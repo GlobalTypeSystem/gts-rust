@@ -20,7 +20,7 @@ pub enum SchemaCastError {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JsonEntityCastResult {
+pub struct GtsEntityCastResult {
     #[serde(rename = "from")]
     pub from_id: String,
     #[serde(rename = "to")]
@@ -42,7 +42,7 @@ pub struct JsonEntityCastResult {
     pub error: Option<String>,
 }
 
-impl JsonEntityCastResult {
+impl GtsEntityCastResult {
     pub fn cast(
         from_instance_id: &str,
         to_schema_id: &str,
@@ -81,7 +81,7 @@ impl JsonEntityCastResult {
             match Self::cast_instance_to_schema(instance_obj, &target_schema, "") {
                 Ok(result) => result,
                 Err(e) => {
-                    return Ok(JsonEntityCastResult {
+                    return Ok(GtsEntityCastResult {
                         from_id: from_instance_id.to_string(),
                         to_id: to_schema_id.to_string(),
                         old: from_instance_id.to_string(),
@@ -116,7 +116,7 @@ impl JsonEntityCastResult {
         removed_sorted.sort();
         removed_sorted.dedup();
 
-        Ok(JsonEntityCastResult {
+        Ok(GtsEntityCastResult {
             from_id: from_instance_id.to_string(),
             to_id: to_schema_id.to_string(),
             old: from_instance_id.to_string(),

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::gts::GtsID;
 use crate::path_resolver::JsonPathResolver;
-use crate::schema_cast::{JsonEntityCastResult, SchemaCastError};
+use crate::schema_cast::{GtsEntityCastResult, SchemaCastError};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationError {
@@ -25,7 +25,7 @@ pub struct ValidationResult {
 }
 
 #[derive(Debug, Clone)]
-pub struct JsonFile {
+pub struct GtsFile {
     pub path: String,
     pub name: String,
     pub content: Value,
@@ -34,7 +34,7 @@ pub struct JsonFile {
     pub validation: ValidationResult,
 }
 
-impl JsonFile {
+impl GtsFile {
     pub fn new(path: String, name: String, content: Value) -> Self {
         let mut sequences_count = 0;
         let mut sequence_content = HashMap::new();
@@ -50,7 +50,7 @@ impl JsonFile {
             sequence_content.insert(i, item.clone());
         }
 
-        JsonFile {
+        GtsFile {
             path,
             name,
             content,
@@ -103,10 +103,10 @@ pub struct GtsRef {
 }
 
 #[derive(Debug, Clone)]
-pub struct JsonEntity {
+pub struct GtsEntity {
     pub gts_id: Option<GtsID>,
     pub is_schema: bool,
-    pub file: Option<JsonFile>,
+    pub file: Option<GtsFile>,
     pub list_sequence: Option<usize>,
     pub label: String,
     pub content: Value,
@@ -119,9 +119,9 @@ pub struct JsonEntity {
     pub schema_refs: Vec<GtsRef>,
 }
 
-impl JsonEntity {
+impl GtsEntity {
     pub fn new(
-        file: Option<JsonFile>,
+        file: Option<GtsFile>,
         list_sequence: Option<usize>,
         content: Value,
         cfg: Option<&GtsConfig>,
@@ -131,7 +131,7 @@ impl JsonEntity {
         validation: Option<ValidationResult>,
         schema_id: Option<String>,
     ) -> Self {
-        let mut entity = JsonEntity {
+        let mut entity = GtsEntity {
             file,
             list_sequence,
             content: content.clone(),
@@ -226,10 +226,10 @@ impl JsonEntity {
 
     pub fn cast(
         &self,
-        to_schema: &JsonEntity,
-        from_schema: &JsonEntity,
+        to_schema: &GtsEntity,
+        from_schema: &GtsEntity,
         resolver: Option<&()>,
-    ) -> Result<JsonEntityCastResult, SchemaCastError> {
+    ) -> Result<GtsEntityCastResult, SchemaCastError> {
         if self.is_schema {
             // When casting a schema, from_schema might be a standard JSON Schema (no gts_id)
             if let (Some(ref self_id), Some(ref from_id)) = (&self.gts_id, &from_schema.gts_id) {
@@ -261,7 +261,7 @@ impl JsonEntity {
             .map(|g| g.id.clone())
             .unwrap_or_default();
 
-        JsonEntityCastResult::cast(
+        GtsEntityCastResult::cast(
             &from_id,
             &to_id,
             &self.content,

@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-use crate::entities::{GtsConfig, JsonEntity, JsonFile};
+use crate::entities::{GtsConfig, GtsEntity, GtsFile};
 use crate::store::GtsReader;
 
 const EXCLUDE_LIST: &[&str] = &["node_modules", "dist", "build"];
@@ -95,12 +95,12 @@ impl GtsFileReader {
         Ok(value)
     }
 
-    fn process_file(&self, file_path: &Path) -> Vec<JsonEntity> {
+    fn process_file(&self, file_path: &Path) -> Vec<GtsEntity> {
         let mut entities = Vec::new();
 
         match self.load_json_file(file_path) {
             Ok(content) => {
-                let json_file = JsonFile::new(
+                let json_file = GtsFile::new(
                     file_path.to_string_lossy().to_string(),
                     file_path
                         .file_name()
@@ -113,7 +113,7 @@ impl GtsFileReader {
                 // Handle both single objects and arrays
                 if let Some(arr) = content.as_array() {
                     for (idx, item) in arr.iter().enumerate() {
-                        let entity = JsonEntity::new(
+                        let entity = GtsEntity::new(
                             Some(json_file.clone()),
                             Some(idx),
                             item.clone(),
@@ -133,7 +133,7 @@ impl GtsFileReader {
                         }
                     }
                 } else {
-                    let entity = JsonEntity::new(
+                    let entity = GtsEntity::new(
                         Some(json_file),
                         None,
                         content,
@@ -163,7 +163,7 @@ impl GtsFileReader {
 }
 
 impl GtsReader for GtsFileReader {
-    fn iter(&mut self) -> Box<dyn Iterator<Item = JsonEntity> + '_> {
+    fn iter(&mut self) -> Box<dyn Iterator<Item = GtsEntity> + '_> {
         if !self.initialized {
             self.collect_files();
             self.initialized = true;
@@ -175,7 +175,7 @@ impl GtsReader for GtsFileReader {
             self.paths
         );
 
-        let entities: Vec<JsonEntity> = self
+        let entities: Vec<GtsEntity> = self
             .files
             .iter()
             .flat_map(|file_path| self.process_file(file_path))
@@ -184,7 +184,7 @@ impl GtsReader for GtsFileReader {
         Box::new(entities.into_iter())
     }
 
-    fn read_by_id(&self, _entity_id: &str) -> Option<JsonEntity> {
+    fn read_by_id(&self, _entity_id: &str) -> Option<GtsEntity> {
         // For FileReader, we don't support random access by ID
         None
     }

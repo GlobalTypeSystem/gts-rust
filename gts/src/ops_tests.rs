@@ -181,14 +181,14 @@ mod tests {
 
     #[test]
     fn test_json_file_creation() {
-        use crate::entities::JsonFile;
+        use crate::entities::GtsFile;
 
         let content = json!({
             "id": "gts.test.id.v1.0",
             "data": "test"
         });
 
-        let file = JsonFile::new(
+        let file = GtsFile::new(
             "/path/to/file.json".to_string(),
             "file.json".to_string(),
             content.clone(),
@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn test_json_file_with_array() {
-        use crate::entities::JsonFile;
+        use crate::entities::GtsFile;
 
         let content = json!([
             {"id": "gts.test.id1.v1.0"},
@@ -209,7 +209,7 @@ mod tests {
             {"id": "gts.test.id3.v1.0"}
         ]);
 
-        let file = JsonFile::new(
+        let file = GtsFile::new(
             "/path/to/array.json".to_string(),
             "array.json".to_string(),
             content,
@@ -551,11 +551,11 @@ mod tests {
     #[test]
     fn test_json_path_resolver_to_dict() {
         use crate::path_resolver::JsonPathResolver;
-        
+
         let content = json!({"name": "test"});
         let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_string(), content);
         let result = resolver.resolve("name");
-        
+
         let dict = result.to_dict();
         assert_eq!(dict.get("gts_id").unwrap().as_str().unwrap(), "gts.test.id.v1.0");
         assert_eq!(dict.get("path").unwrap().as_str().unwrap(), "name");
@@ -567,28 +567,28 @@ mod tests {
     #[test]
     fn test_schema_cast_error_display() {
         use crate::schema_cast::SchemaCastError;
-        
+
         let error = SchemaCastError::InternalError("test".to_string());
         assert!(error.to_string().contains("test"));
-        
+
         let error = SchemaCastError::TargetMustBeSchema;
         assert!(error.to_string().contains("Target must be a schema"));
-        
+
         let error = SchemaCastError::SourceMustBeSchema;
         assert!(error.to_string().contains("Source schema must be a schema"));
-        
+
         let error = SchemaCastError::InstanceMustBeObject;
         assert!(error.to_string().contains("Instance must be an object"));
-        
+
         let error = SchemaCastError::CastError("cast error".to_string());
         assert!(error.to_string().contains("cast error"));
     }
 
     #[test]
     fn test_json_entity_cast_result_infer_direction_up() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
-        let direction = JsonEntityCastResult::infer_direction(
+        use crate::schema_cast::GtsEntityCastResult;
+
+        let direction = GtsEntityCastResult::infer_direction(
             "gts.vendor.package.namespace.type.v1.0",
             "gts.vendor.package.namespace.type.v1.1"
         );
@@ -597,9 +597,9 @@ mod tests {
 
     #[test]
     fn test_json_entity_cast_result_infer_direction_down() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
-        let direction = JsonEntityCastResult::infer_direction(
+        use crate::schema_cast::GtsEntityCastResult;
+
+        let direction = GtsEntityCastResult::infer_direction(
             "gts.vendor.package.namespace.type.v1.1",
             "gts.vendor.package.namespace.type.v1.0"
         );
@@ -608,9 +608,9 @@ mod tests {
 
     #[test]
     fn test_json_entity_cast_result_infer_direction_none() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
-        let direction = JsonEntityCastResult::infer_direction(
+        use crate::schema_cast::GtsEntityCastResult;
+
+        let direction = GtsEntityCastResult::infer_direction(
             "gts.vendor.package.namespace.type.v1.0",
             "gts.vendor.package.namespace.type.v1.0"
         );
@@ -619,9 +619,9 @@ mod tests {
 
     #[test]
     fn test_json_entity_cast_result_infer_direction_unknown() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
-        let direction = JsonEntityCastResult::infer_direction(
+        use crate::schema_cast::GtsEntityCastResult;
+
+        let direction = GtsEntityCastResult::infer_direction(
             "invalid",
             "also-invalid"
         );
@@ -630,15 +630,15 @@ mod tests {
 
     #[test]
     fn test_json_entity_cast_result_cast_success() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
+        use crate::schema_cast::GtsEntityCastResult;
+
         let from_schema = json!({
             "type": "object",
             "properties": {
                 "name": {"type": "string"}
             }
         });
-        
+
         let to_schema = json!({
             "type": "object",
             "properties": {
@@ -646,12 +646,12 @@ mod tests {
                 "email": {"type": "string", "default": "test@example.com"}
             }
         });
-        
+
         let instance = json!({
             "name": "John"
         });
-        
-        let result = JsonEntityCastResult::cast(
+
+        let result = GtsEntityCastResult::cast(
             "gts.vendor.package.namespace.type.v1.0",
             "gts.vendor.package.namespace.type.v1.1",
             &instance,
@@ -659,7 +659,7 @@ mod tests {
             &to_schema,
             None
         );
-        
+
         assert!(result.is_ok());
         let cast_result = result.unwrap();
         assert_eq!(cast_result.direction, "up");
@@ -668,13 +668,13 @@ mod tests {
 
     #[test]
     fn test_json_entity_cast_result_cast_non_object_instance() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
+        use crate::schema_cast::GtsEntityCastResult;
+
         let from_schema = json!({"type": "object"});
         let to_schema = json!({"type": "object"});
         let instance = json!("not an object");
-        
-        let result = JsonEntityCastResult::cast(
+
+        let result = GtsEntityCastResult::cast(
             "gts.vendor.package.namespace.type.v1.0",
             "gts.vendor.package.namespace.type.v1.1",
             &instance,
@@ -682,21 +682,21 @@ mod tests {
             &to_schema,
             None
         );
-        
+
         assert!(result.is_err());
     }
 
     #[test]
     fn test_json_entity_cast_with_required_property() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
+        use crate::schema_cast::GtsEntityCastResult;
+
         let from_schema = json!({
             "type": "object",
             "properties": {
                 "name": {"type": "string"}
             }
         });
-        
+
         let to_schema = json!({
             "type": "object",
             "properties": {
@@ -705,10 +705,10 @@ mod tests {
             },
             "required": ["name", "age"]
         });
-        
+
         let instance = json!({"name": "John"});
-        
-        let result = JsonEntityCastResult::cast(
+
+        let result = GtsEntityCastResult::cast(
             "gts.vendor.package.namespace.type.v1.0",
             "gts.vendor.package.namespace.type.v1.1",
             &instance,
@@ -716,7 +716,7 @@ mod tests {
             &to_schema,
             None
         );
-        
+
         assert!(result.is_ok());
         let cast_result = result.unwrap();
         assert!(!cast_result.incompatibility_reasons.is_empty());
@@ -724,8 +724,8 @@ mod tests {
 
     #[test]
     fn test_json_entity_cast_with_default_values() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
+        use crate::schema_cast::GtsEntityCastResult;
+
         let from_schema = json!({"type": "object"});
         let to_schema = json!({
             "type": "object",
@@ -734,10 +734,10 @@ mod tests {
                 "count": {"type": "number", "default": 0}
             }
         });
-        
+
         let instance = json!({});
-        
-        let result = JsonEntityCastResult::cast(
+
+        let result = GtsEntityCastResult::cast(
             "gts.vendor.package.namespace.type.v1.0",
             "gts.vendor.package.namespace.type.v1.1",
             &instance,
@@ -745,7 +745,7 @@ mod tests {
             &to_schema,
             None
         );
-        
+
         assert!(result.is_ok());
         let cast_result = result.unwrap();
         let casted = cast_result.casted_entity.unwrap();
@@ -755,8 +755,8 @@ mod tests {
 
     #[test]
     fn test_json_entity_cast_remove_additional_properties() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
+        use crate::schema_cast::GtsEntityCastResult;
+
         let from_schema = json!({"type": "object"});
         let to_schema = json!({
             "type": "object",
@@ -765,13 +765,13 @@ mod tests {
             },
             "additionalProperties": false
         });
-        
+
         let instance = json!({
             "name": "John",
             "extra": "field"
         });
-        
-        let result = JsonEntityCastResult::cast(
+
+        let result = GtsEntityCastResult::cast(
             "gts.vendor.package.namespace.type.v1.0",
             "gts.vendor.package.namespace.type.v1.1",
             &instance,
@@ -779,7 +779,7 @@ mod tests {
             &to_schema,
             None
         );
-        
+
         assert!(result.is_ok());
         let cast_result = result.unwrap();
         assert!(!cast_result.removed_properties.is_empty());
@@ -787,8 +787,8 @@ mod tests {
 
     #[test]
     fn test_json_entity_cast_with_const_values() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
+        use crate::schema_cast::GtsEntityCastResult;
+
         let from_schema = json!({"type": "object"});
         let to_schema = json!({
             "type": "object",
@@ -796,12 +796,12 @@ mod tests {
                 "type": {"type": "string", "const": "gts.vendor.package.namespace.type.v1.1~"}
             }
         });
-        
+
         let instance = json!({
             "type": "gts.vendor.package.namespace.type.v1.0~"
         });
-        
-        let result = JsonEntityCastResult::cast(
+
+        let result = GtsEntityCastResult::cast(
             "gts.vendor.package.namespace.type.v1.0",
             "gts.vendor.package.namespace.type.v1.1",
             &instance,
@@ -809,19 +809,19 @@ mod tests {
             &to_schema,
             None
         );
-        
+
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_json_entity_cast_direction_down() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
+        use crate::schema_cast::GtsEntityCastResult;
+
         let from_schema = json!({"type": "object"});
         let to_schema = json!({"type": "object"});
         let instance = json!({"name": "test"});
-        
-        let result = JsonEntityCastResult::cast(
+
+        let result = GtsEntityCastResult::cast(
             "gts.vendor.package.namespace.type.v1.1",
             "gts.vendor.package.namespace.type.v1.0",
             &instance,
@@ -829,7 +829,7 @@ mod tests {
             &to_schema,
             None
         );
-        
+
         assert!(result.is_ok());
         let cast_result = result.unwrap();
         assert_eq!(cast_result.direction, "down");
@@ -837,8 +837,8 @@ mod tests {
 
     #[test]
     fn test_json_entity_cast_with_allof() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
+        use crate::schema_cast::GtsEntityCastResult;
+
         let from_schema = json!({"type": "object"});
         let to_schema = json!({
             "allOf": [
@@ -850,10 +850,10 @@ mod tests {
                 }
             ]
         });
-        
+
         let instance = json!({"name": "test"});
-        
-        let result = JsonEntityCastResult::cast(
+
+        let result = GtsEntityCastResult::cast(
             "gts.vendor.package.namespace.type.v1.0",
             "gts.vendor.package.namespace.type.v1.1",
             &instance,
@@ -861,15 +861,15 @@ mod tests {
             &to_schema,
             None
         );
-        
+
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_json_entity_cast_result_to_dict() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
-        let result = JsonEntityCastResult {
+        use crate::schema_cast::GtsEntityCastResult;
+
+        let result = GtsEntityCastResult {
             from_id: "gts.vendor.package.namespace.type.v1.0".to_string(),
             to_id: "gts.vendor.package.namespace.type.v1.1".to_string(),
             old: "gts.vendor.package.namespace.type.v1.0".to_string(),
@@ -887,7 +887,7 @@ mod tests {
             casted_entity: Some(json!({"name": "test"})),
             error: None,
         };
-        
+
         let dict = result.to_dict();
         assert_eq!(dict.get("from").unwrap().as_str().unwrap(), "gts.vendor.package.namespace.type.v1.0");
         assert_eq!(dict.get("direction").unwrap().as_str().unwrap(), "up");
@@ -895,8 +895,8 @@ mod tests {
 
     #[test]
     fn test_json_entity_cast_nested_objects() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
+        use crate::schema_cast::GtsEntityCastResult;
+
         let from_schema = json!({"type": "object"});
         let to_schema = json!({
             "type": "object",
@@ -910,14 +910,14 @@ mod tests {
                 }
             }
         });
-        
+
         let instance = json!({
             "user": {
                 "name": "John"
             }
         });
-        
-        let result = JsonEntityCastResult::cast(
+
+        let result = GtsEntityCastResult::cast(
             "gts.vendor.package.namespace.type.v1.0",
             "gts.vendor.package.namespace.type.v1.1",
             &instance,
@@ -925,14 +925,14 @@ mod tests {
             &to_schema,
             None
         );
-        
+
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_json_entity_cast_array_of_objects() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
+        use crate::schema_cast::GtsEntityCastResult;
+
         let from_schema = json!({"type": "object"});
         let to_schema = json!({
             "type": "object",
@@ -949,15 +949,15 @@ mod tests {
                 }
             }
         });
-        
+
         let instance = json!({
             "users": [
                 {"name": "John"},
                 {"name": "Jane"}
             ]
         });
-        
-        let result = JsonEntityCastResult::cast(
+
+        let result = GtsEntityCastResult::cast(
             "gts.vendor.package.namespace.type.v1.0",
             "gts.vendor.package.namespace.type.v1.1",
             &instance,
@@ -965,14 +965,14 @@ mod tests {
             &to_schema,
             None
         );
-        
+
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_json_entity_cast_with_required_and_default() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
+        use crate::schema_cast::GtsEntityCastResult;
+
         let from_schema = json!({"type": "object"});
         let to_schema = json!({
             "type": "object",
@@ -981,10 +981,10 @@ mod tests {
             },
             "required": ["status"]
         });
-        
+
         let instance = json!({});
-        
-        let result = JsonEntityCastResult::cast(
+
+        let result = GtsEntityCastResult::cast(
             "gts.vendor.package.namespace.type.v1.0",
             "gts.vendor.package.namespace.type.v1.1",
             &instance,
@@ -992,7 +992,7 @@ mod tests {
             &to_schema,
             None
         );
-        
+
         assert!(result.is_ok());
         let cast_result = result.unwrap();
         assert!(!cast_result.added_properties.is_empty());
@@ -1000,8 +1000,8 @@ mod tests {
 
     #[test]
     fn test_json_entity_cast_flatten_schema_with_allof() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
+        use crate::schema_cast::GtsEntityCastResult;
+
         let from_schema = json!({"type": "object"});
         let to_schema = json!({
             "allOf": [
@@ -1020,10 +1020,10 @@ mod tests {
                 }
             ]
         });
-        
+
         let instance = json!({"name": "test"});
-        
-        let result = JsonEntityCastResult::cast(
+
+        let result = GtsEntityCastResult::cast(
             "gts.vendor.package.namespace.type.v1.0",
             "gts.vendor.package.namespace.type.v1.1",
             &instance,
@@ -1031,14 +1031,14 @@ mod tests {
             &to_schema,
             None
         );
-        
+
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_json_entity_cast_array_with_non_object_items() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
+        use crate::schema_cast::GtsEntityCastResult;
+
         let from_schema = json!({"type": "object"});
         let to_schema = json!({
             "type": "object",
@@ -1051,12 +1051,12 @@ mod tests {
                 }
             }
         });
-        
+
         let instance = json!({
             "tags": ["tag1", "tag2"]
         });
-        
-        let result = JsonEntityCastResult::cast(
+
+        let result = GtsEntityCastResult::cast(
             "gts.vendor.package.namespace.type.v1.0",
             "gts.vendor.package.namespace.type.v1.1",
             &instance,
@@ -1064,14 +1064,14 @@ mod tests {
             &to_schema,
             None
         );
-        
+
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_json_entity_cast_const_non_gts_id() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
+        use crate::schema_cast::GtsEntityCastResult;
+
         let from_schema = json!({"type": "object"});
         let to_schema = json!({
             "type": "object",
@@ -1079,12 +1079,12 @@ mod tests {
                 "version": {"type": "string", "const": "2.0"}
             }
         });
-        
+
         let instance = json!({
             "version": "1.0"
         });
-        
-        let result = JsonEntityCastResult::cast(
+
+        let result = GtsEntityCastResult::cast(
             "gts.vendor.package.namespace.type.v1.0",
             "gts.vendor.package.namespace.type.v1.1",
             &instance,
@@ -1092,14 +1092,14 @@ mod tests {
             &to_schema,
             None
         );
-        
+
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_json_entity_cast_additional_properties_true() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
+        use crate::schema_cast::GtsEntityCastResult;
+
         let from_schema = json!({"type": "object"});
         let to_schema = json!({
             "type": "object",
@@ -1108,13 +1108,13 @@ mod tests {
             },
             "additionalProperties": true
         });
-        
+
         let instance = json!({
             "name": "John",
             "extra": "field"
         });
-        
-        let result = JsonEntityCastResult::cast(
+
+        let result = GtsEntityCastResult::cast(
             "gts.vendor.package.namespace.type.v1.0",
             "gts.vendor.package.namespace.type.v1.1",
             &instance,
@@ -1122,7 +1122,7 @@ mod tests {
             &to_schema,
             None
         );
-        
+
         assert!(result.is_ok());
         let cast_result = result.unwrap();
         // Should not remove extra field when additionalProperties is true
@@ -1131,31 +1131,31 @@ mod tests {
 
     #[test]
     fn test_schema_compatibility_type_change() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
+        use crate::schema_cast::GtsEntityCastResult;
+
         let old_schema = json!({
             "type": "object",
             "properties": {
                 "value": {"type": "string"}
             }
         });
-        
+
         let new_schema = json!({
             "type": "object",
             "properties": {
                 "value": {"type": "number"}
             }
         });
-        
-        let (is_backward, backward_errors) = JsonEntityCastResult::check_backward_compatibility(&old_schema, &new_schema);
+
+        let (is_backward, backward_errors) = GtsEntityCastResult::check_backward_compatibility(&old_schema, &new_schema);
         assert!(!is_backward);
         assert!(!backward_errors.is_empty());
     }
 
     #[test]
     fn test_schema_compatibility_enum_changes() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
+        use crate::schema_cast::GtsEntityCastResult;
+
         let old_schema = json!({
             "type": "object",
             "properties": {
@@ -1165,7 +1165,7 @@ mod tests {
                 }
             }
         });
-        
+
         let new_schema = json!({
             "type": "object",
             "properties": {
@@ -1175,10 +1175,10 @@ mod tests {
                 }
             }
         });
-        
-        let (is_backward, _) = JsonEntityCastResult::check_backward_compatibility(&old_schema, &new_schema);
-        let (is_forward, _) = JsonEntityCastResult::check_forward_compatibility(&old_schema, &new_schema);
-        
+
+        let (is_backward, _) = GtsEntityCastResult::check_backward_compatibility(&old_schema, &new_schema);
+        let (is_forward, _) = GtsEntityCastResult::check_forward_compatibility(&old_schema, &new_schema);
+
         // Adding enum values is not backward compatible but is forward compatible
         assert!(!is_backward);
         assert!(is_forward);
@@ -1186,8 +1186,8 @@ mod tests {
 
     #[test]
     fn test_schema_compatibility_numeric_constraints() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
+        use crate::schema_cast::GtsEntityCastResult;
+
         let old_schema = json!({
             "type": "object",
             "properties": {
@@ -1198,7 +1198,7 @@ mod tests {
                 }
             }
         });
-        
+
         let new_schema = json!({
             "type": "object",
             "properties": {
@@ -1209,16 +1209,16 @@ mod tests {
                 }
             }
         });
-        
-        let (is_backward, backward_errors) = JsonEntityCastResult::check_backward_compatibility(&old_schema, &new_schema);
+
+        let (is_backward, backward_errors) = GtsEntityCastResult::check_backward_compatibility(&old_schema, &new_schema);
         assert!(!is_backward);
         assert!(!backward_errors.is_empty());
     }
 
     #[test]
     fn test_schema_compatibility_string_constraints() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
+        use crate::schema_cast::GtsEntityCastResult;
+
         let old_schema = json!({
             "type": "object",
             "properties": {
@@ -1229,7 +1229,7 @@ mod tests {
                 }
             }
         });
-        
+
         let new_schema = json!({
             "type": "object",
             "properties": {
@@ -1240,15 +1240,15 @@ mod tests {
                 }
             }
         });
-        
-        let (is_backward, _) = JsonEntityCastResult::check_backward_compatibility(&old_schema, &new_schema);
+
+        let (is_backward, _) = GtsEntityCastResult::check_backward_compatibility(&old_schema, &new_schema);
         assert!(!is_backward);
     }
 
     #[test]
     fn test_schema_compatibility_array_constraints() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
+        use crate::schema_cast::GtsEntityCastResult;
+
         let old_schema = json!({
             "type": "object",
             "properties": {
@@ -1259,7 +1259,7 @@ mod tests {
                 }
             }
         });
-        
+
         let new_schema = json!({
             "type": "object",
             "properties": {
@@ -1270,22 +1270,22 @@ mod tests {
                 }
             }
         });
-        
-        let (is_backward, _) = JsonEntityCastResult::check_backward_compatibility(&old_schema, &new_schema);
+
+        let (is_backward, _) = GtsEntityCastResult::check_backward_compatibility(&old_schema, &new_schema);
         assert!(!is_backward);
     }
 
     #[test]
     fn test_schema_compatibility_added_constraint() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
+        use crate::schema_cast::GtsEntityCastResult;
+
         let old_schema = json!({
             "type": "object",
             "properties": {
                 "age": {"type": "number"}
             }
         });
-        
+
         let new_schema = json!({
             "type": "object",
             "properties": {
@@ -1295,15 +1295,15 @@ mod tests {
                 }
             }
         });
-        
-        let (is_backward, _) = JsonEntityCastResult::check_backward_compatibility(&old_schema, &new_schema);
+
+        let (is_backward, _) = GtsEntityCastResult::check_backward_compatibility(&old_schema, &new_schema);
         assert!(!is_backward);
     }
 
     #[test]
     fn test_schema_compatibility_removed_constraint() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
+        use crate::schema_cast::GtsEntityCastResult;
+
         let old_schema = json!({
             "type": "object",
             "properties": {
@@ -1313,22 +1313,22 @@ mod tests {
                 }
             }
         });
-        
+
         let new_schema = json!({
             "type": "object",
             "properties": {
                 "age": {"type": "number"}
             }
         });
-        
-        let (is_forward, _) = JsonEntityCastResult::check_forward_compatibility(&old_schema, &new_schema);
+
+        let (is_forward, _) = GtsEntityCastResult::check_forward_compatibility(&old_schema, &new_schema);
         assert!(!is_forward);
     }
 
     #[test]
     fn test_schema_compatibility_removed_required_property() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
+        use crate::schema_cast::GtsEntityCastResult;
+
         let old_schema = json!({
             "type": "object",
             "properties": {
@@ -1337,7 +1337,7 @@ mod tests {
             },
             "required": ["name", "email"]
         });
-        
+
         let new_schema = json!({
             "type": "object",
             "properties": {
@@ -1346,16 +1346,16 @@ mod tests {
             },
             "required": ["name"]
         });
-        
-        let (is_forward, forward_errors) = JsonEntityCastResult::check_forward_compatibility(&old_schema, &new_schema);
+
+        let (is_forward, forward_errors) = GtsEntityCastResult::check_forward_compatibility(&old_schema, &new_schema);
         assert!(!is_forward);
         assert!(!forward_errors.is_empty());
     }
 
     #[test]
     fn test_schema_compatibility_enum_removed_values() {
-        use crate::schema_cast::JsonEntityCastResult;
-        
+        use crate::schema_cast::GtsEntityCastResult;
+
         let old_schema = json!({
             "type": "object",
             "properties": {
@@ -1365,7 +1365,7 @@ mod tests {
                 }
             }
         });
-        
+
         let new_schema = json!({
             "type": "object",
             "properties": {
@@ -1375,8 +1375,8 @@ mod tests {
                 }
             }
         });
-        
-        let (is_forward, forward_errors) = JsonEntityCastResult::check_forward_compatibility(&old_schema, &new_schema);
+
+        let (is_forward, forward_errors) = GtsEntityCastResult::check_forward_compatibility(&old_schema, &new_schema);
         assert!(!is_forward);
         assert!(!forward_errors.is_empty());
     }
@@ -1394,12 +1394,12 @@ mod tests {
     #[test]
     fn test_gts_ops_add_entities() {
         let mut ops = GtsOps::new(None, None, 0);
-        
+
         let entities = vec![
             json!({"id": "gts.vendor.package.namespace.type.v1.0", "name": "test1"}),
             json!({"id": "gts.vendor.package.namespace.type.v1.1", "name": "test2"}),
         ];
-        
+
         let result = ops.add_entities(entities);
         assert_eq!(result.results.len(), 2);
     }
@@ -1450,15 +1450,15 @@ mod tests {
     #[test]
     fn test_gts_ops_schema_graph() {
         let mut ops = GtsOps::new(None, None, 0);
-        
+
         let schema = json!({
             "$id": "gts.vendor.package.namespace.type.v1.0~",
             "$schema": "http://json-schema.org/draft-07/schema#",
             "type": "object"
         });
-        
+
         ops.add_schema("gts.vendor.package.namespace.type.v1.0~".to_string(), schema);
-        
+
         let result = ops.schema_graph("gts.vendor.package.namespace.type.v1.0~");
         assert!(result.graph.is_object());
     }
@@ -1466,16 +1466,16 @@ mod tests {
     #[test]
     fn test_gts_ops_attr() {
         let mut ops = GtsOps::new(None, None, 0);
-        
+
         let content = json!({
             "id": "gts.vendor.package.namespace.type.v1.0",
             "user": {
                 "name": "John"
             }
         });
-        
+
         ops.add_entity(content);
-        
+
         let result = ops.attr("gts.vendor.package.namespace.type.v1.0#user.name");
         // Just verify it executes
         assert!(!result.gts_id.is_empty());
@@ -1484,14 +1484,14 @@ mod tests {
     #[test]
     fn test_gts_ops_attr_no_path() {
         let mut ops = GtsOps::new(None, None, 0);
-        
+
         let content = json!({
             "id": "gts.vendor.package.namespace.type.v1.0",
             "name": "test"
         });
-        
+
         ops.add_entity(content);
-        
+
         let result = ops.attr("gts.vendor.package.namespace.type.v1.0");
         assert_eq!(result.path, "");
     }
@@ -1508,11 +1508,11 @@ mod tests {
     #[test]
     fn test_path_resolver_failure() {
         use crate::path_resolver::JsonPathResolver;
-        
+
         let content = json!({"name": "test"});
         let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_string(), content);
         let result = resolver.failure("invalid.path", "Path not found");
-        
+
         assert!(!result.resolved);
         assert!(result.error.is_some());
     }
@@ -1520,50 +1520,50 @@ mod tests {
     #[test]
     fn test_path_resolver_array_access() {
         use crate::path_resolver::JsonPathResolver;
-        
+
         let content = json!({
             "items": [
                 {"name": "first"},
                 {"name": "second"}
             ]
         });
-        
+
         let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_string(), content);
         let result = resolver.resolve("items[0].name");
-        
+
         assert_eq!(result.path, "items[0].name");
     }
 
     #[test]
     fn test_path_resolver_invalid_path() {
         use crate::path_resolver::JsonPathResolver;
-        
+
         let content = json!({"name": "test"});
         let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_string(), content);
         let result = resolver.resolve("nonexistent.path");
-        
+
         assert!(!result.resolved);
     }
 
     #[test]
     fn test_path_resolver_empty_path() {
         use crate::path_resolver::JsonPathResolver;
-        
+
         let content = json!({"name": "test"});
         let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_string(), content);
         let result = resolver.resolve("");
-        
+
         assert_eq!(result.path, "");
     }
 
     #[test]
     fn test_path_resolver_root_access() {
         use crate::path_resolver::JsonPathResolver;
-        
+
         let content = json!({"name": "test", "value": 42});
         let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_string(), content.clone());
         let result = resolver.resolve("$");
-        
+
         // Root access should return the whole object
         assert_eq!(result.gts_id, "gts.test.id.v1.0");
     }
@@ -1571,7 +1571,7 @@ mod tests {
     #[test]
     fn test_gts_ops_list_entities() {
         let mut ops = GtsOps::new(None, None, 0);
-        
+
         for i in 0..3 {
             let content = json!({
                 "id": format!("gts.vendor.package.namespace.type.v1.{}", i),
@@ -1579,7 +1579,7 @@ mod tests {
             });
             ops.add_entity(content);
         }
-        
+
         let result = ops.list(10);
         assert_eq!(result.total, 3);
         assert_eq!(result.entities.len(), 3);
@@ -1588,7 +1588,7 @@ mod tests {
     #[test]
     fn test_gts_ops_list_with_limit() {
         let mut ops = GtsOps::new(None, None, 0);
-        
+
         for i in 0..5 {
             let content = json!({
                 "id": format!("gts.vendor.package.namespace.type.v1.{}", i),
@@ -1596,7 +1596,7 @@ mod tests {
             });
             ops.add_entity(content);
         }
-        
+
         let result = ops.list(2);
         assert_eq!(result.entities.len(), 2);
         assert_eq!(result.total, 5);
@@ -1613,7 +1613,7 @@ mod tests {
     #[test]
     fn test_gts_ops_validate_instance() {
         let mut ops = GtsOps::new(None, None, 0);
-        
+
         let schema = json!({
             "$id": "gts.vendor.package.namespace.type.v1.0~",
             "$schema": "http://json-schema.org/draft-07/schema#",
@@ -1622,17 +1622,17 @@ mod tests {
                 "name": {"type": "string"}
             }
         });
-        
+
         ops.add_schema("gts.vendor.package.namespace.type.v1.0~".to_string(), schema);
-        
+
         let content = json!({
             "id": "gts.vendor.package.namespace.type.v1.0",
             "type": "gts.vendor.package.namespace.type.v1.0~",
             "name": "test"
         });
-        
+
         ops.add_entity(content);
-        
+
         let result = ops.validate_instance("gts.vendor.package.namespace.type.v1.0");
         // Just verify it executes
         assert!(result.ok || !result.ok);
@@ -1641,7 +1641,7 @@ mod tests {
     #[test]
     fn test_path_resolver_nested_object() {
         use crate::path_resolver::JsonPathResolver;
-        
+
         let content = json!({
             "user": {
                 "profile": {
@@ -1649,31 +1649,31 @@ mod tests {
                 }
             }
         });
-        
+
         let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_string(), content);
         let result = resolver.resolve("user.profile.name");
-        
+
         assert_eq!(result.gts_id, "gts.test.id.v1.0");
     }
 
     #[test]
     fn test_path_resolver_array_out_of_bounds() {
         use crate::path_resolver::JsonPathResolver;
-        
+
         let content = json!({
             "items": [1, 2, 3]
         });
-        
+
         let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_string(), content);
         let result = resolver.resolve("items[10]");
-        
+
         assert!(!result.resolved);
     }
 
     #[test]
     fn test_gts_ops_compatibility() {
         let mut ops = GtsOps::new(None, None, 0);
-        
+
         let schema1 = json!({
             "$id": "gts.vendor.package.namespace.type.v1.0~",
             "$schema": "http://json-schema.org/draft-07/schema#",
@@ -1682,7 +1682,7 @@ mod tests {
                 "name": {"type": "string"}
             }
         });
-        
+
         let schema2 = json!({
             "$id": "gts.vendor.package.namespace.type.v1.1~",
             "$schema": "http://json-schema.org/draft-07/schema#",
@@ -1692,15 +1692,15 @@ mod tests {
                 "email": {"type": "string"}
             }
         });
-        
+
         ops.add_schema("gts.vendor.package.namespace.type.v1.0~".to_string(), schema1);
         ops.add_schema("gts.vendor.package.namespace.type.v1.1~".to_string(), schema2);
-        
+
         let result = ops.compatibility(
             "gts.vendor.package.namespace.type.v1.0~",
             "gts.vendor.package.namespace.type.v1.1~"
         );
-        
+
         assert!(result.is_backward_compatible || !result.is_backward_compatible);
     }
 
@@ -1708,8 +1708,8 @@ mod tests {
 
     #[test]
     fn test_json_entity_resolve_path() {
-        use crate::entities::{GtsConfig, JsonEntity};
-        
+        use crate::entities::{GtsConfig, GtsEntity};
+
         let cfg = GtsConfig::default();
         let content = json!({
             "id": "gts.vendor.package.namespace.type.v1.0",
@@ -1718,8 +1718,8 @@ mod tests {
                 "age": 30
             }
         });
-        
-        let entity = JsonEntity::new(
+
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -1730,17 +1730,17 @@ mod tests {
             None,
             None,
         );
-        
+
         let result = entity.resolve_path("user.name");
         assert_eq!(result.gts_id, "gts.vendor.package.namespace.type.v1.0");
     }
 
     #[test]
     fn test_json_entity_cast_method() {
-        use crate::entities::{GtsConfig, JsonEntity};
-        
+        use crate::entities::{GtsConfig, GtsEntity};
+
         let cfg = GtsConfig::default();
-        
+
         let from_schema_content = json!({
             "$id": "gts.vendor.package.namespace.type.v1.0~",
             "$schema": "http://json-schema.org/draft-07/schema#",
@@ -1749,7 +1749,7 @@ mod tests {
                 "name": {"type": "string"}
             }
         });
-        
+
         let to_schema_content = json!({
             "$id": "gts.vendor.package.namespace.type.v1.1~",
             "$schema": "http://json-schema.org/draft-07/schema#",
@@ -1759,8 +1759,8 @@ mod tests {
                 "email": {"type": "string", "default": "test@example.com"}
             }
         });
-        
-        let from_schema = JsonEntity::new(
+
+        let from_schema = GtsEntity::new(
             None,
             None,
             from_schema_content,
@@ -1771,8 +1771,8 @@ mod tests {
             None,
             None,
         );
-        
-        let to_schema = JsonEntity::new(
+
+        let to_schema = GtsEntity::new(
             None,
             None,
             to_schema_content,
@@ -1783,13 +1783,13 @@ mod tests {
             None,
             None,
         );
-        
+
         let instance_content = json!({
             "id": "gts.vendor.package.namespace.type.v1.0",
             "name": "John"
         });
-        
-        let instance = JsonEntity::new(
+
+        let instance = GtsEntity::new(
             None,
             None,
             instance_content,
@@ -1800,53 +1800,53 @@ mod tests {
             None,
             None,
         );
-        
+
         let result = instance.cast(&to_schema, &from_schema, None);
         assert!(result.is_ok() || result.is_err());
     }
 
     #[test]
     fn test_json_file_with_array_content() {
-        use crate::entities::JsonFile;
-        
+        use crate::entities::GtsFile;
+
         let content = json!([
             {"id": "gts.vendor.package.namespace.type.v1.0", "name": "first"},
             {"id": "gts.vendor.package.namespace.type.v1.1", "name": "second"}
         ]);
-        
-        let file = JsonFile::new(
+
+        let file = GtsFile::new(
             "/path/to/file.json".to_string(),
             "file.json".to_string(),
             content,
         );
-        
+
         assert_eq!(file.sequences_count, 2);
         assert_eq!(file.sequence_content.len(), 2);
     }
 
     #[test]
     fn test_json_file_with_single_object() {
-        use crate::entities::JsonFile;
-        
+        use crate::entities::GtsFile;
+
         let content = json!({"id": "gts.vendor.package.namespace.type.v1.0"});
-        
-        let file = JsonFile::new(
+
+        let file = GtsFile::new(
             "/path/to/file.json".to_string(),
             "file.json".to_string(),
             content,
         );
-        
+
         assert_eq!(file.sequences_count, 1);
         assert_eq!(file.sequence_content.len(), 1);
     }
 
     #[test]
     fn test_json_entity_with_validation_result() {
-        use crate::entities::{GtsConfig, JsonEntity, ValidationResult, ValidationError};
-        
+        use crate::entities::{GtsConfig, GtsEntity, ValidationResult, ValidationError};
+
         let cfg = GtsConfig::default();
         let content = json!({"id": "gts.vendor.package.namespace.type.v1.0"});
-        
+
         let mut validation = ValidationResult::default();
         validation.errors.push(ValidationError {
             instance_path: "/test".to_string(),
@@ -1856,8 +1856,8 @@ mod tests {
             params: std::collections::HashMap::new(),
             data: None,
         });
-        
-        let entity = JsonEntity::new(
+
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -1868,24 +1868,24 @@ mod tests {
             Some(validation),
             None,
         );
-        
+
         assert_eq!(entity.validation.errors.len(), 1);
     }
 
     #[test]
     fn test_json_entity_with_file() {
-        use crate::entities::{GtsConfig, JsonEntity, JsonFile};
-        
+        use crate::entities::{GtsConfig, GtsEntity, GtsFile};
+
         let cfg = GtsConfig::default();
         let content = json!({"id": "gts.vendor.package.namespace.type.v1.0"});
-        
-        let file = JsonFile::new(
+
+        let file = GtsFile::new(
             "/path/to/file.json".to_string(),
             "file.json".to_string(),
             content.clone(),
         );
-        
-        let entity = JsonEntity::new(
+
+        let entity = GtsEntity::new(
             Some(file),
             Some(0),
             content,
@@ -1896,9 +1896,8 @@ mod tests {
             None,
             None,
         );
-        
+
         assert!(entity.file.is_some());
         assert_eq!(entity.list_sequence, Some(0));
     }
 }
-

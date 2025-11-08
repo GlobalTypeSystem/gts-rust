@@ -18,10 +18,10 @@ mod ops_tests;
 mod store_tests;
 
 // Re-export commonly used types
-pub use entities::{GtsConfig, JsonEntity, JsonFile, ValidationError, ValidationResult};
+pub use entities::{GtsConfig, GtsEntity, GtsFile, ValidationError, ValidationResult};
 pub use files_reader::GtsFileReader;
 pub use gts::{GtsError, GtsID, GtsIdSegment, GtsWildcard};
 pub use ops::GtsOps;
 pub use path_resolver::JsonPathResolver;
-pub use schema_cast::{JsonEntityCastResult, SchemaCastError};
+pub use schema_cast::{GtsEntityCastResult, SchemaCastError};
 pub use store::{GtsReader, GtsStore, GtsStoreQueryResult, StoreError};

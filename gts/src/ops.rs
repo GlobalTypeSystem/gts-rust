@@ -4,11 +4,11 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::entities::{GtsConfig, JsonEntity};
+use crate::entities::{GtsConfig, GtsEntity};
 use crate::files_reader::GtsFileReader;
 use crate::gts::{GtsID, GtsWildcard};
 use crate::path_resolver::JsonPathResolver;
-use crate::schema_cast::JsonEntityCastResult;
+use crate::schema_cast::GtsEntityCastResult;
 use crate::store::{GtsStore, GtsStoreQueryResult};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -419,7 +419,7 @@ impl GtsOps {
     }
 
     pub fn add_entity(&mut self, content: Value) -> GtsAddEntityResult {
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -582,14 +582,14 @@ impl GtsOps {
         &mut self,
         old_schema_id: &str,
         new_schema_id: &str,
-    ) -> JsonEntityCastResult {
+    ) -> GtsEntityCastResult {
         self.store.is_minor_compatible(old_schema_id, new_schema_id)
     }
 
-    pub fn cast(&mut self, from_id: &str, to_schema_id: &str) -> JsonEntityCastResult {
+    pub fn cast(&mut self, from_id: &str, to_schema_id: &str) -> GtsEntityCastResult {
         match self.store.cast(from_id, to_schema_id) {
             Ok(result) => result,
-            Err(e) => JsonEntityCastResult {
+            Err(e) => GtsEntityCastResult {
                 from_id: from_id.to_string(),
                 to_id: to_schema_id.to_string(),
                 old: from_id.to_string(),
@@ -631,7 +631,7 @@ impl GtsOps {
     }
 
     pub fn extract_id(&self, content: Value) -> GtsExtractIdResult {
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,

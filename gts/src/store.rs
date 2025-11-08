@@ -3,9 +3,9 @@ use serde_json::Value;
 use std::collections::HashMap;
 use thiserror::Error;
 
-use crate::entities::JsonEntity;
+use crate::entities::GtsEntity;
 use crate::gts::{GtsID, GtsWildcard};
-use crate::schema_cast::JsonEntityCastResult;
+use crate::schema_cast::GtsEntityCastResult;
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -24,8 +24,8 @@ pub enum StoreError {
 }
 
 pub trait GtsReader: Send {
-    fn iter(&mut self) -> Box<dyn Iterator<Item = JsonEntity> + '_>;
-    fn read_by_id(&self, entity_id: &str) -> Option<JsonEntity>;
+    fn iter(&mut self) -> Box<dyn Iterator<Item = GtsEntity> + '_>;
+    fn read_by_id(&self, entity_id: &str) -> Option<GtsEntity>;
     fn reset(&mut self);
 }
 
@@ -52,7 +52,7 @@ impl GtsStoreQueryResult {
 }
 
 pub struct GtsStore {
-    by_id: HashMap<String, JsonEntity>,
+    by_id: HashMap<String, GtsEntity>,
     reader: Option<Box<dyn GtsReader>>,
 }
 
@@ -81,7 +81,7 @@ impl GtsStore {
         }
     }
 
-    pub fn register(&mut self, entity: JsonEntity) -> Result<(), StoreError> {
+    pub fn register(&mut self, entity: GtsEntity) -> Result<(), StoreError> {
         if entity.gts_id.is_none() {
             return Err(StoreError::InvalidEntity);
         }
@@ -96,7 +96,7 @@ impl GtsStore {
         }
 
         let gts_id = GtsID::new(type_id).map_err(|_| StoreError::InvalidSchemaId)?;
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             schema,
@@ -111,7 +111,7 @@ impl GtsStore {
         Ok(())
     }
 
-    pub fn get(&mut self, entity_id: &str) -> Option<&JsonEntity> {
+    pub fn get(&mut self, entity_id: &str) -> Option<&GtsEntity> {
         // Check cache first
         if self.by_id.contains_key(entity_id) {
             return self.by_id.get(entity_id);
@@ -135,7 +135,7 @@ impl GtsStore {
         Err(StoreError::SchemaNotFound(type_id.to_string()))
     }
 
-    pub fn items(&self) -> impl Iterator<Item = (&String, &JsonEntity)> {
+    pub fn items(&self) -> impl Iterator<Item = (&String, &GtsEntity)> {
         self.by_id.iter()
     }
 
@@ -254,7 +254,7 @@ impl GtsStore {
         &mut self,
         from_id: &str,
         target_schema_id: &str,
-    ) -> Result<JsonEntityCastResult, StoreError> {
+    ) -> Result<GtsEntityCastResult, StoreError> {
         let from_entity = self
             .get(from_id)
             .ok_or_else(|| StoreError::EntityNotFound(from_id.to_string()))?
@@ -296,12 +296,12 @@ impl GtsStore {
         &mut self,
         old_schema_id: &str,
         new_schema_id: &str,
-    ) -> JsonEntityCastResult {
+    ) -> GtsEntityCastResult {
         let old_entity = self.get(old_schema_id).cloned();
         let new_entity = self.get(new_schema_id).cloned();
 
         if old_entity.is_none() || new_entity.is_none() {
-            return JsonEntityCastResult {
+            return GtsEntityCastResult {
                 from_id: old_schema_id.to_string(),
                 to_id: new_schema_id.to_string(),
                 old: old_schema_id.to_string(),
@@ -326,14 +326,14 @@ impl GtsStore {
 
         // Use the cast method's compatibility checking logic
         let (is_backward, backward_errors) =
-            JsonEntityCastResult::check_backward_compatibility(old_schema, new_schema);
+            GtsEntityCastResult::check_backward_compatibility(old_schema, new_schema);
         let (is_forward, forward_errors) =
-            JsonEntityCastResult::check_forward_compatibility(old_schema, new_schema);
+            GtsEntityCastResult::check_forward_compatibility(old_schema, new_schema);
 
         // Determine direction
-        let direction = JsonEntityCastResult::infer_direction(old_schema_id, new_schema_id);
+        let direction = GtsEntityCastResult::infer_direction(old_schema_id, new_schema_id);
 
-        JsonEntityCastResult {
+        GtsEntityCastResult {
             from_id: old_schema_id.to_string(),
             to_id: new_schema_id.to_string(),
             old: old_schema_id.to_string(),

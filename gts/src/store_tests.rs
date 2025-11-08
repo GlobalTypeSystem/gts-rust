@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::store::*;
-    use crate::entities::{JsonEntity, GtsConfig};
+    use crate::entities::{GtsEntity, GtsConfig};
     use serde_json::json;
 
     #[test]
@@ -53,7 +53,7 @@ mod tests {
             "name": "test"
         });
 
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -185,7 +185,7 @@ mod tests {
             "name": "test"
         });
 
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -323,7 +323,7 @@ mod tests {
             "name": "John"
         });
 
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -365,7 +365,7 @@ mod tests {
             "name": "test"
         });
 
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -431,7 +431,7 @@ mod tests {
             "name": "test"
         });
 
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -482,7 +482,7 @@ mod tests {
             "name": "test"
         });
 
-        let entity1 = JsonEntity::new(
+        let entity1 = GtsEntity::new(
             None,
             None,
             content.clone(),
@@ -494,7 +494,7 @@ mod tests {
             None,
         );
 
-        let entity2 = JsonEntity::new(
+        let entity2 = GtsEntity::new(
             None,
             None,
             content,
@@ -536,7 +536,7 @@ mod tests {
             "name": "test"
         });
 
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -571,7 +571,7 @@ mod tests {
             "name": "test"
         });
 
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -632,7 +632,7 @@ mod tests {
             "name": "test"
         });
 
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -671,7 +671,7 @@ mod tests {
             "name": "test"
         });
 
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -738,7 +738,7 @@ mod tests {
             "name": "test"
         });
 
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -780,7 +780,7 @@ mod tests {
             "age": "not a number"
         });
 
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -875,7 +875,7 @@ mod tests {
             "name": "John"
         });
 
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -964,7 +964,7 @@ mod tests {
             "name": "test"
         });
 
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -1053,7 +1053,7 @@ mod tests {
             "name": "test"
         });
 
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -1155,7 +1155,7 @@ mod tests {
             "email": "test@example.com"
         });
 
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -1227,7 +1227,7 @@ mod tests {
             "name": "John"
         });
 
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -1349,7 +1349,7 @@ mod tests {
         let mut store = GtsStore::new(None);
         let content = json!({"name": "test"});
 
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -1397,7 +1397,7 @@ mod tests {
             "tags": ["developer", "rust"]
         });
 
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -1437,7 +1437,7 @@ mod tests {
             "id": "gts.vendor.package.namespace.type.v1.0"
         });
 
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -1516,7 +1516,7 @@ mod tests {
             "name": "test"
         });
 
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -1560,7 +1560,7 @@ mod tests {
                 "name": format!("test{}", i)
             });
 
-            let entity = JsonEntity::new(
+            let entity = GtsEntity::new(
                 None,
                 None,
                 content,
@@ -1690,7 +1690,7 @@ mod tests {
             "name": "test"
         });
 
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -1760,7 +1760,7 @@ mod tests {
             "name": "test"
         });
 
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -1802,7 +1802,7 @@ mod tests {
             "data": {}
         });
 
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -1879,7 +1879,7 @@ mod tests {
             "name": "test"
         });
 
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -1914,7 +1914,7 @@ mod tests {
                 "status": if i % 2 == 0 { "active" } else { "inactive" }
             });
 
-            let entity = JsonEntity::new(
+            let entity = GtsEntity::new(
                 None,
                 None,
                 content,
@@ -1954,7 +1954,7 @@ mod tests {
                 })
             };
 
-            let entity = JsonEntity::new(
+            let entity = GtsEntity::new(
                 None,
                 None,
                 content,
@@ -2030,7 +2030,7 @@ mod tests {
             "name": "test"
         });
 
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -2050,22 +2050,22 @@ mod tests {
 
     // Mock GtsReader for testing reader functionality
     struct MockGtsReader {
-        entities: Vec<JsonEntity>,
+        entities: Vec<GtsEntity>,
         index: usize,
     }
 
     impl MockGtsReader {
-        fn new(entities: Vec<JsonEntity>) -> Self {
+        fn new(entities: Vec<GtsEntity>) -> Self {
             MockGtsReader { entities, index: 0 }
         }
     }
 
     impl GtsReader for MockGtsReader {
-        fn iter(&mut self) -> Box<dyn Iterator<Item = JsonEntity> + '_> {
+        fn iter(&mut self) -> Box<dyn Iterator<Item = GtsEntity> + '_> {
             Box::new(self.entities.clone().into_iter())
         }
 
-        fn read_by_id(&self, entity_id: &str) -> Option<JsonEntity> {
+        fn read_by_id(&self, entity_id: &str) -> Option<GtsEntity> {
             self.entities.iter().find(|e| {
                 e.gts_id.as_ref().map(|id| id.id.as_str()) == Some(entity_id)
             }).cloned()
@@ -2088,7 +2088,7 @@ mod tests {
                 "name": format!("item{}", i)
             });
 
-            let entity = JsonEntity::new(
+            let entity = GtsEntity::new(
                 None,
                 None,
                 content,
@@ -2120,7 +2120,7 @@ mod tests {
             "name": "test"
         });
 
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,
@@ -2147,7 +2147,7 @@ mod tests {
             "name": "test"
         });
 
-        let entity = JsonEntity::new(
+        let entity = GtsEntity::new(
             None,
             None,
             content,
