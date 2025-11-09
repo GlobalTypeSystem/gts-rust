@@ -32,6 +32,7 @@ Other features:
 - [x] **Web server** - a non-production web-server with REST API for the operations processing and testing
 - [x] **CLI** - command-line interface for all GTS operations
 - [ ] **UUID for instances** - to support UUID as ID in JSON instances
+- [x] **YAML support** - to support YAML files (*.yml, *.yaml) as input files
 - [ ] **TypeSpec support** - Add [typespec.io](https://typespec.io/) files (*.tsp) support
 
 Technical Backlog:

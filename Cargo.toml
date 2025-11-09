@@ -36,3 +36,6 @@ jsonschema = "0.18"
 
 # File system
 walkdir = "2.5"
+
+# Format parsing
+serde_yaml = "0.9"

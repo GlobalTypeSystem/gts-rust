@@ -31,7 +31,7 @@ impl GtsFileReader {
     }
 
     fn collect_files(&mut self) {
-        let valid_extensions = vec![".json", ".jsonc", ".gts"];
+        let valid_extensions = vec![".json", ".jsonc", ".gts", ".yaml", ".yml"];
         let mut seen = std::collections::HashSet::new();
         let mut collected = Vec::new();
 
@@ -91,7 +91,26 @@ impl GtsFileReader {
 
     fn load_json_file(&self, file_path: &Path) -> Result<Value, Box<dyn std::error::Error>> {
         let content = fs::read_to_string(file_path)?;
-        let value: Value = serde_json::from_str(&content)?;
+
+        // Determine file type by extension
+        let extension = file_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .unwrap_or_default();
+
+        let value: Value = match extension.as_str() {
+            "yaml" | "yml" => {
+                // Parse YAML and convert to JSON
+                let yaml_value: serde_yaml::Value = serde_yaml::from_str(&content)?;
+                serde_json::to_value(yaml_value)?
+            }
+            _ => {
+                // Default: parse as JSON
+                serde_json::from_str(&content)?
+            }
+        };
+
         Ok(value)
     }
 
@@ -130,13 +149,15 @@ impl GtsFileReader {
                                 entity.gts_id.as_ref().unwrap().id
                             );
                             entities.push(entity);
+                        } else {
+                            tracing::debug!("- skipped entity from {:?} (no valid GTS ID)", file_path);
                         }
                     }
                 } else {
                     let entity = GtsEntity::new(
                         Some(json_file),
                         None,
-                        content,
+                        content.clone(),
                         Some(&self.cfg),
                         None,
                         false,
@@ -150,11 +171,14 @@ impl GtsFileReader {
                             entity.gts_id.as_ref().unwrap().id
                         );
                         entities.push(entity);
+                    } else {
+                        tracing::debug!("- skipped entity from {:?} (no valid GTS ID found in content: {:?})", file_path, content);
                     }
                 }
             }
-            Err(_) => {
+            Err(e) => {
                 // Skip files that can't be parsed
+                tracing::debug!("Failed to parse file {:?}: {}", file_path, e);
             }
         }
 
