@@ -336,4 +336,200 @@ mod tests {
         };
         assert!(result.is_fully_compatible);
     }
+
+    #[test]
+    fn test_check_schema_compatibility_enum_reordered() {
+        let old_schema = json!({
+            "type": "string",
+            "enum": ["a", "b", "c"]
+        });
+
+        let new_schema = json!({
+            "type": "string",
+            "enum": ["c", "a", "b"]
+        });
+
+        let result = check_schema_compatibility(&old_schema, &new_schema);
+        assert!(result.is_backward_compatible);
+        assert!(result.is_forward_compatible);
+        assert!(result.is_fully_compatible);
+    }
+
+    #[test]
+    fn test_check_schema_compatibility_nested_required_added() {
+        let old_schema = json!({
+            "type": "object",
+            "properties": {
+                "user": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"}
+                    },
+                    "required": ["name"]
+                }
+            },
+            "required": ["user"]
+        });
+
+        let new_schema = json!({
+            "type": "object",
+            "properties": {
+                "user": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "email": {"type": "string"}
+                    },
+                    "required": ["name", "email"]
+                }
+            },
+            "required": ["user"]
+        });
+
+        let result = check_schema_compatibility(&old_schema, &new_schema);
+        // Adding nested required is not backward compatible
+        assert!(!result.is_backward_compatible);
+    }
+
+    #[test]
+    fn test_check_schema_compatibility_allof_flatten_equivalence() {
+        let direct = json!({
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "value": {"type": "number"}
+            },
+            "required": ["id"]
+        });
+
+        let via_allof = json!({
+            "allOf": [
+                {
+                    "type": "object",
+                    "properties": {"id": {"type": "string"}},
+                    "required": ["id"]
+                },
+                {
+                    "type": "object",
+                    "properties": {"value": {"type": "number"}}
+                }
+            ]
+        });
+
+        // Either direction should be fully compatible
+        let r1 = check_schema_compatibility(&direct, &via_allof);
+        assert!(r1.is_backward_compatible);
+        assert!(r1.is_forward_compatible);
+        assert!(r1.is_fully_compatible);
+
+        let r2 = check_schema_compatibility(&via_allof, &direct);
+        assert!(r2.is_backward_compatible);
+        assert!(r2.is_forward_compatible);
+        assert!(r2.is_fully_compatible);
+    }
+
+    #[test]
+    fn test_check_schema_compatibility_removed_required_is_forward_incompatible() {
+        let old_schema = json!({
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"]
+        });
+
+        let new_schema = json!({
+            "type": "object",
+            "properties": {"name": {"type": "string"}}
+        });
+
+        let result = check_schema_compatibility(&old_schema, &new_schema);
+        // Removing required is forward-incompatible per current logic
+        assert!(!result.is_forward_compatible);
+    }
+
+    #[test]
+    fn test_cast_adds_defaults_and_updates_gtsid_const() {
+        // Instance is missing optional 'region' and has an outdated GTS id const in 'typeRef'
+        let from_instance_id = "gts.vendor.pkg.ns.type.v1.0";
+        let from_instance = json!({
+            "name": "alice",
+            "typeRef": "gts.vendor.pkg.ns.subtype.v1.0~"
+        });
+
+        // From schema (minimal)
+        let from_schema = json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "typeRef": {"type": "string"}
+            }
+        });
+
+        // To schema has default for optional 'region' and const for 'typeRef' to a newer ID
+        let to_schema_id = "gts.vendor.pkg.ns.type.v1.1";
+        let to_schema = json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "region": {"type": "string", "default": "us-east"},
+                "typeRef": {"type": "string", "const": "gts.vendor.pkg.ns.subtype.v1.1~"}
+            }
+        });
+
+        let cast = GtsEntityCastResult::cast(
+            from_instance_id,
+            to_schema_id,
+            &from_instance,
+            &from_schema,
+            &to_schema,
+            None,
+        )
+        .expect("cast ok");
+
+        // Defaults should be added
+        assert!(cast.added_properties.iter().any(|p| p == "region"));
+
+        let casted = cast.casted_entity.expect("casted entity");
+        assert_eq!(casted.get("region").and_then(|v| v.as_str()), Some("us-east"));
+        // typeRef should be updated to the const GTS ID
+        assert_eq!(
+            casted.get("typeRef").and_then(|v| v.as_str()),
+            Some("gts.vendor.pkg.ns.subtype.v1.1~")
+        );
+    }
+
+    #[test]
+    fn test_cast_removes_additional_properties_when_disallowed() {
+        let from_instance_id = "gts.vendor.pkg.ns.type.v1.0";
+        let from_instance = json!({
+            "name": "alice",
+            "extra": 123
+        });
+
+        let from_schema = json!({
+            "type": "object",
+            "properties": {"name": {"type": "string"}}
+        });
+
+        let to_schema_id = "gts.vendor.pkg.ns.type.v1.1";
+        let to_schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {"name": {"type": "string"}}
+        });
+
+        let cast = GtsEntityCastResult::cast(
+            from_instance_id,
+            to_schema_id,
+            &from_instance,
+            &from_schema,
+            &to_schema,
+            None,
+        )
+        .expect("cast ok");
+
+        // 'extra' should be removed
+        let casted = cast.casted_entity.expect("casted entity");
+        assert!(casted.get("extra").is_none());
+        assert!(cast.removed_properties.iter().any(|p| p == "extra"));
+    }
 }
