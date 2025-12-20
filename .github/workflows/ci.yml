@@ -210,3 +210,46 @@ jobs:
           files: lcov.info
           fail_ci_if_error: false
           # token: ${{ secrets.CODECOV_TOKEN }}  # Uncomment if required for private repos
+
+  e2e:
+    name: E2E Tests (gts-spec)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo/target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --workspace --release
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pytest and dependencies
+        run: pip install pytest requests
+
+      - name: Start GTS server
+        run: |
+          ./target/release/gts server --port 8000 &
+          echo $! > .server.pid
+          sleep 2
+
+      - name: Run e2e tests
+        run: pytest ./.gts-spec/tests -v
+
+      - name: Stop GTS server
+        if: always()
+        run: |
+          if [ -f .server.pid ]; then
+            kill $(cat .server.pid) 2>/dev/null || true
+            rm -f .server.pid
+          fi
