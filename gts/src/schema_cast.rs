@@ -748,10 +748,10 @@ mod tests {
 
     #[test]
     fn test_schema_cast_error_display() {
-        let error = SchemaCastError::InternalError("test error".to_string());
+        let error = SchemaCastError::InternalError("test error".to_owned());
         assert!(error.to_string().contains("test error"));
 
-        let error = SchemaCastError::CastError("cast error".to_string());
+        let error = SchemaCastError::CastError("cast error".to_owned());
         assert!(error.to_string().contains("cast error"));
     }
 
@@ -786,11 +786,11 @@ mod tests {
     #[test]
     fn test_json_entity_cast_result_serialization() {
         let result = GtsEntityCastResult {
-            from_id: "gts.vendor.package.namespace.type.v1.0".to_string(),
-            to_id: "gts.vendor.package.namespace.type.v2.0".to_string(),
-            old: "gts.vendor.package.namespace.type.v1.0".to_string(),
-            new: "gts.vendor.package.namespace.type.v2.0".to_string(),
-            direction: "up".to_string(),
+            from_id: "gts.vendor.package.namespace.type.v1.0".to_owned(),
+            to_id: "gts.vendor.package.namespace.type.v2.0".to_owned(),
+            old: "gts.vendor.package.namespace.type.v1.0".to_owned(),
+            new: "gts.vendor.package.namespace.type.v2.0".to_owned(),
+            direction: "up".to_owned(),
             added_properties: vec![],
             removed_properties: vec![],
             changed_properties: vec![],

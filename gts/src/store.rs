@@ -950,8 +950,7 @@ mod tests {
         assert_eq!(store.items().count(), 3);
 
         // Verify we can iterate
-        let ids: Vec<String> = store.items().map(|(id, _)| id.clone()).collect();
-        assert_eq!(ids.len(), 3);
+        assert_eq!(store.items().count(), 3);
     }
 
     #[test]

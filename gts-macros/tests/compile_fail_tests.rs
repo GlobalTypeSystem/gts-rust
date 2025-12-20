@@ -1,4 +1,4 @@
-//! Compile-fail tests for struct_to_gts_schema macro validation.
+//! Compile-fail tests for `struct_to_gts_schema` macro validation.
 //!
 //! These tests verify that the macro produces appropriate compile errors
 //! for invalid inputs.

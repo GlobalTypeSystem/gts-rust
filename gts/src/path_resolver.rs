@@ -218,25 +218,25 @@ mod tests {
     #[test]
     fn test_resolve_simple_path() {
         let content = json!({"field": "value"});
-        let resolver = JsonPathResolver::new("gts.test.v1~".to_string(), content);
+        let resolver = JsonPathResolver::new("gts.test.v1~".to_owned(), content);
         let result = resolver.resolve("field");
         assert!(result.resolved);
-        assert_eq!(result.value, Some(Value::String("value".to_string())));
+        assert_eq!(result.value, Some(Value::String("value".to_owned())));
     }
 
     #[test]
     fn test_resolve_nested_path() {
         let content = json!({"outer": {"inner": "value"}});
-        let resolver = JsonPathResolver::new("gts.test.v1~".to_string(), content);
+        let resolver = JsonPathResolver::new("gts.test.v1~".to_owned(), content);
         let result = resolver.resolve("outer.inner");
         assert!(result.resolved);
-        assert_eq!(result.value, Some(Value::String("value".to_string())));
+        assert_eq!(result.value, Some(Value::String("value".to_owned())));
     }
 
     #[test]
     fn test_resolve_array_index() {
         let content = json!({"items": [1, 2, 3]});
-        let resolver = JsonPathResolver::new("gts.test.v1~".to_string(), content);
+        let resolver = JsonPathResolver::new("gts.test.v1~".to_owned(), content);
         let result = resolver.resolve("items[1]");
         assert!(result.resolved);
         assert_eq!(result.value, Some(Value::Number(2.into())));
@@ -245,7 +245,7 @@ mod tests {
     #[test]
     fn test_resolve_missing_path() {
         let content = json!({"field": "value"});
-        let resolver = JsonPathResolver::new("gts.test.v1~".to_string(), content);
+        let resolver = JsonPathResolver::new("gts.test.v1~".to_owned(), content);
         let result = resolver.resolve("missing");
         assert!(!result.resolved);
         assert!(result.error.is_some());

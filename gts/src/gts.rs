@@ -674,7 +674,7 @@ mod tests {
         let (gts, path) =
             GtsID::split_at_path("gts.x.core.events.event.v1~@field.subfield").expect("test");
         assert_eq!(gts, "gts.x.core.events.event.v1~");
-        assert_eq!(path, Some("field.subfield".to_string()));
+        assert_eq!(path, Some("field.subfield".to_owned()));
     }
 
     #[test]
@@ -792,7 +792,7 @@ mod tests {
         let (gts, path) =
             GtsID::split_at_path("gts.x.core.events.event.v1~@field@subfield").expect("test");
         assert_eq!(gts, "gts.x.core.events.event.v1~");
-        assert_eq!(path, Some("field@subfield".to_string()));
+        assert_eq!(path, Some("field@subfield".to_owned()));
     }
 
     #[test]
@@ -870,7 +870,7 @@ mod tests {
     #[test]
     fn test_gts_id_display_trait() {
         let id = GtsID::new("gts.x.core.events.event.v1~").expect("test");
-        assert_eq!(format!("{}", id), "gts.x.core.events.event.v1~");
+        assert_eq!(format!("{id}"), "gts.x.core.events.event.v1~");
     }
 
     #[test]
@@ -889,7 +889,7 @@ mod tests {
     #[test]
     fn test_gts_wildcard_display_trait() {
         let pattern = GtsWildcard::new("gts.x.core.events.*").expect("test");
-        assert_eq!(format!("{}", pattern), "gts.x.core.events.*");
+        assert_eq!(format!("{pattern}"), "gts.x.core.events.*");
     }
 
     #[test]

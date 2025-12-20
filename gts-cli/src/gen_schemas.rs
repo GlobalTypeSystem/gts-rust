@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 use walkdir::WalkDir;
 
-/// Directories that are automatically ignored (e.g., trybuild compile_fail tests)
+/// Directories that are automatically ignored (e.g., trybuild `compile_fail` tests)
 const AUTO_IGNORE_DIRS: &[&str] = &["compile_fail"];
 
 /// Reason why a file was skipped
@@ -157,7 +157,7 @@ fn matches_glob_pattern(path: &str, pattern: &str) -> bool {
     }
 }
 
-/// Check if path is in an auto-ignored directory (e.g., compile_fail)
+/// Check if path is in an auto-ignored directory (e.g., `compile_fail`)
 fn is_in_auto_ignored_dir(path: &Path) -> bool {
     path.components().any(|component| {
         if let Some(name) = component.as_os_str().to_str() {

@@ -649,7 +649,7 @@ mod tests {
         let result = ops.extract_id(&content);
         assert_eq!(
             result.schema_id,
-            Some("gts.vendor.package.namespace.type.v1.0~".to_string())
+            Some("gts.vendor.package.namespace.type.v1.0~".to_owned())
         );
     }
 
@@ -684,7 +684,7 @@ mod tests {
             },
             "required": ["id"]
         });
-        ops.add_schema("gts.test.base.v1.0~".to_string(), &base_schema);
+        ops.add_schema("gts.test.base.v1.0~".to_owned(), &base_schema);
 
         // Register a derived schema
         let derived_schema = json!({
@@ -698,7 +698,7 @@ mod tests {
             },
             "required": ["id"]
         });
-        ops.add_schema("gts.test.derived.v1.1~".to_string(), &derived_schema);
+        ops.add_schema("gts.test.derived.v1.1~".to_owned(), &derived_schema);
 
         // Register an instance
         let instance = json!({
@@ -723,7 +723,7 @@ mod tests {
             "value": 42
         });
 
-        let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_string(), content);
+        let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_owned(), content);
         let result = resolver.resolve("name");
         // Just verify the method executes and returns a result
         assert_eq!(result.gts_id, "gts.test.id.v1.0");
@@ -742,7 +742,7 @@ mod tests {
             }
         });
 
-        let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_string(), content);
+        let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_owned(), content);
         let result = resolver.resolve("user.profile.name");
         // Just verify the method executes
         assert_eq!(result.gts_id, "gts.test.id.v1.0");
@@ -756,7 +756,7 @@ mod tests {
             "items": ["first", "second", "third"]
         });
 
-        let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_string(), content);
+        let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_owned(), content);
         let result = resolver.resolve("items[1]");
         // Just verify the method executes
         assert_eq!(result.gts_id, "gts.test.id.v1.0");
@@ -772,8 +772,8 @@ mod tests {
         });
 
         let file = GtsFile::new(
-            "/path/to/file.json".to_string(),
-            "file.json".to_string(),
+            "/path/to/file.json".to_owned(),
+            "file.json".to_owned(),
             content,
         );
 
@@ -793,8 +793,8 @@ mod tests {
         ]);
 
         let file = GtsFile::new(
-            "/path/to/array.json".to_string(),
-            "array.json".to_string(),
+            "/path/to/array.json".to_owned(),
+            "array.json".to_owned(),
             content,
         );
 
@@ -818,7 +818,7 @@ mod tests {
         // calc_json_schema_id should be triggered and extract schema_id from type field
         assert_eq!(
             result.schema_id,
-            Some("gts.vendor.package.namespace.type.v1.0~".to_string())
+            Some("gts.vendor.package.namespace.type.v1.0~".to_owned())
         );
         // Verify the method executed successfully
         assert!(!result.id.is_empty());
@@ -860,7 +860,7 @@ mod tests {
                 }
             }
         });
-        ops.add_schema("gts.test.compat.v1.0~".to_string(), &old_schema);
+        ops.add_schema("gts.test.compat.v1.0~".to_owned(), &old_schema);
 
         // Register new schema with expanded enum
         let new_schema = json!({
@@ -874,7 +874,7 @@ mod tests {
                 }
             }
         });
-        ops.add_schema("gts.test.compat.v1.1~".to_string(), &new_schema);
+        ops.add_schema("gts.test.compat.v1.1~".to_owned(), &new_schema);
 
         // Check compatibility - just verify the method executes
         let result = ops.compatibility("gts.test.compat.v1.0~", "gts.test.compat.v1.1~");
@@ -892,7 +892,7 @@ mod tests {
             Value::Object(map) => map,
             other => {
                 let mut map = serde_json::Map::new();
-                map.insert("value".to_string(), other);
+                map.insert("value".to_owned(), other);
                 map
             }
         }
@@ -903,7 +903,7 @@ mod tests {
         use crate::ops::GtsIdValidationResult;
 
         let result = GtsIdValidationResult {
-            id: "gts.vendor.package.namespace.type.v1.0".to_string(),
+            id: "gts.vendor.package.namespace.type.v1.0".to_owned(),
             valid: true,
             error: String::new(),
         };
@@ -921,10 +921,10 @@ mod tests {
         use crate::ops::GtsIdSegmentInfo;
 
         let segment = GtsIdSegmentInfo {
-            vendor: "vendor".to_string(),
-            package: "package".to_string(),
-            namespace: "namespace".to_string(),
-            type_name: "type".to_string(),
+            vendor: "vendor".to_owned(),
+            package: "package".to_owned(),
+            namespace: "namespace".to_owned(),
+            type_name: "type".to_owned(),
             ver_major: Some(1),
             ver_minor: Some(0),
             is_type: false,
@@ -962,7 +962,7 @@ mod tests {
         use crate::ops::GtsIdParseResult;
 
         let result = GtsIdParseResult {
-            id: "gts.vendor.package.namespace.type.v1.0".to_string(),
+            id: "gts.vendor.package.namespace.type.v1.0".to_owned(),
             ok: true,
             error: String::new(),
             segments: vec![],
@@ -982,8 +982,8 @@ mod tests {
         use crate::ops::GtsIdMatchResult;
 
         let result = GtsIdMatchResult {
-            candidate: "gts.vendor.package.namespace.type.v1.0".to_string(),
-            pattern: "gts.vendor.*".to_string(),
+            candidate: "gts.vendor.package.namespace.type.v1.0".to_owned(),
+            pattern: "gts.vendor.*".to_owned(),
             is_match: true,
             error: String::new(),
         };
@@ -1005,8 +1005,8 @@ mod tests {
         use crate::ops::GtsUuidResult;
 
         let result = GtsUuidResult {
-            id: "gts.vendor.package.namespace.type.v1.0".to_string(),
-            uuid: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            id: "gts.vendor.package.namespace.type.v1.0".to_owned(),
+            uuid: "550e8400-e29b-41d4-a716-446655440000".to_owned(),
         };
 
         let json = to_json_obj(&result);
@@ -1025,7 +1025,7 @@ mod tests {
         use crate::ops::GtsValidationResult;
 
         let result = GtsValidationResult {
-            id: "gts.vendor.package.namespace.type.v1.0".to_string(),
+            id: "gts.vendor.package.namespace.type.v1.0".to_owned(),
             ok: true,
             error: String::new(),
         };
@@ -1047,9 +1047,7 @@ mod tests {
             "refs": []
         });
 
-        let result = GtsSchemaGraphResult {
-            graph: graph.clone(),
-        };
+        let result = GtsSchemaGraphResult { graph };
 
         // GtsSchemaGraphResult uses #[serde(transparent)] so it serializes as the graph directly
         let json_value = serde_json::to_value(&result).expect("test");
@@ -1061,8 +1059,8 @@ mod tests {
         use crate::ops::GtsEntityInfo;
 
         let info = GtsEntityInfo {
-            id: "gts.vendor.package.namespace.type.v1.0".to_string(),
-            schema_id: Some("gts.vendor.package.namespace.type.v1.0~".to_string()),
+            id: "gts.vendor.package.namespace.type.v1.0".to_owned(),
+            schema_id: Some("gts.vendor.package.namespace.type.v1.0~".to_owned()),
             is_schema: false,
         };
 
@@ -1085,12 +1083,12 @@ mod tests {
 
         let entities = vec![
             GtsEntityInfo {
-                id: "gts.test.id1.v1.0".to_string(),
+                id: "gts.test.id1.v1.0".to_owned(),
                 schema_id: None,
                 is_schema: false,
             },
             GtsEntityInfo {
-                id: "gts.test.id2.v1.0".to_string(),
+                id: "gts.test.id2.v1.0".to_owned(),
                 schema_id: None,
                 is_schema: false,
             },
@@ -1113,7 +1111,7 @@ mod tests {
 
         let result = GtsAddEntityResult {
             ok: true,
-            id: "gts.vendor.package.namespace.type.v1.0".to_string(),
+            id: "gts.vendor.package.namespace.type.v1.0".to_owned(),
             schema_id: None,
             is_schema: false,
             error: String::new(),
@@ -1134,14 +1132,14 @@ mod tests {
         let results = vec![
             GtsAddEntityResult {
                 ok: true,
-                id: "gts.test.id1.v1.0".to_string(),
+                id: "gts.test.id1.v1.0".to_owned(),
                 schema_id: None,
                 is_schema: false,
                 error: String::new(),
             },
             GtsAddEntityResult {
                 ok: true,
-                id: "gts.test.id2.v1.0".to_string(),
+                id: "gts.test.id2.v1.0".to_owned(),
                 schema_id: None,
                 is_schema: false,
                 error: String::new(),
@@ -1161,7 +1159,7 @@ mod tests {
 
         let result = GtsAddSchemaResult {
             ok: true,
-            id: "gts.vendor.package.namespace.type.v1.0~".to_string(),
+            id: "gts.vendor.package.namespace.type.v1.0~".to_owned(),
             error: String::new(),
         };
 
@@ -1178,10 +1176,10 @@ mod tests {
         use crate::ops::GtsExtractIdResult;
 
         let result = GtsExtractIdResult {
-            id: "gts.vendor.package.namespace.type.v1.0".to_string(),
-            schema_id: Some("gts.vendor.package.namespace.type.v1.0~".to_string()),
-            selected_entity_field: Some("id".to_string()),
-            selected_schema_id_field: Some("type".to_string()),
+            id: "gts.vendor.package.namespace.type.v1.0".to_owned(),
+            schema_id: Some("gts.vendor.package.namespace.type.v1.0~".to_owned()),
+            selected_entity_field: Some("id".to_owned()),
+            selected_schema_id_field: Some("type".to_owned()),
             is_schema: false,
         };
 
@@ -1205,7 +1203,7 @@ mod tests {
         use crate::path_resolver::JsonPathResolver;
 
         let content = json!({"name": "test"});
-        let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_string(), content);
+        let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_owned(), content);
         let result = resolver.resolve("name");
 
         let json = to_json_obj(&result);
@@ -1226,7 +1224,7 @@ mod tests {
     fn test_schema_cast_error_display() {
         use crate::schema_cast::SchemaCastError;
 
-        let error = SchemaCastError::InternalError("test".to_string());
+        let error = SchemaCastError::InternalError("test".to_owned());
         assert!(error.to_string().contains("test"));
 
         let error = SchemaCastError::TargetMustBeSchema;
@@ -1238,7 +1236,7 @@ mod tests {
         let error = SchemaCastError::InstanceMustBeObject;
         assert!(error.to_string().contains("Instance must be an object"));
 
-        let error = SchemaCastError::CastError("cast error".to_string());
+        let error = SchemaCastError::CastError("cast error".to_owned());
         assert!(error.to_string().contains("cast error"));
     }
 
@@ -1531,12 +1529,12 @@ mod tests {
         use crate::schema_cast::GtsEntityCastResult;
 
         let result = GtsEntityCastResult {
-            from_id: "gts.vendor.package.namespace.type.v1.0".to_string(),
-            to_id: "gts.vendor.package.namespace.type.v1.1".to_string(),
-            old: "gts.vendor.package.namespace.type.v1.0".to_string(),
-            new: "gts.vendor.package.namespace.type.v1.1".to_string(),
-            direction: "up".to_string(),
-            added_properties: vec!["email".to_string()],
+            from_id: "gts.vendor.package.namespace.type.v1.0".to_owned(),
+            to_id: "gts.vendor.package.namespace.type.v1.1".to_owned(),
+            old: "gts.vendor.package.namespace.type.v1.0".to_owned(),
+            new: "gts.vendor.package.namespace.type.v1.1".to_owned(),
+            direction: "up".to_owned(),
+            added_properties: vec!["email".to_owned()],
             removed_properties: vec![],
             changed_properties: vec![],
             is_fully_compatible: true,
@@ -2128,7 +2126,7 @@ mod tests {
         });
 
         ops.add_schema(
-            "gts.vendor.package.namespace.type.v1.0~".to_string(),
+            "gts.vendor.package.namespace.type.v1.0~".to_owned(),
             &schema,
         );
 
@@ -2183,7 +2181,7 @@ mod tests {
         use crate::path_resolver::JsonPathResolver;
 
         let content = json!({"name": "test"});
-        let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_string(), content);
+        let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_owned(), content);
         let result = resolver.failure("invalid.path", "Path not found");
 
         assert!(!result.resolved);
@@ -2201,7 +2199,7 @@ mod tests {
             ]
         });
 
-        let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_string(), content);
+        let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_owned(), content);
         let result = resolver.resolve("items[0].name");
 
         assert_eq!(result.path, "items[0].name");
@@ -2212,7 +2210,7 @@ mod tests {
         use crate::path_resolver::JsonPathResolver;
 
         let content = json!({"name": "test"});
-        let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_string(), content);
+        let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_owned(), content);
         let result = resolver.resolve("nonexistent.path");
 
         assert!(!result.resolved);
@@ -2223,7 +2221,7 @@ mod tests {
         use crate::path_resolver::JsonPathResolver;
 
         let content = json!({"name": "test"});
-        let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_string(), content);
+        let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_owned(), content);
         let result = resolver.resolve("");
 
         assert_eq!(result.path, "");
@@ -2234,7 +2232,7 @@ mod tests {
         use crate::path_resolver::JsonPathResolver;
 
         let content = json!({"name": "test", "value": 42});
-        let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_string(), content.clone());
+        let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_owned(), content);
         let result = resolver.resolve("$");
 
         // Root access should return the whole object
@@ -2297,7 +2295,7 @@ mod tests {
         });
 
         ops.add_schema(
-            "gts.vendor.package.namespace.type.v1.0~".to_string(),
+            "gts.vendor.package.namespace.type.v1.0~".to_owned(),
             &schema,
         );
 
@@ -2326,7 +2324,7 @@ mod tests {
             }
         });
 
-        let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_string(), content);
+        let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_owned(), content);
         let result = resolver.resolve("user.profile.name");
 
         assert_eq!(result.gts_id, "gts.test.id.v1.0");
@@ -2340,7 +2338,7 @@ mod tests {
             "items": [1, 2, 3]
         });
 
-        let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_string(), content);
+        let resolver = JsonPathResolver::new("gts.test.id.v1.0".to_owned(), content);
         let result = resolver.resolve("items[10]");
 
         assert!(!result.resolved);
@@ -2370,11 +2368,11 @@ mod tests {
         });
 
         ops.add_schema(
-            "gts.vendor.package.namespace.type.v1.0~".to_string(),
+            "gts.vendor.package.namespace.type.v1.0~".to_owned(),
             &schema1,
         );
         ops.add_schema(
-            "gts.vendor.package.namespace.type.v1.1~".to_string(),
+            "gts.vendor.package.namespace.type.v1.1~".to_owned(),
             &schema2,
         );
 
@@ -2498,8 +2496,8 @@ mod tests {
         ]);
 
         let file = GtsFile::new(
-            "/path/to/file.json".to_string(),
-            "file.json".to_string(),
+            "/path/to/file.json".to_owned(),
+            "file.json".to_owned(),
             content,
         );
 
@@ -2514,8 +2512,8 @@ mod tests {
         let content = json!({"id": "gts.vendor.package.namespace.type.v1.0"});
 
         let file = GtsFile::new(
-            "/path/to/file.json".to_string(),
-            "file.json".to_string(),
+            "/path/to/file.json".to_owned(),
+            "file.json".to_owned(),
             content,
         );
 
@@ -2532,10 +2530,10 @@ mod tests {
 
         let mut validation = ValidationResult::default();
         validation.errors.push(ValidationError {
-            instance_path: "/test".to_string(),
-            schema_path: "/schema/test".to_string(),
-            keyword: "type".to_string(),
-            message: "validation error".to_string(),
+            instance_path: "/test".to_owned(),
+            schema_path: "/schema/test".to_owned(),
+            keyword: "type".to_owned(),
+            message: "validation error".to_owned(),
             params: std::collections::HashMap::new(),
             data: None,
         });
@@ -2563,8 +2561,8 @@ mod tests {
         let content = json!({"id": "gts.vendor.package.namespace.type.v1.0"});
 
         let file = GtsFile::new(
-            "/path/to/file.json".to_string(),
-            "file.json".to_string(),
+            "/path/to/file.json".to_owned(),
+            "file.json".to_owned(),
             content.clone(),
         );
 
