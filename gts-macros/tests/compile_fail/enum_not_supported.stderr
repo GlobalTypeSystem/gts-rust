@@ -1,0 +1,5 @@
+error: struct_to_gts_schema: Only structs are supported
+  --> tests/compile_fail/enum_not_supported.rs:11:10
+   |
+11 | pub enum Status {
+   |          ^^^^^^

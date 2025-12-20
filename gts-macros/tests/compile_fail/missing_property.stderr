@@ -1,0 +1,5 @@
+error: struct_to_gts_schema: Property 'nonexistent_field' not found in struct. Available fields: ["id"]
+  --> tests/compile_fail/missing_property.rs:11:12
+   |
+11 | pub struct User {
+   |            ^^^^

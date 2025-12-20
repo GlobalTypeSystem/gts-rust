@@ -1,0 +1,11 @@
+error: unexpected end of input, Missing required attribute: schema_id
+ --> tests/compile_fail/missing_schema_id.rs:5:1
+  |
+5 | / #[struct_to_gts_schema(
+6 | |     file_path = "schemas/user.v1~.schema.json",
+7 | |     description = "User entity",
+8 | |     properties = "id"
+9 | | )]
+  | |__^
+  |
+  = note: this error originates in the attribute macro `struct_to_gts_schema` (in Nightly builds, run with -Z macro-backtrace for more info)

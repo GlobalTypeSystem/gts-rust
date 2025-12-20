@@ -1,0 +1,5 @@
+error: struct_to_gts_schema: Only structs with named fields are supported
+  --> tests/compile_fail/tuple_struct.rs:11:12
+   |
+11 | pub struct Data(String);
+   |            ^^^^

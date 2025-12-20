@@ -1,0 +1,5 @@
+error: struct_to_gts_schema: file_path must end with '.json'. Got: 'schemas/user.v1~.schema'
+  --> tests/compile_fail/invalid_file_extension.rs:11:12
+   |
+11 | pub struct User {
+   |            ^^^^
