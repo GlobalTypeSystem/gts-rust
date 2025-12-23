@@ -53,7 +53,7 @@ mod test_structs {
 
     #[struct_to_gts_schema(
         dir_path = "schemas",
-        schema_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~",
+        schema_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~x.marketplace.order_purchase.payload.v1~",
         description = "Order placement audit event",
         properties = "order_id"
     )]
@@ -105,7 +105,9 @@ fn print_instances() -> anyhow::Result<()> {
             data: test_structs::PlaceOrderDataV1 {
                 order_id: uuid::Uuid::new_v4(),
                 product_id: uuid::Uuid::new_v4(),
-                last: (),
+                last: test_structs::PlaceOrderDataPayloadV1 {
+                    order_id: uuid::Uuid::new_v4(),
+                },
             },
         },
     };
