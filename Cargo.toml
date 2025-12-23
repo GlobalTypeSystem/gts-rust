@@ -163,9 +163,6 @@ jsonschema = "0.18"
 # JSON Schema generation
 schemars = { version = "0.8", features = ["uuid1"] }
 
-# JSON Schema manipulation
-schematools = "0.22"
-
 # File system
 walkdir = "2.5"
 

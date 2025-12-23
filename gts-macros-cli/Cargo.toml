@@ -22,7 +22,6 @@ serde_json.workspace = true
 anyhow.workspace = true
 uuid.workspace = true
 schemars.workspace = true
-schematools.workspace = true
 clap.workspace = true
 
 # Include test modules for schema discovery
