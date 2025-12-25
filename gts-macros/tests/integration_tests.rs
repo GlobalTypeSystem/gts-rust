@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
     description = "Event Topic (Stream) definition",
     properties = "id,name,description,retention,ordering"
 )]
-pub struct EventTopic {
+pub struct EventTopicV1 {
     /// Identifier for the topic/stream in GTS notation
     pub id: String,
     /// Topic name
@@ -49,7 +49,7 @@ pub struct EventTopic {
     description = "Product entity with pricing information",
     properties = "id,name,price,description,in_stock"
 )]
-pub struct Product {
+pub struct ProductV1 {
     pub id: String,
     pub name: String,
     pub price: f64,
@@ -67,9 +67,9 @@ pub struct Product {
 fn test_schema_json_contains_id() {
     // Verify GTS_SCHEMA_JSON contains proper $id with URI prefix "gts://"
     let topic_schema: serde_json::Value =
-        serde_json::from_str(&EventTopic::gts_json_schema_with_refs()).unwrap();
+        serde_json::from_str(&EventTopicV1::gts_json_schema_with_refs()).unwrap();
     let product_schema: serde_json::Value =
-        serde_json::from_str(&Product::gts_json_schema_with_refs()).unwrap();
+        serde_json::from_str(&ProductV1::gts_json_schema_with_refs()).unwrap();
     assert_eq!(topic_schema["$id"], "gts://gts.x.core.events.topic.v1~");
     assert_eq!(
         product_schema["$id"],
@@ -82,9 +82,9 @@ fn test_schema_json_contains_description() {
     // Note: schemars-generated schemas use the struct's doc comment for description,
     // not the macro's description attribute. This test verifies basic schema structure.
     let topic_schema: serde_json::Value =
-        serde_json::from_str(&EventTopic::gts_json_schema_with_refs()).unwrap();
+        serde_json::from_str(&EventTopicV1::gts_json_schema_with_refs()).unwrap();
     let product_schema: serde_json::Value =
-        serde_json::from_str(&Product::gts_json_schema_with_refs()).unwrap();
+        serde_json::from_str(&ProductV1::gts_json_schema_with_refs()).unwrap();
     // Verify these are valid object schemas with required type
     assert_eq!(topic_schema["type"], "object");
     assert_eq!(product_schema["type"], "object");
@@ -96,10 +96,10 @@ fn test_schema_json_contains_only_specified_properties() {
     // specified in the macro's properties attribute. The properties attribute is
     // used for CLI schema generation, not runtime schemars generation.
     let topic_schema: serde_json::Value =
-        serde_json::from_str(&EventTopic::gts_json_schema_with_refs()).unwrap();
+        serde_json::from_str(&EventTopicV1::gts_json_schema_with_refs()).unwrap();
     let topic_props = topic_schema["properties"].as_object().unwrap();
 
-    // EventTopic: id, name, description, retention, ordering should be present
+    // EventTopicV1: id, name, description, retention, ordering should be present
     assert!(topic_props.contains_key("id"));
     assert!(topic_props.contains_key("name"));
     assert!(topic_props.contains_key("description"));
@@ -110,7 +110,7 @@ fn test_schema_json_contains_only_specified_properties() {
 
     // Product: id, name, price, description, in_stock should be present
     let product_schema: serde_json::Value =
-        serde_json::from_str(&Product::gts_json_schema_with_refs()).unwrap();
+        serde_json::from_str(&ProductV1::gts_json_schema_with_refs()).unwrap();
     let product_props = product_schema["properties"].as_object().unwrap();
     assert!(product_props.contains_key("id"));
     assert!(product_props.contains_key("name"));
@@ -125,9 +125,9 @@ fn test_schema_json_contains_only_specified_properties() {
 fn test_schema_json_is_valid_json() {
     // Verify the schema JSON can be parsed
     let topic_schema: serde_json::Value =
-        serde_json::from_str(&EventTopic::gts_json_schema_with_refs()).unwrap();
+        serde_json::from_str(&EventTopicV1::gts_json_schema_with_refs()).unwrap();
     let product_schema: serde_json::Value =
-        serde_json::from_str(&Product::gts_json_schema_with_refs()).unwrap();
+        serde_json::from_str(&ProductV1::gts_json_schema_with_refs()).unwrap();
 
     // Verify key fields - $id now uses the "gts://" URI prefix
     assert_eq!(topic_schema["$id"], "gts://gts.x.core.events.topic.v1~");
@@ -147,7 +147,7 @@ fn test_schema_json_is_valid_json() {
 #[test]
 fn test_schema_json_required_fields() {
     let topic_schema: serde_json::Value =
-        serde_json::from_str(&EventTopic::gts_json_schema_with_refs()).unwrap();
+        serde_json::from_str(&EventTopicV1::gts_json_schema_with_refs()).unwrap();
     let required = topic_schema["required"].as_array().unwrap();
 
     // All non-Option fields in properties should be required
@@ -160,7 +160,7 @@ fn test_schema_json_required_fields() {
 
     // Product: description is Option<String>, so should NOT be required
     let product_schema: serde_json::Value =
-        serde_json::from_str(&Product::gts_json_schema_with_refs()).unwrap();
+        serde_json::from_str(&ProductV1::gts_json_schema_with_refs()).unwrap();
     let product_required = product_schema["required"].as_array().unwrap();
     assert!(!product_required.contains(&serde_json::json!("description")));
     assert!(product_required.contains(&serde_json::json!("price")));
@@ -173,13 +173,13 @@ fn test_schema_json_required_fields() {
 #[test]
 fn test_gts_instance_id_simple_segment() {
     // Test with simple segment - event topic instance
-    let id = EventTopic::make_gts_instance_id("x.commerce.orders.orders.v1.0");
+    let id = EventTopicV1::make_gts_instance_id("x.commerce.orders.orders.v1.0");
     assert_eq!(
         id,
         "gts.x.core.events.topic.v1~x.commerce.orders.orders.v1.0"
     );
 
-    let id = Product::make_gts_instance_id("vendor.package.sku.abc.v1");
+    let id = ProductV1::make_gts_instance_id("vendor.package.sku.abc.v1");
     assert_eq!(
         id,
         "gts.x.test.entities.product.v1~vendor.package.sku.abc.v1"
@@ -189,31 +189,31 @@ fn test_gts_instance_id_simple_segment() {
 #[test]
 fn test_gts_instance_id_multi_segment() {
     // Test with multi-part segment like vendor.package.namespace.type.version
-    let id = EventTopic::make_gts_instance_id("x.core.idp.contacts.v1");
+    let id = EventTopicV1::make_gts_instance_id("x.core.idp.contacts.v1");
     assert_eq!(id, "gts.x.core.events.topic.v1~x.core.idp.contacts.v1");
 }
 
 #[test]
 fn test_gts_instance_id_with_wildcard_segment() {
     // Test with segment containing wildcard "_"
-    let id = EventTopic::make_gts_instance_id("x.commerce._.orders.v1.0");
+    let id = EventTopicV1::make_gts_instance_id("x.commerce._.orders.v1.0");
     assert_eq!(id, "gts.x.core.events.topic.v1~x.commerce._.orders.v1.0");
 }
 
 #[test]
 fn test_gts_instance_id_versioned_segment() {
     // Test with versioned segment
-    let id = EventTopic::make_gts_instance_id("x.y.z.instance.v1.0");
+    let id = EventTopicV1::make_gts_instance_id("x.y.z.instance.v1.0");
     assert_eq!(id, "gts.x.core.events.topic.v1~x.y.z.instance.v1.0");
 
-    let id = Product::make_gts_instance_id("x.y.z.sku.v2.1");
+    let id = ProductV1::make_gts_instance_id("x.y.z.sku.v2.1");
     assert_eq!(id, "gts.x.test.entities.product.v1~x.y.z.sku.v2.1");
 }
 
 #[test]
 fn test_gts_instance_id_empty_segment() {
     // Edge case: empty segment returns just the schema_id
-    let id = EventTopic::make_gts_instance_id("");
+    let id = EventTopicV1::make_gts_instance_id("");
     assert_eq!(id, "gts.x.core.events.topic.v1~");
 }
 
@@ -223,18 +223,18 @@ fn test_gts_instance_id_empty_segment() {
 
 #[test]
 fn test_schema_id_constant() {
-    assert_eq!(EventTopic::GTS_SCHEMA_ID, "gts.x.core.events.topic.v1~");
-    assert_eq!(Product::GTS_SCHEMA_ID, "gts.x.test.entities.product.v1~");
+    assert_eq!(EventTopicV1::GTS_SCHEMA_ID, "gts.x.core.events.topic.v1~");
+    assert_eq!(ProductV1::GTS_SCHEMA_ID, "gts.x.test.entities.product.v1~");
 }
 
 #[test]
 fn test_file_path_constant() {
     assert_eq!(
-        EventTopic::GTS_SCHEMA_FILE_PATH,
+        EventTopicV1::GTS_SCHEMA_FILE_PATH,
         "schemas/gts.x.core.events.topic.v1~.schema.json"
     );
     assert_eq!(
-        Product::GTS_SCHEMA_FILE_PATH,
+        ProductV1::GTS_SCHEMA_FILE_PATH,
         "schemas/gts.x.test.entities.product.v1~.schema.json"
     );
 }
@@ -242,11 +242,11 @@ fn test_file_path_constant() {
 #[test]
 fn test_properties_constant() {
     assert_eq!(
-        EventTopic::GTS_SCHEMA_PROPERTIES,
+        EventTopicV1::GTS_SCHEMA_PROPERTIES,
         "id,name,description,retention,ordering"
     );
     assert_eq!(
-        Product::GTS_SCHEMA_PROPERTIES,
+        ProductV1::GTS_SCHEMA_PROPERTIES,
         "id,name,price,description,in_stock"
     );
 }
@@ -257,8 +257,8 @@ fn test_properties_constant() {
 
 #[test]
 fn test_event_topic_serialization() {
-    let topic = EventTopic {
-        id: EventTopic::make_gts_instance_id("x.commerce.orders.orders.v1.0").into(),
+    let topic = EventTopicV1 {
+        id: EventTopicV1::make_gts_instance_id("x.commerce.orders.orders.v1.0").into(),
         name: "orders".to_owned(),
         description: Some("Order lifecycle events topic".to_owned()),
         retention: "P90D".to_owned(),
@@ -274,7 +274,7 @@ fn test_event_topic_serialization() {
 
 #[test]
 fn test_product_serialization() {
-    let product = Product {
+    let product = ProductV1 {
         id: "prod-456".to_owned(), // Non GTS ID
         name: "Test Product".to_owned(),
         price: 99.99,
@@ -294,8 +294,8 @@ fn test_product_serialization() {
 
 #[test]
 fn test_event_topic_instance_validates_against_schema() {
-    let topic = EventTopic {
-        id: EventTopic::make_gts_instance_id("x.commerce.orders.orders.v1.0").into(),
+    let topic = EventTopicV1 {
+        id: EventTopicV1::make_gts_instance_id("x.commerce.orders.orders.v1.0").into(),
         name: "orders".to_owned(),
         description: Some("Order lifecycle events topic".to_owned()),
         retention: "P90D".to_owned(),
@@ -308,20 +308,20 @@ fn test_event_topic_instance_validates_against_schema() {
 
     // Compile the schema - the $id now uses "gts:" prefix which is a valid URI
     let schema: serde_json::Value =
-        serde_json::from_str(&EventTopic::gts_json_schema_with_refs()).unwrap();
+        serde_json::from_str(&EventTopicV1::gts_json_schema_with_refs()).unwrap();
     let compiled = JSONSchema::compile(&schema).unwrap();
 
     // Validate the instance against the schema
     assert!(
         compiled.is_valid(&instance_json),
-        "EventTopic instance should validate against EventTopic schema"
+        "EventTopicV1 instance should validate against EventTopicV1 schema"
     );
 }
 
 #[test]
 fn test_product_instance_validates_against_schema() {
-    let product = Product {
-        id: Product::make_gts_instance_id("x.electronics.laptops.gaming.v1").into(),
+    let product = ProductV1 {
+        id: ProductV1::make_gts_instance_id("x.electronics.laptops.gaming.v1").into(),
         name: "Gaming Laptop".to_owned(),
         price: 1499.99,
         description: Some("High-performance gaming laptop".to_owned()),
@@ -331,7 +331,7 @@ fn test_product_instance_validates_against_schema() {
 
     let instance_json = serde_json::to_value(&product).unwrap();
     let schema: serde_json::Value =
-        serde_json::from_str(&Product::gts_json_schema_with_refs()).unwrap();
+        serde_json::from_str(&ProductV1::gts_json_schema_with_refs()).unwrap();
     let compiled = JSONSchema::compile(&schema).unwrap();
 
     assert!(
@@ -357,7 +357,7 @@ fn test_product_instance_with_absent_optional_field_validates() {
     });
 
     let schema: serde_json::Value =
-        serde_json::from_str(&Product::gts_json_schema_with_refs()).unwrap();
+        serde_json::from_str(&ProductV1::gts_json_schema_with_refs()).unwrap();
     let compiled = JSONSchema::compile(&schema).unwrap();
 
     assert!(
@@ -380,7 +380,7 @@ fn test_optional_field_as_null_fails_validation() {
     });
 
     let schema: serde_json::Value =
-        serde_json::from_str(&Product::gts_json_schema_with_refs()).unwrap();
+        serde_json::from_str(&ProductV1::gts_json_schema_with_refs()).unwrap();
     let compiled = JSONSchema::compile(&schema).unwrap();
 
     assert!(
@@ -399,7 +399,7 @@ fn test_invalid_instance_missing_required_field() {
     });
 
     let schema: serde_json::Value =
-        serde_json::from_str(&EventTopic::gts_json_schema_with_refs()).unwrap();
+        serde_json::from_str(&EventTopicV1::gts_json_schema_with_refs()).unwrap();
     let compiled = JSONSchema::compile(&schema).unwrap();
 
     assert!(
@@ -423,7 +423,7 @@ fn test_invalid_instance_wrong_type() {
     });
 
     let schema: serde_json::Value =
-        serde_json::from_str(&EventTopic::gts_json_schema_with_refs()).unwrap();
+        serde_json::from_str(&EventTopicV1::gts_json_schema_with_refs()).unwrap();
     let compiled = JSONSchema::compile(&schema).unwrap();
 
     assert!(
@@ -446,7 +446,7 @@ fn test_instance_with_extra_fields_rejected() {
     });
 
     let schema: serde_json::Value =
-        serde_json::from_str(&EventTopic::gts_json_schema_with_refs()).unwrap();
+        serde_json::from_str(&EventTopicV1::gts_json_schema_with_refs()).unwrap();
     let compiled = JSONSchema::compile(&schema).unwrap();
 
     assert!(
@@ -457,8 +457,8 @@ fn test_instance_with_extra_fields_rejected() {
 
 #[test]
 fn test_serialization_roundtrip_event_topic() {
-    let original = EventTopic {
-        id: EventTopic::make_gts_instance_id("x.commerce.orders.orders.v1.0").into(),
+    let original = EventTopicV1 {
+        id: EventTopicV1::make_gts_instance_id("x.commerce.orders.orders.v1.0").into(),
         name: "orders".to_owned(),
         description: Some("Order lifecycle events".to_owned()),
         retention: "P90D".to_owned(),
@@ -470,7 +470,7 @@ fn test_serialization_roundtrip_event_topic() {
     let json_string = serde_json::to_string(&original).unwrap();
 
     // Deserialize back
-    let deserialized: EventTopic = serde_json::from_str(&json_string).unwrap();
+    let deserialized: EventTopicV1 = serde_json::from_str(&json_string).unwrap();
 
     // Verify all fields match
     assert_eq!(original.id, deserialized.id);
@@ -483,8 +483,8 @@ fn test_serialization_roundtrip_event_topic() {
 
 #[test]
 fn test_serialization_roundtrip_product() {
-    let original = Product {
-        id: Product::make_gts_instance_id("x.y.roundtrip.product.v1").into(),
+    let original = ProductV1 {
+        id: ProductV1::make_gts_instance_id("x.y.roundtrip.product.v1").into(),
         name: "Roundtrip Product".to_owned(),
         price: 199.99,
         description: Some("A product for testing roundtrip serialization".to_owned()),
@@ -493,7 +493,7 @@ fn test_serialization_roundtrip_product() {
     };
 
     let json_string = serde_json::to_string(&original).unwrap();
-    let deserialized: Product = serde_json::from_str(&json_string).unwrap();
+    let deserialized: ProductV1 = serde_json::from_str(&json_string).unwrap();
 
     assert_eq!(original.id, deserialized.id);
     assert_eq!(original.name, deserialized.name);
@@ -505,8 +505,8 @@ fn test_serialization_roundtrip_product() {
 
 #[test]
 fn test_instance_id_appears_in_serialized_output() {
-    let topic = EventTopic {
-        id: EventTopic::make_gts_instance_id("x.core.idp.contacts.v1").into(),
+    let topic = EventTopicV1 {
+        id: EventTopicV1::make_gts_instance_id("x.core.idp.contacts.v1").into(),
         name: "contacts".to_owned(),
         description: None,
         retention: "P30D".to_owned(),
@@ -526,24 +526,24 @@ fn test_instance_id_appears_in_serialized_output() {
 #[test]
 fn test_multiple_instances_validate_independently() {
     let topics = [
-        EventTopic {
-            id: EventTopic::make_gts_instance_id("x.commerce.orders.orders.v1.0").into(),
+        EventTopicV1 {
+            id: EventTopicV1::make_gts_instance_id("x.commerce.orders.orders.v1.0").into(),
             name: "orders".to_owned(),
             description: Some("Order events".to_owned()),
             retention: "P90D".to_owned(),
             ordering: "by-partition-key".to_owned(),
             internal_config: None,
         },
-        EventTopic {
-            id: EventTopic::make_gts_instance_id("x.core.idp.contacts.v1").into(),
+        EventTopicV1 {
+            id: EventTopicV1::make_gts_instance_id("x.core.idp.contacts.v1").into(),
             name: "contacts".to_owned(),
             description: Some("Contact events".to_owned()),
             retention: "P30D".to_owned(),
             ordering: "global".to_owned(),
             internal_config: Some("config".to_owned()),
         },
-        EventTopic {
-            id: EventTopic::make_gts_instance_id("x.payments.transactions.v1.0").into(),
+        EventTopicV1 {
+            id: EventTopicV1::make_gts_instance_id("x.payments.transactions.v1.0").into(),
             name: "transactions".to_owned(),
             description: Some("Payment transactions".to_owned()),
             retention: "P365D".to_owned(),
@@ -553,14 +553,14 @@ fn test_multiple_instances_validate_independently() {
     ];
 
     let schema: serde_json::Value =
-        serde_json::from_str(&EventTopic::gts_json_schema_with_refs()).unwrap();
+        serde_json::from_str(&EventTopicV1::gts_json_schema_with_refs()).unwrap();
     let compiled = JSONSchema::compile(&schema).unwrap();
 
     for (i, topic) in topics.iter().enumerate() {
         let instance_json = serde_json::to_value(topic).unwrap();
         assert!(
             compiled.is_valid(&instance_json),
-            "EventTopic {} should validate against schema",
+            "EventTopicV1 {} should validate against schema",
             i + 1
         );
     }
@@ -574,19 +574,19 @@ fn test_multiple_instances_validate_independently() {
 fn test_schema_parsed_as_gts_entity() {
     // Parse the macro-generated schema JSON into a GtsEntity
     let schema_json: serde_json::Value =
-        serde_json::from_str(&EventTopic::gts_json_schema_with_refs()).unwrap();
+        serde_json::from_str(&EventTopicV1::gts_json_schema_with_refs()).unwrap();
     let cfg = GtsConfig::default();
 
     let entity = GtsEntity::new(
-        None,                    // file
-        None,                    // list_sequence
-        &schema_json,            // content
-        Some(&cfg),              // config
-        None,                    // gts_id (will be auto-detected)
-        true,                    // is_schema
-        "EventTopic".to_owned(), // label
-        None,                    // validation
-        None,                    // schema_id
+        None,                      // file
+        None,                      // list_sequence
+        &schema_json,              // content
+        Some(&cfg),                // config
+        None,                      // gts_id (will be auto-detected)
+        true,                      // is_schema
+        "EventTopicV1".to_owned(), // label
+        None,                      // validation
+        None,                      // schema_id
     );
 
     // Verify entity is detected as a schema
@@ -597,14 +597,14 @@ fn test_schema_parsed_as_gts_entity() {
     assert_eq!(gts_id.id, "gts.x.core.events.topic.v1~");
 
     // Verify the ID matches what the macro generates
-    assert_eq!(gts_id.id, EventTopic::GTS_SCHEMA_ID);
+    assert_eq!(gts_id.id, EventTopicV1::GTS_SCHEMA_ID);
 }
 
 #[test]
 fn test_instance_parsed_as_gts_entity() {
     // Create an instance and serialize it
-    let topic = EventTopic {
-        id: EventTopic::make_gts_instance_id("x.commerce.orders.orders.v1.0").into(),
+    let topic = EventTopicV1 {
+        id: EventTopicV1::make_gts_instance_id("x.commerce.orders.orders.v1.0").into(),
         name: "orders".to_owned(),
         description: Some("Order lifecycle events".to_owned()),
         retention: "P90D".to_owned(),
@@ -638,7 +638,7 @@ fn test_instance_parsed_as_gts_entity() {
 #[test]
 fn test_gts_id_segments_match_schema() {
     // Get the schema ID from the macro
-    let schema_id_str = EventTopic::GTS_SCHEMA_ID;
+    let schema_id_str = EventTopicV1::GTS_SCHEMA_ID;
 
     // Parse it with GtsID
     let gts_id = GtsID::new(schema_id_str).expect("Schema ID should be valid");
@@ -662,7 +662,7 @@ fn test_gts_id_segments_match_schema() {
 #[test]
 fn test_gts_id_segments_match_instance() {
     // Generate an instance ID using the macro
-    let instance_id_str = EventTopic::make_gts_instance_id("x.commerce.orders.orders.v1.0");
+    let instance_id_str = EventTopicV1::make_gts_instance_id("x.commerce.orders.orders.v1.0");
 
     // Parse it with GtsID
     let gts_id = GtsID::new(&instance_id_str).expect("Instance ID should be valid");
@@ -696,10 +696,10 @@ fn test_gts_id_segments_match_instance() {
 #[test]
 fn test_schema_and_instance_segments_relationship() {
     // The schema ID from macro
-    let schema_id = GtsID::new(EventTopic::GTS_SCHEMA_ID).unwrap();
+    let schema_id = GtsID::new(EventTopicV1::GTS_SCHEMA_ID).unwrap();
 
     // An instance ID from the macro
-    let instance_id_str = EventTopic::make_gts_instance_id("x.core.idp.contacts.v1");
+    let instance_id_str = EventTopicV1::make_gts_instance_id("x.core.idp.contacts.v1");
     let instance_id = GtsID::new(&instance_id_str).unwrap();
 
     // The first segment of the instance should match the schema's segment
@@ -714,14 +714,14 @@ fn test_schema_and_instance_segments_relationship() {
 
     // get_type_id() should return the schema ID (without the instance segment)
     let type_id = instance_id.get_type_id();
-    assert_eq!(type_id, Some(EventTopic::GTS_SCHEMA_ID.to_owned()));
+    assert_eq!(type_id, Some(EventTopicV1::GTS_SCHEMA_ID.to_owned()));
 }
 
 #[test]
 fn test_entity_and_gts_id_vendor_package_namespace_match() {
     // Parse schema as GtsEntity
     let schema_json: serde_json::Value =
-        serde_json::from_str(&EventTopic::gts_json_schema_with_refs()).unwrap();
+        serde_json::from_str(&EventTopicV1::gts_json_schema_with_refs()).unwrap();
     let cfg = GtsConfig::default();
     let entity = GtsEntity::new(
         None,
@@ -739,7 +739,7 @@ fn test_entity_and_gts_id_vendor_package_namespace_match() {
     let entity_gts_id = entity.gts_id.as_ref().unwrap();
 
     // Parse the same ID directly using GtsID
-    let direct_gts_id = GtsID::new(EventTopic::GTS_SCHEMA_ID).unwrap();
+    let direct_gts_id = GtsID::new(EventTopicV1::GTS_SCHEMA_ID).unwrap();
 
     // Verify they match
     assert_eq!(entity_gts_id.id, direct_gts_id.id);
@@ -772,7 +772,7 @@ fn test_entity_and_gts_id_vendor_package_namespace_match() {
 fn test_schema_json_id_uses_uri_prefix() {
     // The generated schema JSON should have $id with gts:// prefix for URI compatibility
     let schema: serde_json::Value =
-        serde_json::from_str(&EventTopic::gts_json_schema_with_refs()).unwrap();
+        serde_json::from_str(&EventTopicV1::gts_json_schema_with_refs()).unwrap();
     let id = schema["$id"].as_str().unwrap();
 
     // $id should start with "gts://" prefix (NOT just "gts:")
@@ -792,7 +792,7 @@ fn test_schema_json_id_uses_uri_prefix() {
 fn test_gts_entity_strips_uri_prefix_from_schema() {
     // When GtsEntity parses a schema with gts:// prefix in $id, the stored ID should be normalized
     let schema_json: serde_json::Value =
-        serde_json::from_str(&EventTopic::gts_json_schema_with_refs()).unwrap();
+        serde_json::from_str(&EventTopicV1::gts_json_schema_with_refs()).unwrap();
     let cfg = GtsConfig::default();
 
     let entity = GtsEntity::new(
@@ -802,7 +802,7 @@ fn test_gts_entity_strips_uri_prefix_from_schema() {
         Some(&cfg),
         None,
         true,
-        "EventTopic".to_owned(),
+        "EventTopicV1".to_owned(),
         None,
         None,
     );
@@ -837,7 +837,7 @@ fn test_gts_id_does_not_accept_uri_prefix() {
 #[test]
 fn test_schema_with_refs_top_level_fields() {
     let schema: serde_json::Value =
-        serde_json::from_str(&EventTopic::gts_json_schema_with_refs()).unwrap();
+        serde_json::from_str(&EventTopicV1::gts_json_schema_with_refs()).unwrap();
 
     // Top-level fields
     assert_eq!(schema["$id"], "gts://gts.x.core.events.topic.v1~");
@@ -854,7 +854,7 @@ fn test_schema_with_refs_top_level_fields() {
 #[test]
 fn test_schema_inline_top_level_fields() {
     let schema: serde_json::Value =
-        serde_json::from_str(&EventTopic::gts_json_schema_inline()).unwrap();
+        serde_json::from_str(&EventTopicV1::gts_json_schema_inline()).unwrap();
 
     // Top-level fields
     assert_eq!(schema["$id"], "gts://gts.x.core.events.topic.v1~");
@@ -871,9 +871,9 @@ fn test_schema_inline_top_level_fields() {
 #[test]
 fn test_schema_with_refs_inheritance_structure() {
     let schema: serde_json::Value =
-        serde_json::from_str(&EventTopic::gts_json_schema_with_refs()).unwrap();
+        serde_json::from_str(&EventTopicV1::gts_json_schema_with_refs()).unwrap();
 
-    // Since EventTopic has no parent (single segment), it has direct properties and required fields
+    // Since EventTopicV1 has no parent (single segment), it has direct properties and required fields
     let props = schema["properties"].as_object().unwrap();
     let required = schema["required"].as_array().unwrap();
     // schemars includes ALL fields (6 including internal_config)
@@ -889,7 +889,7 @@ fn test_schema_with_refs_inheritance_structure() {
 #[test]
 fn test_schema_inline_inheritance_structure() {
     let schema: serde_json::Value =
-        serde_json::from_str(&EventTopic::gts_json_schema_inline()).unwrap();
+        serde_json::from_str(&EventTopicV1::gts_json_schema_inline()).unwrap();
 
     // Currently identical to WITH_REFS - direct properties for single-segment schemas
     let props = schema["properties"].as_object().unwrap();
@@ -1034,13 +1034,13 @@ fn test_runtime_schema_inline_resolution_single_segment() {
 
     // Test with a single-segment schema (no inheritance)
     let event_topic_schema: serde_json::Value =
-        serde_json::from_str(&EventTopic::gts_json_schema_with_refs()).unwrap();
+        serde_json::from_str(&EventTopicV1::gts_json_schema_with_refs()).unwrap();
     store
         .register_schema("gts.x.core.events.topic.v1~", &event_topic_schema)
         .unwrap();
 
     // Generate the inlined schema
-    let inlined = store.resolve_schema_refs(&EventTopic::gts_schema_with_refs());
+    let inlined = store.resolve_schema_refs(&EventTopicV1::gts_schema_with_refs());
 
     // For single-segment schemas, the result should be essentially the same
     assert_eq!(inlined["$id"], "gts://gts.x.core.events.topic.v1~");

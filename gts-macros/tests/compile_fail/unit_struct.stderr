@@ -1,5 +1,5 @@
-error: struct_to_gts_schema: Only structs with named fields are supported
+error: struct_to_gts_schema: Unit struct cannot have properties. Either add named fields or use properties = ""
   --> tests/compile_fail/unit_struct.rs:12:12
    |
-12 | pub struct Empty;
-   |            ^^^^^
+12 | pub struct EmptyV1;
+   |            ^^^^^^^

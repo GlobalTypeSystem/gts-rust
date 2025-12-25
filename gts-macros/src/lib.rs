@@ -128,41 +128,74 @@ fn count_schema_segments(schema_id: &str) -> usize {
 fn validate_version_match(struct_ident: &syn::Ident, schema_id: &str) -> syn::Result<()> {
     let struct_name = struct_ident.to_string();
 
-    let Some(struct_version) = extract_struct_version(&struct_name) else {
-        // No version suffix found in struct name - that's okay, skip validation
-        return Ok(());
-    };
+    let struct_version = extract_struct_version(&struct_name);
+    let schema_version = extract_schema_version(schema_id);
 
-    let Some(schema_version) = extract_schema_version(schema_id) else {
-        return Err(syn::Error::new_spanned(
-            struct_ident,
-            format!(
-                "struct_to_gts_schema: Cannot extract version from schema_id '{schema_id}'. \
-                 Expected format with version like 'gts.x.foo.v1~' or 'gts.x.foo.v1.0~'"
-            ),
-        ));
-    };
+    match (struct_version, schema_version) {
+        // Both have versions - they must match
+        (Some(sv), Some(schv)) => {
+            if sv != schv {
+                let struct_ver_str = match sv.minor {
+                    Some(minor) => format!("V{}_{}", sv.major, minor),
+                    None => format!("V{}", sv.major),
+                };
+                let schema_ver_str = match schv.minor {
+                    Some(minor) => format!("v{}.{}", schv.major, minor),
+                    None => format!("v{}", schv.major),
+                };
 
-    // Check if versions match
-    if struct_version != schema_version {
-        let struct_ver_str = match struct_version.minor {
-            Some(minor) => format!("V{}_{}", struct_version.major, minor),
-            None => format!("V{}", struct_version.major),
-        };
-        let schema_ver_str = match schema_version.minor {
-            Some(minor) => format!("v{}.{}", schema_version.major, minor),
-            None => format!("v{}", schema_version.major),
-        };
-
-        return Err(syn::Error::new_spanned(
-            struct_ident,
-            format!(
-                "struct_to_gts_schema: Version mismatch between struct name and schema_id. \
-                 Struct '{struct_name}' has version suffix '{struct_ver_str}' but schema_id '{schema_id}' \
-                 has version '{schema_ver_str}'. The versions must match exactly \
-                 (e.g., BaseEventV1 with v1~, or BaseEventV2_0 with v2.0~)"
-            ),
-        ));
+                return Err(syn::Error::new_spanned(
+                    struct_ident,
+                    format!(
+                        "struct_to_gts_schema: Version mismatch between struct name and schema_id. \
+                         Struct '{struct_name}' has version suffix '{struct_ver_str}' but schema_id '{schema_id}' \
+                         has version '{schema_ver_str}'. The versions must match exactly \
+                         (e.g., BaseEventV1 with v1~, or BaseEventV2_0 with v2.0~)"
+                    ),
+                ));
+            }
+        }
+        // Schema has version but struct doesn't - error
+        (None, Some(schv)) => {
+            let schema_ver_str = match schv.minor {
+                Some(minor) => format!("V{}_{}", schv.major, minor),
+                None => format!("V{}", schv.major),
+            };
+            return Err(syn::Error::new_spanned(
+                struct_ident,
+                format!(
+                    "struct_to_gts_schema: schema_id '{schema_id}' has a version but struct '{struct_name}' \
+                     does not have a version suffix. Add '{schema_ver_str}' suffix to the struct name \
+                     (e.g., '{struct_name}{schema_ver_str}')"
+                ),
+            ));
+        }
+        // Struct has version but schema doesn't - error
+        (Some(sv), None) => {
+            let struct_ver_str = match sv.minor {
+                Some(minor) => format!("V{}_{}", sv.major, minor),
+                None => format!("V{}", sv.major),
+            };
+            return Err(syn::Error::new_spanned(
+                struct_ident,
+                format!(
+                    "struct_to_gts_schema: Struct '{struct_name}' has version suffix '{struct_ver_str}' but \
+                     cannot extract version from schema_id '{schema_id}'. \
+                     Expected format with version like 'gts.x.foo.v1~' or 'gts.x.foo.v1.0~'"
+                ),
+            ));
+        }
+        // Neither has version - error (both MUST have at least a major version)
+        (None, None) => {
+            return Err(syn::Error::new_spanned(
+                struct_ident,
+                format!(
+                    "struct_to_gts_schema: Both struct name and schema_id must have a version. \
+                     Struct '{struct_name}' has no version suffix (e.g., V1) and schema_id '{schema_id}' \
+                     has no version (e.g., v1~). Add version to both (e.g., '{struct_name}V1' with 'gts.x.foo.v1~')"
+                ),
+            ));
+        }
     }
 
     Ok(())
@@ -374,13 +407,28 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         .collect();
 
     // Extract struct fields for validation
+    // Allow unit structs (no fields) for nested types that don't add new properties
     let struct_fields = match &input.data {
         Data::Struct(data_struct) => match &data_struct.fields {
-            Fields::Named(fields) => &fields.named,
-            _ => {
+            Fields::Named(fields) => Some(&fields.named),
+            Fields::Unit => {
+                // Unit structs are allowed for nested types with empty properties
+                if !property_names.is_empty() {
+                    return syn::Error::new_spanned(
+                        &input.ident,
+                        "struct_to_gts_schema: Unit struct cannot have properties. \
+                         Either add named fields or use properties = \"\"",
+                    )
+                    .to_compile_error()
+                    .into();
+                }
+                None // No fields to validate
+            }
+            Fields::Unnamed(_) => {
                 return syn::Error::new_spanned(
                     &input.ident,
-                    "struct_to_gts_schema: Only structs with named fields are supported",
+                    "struct_to_gts_schema: Tuple structs are not supported. \
+                     Use a struct with named fields or a unit struct (for empty nested types)",
                 )
                 .to_compile_error()
                 .into()
@@ -396,22 +444,24 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         }
     };
 
-    // Validate that all requested properties exist
-    let available_fields: Vec<String> = struct_fields
-        .iter()
-        .filter_map(|f| f.ident.as_ref().map(ToString::to_string))
-        .collect();
+    // Validate that all requested properties exist (only for structs with fields)
+    if let Some(fields) = struct_fields {
+        let available_fields: Vec<String> = fields
+            .iter()
+            .filter_map(|f| f.ident.as_ref().map(ToString::to_string))
+            .collect();
 
-    for prop in &property_names {
-        if !available_fields.contains(prop) {
-            return syn::Error::new_spanned(
-                &input.ident,
-                format!(
-                    "struct_to_gts_schema: Property '{prop}' not found in struct. Available fields: {available_fields:?}"
-                ),
-            )
-            .to_compile_error()
-            .into();
+        for prop in &property_names {
+            if !available_fields.contains(prop) {
+                return syn::Error::new_spanned(
+                    &input.ident,
+                    format!(
+                        "struct_to_gts_schema: Property '{prop}' not found in struct. Available fields: {available_fields:?}"
+                    ),
+                )
+                .to_compile_error()
+                .into();
+            }
         }
     }
 
@@ -490,9 +540,9 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
 
     let mut generic_field_name: Option<String> = None;
 
-    // Find the field that uses the generic type
-    if let Some(ref gp) = generic_param_name {
-        for field in struct_fields {
+    // Find the field that uses the generic type (only for structs with fields)
+    if let (Some(ref gp), Some(fields)) = (&generic_param_name, struct_fields) {
+        for field in fields {
             let field_type = &field.ty;
             let field_type_str = quote::quote!(#field_type).to_string().replace(' ', "");
             if field_type_str == *gp {
@@ -800,6 +850,15 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
             }
         }
     };
+
+    // Check if this is a unit struct - we need to add an allow attribute for clippy
+    // because quote! may emit {} instead of ; for unit structs
+    let is_unit_struct = matches!(&input.data, Data::Struct(data_struct) if matches!(&data_struct.fields, Fields::Unit));
+    if is_unit_struct {
+        modified_input
+            .attrs
+            .push(syn::parse_quote!(#[allow(clippy::empty_structs_with_brackets)]));
+    }
 
     let expanded = quote! {
         #modified_input

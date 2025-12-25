@@ -1,4 +1,4 @@
-error: struct_to_gts_schema: Only structs with named fields are supported
+error: struct_to_gts_schema: Tuple structs are not supported. Use a struct with named fields or a unit struct (for empty nested types)
   --> tests/compile_fail/tuple_struct.rs:12:12
    |
 12 | pub struct Data(String);

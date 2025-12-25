@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /* ============================================================
-Runtime models with GTS schema generation
+Chained inheritance
 ============================================================ */
 
 #[struct_to_gts_schema(
@@ -63,7 +63,7 @@ pub struct PlaceOrderDataV1 {
 }
 
 /* ============================================================
-Runtime models with explicit 'base' attribute
+Chained inheritance w/o new attributes
 ============================================================ */
 
 #[struct_to_gts_schema(
@@ -85,13 +85,11 @@ pub struct TopicV1<P> {
     base = TopicV1,
     schema_id = "gts.x.core.events.topic.v1~x.commerce.orders.topic.v1~",
     description = "Order topic configuration",
-    properties = "retention_days,partitions"
+    properties = ""
 )]
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct OrderTopicConfigV1 {
-    pub retention_days: u32,
-    pub partitions: u32,
-}
+// there are no new fields in OrderTopicConfigV1, we only need it to get dedicated GTS id
+pub struct OrderTopicConfigV1;
 
 /* ============================================================
 The macro automatically generates:
@@ -386,6 +384,69 @@ mod tests {
         assert_eq!(
             OrderTopicConfigV1::BASE_SCHEMA_ID,
             Some(TopicV1::<()>::GTS_SCHEMA_ID)
+        );
+    }
+
+    // =============================================================================
+    // Tests for unit structs (empty nested types)
+    // =============================================================================
+
+    #[test]
+    fn test_unit_struct_schema_generation() {
+        // OrderTopicConfigV1 is a unit struct with no fields
+        // It should still generate a valid schema with allOf inheritance
+        use gts::GtsSchema;
+
+        let schema = OrderTopicConfigV1::gts_schema_with_refs();
+
+        // Should have $id
+        assert_eq!(
+            schema["$id"],
+            "gts://gts.x.core.events.topic.v1~x.commerce.orders.topic.v1~"
+        );
+
+        // Should have allOf with parent reference (since it's a child type)
+        let all_of = schema
+            .get("allOf")
+            .expect("OrderTopicConfigV1 should have allOf");
+        assert!(all_of.is_array(), "allOf should be an array");
+
+        // First element should be $ref to parent
+        let first = &all_of[0];
+        assert_eq!(first["$ref"], "gts://gts.x.core.events.topic.v1~");
+    }
+
+    #[test]
+    fn test_unit_struct_instantiation() {
+        // Unit struct should be usable as a type parameter for parent
+        let topic = TopicV1 {
+            name: "orders".to_string(),
+            description: Some("Order events".to_string()),
+            config: OrderTopicConfigV1 {},
+        };
+
+        // Serialize should work
+        let json = serde_json::to_value(&topic).unwrap();
+        assert_eq!(json["name"], "orders");
+        assert_eq!(json["description"], "Order events");
+        // config field will serialize to null for unit struct with default serde
+    }
+
+    #[test]
+    fn test_unit_struct_gts_schema_trait() {
+        use gts::GtsSchema;
+
+        // Unit struct should implement GtsSchema
+        assert_eq!(
+            OrderTopicConfigV1::SCHEMA_ID,
+            "gts.x.core.events.topic.v1~x.commerce.orders.topic.v1~"
+        );
+        assert_eq!(OrderTopicConfigV1::GENERIC_FIELD, None);
+
+        // innermost_schema_id for a non-generic type returns itself
+        assert_eq!(
+            OrderTopicConfigV1::innermost_schema_id(),
+            "gts.x.core.events.topic.v1~x.commerce.orders.topic.v1~"
         );
     }
 }
