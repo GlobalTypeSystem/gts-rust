@@ -11,12 +11,18 @@ use crate::path_resolver::JsonPathResolver;
 use crate::schema_cast::GtsEntityCastResult;
 use crate::store::{GtsStore, GtsStoreQueryResult};
 
+/// `is_schema` is `Some(true)` for schema/type IDs (ending with `~`),
+/// `Some(false)` for instance IDs, and `None` when the input couldn't be
+/// parsed (unknown).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GtsIdValidationResult {
     pub id: String,
     pub valid: bool,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_schema: Option<bool>,
+    pub is_wildcard: bool,
 }
 
 /// Serializable representation of a GTS ID segment for API responses.
@@ -52,7 +58,11 @@ pub struct GtsIdParseResult {
     pub id: String,
     pub ok: bool,
     pub segments: Vec<GtsIdSegmentInfo>,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_schema: Option<bool>,
+    pub is_wildcard: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -378,42 +388,107 @@ impl GtsOps {
 
     #[must_use]
     pub fn validate_id(&self, gts_id: &str) -> GtsIdValidationResult {
-        match GtsID::new(gts_id) {
-            Ok(_) => GtsIdValidationResult {
-                id: gts_id.to_owned(),
-                valid: true,
-                error: String::new(),
-            },
-            Err(e) => GtsIdValidationResult {
-                id: gts_id.to_owned(),
-                valid: false,
-                error: format!("Unable to validate GTS ID '{gts_id}': {e}"),
-            },
+        let contains_wildcard = gts_id.contains('*');
+
+        if contains_wildcard {
+            // Use GtsWildcard for wildcard pattern validation - it enforces:
+            // - Only one '*' allowed
+            // - '*' must be at end (ending with '.*' or '~*')
+            // - No '*' in the middle of segments
+            match GtsWildcard::new(gts_id) {
+                Ok(w) => GtsIdValidationResult {
+                    id: gts_id.to_owned(),
+                    valid: true,
+                    error: String::new(),
+                    is_schema: Some(w.id.ends_with('~')),
+                    is_wildcard: true,
+                },
+                Err(e) => GtsIdValidationResult {
+                    id: gts_id.to_owned(),
+                    valid: false,
+                    error: format!("Unable to validate GTS ID '{gts_id}': {e}"),
+                    is_schema: None,
+                    is_wildcard: true,
+                },
+            }
+        } else {
+            match GtsID::new(gts_id) {
+                Ok(id) => GtsIdValidationResult {
+                    id: gts_id.to_owned(),
+                    valid: true,
+                    error: String::new(),
+                    is_schema: Some(id.is_type()),
+                    is_wildcard: false,
+                },
+                Err(e) => GtsIdValidationResult {
+                    id: gts_id.to_owned(),
+                    valid: false,
+                    error: format!("Unable to validate GTS ID '{gts_id}': {e}"),
+                    is_schema: None,
+                    is_wildcard: false,
+                },
+            }
         }
     }
 
     pub fn parse_id(&self, gts_id: &str) -> GtsIdParseResult {
-        match GtsID::new(gts_id) {
-            Ok(id) => {
-                let segments = id
-                    .gts_id_segments
-                    .iter()
-                    .map(GtsIdSegmentInfo::from)
-                    .collect();
+        let contains_wildcard = gts_id.contains('*');
 
-                GtsIdParseResult {
-                    id: gts_id.to_owned(),
-                    ok: true,
-                    segments,
-                    error: String::new(),
+        if contains_wildcard {
+            // Use GtsWildcard for wildcard pattern parsing/validation
+            match GtsWildcard::new(gts_id) {
+                Ok(w) => {
+                    let segments = w
+                        .gts_id_segments
+                        .iter()
+                        .map(GtsIdSegmentInfo::from)
+                        .collect();
+
+                    GtsIdParseResult {
+                        id: gts_id.to_owned(),
+                        ok: true,
+                        segments,
+                        error: String::new(),
+                        is_schema: Some(w.id.ends_with('~')),
+                        is_wildcard: true,
+                    }
                 }
+                Err(e) => GtsIdParseResult {
+                    id: gts_id.to_owned(),
+                    ok: false,
+                    segments: Vec::new(),
+                    error: e.to_string(),
+                    is_schema: None,
+                    is_wildcard: true,
+                },
             }
-            Err(e) => GtsIdParseResult {
-                id: gts_id.to_owned(),
-                ok: false,
-                segments: Vec::new(),
-                error: e.to_string(),
-            },
+        } else {
+            match GtsID::new(gts_id) {
+                Ok(id) => {
+                    let segments = id
+                        .gts_id_segments
+                        .iter()
+                        .map(GtsIdSegmentInfo::from)
+                        .collect();
+
+                    GtsIdParseResult {
+                        id: gts_id.to_owned(),
+                        ok: true,
+                        segments,
+                        error: String::new(),
+                        is_schema: Some(id.is_type()),
+                        is_wildcard: false,
+                    }
+                }
+                Err(e) => GtsIdParseResult {
+                    id: gts_id.to_owned(),
+                    ok: false,
+                    segments: Vec::new(),
+                    error: e.to_string(),
+                    is_schema: None,
+                    is_wildcard: false,
+                },
+            }
         }
     }
 
@@ -1022,6 +1097,8 @@ mod tests {
             id: "gts.vendor.package.namespace.type.v1.0".to_owned(),
             valid: true,
             error: String::new(),
+            is_schema: Some(false),
+            is_wildcard: false,
         };
 
         let json = to_json_obj(&result);
@@ -1030,6 +1107,12 @@ mod tests {
             "gts.vendor.package.namespace.type.v1.0"
         );
         assert!(json.get("valid").expect("test").as_bool().expect("test"));
+        assert!(json.get("is_schema").expect("test").as_bool().is_some());
+        assert!(!json
+            .get("is_wildcard")
+            .expect("test")
+            .as_bool()
+            .expect("test"));
     }
 
     #[test]
@@ -1082,6 +1165,8 @@ mod tests {
             ok: true,
             error: String::new(),
             segments: vec![],
+            is_schema: Some(false),
+            is_wildcard: false,
         };
 
         let json = to_json_obj(&result);
