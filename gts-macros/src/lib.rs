@@ -8,11 +8,34 @@ use syn::{
     parse_macro_input, Data, DeriveInput, Fields, LitStr, Token,
 };
 
+// Field name constants to avoid duplication
+const ID_FIELD_NAMES: &[&str] = &["$id", "id", "gts_id", "gtsId"];
+const TYPE_FIELD_NAMES: &[&str] = &["type", "r#type", "gts_type", "gtsType", "schema"];
+const SERDE_TYPE_RENAMES: &[&str] = &["type", "gts_type", "gtsType", "schema"];
+
 /// Represents a parsed version (major and optional minor)
 #[derive(Debug, PartialEq)]
 struct Version {
     major: u32,
     minor: Option<u32>,
+}
+
+impl Version {
+    /// Format version for struct name suffix (e.g., "V1" or "`V1_0`")
+    fn to_struct_suffix(&self) -> String {
+        match self.minor {
+            Some(minor) => format!("V{}_{}", self.major, minor),
+            None => format!("V{}", self.major),
+        }
+    }
+
+    /// Format version for schema ID (e.g., "v1" or "v1.0")
+    fn to_schema_version(&self) -> String {
+        match self.minor {
+            Some(minor) => format!("v{}.{}", self.major, minor),
+            None => format!("v{}", self.major),
+        }
+    }
 }
 
 /// Extract version from struct name suffix (e.g., `BaseEventV1` -> V1, `BaseEventV2_0` -> V2.0)
@@ -126,43 +149,26 @@ fn count_schema_segments(schema_id: &str) -> usize {
 
 /// Check if a type is `GtsInstanceId` (either directly or as a path)
 fn is_type_gts_instance_id(ty: &syn::Type) -> bool {
-    match ty {
-        syn::Type::Path(type_path) => {
-            // Check for simple GtsInstanceId or gts::GtsInstanceId
-            if let Some(last_segment) = type_path.path.segments.last() {
-                if last_segment.ident == "GtsInstanceId" {
-                    return true;
-                }
-            }
-
-            // Check for full path like gts::GtsInstanceId
-            if type_path.path.segments.len() == 2 {
-                let segments: Vec<String> = type_path
-                    .path
-                    .segments
-                    .iter()
-                    .map(|seg| seg.ident.to_string())
-                    .collect();
-                if segments == ["gts", "GtsInstanceId"] {
-                    return true;
-                }
-            }
-
-            false
-        }
-        _ => false,
-    }
+    is_type_named(ty, "GtsInstanceId")
 }
 
 /// Check if a type is `GtsSchemaId` (either directly or as a path)
 fn is_type_gts_schema_id(ty: &syn::Type) -> bool {
+    is_type_named(ty, "GtsSchemaId")
+}
+
+/// Helper function to check if a type matches a given name (either directly or as `gts::Name`)
+fn is_type_named(ty: &syn::Type, name: &str) -> bool {
     match ty {
         syn::Type::Path(type_path) => {
+            // Check for simple name or gts::name
             if let Some(last_segment) = type_path.path.segments.last() {
-                if last_segment.ident == "GtsSchemaId" {
+                if last_segment.ident == name {
                     return true;
                 }
             }
+
+            // Check for full path like gts::Name
             if type_path.path.segments.len() == 2 {
                 let segments: Vec<String> = type_path
                     .path
@@ -170,10 +176,11 @@ fn is_type_gts_schema_id(ty: &syn::Type) -> bool {
                     .iter()
                     .map(|seg| seg.ident.to_string())
                     .collect();
-                if segments == ["gts", "GtsSchemaId"] {
+                if segments == ["gts", name] {
                     return true;
                 }
             }
+
             false
         }
         _ => false,
@@ -206,6 +213,19 @@ fn get_serde_rename(field: &syn::Field) -> Option<String> {
     None
 }
 
+/// Check if a field has a serde rename matching any of the given names
+fn has_matching_serde_rename(field: &syn::Field, names: &[&str]) -> bool {
+    get_serde_rename(field).is_some_and(|rename| names.contains(&rename.as_str()))
+}
+
+/// Check if a field name matches any of the given names
+fn field_name_matches(field: &syn::Field, names: &[&str]) -> bool {
+    field
+        .ident
+        .as_ref()
+        .is_some_and(|name| names.contains(&name.to_string().as_str()))
+}
+
 /// Validate base struct field requirements
 fn validate_base_struct_fields(
     input: &syn::DeriveInput,
@@ -216,106 +236,41 @@ fn validate_base_struct_fields(
         return Ok(());
     }
 
-    let available_fields: Vec<String> = fields
-        .iter()
-        .filter_map(|f| f.ident.as_ref().map(std::string::ToString::to_string))
-        .collect();
-
-    let id_fields = ["$id", "id", "gts_id", "gtsId"];
-    let type_fields = ["type", "r#type", "gts_type", "gtsType", "schema"];
-
     // Check for presence of ID and GTS Type fields (including serde renames)
-    let has_id_field = id_fields
-        .iter()
-        .any(|&id_field| available_fields.contains(&id_field.to_owned()));
+    let has_id_field = fields.iter().any(|f| field_name_matches(f, ID_FIELD_NAMES));
 
-    let mut has_type_field = type_fields
-        .iter()
-        .any(|&type_field| available_fields.contains(&type_field.to_owned()));
-
-    // Also check for fields with serde rename attributes that map to type field names
-    if !has_type_field {
-        has_type_field = fields.iter().any(|field| {
-            if let Some(serde_rename) = get_serde_rename(field) {
-                serde_rename == "type"
-                    || serde_rename == "gts_type"
-                    || serde_rename == "gtsType"
-                    || serde_rename == "schema"
-            } else {
-                false
-            }
-        });
-    }
+    let has_type_field = fields.iter().any(|f| {
+        field_name_matches(f, TYPE_FIELD_NAMES) || has_matching_serde_rename(f, SERDE_TYPE_RENAMES)
+    });
 
     if !has_id_field && !has_type_field {
         return Err(syn::Error::new_spanned(
             &input.ident,
             format!(
                 "struct_to_gts_schema: Base structs must have either an ID field (one of: {}) OR a GTS Type field (one of: {}), but not both.",
-                id_fields.join(", "),
-                type_fields.join(", ")
+                ID_FIELD_NAMES.join(", "),
+                TYPE_FIELD_NAMES.join(", ")
             ),
         ));
     }
 
     // Validate field types
-    validate_field_types(input, fields, has_id_field, has_type_field)
+    validate_field_types(input, fields)
 }
 
 /// Validate that field types are correct for ID and GTS Type fields
 fn validate_field_types(
     input: &syn::DeriveInput,
     fields: &syn::punctuated::Punctuated<syn::Field, syn::token::Comma>,
-    _has_id_field: bool,
-    _has_type_field: bool,
 ) -> Result<(), syn::Error> {
     let has_valid_id_field = fields.iter().any(|field| {
-        if let Some(field_name) = &field.ident {
-            let field_name_str = field_name.to_string();
-            if field_name_str == "$id"
-                || field_name_str == "id"
-                || field_name_str == "gts_id"
-                || field_name_str == "gtsId"
-            {
-                is_type_gts_instance_id(&field.ty)
-            } else {
-                false
-            }
-        } else {
-            false
-        }
+        field_name_matches(field, ID_FIELD_NAMES) && is_type_gts_instance_id(&field.ty)
     });
 
     let has_valid_type_field = fields.iter().any(|field| {
-        if let Some(field_name) = &field.ident {
-            let field_name_str = field_name.to_string();
-
-            // Check if the field has a serde rename attribute
-            if let Some(serde_rename) = get_serde_rename(field) {
-                // If the field is renamed to a valid GTS Type field name, check its type
-                if serde_rename == "type"
-                    || serde_rename == "gts_type"
-                    || serde_rename == "gtsType"
-                    || serde_rename == "schema"
-                {
-                    return is_type_gts_schema_id(&field.ty);
-                }
-            }
-
-            // Handle both "type" and "r#type" field names, plus "schema"
-            if field_name_str == "type"
-                || field_name_str == "r#type"
-                || field_name_str == "gts_type"
-                || field_name_str == "gtsType"
-                || field_name_str == "schema"
-            {
-                is_type_gts_schema_id(&field.ty)
-            } else {
-                false
-            }
-        } else {
-            false
-        }
+        let is_type_field = field_name_matches(field, TYPE_FIELD_NAMES)
+            || has_matching_serde_rename(field, SERDE_TYPE_RENAMES);
+        is_type_field && is_type_gts_schema_id(&field.ty)
     });
 
     // Enforce "either/or but not both" logic
@@ -339,78 +294,133 @@ fn validate_field_types(
 /// Validate that the struct name version suffix matches the `schema_id` version
 fn validate_version_match(struct_ident: &syn::Ident, schema_id: &str) -> syn::Result<()> {
     let struct_name = struct_ident.to_string();
-
     let struct_version = extract_struct_version(&struct_name);
     let schema_version = extract_schema_version(schema_id);
 
     match (struct_version, schema_version) {
-        // Both have versions - they must match
-        (Some(sv), Some(schv)) => {
-            if sv != schv {
-                let struct_ver_str = match sv.minor {
-                    Some(minor) => format!("V{}_{}", sv.major, minor),
-                    None => format!("V{}", sv.major),
-                };
-                let schema_ver_str = match schv.minor {
-                    Some(minor) => format!("v{}.{}", schv.major, minor),
-                    None => format!("v{}", schv.major),
-                };
-
-                return Err(syn::Error::new_spanned(
-                    struct_ident,
-                    format!(
-                        "struct_to_gts_schema: Version mismatch between struct name and schema_id. \
-                         Struct '{struct_name}' has version suffix '{struct_ver_str}' but schema_id '{schema_id}' \
-                         has version '{schema_ver_str}'. The versions must match exactly \
-                         (e.g., BaseEventV1 with v1~, or BaseEventV2_0 with v2.0~)"
-                    ),
-                ));
-            }
-        }
-        // Schema has version but struct doesn't - error
-        (None, Some(schv)) => {
-            let schema_ver_str = match schv.minor {
-                Some(minor) => format!("V{}_{}", schv.major, minor),
-                None => format!("V{}", schv.major),
-            };
-            return Err(syn::Error::new_spanned(
-                struct_ident,
-                format!(
-                    "struct_to_gts_schema: schema_id '{schema_id}' has a version but struct '{struct_name}' \
-                     does not have a version suffix. Add '{schema_ver_str}' suffix to the struct name \
-                     (e.g., '{struct_name}{schema_ver_str}')"
-                ),
-            ));
-        }
-        // Struct has version but schema doesn't - error
-        (Some(sv), None) => {
-            let struct_ver_str = match sv.minor {
-                Some(minor) => format!("V{}_{}", sv.major, minor),
-                None => format!("V{}", sv.major),
-            };
-            return Err(syn::Error::new_spanned(
-                struct_ident,
-                format!(
-                    "struct_to_gts_schema: Struct '{struct_name}' has version suffix '{struct_ver_str}' but \
-                     cannot extract version from schema_id '{schema_id}'. \
-                     Expected format with version like 'gts.x.foo.v1~' or 'gts.x.foo.v1.0~'"
-                ),
-            ));
-        }
-        // Neither has version - error (both MUST have at least a major version)
-        (None, None) => {
-            return Err(syn::Error::new_spanned(
-                struct_ident,
-                format!(
-                    "struct_to_gts_schema: Both struct name and schema_id must have a version. \
-                     Struct '{struct_name}' has no version suffix (e.g., V1) and schema_id '{schema_id}' \
-                     has no version (e.g., v1~). Add version to both (e.g., '{struct_name}V1' with 'gts.x.foo.v1~')"
-                ),
-            ));
-        }
+        (Some(sv), Some(schv)) if sv != schv => Err(syn::Error::new_spanned(
+            struct_ident,
+            format!(
+                "struct_to_gts_schema: Version mismatch between struct name and schema_id. \
+                 Struct '{struct_name}' has version suffix '{}' but schema_id '{schema_id}' \
+                 has version '{}'. The versions must match exactly \
+                 (e.g., BaseEventV1 with v1~, or BaseEventV2_0 with v2.0~)",
+                sv.to_struct_suffix(),
+                schv.to_schema_version()
+            ),
+        )),
+        (Some(_), Some(_)) => Ok(()), // Versions match
+        (None, Some(schv)) => Err(syn::Error::new_spanned(
+            struct_ident,
+            format!(
+                "struct_to_gts_schema: schema_id '{schema_id}' has a version but struct '{struct_name}' \
+                 does not have a version suffix. Add '{}' suffix to the struct name \
+                 (e.g., '{struct_name}{}')",
+                schv.to_struct_suffix(),
+                schv.to_struct_suffix()
+            ),
+        )),
+        (Some(sv), None) => Err(syn::Error::new_spanned(
+            struct_ident,
+            format!(
+                "struct_to_gts_schema: Struct '{struct_name}' has version suffix '{}' but \
+                 cannot extract version from schema_id '{schema_id}'. \
+                 Expected format with version like 'gts.x.foo.v1~' or 'gts.x.foo.v1.0~'",
+                sv.to_struct_suffix()
+            ),
+        )),
+        (None, None) => Err(syn::Error::new_spanned(
+            struct_ident,
+            format!(
+                "struct_to_gts_schema: Both struct name and schema_id must have a version. \
+                 Struct '{struct_name}' has no version suffix (e.g., V1) and schema_id '{schema_id}' \
+                 has no version (e.g., v1~). Add version to both (e.g., '{struct_name}V1' with 'gts.x.foo.v1~')"
+            ),
+        )),
     }
+}
 
-    Ok(())
+/// Check if a derive attribute contains a specific trait name
+fn has_derive(input: &syn::DeriveInput, trait_name: &str) -> bool {
+    input.attrs.iter().any(|attr| {
+        attr.path().is_ident("derive")
+            && attr
+                .meta
+                .require_list()
+                .map(|meta| meta.tokens.to_string().contains(trait_name))
+                .unwrap_or(false)
+    })
+}
+
+/// Add missing required derives (Serialize, Deserialize, `JsonSchema`)
+fn add_missing_derives(input: &mut syn::DeriveInput) {
+    let derives_to_add: Vec<&str> = [
+        ("Serialize", "serde::Serialize"),
+        ("Deserialize", "serde::Deserialize"),
+        ("JsonSchema", "schemars::JsonSchema"),
+    ]
+    .into_iter()
+    .filter(|(check, _)| !has_derive(input, check))
+    .map(|(_, full)| full)
+    .collect();
+
+    if !derives_to_add.is_empty() {
+        let derives_str = derives_to_add.join(", ");
+        let derives_tokens: proc_macro2::TokenStream =
+            derives_str.parse().expect("Failed to parse derive tokens");
+        input
+            .attrs
+            .push(syn::parse_quote!(#[derive(#derives_tokens)]));
+    }
+}
+
+/// Validate that base attribute is consistent with `schema_id` segment count
+fn validate_base_segments(
+    input: &syn::DeriveInput,
+    base: &BaseAttr,
+    schema_id: &str,
+) -> Result<(), syn::Error> {
+    let segment_count = count_schema_segments(schema_id);
+
+    match base {
+        BaseAttr::IsBase if segment_count > 1 => Err(syn::Error::new_spanned(
+            &input.ident,
+            format!(
+                "struct_to_gts_schema: 'base = true' but schema_id '{schema_id}' has {segment_count} segments. \
+                 A base type must have exactly 1 segment (no parent). \
+                 Either use 'base = ParentStruct' or fix the schema_id."
+            ),
+        )),
+        BaseAttr::Parent(_) if segment_count < 2 => Err(syn::Error::new_spanned(
+            &input.ident,
+            format!(
+                "struct_to_gts_schema: 'base' specifies a parent struct but schema_id '{schema_id}' \
+                 has only {segment_count} segment. A child type must have at least 2 segments. \
+                 Either use 'base = true' or add parent segment to schema_id."
+            ),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Build a custom where clause with additional trait bounds on generic params
+fn build_where_clause(
+    generics: &syn::Generics,
+    where_clause: Option<&syn::WhereClause>,
+    bounds: &str,
+) -> proc_macro2::TokenStream {
+    if let Some(generic_param) = generics.type_params().next() {
+        let generic_ident = &generic_param.ident;
+        let bounds_tokens: proc_macro2::TokenStream =
+            bounds.parse().expect("Failed to parse bounds");
+        if let Some(existing) = where_clause {
+            quote! { #existing #generic_ident: #bounds_tokens, }
+        } else {
+            quote! { where #generic_ident: #bounds_tokens }
+        }
+    } else {
+        quote! { #where_clause }
+    }
 }
 
 /// Represents the `base` attribute value for struct inheritance
@@ -701,88 +711,13 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     }
 
     // Automatically add required derives: Serialize, Deserialize, JsonSchema
-    // First check if they're already present to avoid duplicate implementations
-    let mut has_serialize = false;
-    let mut has_deserialize = false;
-    let mut has_json_schema = false;
-
-    for attr in &modified_input.attrs {
-        if attr.path().is_ident("derive") {
-            if let Ok(meta) = attr.meta.require_list() {
-                let tokens = meta.tokens.to_string();
-                if tokens.contains("Serialize") {
-                    has_serialize = true;
-                }
-                if tokens.contains("Deserialize") {
-                    has_deserialize = true;
-                }
-                if tokens.contains("JsonSchema") {
-                    has_json_schema = true;
-                }
-            }
-        }
-    }
-
-    // Build a list of derives to add (only those not already present)
-    let mut derives_to_add = Vec::new();
-    if !has_serialize {
-        derives_to_add.push("serde::Serialize");
-    }
-    if !has_deserialize {
-        derives_to_add.push("serde::Deserialize");
-    }
-    if !has_json_schema {
-        derives_to_add.push("schemars::JsonSchema");
-    }
-
-    // Add the missing derives if any
-    if !derives_to_add.is_empty() {
-        let derives_str = derives_to_add.join(", ");
-        let derives_tokens: proc_macro2::TokenStream =
-            derives_str.parse().expect("Failed to parse derive tokens");
-        modified_input
-            .attrs
-            .push(syn::parse_quote!(#[derive(#derives_tokens)]));
-    }
+    add_missing_derives(&mut modified_input);
 
     // Validate base attribute consistency with schema_id segments
-    let segment_count = count_schema_segments(&args.schema_id);
-    let expected_parent_schema_id = extract_parent_schema_id(&args.schema_id);
-
-    match &args.base {
-        BaseAttr::IsBase => {
-            // base = true: must be a single-segment schema (no parent)
-            if segment_count > 1 {
-                return syn::Error::new_spanned(
-                    &input.ident,
-                    format!(
-                        "struct_to_gts_schema: 'base = true' but schema_id '{}' has {} segments. \
-                         A base type must have exactly 1 segment (no parent). \
-                         Either use 'base = ParentStruct' or fix the schema_id.",
-                        args.schema_id, segment_count
-                    ),
-                )
-                .to_compile_error()
-                .into();
-            }
-        }
-        BaseAttr::Parent(_) => {
-            // base = ParentStruct: must have at least 2 segments
-            if segment_count < 2 {
-                return syn::Error::new_spanned(
-                    &input.ident,
-                    format!(
-                        "struct_to_gts_schema: 'base' specifies a parent struct but schema_id '{}' \
-                         has only {} segment. A child type must have at least 2 segments. \
-                         Either use 'base = true' or add parent segment to schema_id.",
-                        args.schema_id, segment_count
-                    ),
-                )
-                .to_compile_error()
-                .into();
-            }
-        }
+    if let Err(err) = validate_base_segments(&input, &args.base, &args.schema_id) {
+        return err.to_compile_error().into();
     }
+    let expected_parent_schema_id = extract_parent_schema_id(&args.schema_id);
 
     // Build the schema output file path from dir_path + schema_id
     let struct_name = &input.ident;
@@ -890,31 +825,17 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     // Generate gts_schema() implementation based on whether we have a generic parameter
     let has_generic = input.generics.type_params().count() > 0;
 
-    // Build a custom where clause for GtsSchema that adds the GtsSchema bound on generic params
-    let gts_schema_where_clause = if has_generic {
-        let generic_param = input.generics.type_params().next().unwrap();
-        let generic_ident = &generic_param.ident;
-        if let Some(existing) = where_clause {
-            quote! { #existing #generic_ident: ::gts::GtsSchema + ::schemars::JsonSchema, }
-        } else {
-            quote! { where #generic_ident: ::gts::GtsSchema + ::schemars::JsonSchema }
-        }
-    } else {
-        quote! { #where_clause }
-    };
-
-    // Build a custom where clause for instance serialization that adds Serialize + GtsSchema bounds on generic params
-    let serialize_where_clause = if has_generic {
-        let generic_param = input.generics.type_params().next().unwrap();
-        let generic_ident = &generic_param.ident;
-        if let Some(existing) = where_clause {
-            quote! { #existing #generic_ident: serde::Serialize + ::gts::GtsSchema, }
-        } else {
-            quote! { where #generic_ident: serde::Serialize + ::gts::GtsSchema }
-        }
-    } else {
-        quote! { #where_clause }
-    };
+    // Build custom where clauses for different impl blocks
+    let gts_schema_where_clause = build_where_clause(
+        generics,
+        where_clause,
+        "::gts::GtsSchema + ::schemars::JsonSchema",
+    );
+    let serialize_where_clause = build_where_clause(
+        generics,
+        where_clause,
+        "serde::Serialize + ::gts::GtsSchema",
+    );
 
     let gts_schema_impl = if has_generic {
         let generic_param = input.generics.type_params().next().unwrap();
