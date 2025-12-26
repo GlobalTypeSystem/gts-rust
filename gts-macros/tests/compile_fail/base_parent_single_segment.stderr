@@ -1,11 +1,11 @@
 error: struct_to_gts_schema: Base structs must have either an ID field (one of: $id, id, gts_id, or gtsId) of type GtsInstanceId OR a GTS Type field (one of: type, gts_type, gtsType, or schema) of type GtsSchemaId
-  --> tests/compile_fail/base_parent_single_segment.rs:17:12
+  --> tests/compile_fail/base_parent_single_segment.rs:15:12
    |
-17 | pub struct BaseEventV1<P> {
+15 | pub struct BaseEventV1<P> {
    |            ^^^^^^^^^^^
 
 error: struct_to_gts_schema: 'base' specifies a parent struct but schema_id 'gts.x.core.audit.event.v1~' has only 1 segment. A child type must have at least 2 segments. Either use 'base = true' or add parent segment to schema_id.
-  --> tests/compile_fail/base_parent_single_segment.rs:31:12
+  --> tests/compile_fail/base_parent_single_segment.rs:29:12
    |
-31 | pub struct AuditEventV1 {
+29 | pub struct AuditEventV1 {
    |            ^^^^^^^^^^^^

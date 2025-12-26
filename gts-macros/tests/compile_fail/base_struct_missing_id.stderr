@@ -1,5 +1,5 @@
 error: struct_to_gts_schema: Base structs must have either an ID field (one of: $id, id, gts_id, gtsId) OR a GTS Type field (one of: type, r#type, gts_type, gtsType, schema), but not both.
-  --> tests/compile_fail/base_struct_missing_id.rs:15:12
+  --> tests/compile_fail/base_struct_missing_id.rs:13:12
    |
-15 | pub struct TopicV1<P> {
+13 | pub struct TopicV1<P> {
    |            ^^^^^^^

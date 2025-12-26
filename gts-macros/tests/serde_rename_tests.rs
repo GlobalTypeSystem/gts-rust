@@ -11,8 +11,6 @@
 
 use gts::gts::GtsSchemaId;
 use gts_macros::struct_to_gts_schema;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /* ============================================================
@@ -26,7 +24,7 @@ Serde rename tests - event_type field with serde(rename = "type")
     description = "Base event type with serde(rename = \"type\")",
     properties = "event_type,id,tenant_id,sequence_id,payload"
 )]
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug)]
 pub struct BaseEventV1SerdeRenameV1<P> {
     #[serde(rename = "type")]
     pub event_type: GtsSchemaId, // This should be recognized as a valid GTS Type field
@@ -43,7 +41,7 @@ pub struct BaseEventV1SerdeRenameV1<P> {
     description = "Base event type with serde(rename = \"gts_type\")",
     properties = "event_type,id,tenant_id,sequence_id,payload"
 )]
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug)]
 pub struct BaseEventV1GtsTypeRenameV1<P> {
     #[serde(rename = "gts_type")]
     pub event_type: GtsSchemaId, // This should be recognized as a valid GTS Type field
@@ -60,7 +58,7 @@ pub struct BaseEventV1GtsTypeRenameV1<P> {
     description = "Base event type with serde(rename = \"schema\")",
     properties = "event_type,id,tenant_id,sequence_id,payload"
 )]
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug)]
 pub struct BaseEventV1SchemaRenameV1<P> {
     #[serde(rename = "schema")]
     pub event_type: GtsSchemaId, // This should be recognized as a valid GTS Type field

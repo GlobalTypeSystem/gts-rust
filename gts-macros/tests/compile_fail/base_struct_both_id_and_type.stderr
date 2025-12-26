@@ -1,7 +1,7 @@
 error: struct_to_gts_schema: Base structs must have either an ID field (one of: $id, id, gts_id, or gtsId) of type GtsInstanceId OR a GTS Type field (one of: type, gts_type, gtsType, or schema) of type GtsSchemaId, but not both. Found both valid ID and GTS Type fields.
-  --> tests/compile_fail/base_struct_both_id_and_type.rs:16:12
+  --> tests/compile_fail/base_struct_both_id_and_type.rs:14:12
    |
-16 | pub struct TopicV1BothIdAndTypeV1<P> {
+14 | pub struct TopicV1BothIdAndTypeV1<P> {
    |            ^^^^^^^^^^^^^^^^^^^^^^
 
 warning: unused imports: `GtsInstanceId` and `GtsSchemaId`

@@ -2,7 +2,6 @@
 mod tests {
     use gts_macros::struct_to_gts_schema;
 
-    #[derive(schemars::JsonSchema)]
     #[struct_to_gts_schema(
         dir_path = "test_schemas",
         schema_id = "gts.test.pretty.v1~",
@@ -18,12 +17,12 @@ mod tests {
     }
 
     #[test]
-    fn test_gts_json_schema_with_refs_pretty() {
+    fn test_gts_schema_with_refs_as_string_pretty() {
         // Test the regular version
-        let regular = TestPrettyStructV1::gts_json_schema_with_refs();
+        let regular = TestPrettyStructV1::gts_schema_with_refs_as_string();
 
         // Test the pretty version
-        let pretty = TestPrettyStructV1::gts_json_schema_with_refs_pretty();
+        let pretty = TestPrettyStructV1::gts_schema_with_refs_as_string_pretty();
 
         // Verify they both contain the same content (just different formatting)
         let regular_parsed: serde_json::Value = serde_json::from_str(&regular)

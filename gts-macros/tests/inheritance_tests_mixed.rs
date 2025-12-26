@@ -11,8 +11,6 @@
 
 use gts::gts::GtsSchemaId;
 use gts_macros::struct_to_gts_schema;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /* ============================================================
@@ -26,7 +24,7 @@ Mixed validation tests - invalid ID fields but valid GTS Type fields
     description = "Base topic type with invalid ID field but valid GTS Type field",
     properties = "id,r#type,name,description"
 )]
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug)]
 pub struct TopicV1MixedValidationV1<P> {
     pub id: String,          // Invalid ID field type (String instead of GtsInstanceId)
     pub r#type: GtsSchemaId, // Valid GTS Type field - this should allow the struct to pass
@@ -42,7 +40,7 @@ pub struct TopicV1MixedValidationV1<P> {
     description = "Base event type with invalid ID field but valid GTS Type field",
     properties = "id,gts_type,name,description"
 )]
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug)]
 pub struct BaseEventV1MixedV1<P> {
     pub id: Uuid,              // Invalid ID field type (Uuid instead of GtsInstanceId)
     pub gts_type: GtsSchemaId, // Valid GTS Type field - this should allow the struct to pass
@@ -58,7 +56,7 @@ pub struct BaseEventV1MixedV1<P> {
     description = "Base schema type with invalid ID fields but valid GTS Type field",
     properties = "gts_id,schema,name,description"
 )]
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug)]
 pub struct BaseSchemaV1MixedV1<P> {
     pub gts_id: String,      // Invalid ID field type (String instead of GtsInstanceId)
     pub schema: GtsSchemaId, // Valid GTS Type field - this should allow the struct to pass

@@ -24,12 +24,12 @@ serde = { version = "1.0", features = ["derive"] }
 
 ```rust
 use gts_macros::struct_to_gts_schema;
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use gts::gts::{GtsInstanceId, GtsSchemaId};
 
 // Base event type (root of the hierarchy)
-#[derive(Debug, Serialize, Deserialize)]
+// Note: #[derive(Serialize, Deserialize, JsonSchema)] is added automatically!
+#[derive(Debug)]
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
@@ -45,7 +45,7 @@ pub struct BaseEventV1<P> {
 }
 
 // Audit event that inherits from BaseEventV1
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = BaseEventV1,
@@ -65,7 +65,7 @@ fn example() {
     let audit_schema = AuditEventV1::GTS_JSON_SCHEMA_WITH_REFS;
 
     // Generate instance IDs
-    let event_id = AuditEventV1::make_gts_instance_id("evt-12345.v1");
+    let event_id = AuditEventV1::gts_make_instance_id("evt-12345.v1");
     assert_eq!(event_id.as_ref(), "gts.x.core.events.type.v1~x.core.audit.event.v1~evt-12345.v1");
 }
 ```
@@ -75,6 +75,27 @@ fn example() {
 ## Purpose 1: Compile-Time Validation
 
 The macro validates your annotations at compile time, catching errors early.
+
+### Automatic Derives
+
+The macro automatically adds these derives to your struct:
+- `serde::Serialize`
+- `serde::Deserialize`
+- `schemars::JsonSchema`
+
+**Do NOT add these derives manually** - they will conflict. You can add other derives like `Debug`, `Clone`, etc.
+
+```rust
+// ✅ Correct - only add Debug, Clone, etc.
+#[derive(Debug, Clone)]
+#[struct_to_gts_schema(...)]
+pub struct MyStructV1 { ... }
+
+// ❌ Wrong - will cause duplicate implementation errors
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[struct_to_gts_schema(...)]
+pub struct MyStructV1 { ... }
+```
 
 ### What Gets Validated
 
@@ -374,6 +395,8 @@ use gts_macros::struct_to_gts_schema;
 
 ### Type Mapping
 
+The CLI automatically maps Rust types to JSON Schema types:
+
 | Rust Type | JSON Schema Type | Format | Required |
 |-----------|------------------|--------|----------|
 | `String`, `&str` | `string` | - | Yes |
@@ -386,8 +409,12 @@ use gts_macros::struct_to_gts_schema;
 | `DateTime`, `NaiveDateTime` | `string` | `date-time` | Yes |
 | `NaiveDate` | `string` | `date` | Yes |
 | `HashMap<K,V>`, `BTreeMap<K,V>` | `object` | - | Yes |
+| `GtsInstanceId` | `string` | `gts-instance-id` | Yes |
+| `GtsSchemaId` | `string` | `gts-schema-id` | Yes |
 
-**Note**: `Option<T>` fields are not marked as `required` in the generated schema.
+**Notes**:
+- `Option<T>` fields are not marked as `required` in the generated schema
+- Generic type parameters (e.g., `P` in `BaseEventV1<P>`) are mapped to `{"type": "object"}` placeholders
 
 ---
 
@@ -395,61 +422,256 @@ use gts_macros::struct_to_gts_schema;
 
 The macro generates associated constants, methods, and implements the `GtsSchema` trait for runtime use.
 
-### `GTS_JSON_SCHEMA_WITH_REFS`
+### Getting Schema IDs
 
-A compile-time constant containing the JSON Schema with `$id` set to `schema_id`. When inheritance is used (multiple segments in `schema_id`), this version uses `allOf` with `$ref` to reference the parent schema.
-
-```rust
-// Access base event schema
-let base_schema: &'static str = BaseEventV1::<()>::GTS_JSON_SCHEMA_WITH_REFS;
-
-// Access inherited audit event schema (contains $ref to parent)
-let audit_schema: &'static str = AuditEventV1::<()>::GTS_JSON_SCHEMA_WITH_REFS;
-
-// Parse and inspect
-let parsed: serde_json::Value = serde_json::from_str(audit_schema).unwrap();
-assert_eq!(parsed["$id"], "gts://gts.x.core.events.type.v1~x.core.audit.event.v1~");
-```
-
-### `GTS_JSON_SCHEMA_INLINE`
-
-A compile-time constant containing the JSON Schema with the parent schema **inlined** (no `$ref`). Currently identical to `GTS_JSON_SCHEMA_WITH_REFS`, but will differ in future versions when true inlining is implemented.
+**Get the struct's GTS schema ID:**
 
 ```rust
-// Access the inlined schema at runtime
-let schema: &'static str = AuditEventV1::<()>::GTS_JSON_SCHEMA_INLINE;
+// Using gts_schema_id() - returns &'static GtsSchemaId
+let schema_id: &gts::gts::GtsSchemaId = AuditEventV1::gts_schema_id();
+println!("Schema ID: {}", schema_id.as_ref());
+// Output: gts.x.core.events.type.v1~x.core.audit.event.v1~
 
-// Parse it if needed
-let parsed: serde_json::Value = serde_json::from_str(schema).unwrap();
-assert_eq!(parsed["$id"], "gts://gts.x.core.events.type.v1~x.core.audit.event.v1~");
+// For generic structs, use () as type parameter
+let base_id = BaseEventV1::<()>::gts_schema_id();
+println!("Base schema ID: {}", base_id.as_ref());
+// Output: gts.x.core.events.type.v1~
 ```
 
-### `make_gts_instance_id(segment) -> GtsInstanceId`
+**Get the parent (base) schema ID:**
 
-Generate instance IDs by appending a segment to the schema ID. Returns a `gts::GtsInstanceId`
-which can be used as a map key, compared, hashed, and serialized.
+```rust
+// Using gts_base_schema_id() - returns Option<&'static GtsSchemaId>
+let parent_id: Option<&gts::gts::GtsSchemaId> = AuditEventV1::gts_base_schema_id();
+match parent_id {
+    Some(id) => println!("Parent schema ID: {}", id.as_ref()),
+    // Output: gts.x.core.events.type.v1~
+    None => println!("This is a base struct (no parent)"),
+}
+
+// Base structs return None
+assert!(BaseEventV1::<()>::gts_base_schema_id().is_none());
+
+// Child structs return Some(&GtsSchemaId)
+assert_eq!(
+    AuditEventV1::gts_base_schema_id().map(|id| id.as_ref()),
+    Some("gts.x.core.events.type.v1~")
+);
+```
+
+### Getting Schemas
+
+**Get the struct's JSON schema with references:**
+
+```rust
+use gts::GtsSchema;
+
+// Using gts_schema_with_refs() - returns serde_json::Value
+let schema_value = AuditEventV1::gts_schema_with_refs();
+println!("Schema $id: {}", schema_value["$id"]);
+// Output: gts://gts.x.core.events.type.v1~x.core.audit.event.v1~
+
+// Using gts_schema_with_refs_as_string() - returns compact JSON String
+let schema_json = AuditEventV1::gts_schema_with_refs_as_string();
+println!("Schema JSON: {}", schema_json);
+
+// Using gts_schema_with_refs_as_string_pretty() - returns pretty-printed JSON String
+let schema_pretty = AuditEventV1::gts_schema_with_refs_as_string_pretty();
+println!("Pretty schema:\n{}", schema_pretty);
+
+// For generic structs, the type parameter doesn't affect the schema
+// Both generate identical schemas:
+let schema1 = BaseEventV1::<()>::gts_schema_with_refs();
+let schema2 = BaseEventV1::<AuditEventV1>::gts_schema_with_refs();
+assert_eq!(schema1, schema2);  // OK. Identical schemas
+```
+
+**Schema structure:**
+
+- **Base structs** (single-segment schema_id): Direct properties, no `allOf`
+  ```json
+  {
+    "$id": "gts://gts.x.core.events.type.v1~",
+    "type": "object",
+    "additionalProperties": false,
+    "properties": { /* ... */ }
+  }
+  ```
+
+- **Child structs** (multi-segment schema_id): Uses `allOf` with `$ref` to parent
+  ```json
+  {
+    "$id": "gts://gts.x.core.events.type.v1~x.core.audit.event.v1~",
+    "type": "object",
+    "allOf": [
+      { "$ref": "gts://gts.x.core.events.type.v1~" },
+      { "properties": { /* child-specific properties */ } }
+    ]
+  }
+  ```
+
+### Serialization & Deserialization
+
+**Important**: Nested payload structs (like `AuditPayloadV1`, `PlaceOrderDataV1`) should never be serialized/deserialized alone. Always serialize/deserialize the complete event hierarchy starting from the base event.
+
+**Serialize complete event instances to JSON:**
+
+```rust
+use serde::{Serialize, Deserialize};
+use uuid::Uuid;
+
+// Create a complete event with nested payloads
+// BaseEventV1 -> AuditPayloadV1 -> PlaceOrderDataV1
+let event = BaseEventV1 {
+    event_type: PlaceOrderDataV1::gts_schema_id().clone(),
+    id: Uuid::new_v4(),
+    tenant_id: Uuid::new_v4(),
+    sequence_id: 42,
+    payload: AuditPayloadV1 {
+        user_agent: "Mozilla/5.0".to_string(),
+        user_id: Uuid::new_v4(),
+        ip_address: "192.168.1.1".to_string(),
+        data: PlaceOrderDataV1 {
+            order_id: Uuid::new_v4(),
+            product_id: Uuid::new_v4(),
+        },
+    },
+};
+
+// Using GTS instance methods (recommended):
+// gts_instance_json() - returns serde_json::Value
+let json_value = event.gts_instance_json();
+println!("Value: {:?}", json_value);
+
+// gts_instance_json_as_string() - returns compact JSON String
+let json_string = event.gts_instance_json_as_string();
+println!("JSON: {}", json_string);
+
+// gts_instance_json_as_string_pretty() - returns pretty-printed JSON String
+let json_pretty = event.gts_instance_json_as_string_pretty();
+println!("Pretty JSON:\n{}", json_pretty);
+
+// You can also use serde_json directly:
+let json_string = serde_json::to_string(&event).unwrap();
+let json_pretty = serde_json::to_string_pretty(&event).unwrap();
+let json_value = serde_json::to_value(&event).unwrap();
+```
+
+**Deserialize JSON to complete event instances:**
+
+```rust
+// Deserialize from JSON string
+let json_str = r#"{
+    "type": "gts.x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~",
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "tenant_id": "660e8400-e29b-41d4-a716-446655440000",
+    "sequence_id": 42,
+    "payload": {
+        "user_agent": "Mozilla/5.0",
+        "user_id": "770e8400-e29b-41d4-a716-446655440000",
+        "ip_address": "192.168.1.1",
+        "data": {
+            "order_id": "880e8400-e29b-41d4-a716-446655440000",
+            "product_id": "990e8400-e29b-41d4-a716-446655440000"
+        }
+    }
+}"#;
+
+let event: BaseEventV1<AuditPayloadV1<PlaceOrderDataV1>> =
+    serde_json::from_str(json_str).unwrap();
+println!("Deserialized: {:?}", event);
+
+// Deserialize from serde_json::Value
+let json_value = serde_json::json!({
+    "type": "gts.x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~",
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "tenant_id": "660e8400-e29b-41d4-a716-446655440000",
+    "sequence_id": 42,
+    "payload": {
+        "user_agent": "Mozilla/5.0",
+        "user_id": "770e8400-e29b-41d4-a716-446655440000",
+        "ip_address": "192.168.1.1",
+        "data": {
+            "order_id": "880e8400-e29b-41d4-a716-446655440000",
+            "product_id": "990e8400-e29b-41d4-a716-446655440000"
+        }
+    }
+});
+
+let event: BaseEventV1<AuditPayloadV1<PlaceOrderDataV1>> =
+    serde_json::from_value(json_value).unwrap();
+println!("Deserialized: {:?}", event);
+
+// Deserialize from reader (file, network stream, etc.)
+use std::fs::File;
+let file = File::open("event.json").unwrap();
+let event: BaseEventV1<AuditPayloadV1<PlaceOrderDataV1>> =
+    serde_json::from_reader(file).unwrap();
+```
+
+**Working with different payload types:**
+
+```rust
+// You can use different payload combinations with the same base event
+type OrderEvent = BaseEventV1<AuditPayloadV1<PlaceOrderDataV1>>;
+type SimpleEvent = BaseEventV1<()>;
+
+// Create and serialize different event types
+let order_event: OrderEvent = BaseEventV1 {
+    event_type: PlaceOrderDataV1::gts_schema_id().clone(),
+    id: Uuid::new_v4(),
+    tenant_id: Uuid::new_v4(),
+    sequence_id: 1,
+    payload: AuditPayloadV1 {
+        user_agent: "Mozilla/5.0".to_string(),
+        user_id: Uuid::new_v4(),
+        ip_address: "192.168.1.1".to_string(),
+        data: PlaceOrderDataV1 {
+            order_id: Uuid::new_v4(),
+            product_id: Uuid::new_v4(),
+        },
+    },
+};
+
+let json = serde_json::to_string_pretty(&order_event).unwrap();
+println!("Order event JSON:\n{}", json);
+
+// Deserialize back to the correct type
+let deserialized: OrderEvent = serde_json::from_str(&json).unwrap();
+```
+
+### Generating Instance IDs
+
+Generate instance IDs by appending a segment to the schema ID:
 
 ```rust
 // Generate event instance ID
-let event_id = AuditEventV1::<()>::make_gts_instance_id("evt-12345.v1");
-assert_eq!(event_id.as_ref(), "gts.x.core.events.type.v1~x.core.audit.event.v1~evt-12345.v1");
+let topic_id = AuditEventTopicV1::gts_make_instance_id("x.core.audit.topic.v1");
+assert_eq!(
+    topic_id.as_ref(),
+    "gts.x.core.events.topic.v1~x.core.audit.topic.v1"
+);
 
 // Generate base event instance ID
-let base_id = BaseEventV1::<()>::make_gts_instance_id("evt-67890.v1");
-assert_eq!(base_id.as_ref(), "gts.x.core.events.type.v1~evt-67890.v1");
+let base_id = BaseEventTopicV1::<()>::gts_make_instance_id("a.b.c.topic.v1");
+assert_eq!(base_id.as_ref(), "gts.x.core.events.topic.v1~a.b.c.topic.v1");
 
 // Convert to String when needed
-let id_string: String = event_id.into();
+let id_string: String = topic_id.clone().into();
 
-// Use as map key
+// Use as map key (implements Hash, Eq, Clone)
 use std::collections::HashMap;
 let mut events: HashMap<gts::GtsInstanceId, String> = HashMap::new();
 events.insert(event_id, "processed".to_owned());
+
+// Serialize/deserialize instance IDs
+let id_json = serde_json::to_string(&event_id).unwrap();
+let id_back: gts::GtsInstanceId = serde_json::from_str(&id_json).unwrap();
 ```
 
 ### Schema Composition & Inheritance (`GtsSchema` Trait)
 
-The macro automatically implements the `GtsSchema` trait, enabling runtime schema composition for nested generic types. This allows you to compose schemas at runtime for complex type hierarchies like `BaseEventV1<AuditPayloadV1<PlaceOrderDataV1>>`.
+The macro automatically implements the `GtsSchema` trait, enabling runtime schema composition for nested generic types:
 
 ```rust
 use gts::GtsSchema;
@@ -468,16 +690,19 @@ let schema = BaseEventV1::<AuditPayloadV1<PlaceOrderDataV1>>::gts_schema_with_re
 - ✅ No arbitrary extra properties can be added to generic fields
 - ✅ Type safety is enforced at the JSON Schema level
 
-### Other Generated Constants
+### Complete Runtime API Reference
 
-| Constant | Description |
-|----------|-------------|
-| `GTS_SCHEMA_ID` | The schema ID string |
-| `GTS_SCHEMA_FILE_PATH` | The full file path for CLI generation (`{dir_path}/{schema_id}.schema.json`) |
-| `GTS_SCHEMA_DESCRIPTION` | The description string |
-| `GTS_SCHEMA_PROPERTIES` | Comma-separated property list |
-| `GTS_JSON_SCHEMA_WITH_REFS` | JSON Schema with `allOf` + `$ref` for inheritance |
-| `GTS_JSON_SCHEMA_INLINE` | JSON Schema with parent inlined (currently identical to WITH_REFS) |
+| API | Type | Description |
+|-----|------|-------------|
+| `gts_schema_id()` | `&'static GtsSchemaId` | Get the struct's GTS schema ID |
+| `gts_base_schema_id()` | `Option<&'static GtsSchemaId>` | Get parent schema ID (None for base structs) |
+| `gts_schema_with_refs()` | `serde_json::Value` | Get schema as JSON value with `$ref` |
+| `gts_schema_with_refs_as_string()` | `String` | Get schema as compact JSON string |
+| `gts_schema_with_refs_as_string_pretty()` | `String` | Get schema as pretty-printed JSON string |
+| `gts_instance_json(&self)` | `serde_json::Value` | Serialize instance to JSON value |
+| `gts_instance_json_as_string(&self)` | `String` | Serialize instance to compact JSON string |
+| `gts_instance_json_as_string_pretty(&self)` | `String` | Serialize instance to pretty-printed JSON string |
+| `gts_make_instance_id(segment)` | `GtsInstanceId` | Generate instance ID by appending segment |
 
 ---
 
@@ -595,7 +820,7 @@ fn main() {
     println!("Order placed schema: {}", OrderPlacedV1::GTS_JSON_SCHEMA_WITH_REFS);
 
     // Generate instance IDs
-    let event_id = OrderPlacedV1::make_gts_instance_id("evt-12345.v1");
+    let event_id = OrderPlacedV1::gts_make_instance_id("evt-12345.v1");
     println!("Event ID: {}", event_id);
     // Output: gts.x.core.events.type.v1~x.core.audit.event.v1~x.shop.orders.placed.v1~evt-12345.v1
 

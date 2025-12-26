@@ -2,8 +2,6 @@
 //! A child type must have at least 2 segments
 
 use gts_macros::struct_to_gts_schema;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 
 // Define a valid base type first (must be generic)
 #[struct_to_gts_schema(
@@ -13,7 +11,7 @@ use serde::{Deserialize, Serialize};
     description = "Base event type",
     properties = "id,payload"
 )]
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug)]
 pub struct BaseEventV1<P> {
     pub id: String,
     pub payload: P,
@@ -27,7 +25,7 @@ pub struct BaseEventV1<P> {
     description = "This should fail",
     properties = "user_id"
 )]
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug)]
 pub struct AuditEventV1 {
     pub user_id: String,
 }

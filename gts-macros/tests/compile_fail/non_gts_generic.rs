@@ -4,8 +4,6 @@
 //! can be used as generic parameters in GTS structs.
 
 use gts_macros::struct_to_gts_schema;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 
 // Define a GTS base struct with generic parameter
 #[struct_to_gts_schema(
@@ -15,14 +13,14 @@ use serde::{Deserialize, Serialize};
     description = "Base event type",
     properties = "id,payload"
 )]
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug)]
 pub struct BaseEventV1<P> {
     pub id: String,
     pub payload: P,
 }
 
 // This is a regular struct that does NOT have struct_to_gts_schema applied
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug)]
 pub struct MyStruct {
     pub some_id: String,
 }

@@ -10,7 +10,6 @@
 use gts::gts::GtsSchemaId;
 use gts::{GtsInstanceId, GtsSchema, GtsStore};
 use gts_macros::struct_to_gts_schema;
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /* ============================================================
@@ -24,7 +23,7 @@ Chained inheritance
     description = "Base event type definition",
     properties = "event_type,id,tenant_id,sequence_id,payload"
 )]
-#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug)]
 pub struct BaseEventV1<P> {
     #[serde(rename = "type")]
     pub event_type: GtsSchemaId,
@@ -41,7 +40,7 @@ pub struct BaseEventV1<P> {
     description = "Audit event with user context",
     properties = "user_agent,user_id,ip_address,data"
 )]
-#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug)]
 pub struct AuditPayloadV1<D> {
     pub user_agent: String,
     pub user_id: Uuid,
@@ -56,7 +55,7 @@ pub struct AuditPayloadV1<D> {
     description = "Order placement audit event",
     properties = "order_id,product_id"
 )]
-#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug)]
 pub struct PlaceOrderDataV1 {
     pub order_id: Uuid,
     pub product_id: Uuid,
@@ -73,7 +72,7 @@ Base struct ID field validation tests
     description = "Base topic type definition with id field",
     properties = "id,name,description"
 )]
-#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug)]
 pub struct TopicV1WithIdV1<P> {
     pub id: GtsInstanceId,
     pub name: String,
@@ -88,7 +87,7 @@ pub struct TopicV1WithIdV1<P> {
     description = "Base topic type definition with gts_id field",
     properties = "gts_id,name,description"
 )]
-#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug)]
 pub struct TopicV1WithGtsIdV1<P> {
     pub gts_id: GtsInstanceId,
     pub name: String,
@@ -103,7 +102,7 @@ pub struct TopicV1WithGtsIdV1<P> {
     description = "Base topic type definition with gtsId field",
     properties = "gts_id,name,description"
 )]
-#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug)]
 pub struct TopicV1WithGtsIdCamelV1<P> {
     pub gts_id: GtsInstanceId,
     pub name: String,
@@ -118,7 +117,7 @@ pub struct TopicV1WithGtsIdCamelV1<P> {
     description = "Base topic type definition with gts_type field",
     properties = "gts_type,name,description"
 )]
-#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug)]
 pub struct TopicV1WithGtsTypeV1<P> {
     pub gts_type: GtsSchemaId,
     pub name: String,
@@ -133,7 +132,7 @@ pub struct TopicV1WithGtsTypeV1<P> {
     description = "Base topic type definition with gtsType field",
     properties = "gts_type,name,description"
 )]
-#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug)]
 pub struct TopicV1WithGtsTypeCamelV1<P> {
     pub gts_type: GtsSchemaId,
     pub name: String,
@@ -152,7 +151,7 @@ Chained inheritance w/o new attributes
     description = "Base topic type definition",
     properties = "name,description"
 )]
-#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug)]
 pub struct TopicV1<P> {
     pub id: GtsInstanceId,
     pub name: String,
@@ -167,7 +166,7 @@ pub struct TopicV1<P> {
     description = "Order topic configuration",
     properties = ""
 )]
-#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug)]
 // there are no new fields in OrderTopicConfigV1, we only need it to get dedicated GTS id
 pub struct OrderTopicConfigV1;
 
@@ -175,7 +174,7 @@ pub struct OrderTopicConfigV1;
 The macro automatically generates:
 - GTS_SCHEMA_JSON constants with proper allOf inheritance
 - GTS_SCHEMA_ID constants
-- make_gts_instance_id() methods
+- gts_make_instance_id() methods
 
 No more manual schema implementation needed!
 ============================================================ */
@@ -335,7 +334,7 @@ mod tests {
 
         // Parse the BaseEventV1 schema (single-segment, can use WITH_REFS)
         let base_schema: serde_json::Value =
-            serde_json::from_str(&BaseEventV1::<()>::gts_json_schema_with_refs()).unwrap();
+            serde_json::from_str(&BaseEventV1::<()>::gts_schema_with_refs_as_string()).unwrap();
 
         // The payload field should be a nested object, and now it's correctly treated as "object"
         let base_props = base_schema.get("properties").unwrap().as_object().unwrap();
@@ -403,22 +402,22 @@ mod tests {
     // =============================================================================
 
     #[test]
-    fn test_base_schema_id_constants() {
-        // Base type should have BASE_SCHEMA_ID = None
-        assert_eq!(BaseEventV1::<()>::BASE_SCHEMA_ID, None);
-        assert_eq!(TopicV1::<()>::BASE_SCHEMA_ID, None);
+    fn test_base_schema_id_methods() {
+        // Base type should have gts_base_schema_id() = None
+        assert!(BaseEventV1::<()>::gts_base_schema_id().is_none());
+        assert!(TopicV1::<()>::gts_base_schema_id().is_none());
 
-        // Child types should have BASE_SCHEMA_ID = Some(parent's schema ID)
+        // Child types should have gts_base_schema_id() = Some(parent's schema ID)
         assert_eq!(
-            AuditPayloadV1::<()>::BASE_SCHEMA_ID,
+            AuditPayloadV1::<()>::gts_base_schema_id().map(AsRef::as_ref),
             Some("gts.x.core.events.type.v1~")
         );
         assert_eq!(
-            PlaceOrderDataV1::BASE_SCHEMA_ID,
+            PlaceOrderDataV1::gts_base_schema_id().map(AsRef::as_ref),
             Some("gts.x.core.events.type.v1~x.core.audit.event.v1~")
         );
         assert_eq!(
-            OrderTopicConfigV1::BASE_SCHEMA_ID,
+            OrderTopicConfigV1::gts_base_schema_id().map(AsRef::as_ref),
             Some("gts.x.core.events.topic.v1~")
         );
     }
@@ -500,7 +499,7 @@ mod tests {
     fn test_unit_struct_instantiation_and_serialization() {
         // Unit struct should be usable as a type parameter for parent
         let topic = TopicV1::<OrderTopicConfigV1> {
-            id: OrderTopicConfigV1::make_gts_instance_id("test.test._.topic.v1"),
+            id: OrderTopicConfigV1::gts_make_instance_id("test.test._.topic.v1"),
             name: "orders".to_string(),
             description: Some("Order events".to_string()),
             config: OrderTopicConfigV1,
@@ -553,7 +552,7 @@ mod tests {
 
         // Create a TopicV1 with OrderTopicConfigV1 (empty struct) as config
         let topic = TopicV1::<OrderTopicConfigV1> {
-            id: OrderTopicConfigV1::make_gts_instance_id("vendor.app._.topic.v1"),
+            id: OrderTopicConfigV1::gts_make_instance_id("vendor.app._.topic.v1"),
             name: "orders".to_string(),
             description: Some("Order events".to_string()),
             config: OrderTopicConfigV1,
@@ -592,7 +591,7 @@ mod tests {
         // Test GTS instance ID serialization/deserialization for macro-generated structs with empty nested types
 
         // Create instance ID using the macro-generated method
-        let instance_id = TopicV1::<OrderTopicConfigV1>::make_gts_instance_id("test-topic");
+        let instance_id = TopicV1::<OrderTopicConfigV1>::gts_make_instance_id("test-topic");
 
         // Serialize the instance ID
         let serialized = serde_json::to_string(&instance_id).expect("Serialization should succeed");
@@ -607,7 +606,7 @@ mod tests {
         let id_str = instance_id.as_ref();
         assert!(id_str.contains("gts.x.core.events.topic.v1~"));
         assert!(id_str.ends_with("test-topic"));
-        // Note: make_gts_instance_id uses the schema ID of the type it's called on (TopicV1),
+        // Note: gts_make_instance_id uses the schema ID of the type it's called on (TopicV1),
         // not the generic parameter (OrderTopicConfigV1)
     }
 
@@ -643,7 +642,7 @@ mod tests {
 
         // Create a proper nested TopicV1<OrderTopicConfigV1> instance
         let topic_instance = TopicV1::<OrderTopicConfigV1> {
-            id: OrderTopicConfigV1::make_gts_instance_id("vendor.app._.topic.v1"),
+            id: OrderTopicConfigV1::gts_make_instance_id("vendor.app._.topic.v1"),
             name: "orders".to_string(),
             description: Some("Order events".to_string()),
             config: OrderTopicConfigV1,
@@ -765,7 +764,7 @@ mod tests {
     fn test_topic_instances(ops: &mut gts::GtsOps) {
         // Create and validate TopicV1 instance
         let topic_instance = TopicV1::<()> {
-            id: TopicV1::<()>::make_gts_instance_id("vendor.app._.topic.v1"),
+            id: TopicV1::<()>::gts_make_instance_id("vendor.app._.topic.v1"),
             name: "orders".to_string(),
             description: Some("Order lifecycle events".to_string()),
             config: (),
@@ -773,7 +772,7 @@ mod tests {
 
         // Create and validate TopicV1<OrderTopicConfigV1> instance
         let nested_topic_instance = TopicV1::<OrderTopicConfigV1> {
-            id: TopicV1::<OrderTopicConfigV1>::make_gts_instance_id("vendor.app.nested.topic.v1"),
+            id: TopicV1::<OrderTopicConfigV1>::gts_make_instance_id("vendor.app.nested.topic.v1"),
             name: "nested-orders".to_string(),
             description: Some("Nested order events".to_string()),
             config: OrderTopicConfigV1 {},
@@ -898,7 +897,7 @@ mod tests {
     fn test_base_struct_with_id_field_compiles() {
         // Test that base structs with 'id' field compile and work correctly
         let topic = TopicV1WithIdV1::<OrderTopicConfigV1> {
-            id: OrderTopicConfigV1::make_gts_instance_id("vendor.app._.topic.v1"),
+            id: OrderTopicConfigV1::gts_make_instance_id("vendor.app._.topic.v1"),
             name: "orders".to_string(),
             description: Some("Order events".to_string()),
             config: OrderTopicConfigV1,
@@ -909,7 +908,7 @@ mod tests {
             TopicV1WithIdV1::<()>::gts_schema_id().clone().into_string(),
             "gts.x.core.events.topic.v1~"
         );
-        assert_eq!(TopicV1WithIdV1::<()>::BASE_SCHEMA_ID, None);
+        assert!(TopicV1WithIdV1::<()>::gts_base_schema_id().is_none());
 
         // Test serialization
         let serialized = serde_json::to_string(&topic).expect("Serialization should succeed");
@@ -920,7 +919,7 @@ mod tests {
 
         // Test instance ID generation
         let instance_id =
-            TopicV1WithIdV1::<OrderTopicConfigV1>::make_gts_instance_id("test-instance");
+            TopicV1WithIdV1::<OrderTopicConfigV1>::gts_make_instance_id("test-instance");
         assert!(instance_id.as_ref().contains("gts.x.core.events.topic.v1~"));
         assert!(instance_id.as_ref().ends_with("test-instance"));
     }
@@ -929,7 +928,7 @@ mod tests {
     fn test_base_struct_with_gts_id_field_compiles() {
         // Test that base structs with 'gts_id' field compile and work correctly
         let topic = TopicV1WithGtsIdV1::<OrderTopicConfigV1> {
-            gts_id: OrderTopicConfigV1::make_gts_instance_id("vendor.app._.topic.v1"),
+            gts_id: OrderTopicConfigV1::gts_make_instance_id("vendor.app._.topic.v1"),
             name: "orders".to_string(),
             description: Some("Order events".to_string()),
             config: OrderTopicConfigV1,
@@ -942,7 +941,7 @@ mod tests {
                 .into_string(),
             "gts.x.core.events.topic.v1~"
         );
-        assert_eq!(TopicV1WithGtsIdV1::<()>::BASE_SCHEMA_ID, None);
+        assert!(TopicV1WithGtsIdV1::<()>::gts_base_schema_id().is_none());
 
         // Test serialization
         let serialized = serde_json::to_string(&topic).expect("Serialization should succeed");
@@ -956,7 +955,7 @@ mod tests {
     fn test_base_struct_with_gts_id_camel_field_compiles() {
         // Test that base structs with 'gts_id' field (camelCase equivalent) compile and work correctly
         let topic = TopicV1WithGtsIdCamelV1::<OrderTopicConfigV1> {
-            gts_id: OrderTopicConfigV1::make_gts_instance_id("vendor.app._.topic.v1"),
+            gts_id: OrderTopicConfigV1::gts_make_instance_id("vendor.app._.topic.v1"),
             name: "orders".to_string(),
             description: Some("Order events".to_string()),
             config: OrderTopicConfigV1,
@@ -969,7 +968,7 @@ mod tests {
                 .into_string(),
             "gts.x.core.events.topic.v1~"
         );
-        assert_eq!(TopicV1WithGtsIdCamelV1::<()>::BASE_SCHEMA_ID, None);
+        assert!(TopicV1WithGtsIdCamelV1::<()>::gts_base_schema_id().is_none());
 
         // Test serialization
         let serialized = serde_json::to_string(&topic).expect("Serialization should succeed");
@@ -996,7 +995,7 @@ mod tests {
                 .into_string(),
             "gts.x.core.events.topic.v1~"
         );
-        assert_eq!(TopicV1WithGtsTypeV1::<()>::BASE_SCHEMA_ID, None);
+        assert!(TopicV1WithGtsTypeV1::<()>::gts_base_schema_id().is_none());
 
         // Test serialization
         let serialized = serde_json::to_string(&topic).expect("Serialization should succeed");
@@ -1021,7 +1020,7 @@ mod tests {
                 .into_string(),
             "gts.x.core.events.topic.v1~"
         );
-        assert_eq!(TopicV1WithGtsTypeCamelV1::<()>::BASE_SCHEMA_ID, None);
+        assert!(TopicV1WithGtsTypeCamelV1::<()>::gts_base_schema_id().is_none());
 
         // Test serialization
         let serialized = serde_json::to_string(&topic).expect("Serialization should succeed");
@@ -1071,5 +1070,92 @@ mod tests {
             schema_unit["properties"]["config"]["type"], "object",
             "Generic field should be a simple object placeholder"
         );
+    }
+
+    #[test]
+    fn test_instance_json_methods() {
+        // Test gts_instance_json(), gts_instance_json_as_string(), gts_instance_json_as_string_pretty()
+
+        let event = BaseEventV1 {
+            event_type: PlaceOrderDataV1::gts_schema_id().clone(),
+            id: Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap(),
+            tenant_id: Uuid::parse_str("660e8400-e29b-41d4-a716-446655440000").unwrap(),
+            sequence_id: 42,
+            payload: AuditPayloadV1 {
+                user_agent: "Mozilla/5.0".to_string(),
+                user_id: Uuid::parse_str("770e8400-e29b-41d4-a716-446655440000").unwrap(),
+                ip_address: "192.168.1.1".to_string(),
+                data: PlaceOrderDataV1 {
+                    order_id: Uuid::parse_str("880e8400-e29b-41d4-a716-446655440000").unwrap(),
+                    product_id: Uuid::parse_str("990e8400-e29b-41d4-a716-446655440000").unwrap(),
+                },
+            },
+        };
+
+        // Test gts_instance_json() - returns serde_json::Value
+        let json_value = event.gts_instance_json();
+        assert_eq!(json_value["sequence_id"], 42);
+        assert_eq!(json_value["payload"]["ip_address"], "192.168.1.1");
+        assert_eq!(
+            json_value["payload"]["data"]["order_id"],
+            "880e8400-e29b-41d4-a716-446655440000"
+        );
+
+        // Test gts_instance_json_as_string() - returns compact JSON string
+        let json_string = event.gts_instance_json_as_string();
+        assert!(json_string.contains("\"sequence_id\":42"));
+        assert!(json_string.contains("192.168.1.1"));
+        assert!(
+            !json_string.contains('\n'),
+            "Compact JSON should not contain newlines"
+        );
+
+        // Test gts_instance_json_as_string_pretty() - returns pretty-printed JSON string
+        let json_pretty = event.gts_instance_json_as_string_pretty();
+        assert!(json_pretty.contains("\"sequence_id\": 42"));
+        assert!(json_pretty.contains("192.168.1.1"));
+        assert!(
+            json_pretty.contains('\n'),
+            "Pretty JSON should contain newlines"
+        );
+    }
+
+    #[test]
+    fn test_schema_string_methods() {
+        // Test gts_schema_with_refs_as_string() and gts_schema_with_refs_as_string_pretty()
+
+        // Test compact string
+        let schema_string = TopicV1::<()>::gts_schema_with_refs_as_string();
+        assert!(schema_string.contains("\"$id\":\"gts://gts.x.core.events.topic.v1~\""));
+        assert!(
+            !schema_string.contains('\n'),
+            "Compact JSON should not contain newlines"
+        );
+
+        // Test pretty string
+        let schema_pretty = TopicV1::<()>::gts_schema_with_refs_as_string_pretty();
+        assert!(schema_pretty.contains("\"$id\": \"gts://gts.x.core.events.topic.v1~\""));
+        assert!(
+            schema_pretty.contains('\n'),
+            "Pretty JSON should contain newlines"
+        );
+    }
+
+    #[test]
+    fn test_gts_base_schema_id_returns_gts_schema_id_type() {
+        // Verify gts_base_schema_id() returns the correct type
+
+        // Base struct should return None
+        let base_id: Option<&gts::gts::GtsSchemaId> = TopicV1::<()>::gts_base_schema_id();
+        assert!(base_id.is_none());
+
+        // Child struct should return Some with correct value
+        let child_id: Option<&gts::gts::GtsSchemaId> = OrderTopicConfigV1::gts_base_schema_id();
+        assert!(child_id.is_some());
+        assert_eq!(child_id.unwrap().as_ref(), "gts.x.core.events.topic.v1~");
+
+        // Verify it's usable as GtsSchemaId
+        let parent_id = child_id.unwrap();
+        assert!(parent_id.as_ref().ends_with('~'));
     }
 }

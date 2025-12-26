@@ -546,7 +546,7 @@ impl Parse for GtsSchemaArgs {
 ///
 /// - `GTS_JSON_SCHEMA_WITH_REFS: &'static str` - JSON Schema with `allOf` + `$ref` for inheritance (most memory-efficient)
 /// - `GTS_JSON_SCHEMA_INLINE: &'static str` - JSON Schema with parent inlined (currently identical to `WITH_REFS`; true inlining requires runtime resolution)
-/// - `make_gts_instance_id(segment: &str) -> gts::GtsInstanceId` - Generate an instance ID by appending
+/// - `gts_make_instance_id(segment: &str) -> gts::GtsInstanceId` - Generate an instance ID by appending
 ///   a segment to the schema ID. The segment must be a valid GTS segment (e.g., "a.b.c.v1")
 /// - `GtsSchema` trait implementation - Enables runtime schema composition for nested generic types
 ///   (e.g., `BaseEventV1<AuditPayloadV1<PlaceOrderDataV1>>`), with proper nesting and inheritance support.
@@ -591,7 +591,7 @@ impl Parse for GtsSchemaArgs {
 /// // Runtime usage:
 /// let schema_with_refs = User::GTS_JSON_SCHEMA_WITH_REFS;
 /// let schema_inline = User::GTS_JSON_SCHEMA_INLINE;
-/// let instance_id = User::make_gts_instance_id("vendor.marketplace.orders.order_created.v1");
+/// let instance_id = User::gts_make_instance_id("vendor.marketplace.orders.order_created.v1");
 /// assert_eq!(instance_id.as_ref(), "gts.x.core.events.topic.v1~vendor.marketplace.orders.order_created.v1");
 /// ```
 #[proc_macro_attribute]
@@ -700,6 +700,51 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         param.bounds.push(syn::parse_quote!(::gts::GtsSchema));
     }
 
+    // Automatically add required derives: Serialize, Deserialize, JsonSchema
+    // First check if they're already present to avoid duplicate implementations
+    let mut has_serialize = false;
+    let mut has_deserialize = false;
+    let mut has_json_schema = false;
+
+    for attr in &modified_input.attrs {
+        if attr.path().is_ident("derive") {
+            if let Ok(meta) = attr.meta.require_list() {
+                let tokens = meta.tokens.to_string();
+                if tokens.contains("Serialize") {
+                    has_serialize = true;
+                }
+                if tokens.contains("Deserialize") {
+                    has_deserialize = true;
+                }
+                if tokens.contains("JsonSchema") {
+                    has_json_schema = true;
+                }
+            }
+        }
+    }
+
+    // Build a list of derives to add (only those not already present)
+    let mut derives_to_add = Vec::new();
+    if !has_serialize {
+        derives_to_add.push("serde::Serialize");
+    }
+    if !has_deserialize {
+        derives_to_add.push("serde::Deserialize");
+    }
+    if !has_json_schema {
+        derives_to_add.push("schemars::JsonSchema");
+    }
+
+    // Add the missing derives if any
+    if !derives_to_add.is_empty() {
+        let derives_str = derives_to_add.join(", ");
+        let derives_tokens: proc_macro2::TokenStream =
+            derives_str.parse().expect("Failed to parse derive tokens");
+        modified_input
+            .attrs
+            .push(syn::parse_quote!(#[derive(#derives_tokens)]));
+    }
+
     // Validate base attribute consistency with schema_id segments
     let segment_count = count_schema_segments(&args.schema_id);
     let expected_parent_schema_id = extract_parent_schema_id(&args.schema_id);
@@ -782,21 +827,28 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         quote! { None }
     };
 
-    // Generate BASE_SCHEMA_ID constant and compile-time assertion for base struct matching
+    // Generate BASE_SCHEMA_ID constant (private) and compile-time assertion for base struct matching
     let base_schema_id_const = if let Some(parent_id) = &expected_parent_schema_id {
         quote! {
-            /// Parent schema ID (extracted from schema_id segments).
+            /// Parent schema ID (extracted from schema_id segments). Use `gts_base_schema_id()` instead.
             #[doc(hidden)]
             #[allow(dead_code)]
-            pub const BASE_SCHEMA_ID: Option<&'static str> = Some(#parent_id);
+            const BASE_SCHEMA_ID: Option<&'static str> = Some(#parent_id);
         }
     } else {
         quote! {
-            /// Parent schema ID (None for base types).
+            /// Parent schema ID (None for base types). Use `gts_base_schema_id()` instead.
             #[doc(hidden)]
             #[allow(dead_code)]
-            pub const BASE_SCHEMA_ID: Option<&'static str> = None;
+            const BASE_SCHEMA_ID: Option<&'static str> = None;
         }
+    };
+
+    // Generate the literal option value for use in static initializers (avoids Self::BASE_SCHEMA_ID)
+    let base_schema_id_option = if let Some(parent_id) = &expected_parent_schema_id {
+        quote! { Some(#parent_id) }
+    } else {
+        quote! { None::<&'static str> }
     };
 
     // Generate compile-time assertion when base = ParentStruct
@@ -846,6 +898,19 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
             quote! { #existing #generic_ident: ::gts::GtsSchema + ::schemars::JsonSchema, }
         } else {
             quote! { where #generic_ident: ::gts::GtsSchema + ::schemars::JsonSchema }
+        }
+    } else {
+        quote! { #where_clause }
+    };
+
+    // Build a custom where clause for instance serialization that adds Serialize + GtsSchema bounds on generic params
+    let serialize_where_clause = if has_generic {
+        let generic_param = input.generics.type_params().next().unwrap();
+        let generic_ident = &generic_param.ident;
+        if let Some(existing) = where_clause {
+            quote! { #existing #generic_ident: serde::Serialize + ::gts::GtsSchema, }
+        } else {
+            quote! { where #generic_ident: serde::Serialize + ::gts::GtsSchema }
         }
     } else {
         quote! { #where_clause }
@@ -1072,12 +1137,15 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
             .attrs
             .push(syn::parse_quote!(#[allow(clippy::empty_structs_with_brackets)]));
 
-        // Remove Serialize and Deserialize derives for unit structs since we'll provide custom implementations
+        // For unit structs, we provide custom Serialize/Deserialize implementations
+        // Remove our auto-added Serialize/Deserialize derives since we provide custom impls
+        // Keep JsonSchema from our auto-added derives
         modified_input.attrs.retain(|attr| {
             if attr.path().is_ident("derive") {
                 if let Ok(meta) = attr.meta.require_list() {
                     let tokens = meta.tokens.to_string();
-                    // Check if Serialize or Deserialize is in the derive list
+                    // Remove derives that contain Serialize or Deserialize
+                    // (our auto-added derive will have both)
                     !tokens.contains("Serialize") && !tokens.contains("Deserialize")
                 } else {
                     true
@@ -1087,10 +1155,10 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
             }
         });
 
-        // Add custom derive without Serialize and Deserialize
+        // Add just JsonSchema for unit structs (Serialize/Deserialize are custom impl'd below)
         modified_input
             .attrs
-            .push(syn::parse_quote!(#[derive(Debug, schemars::JsonSchema)]));
+            .push(syn::parse_quote!(#[derive(schemars::JsonSchema)]));
     }
 
     // Generate custom serialization implementation for unit structs to serialize as {} instead of null
@@ -1166,33 +1234,45 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
             /// File path where the GTS schema will be generated by the CLI.
             #[doc(hidden)]
             #[allow(dead_code)]
-            pub const GTS_SCHEMA_FILE_PATH: &'static str = #schema_file_path;
-
-            /// GTS schema identifier (the `$id` field in the JSON Schema).
-            #[doc(hidden)]
-            #[allow(dead_code)]
-            pub fn gts_schema_id() -> &'static gts::gts::GtsSchemaId {
-                static GTS_SCHEMA_ID: std::sync::LazyLock<gts::gts::GtsSchemaId> =
-                    std::sync::LazyLock::new(|| gts::gts::GtsSchemaId::new(#schema_id));
-                &GTS_SCHEMA_ID
-            }
+            const GTS_SCHEMA_FILE_PATH: &'static str = #schema_file_path;
 
             /// GTS schema description.
             #[doc(hidden)]
             #[allow(dead_code)]
-            pub const GTS_SCHEMA_DESCRIPTION: &'static str = #description;
+            const GTS_SCHEMA_DESCRIPTION: &'static str = #description;
 
             /// Comma-separated list of properties included in the schema.
             #[doc(hidden)]
             #[allow(dead_code)]
-            pub const GTS_SCHEMA_PROPERTIES: &'static str = #properties_str;
+            const GTS_SCHEMA_PROPERTIES: &'static str = #properties_str;
 
             #base_schema_id_const
+
+            /// Get the GTS schema identifier as a static reference.
+            #[allow(dead_code)]
+            #[must_use]
+            pub fn gts_schema_id() -> &'static ::gts::gts::GtsSchemaId {
+                static GTS_SCHEMA_ID: std::sync::LazyLock<::gts::gts::GtsSchemaId> =
+                    std::sync::LazyLock::new(|| ::gts::gts::GtsSchemaId::new(#schema_id));
+                &GTS_SCHEMA_ID
+            }
+
+            /// Get the parent (base) schema identifier as a static reference.
+            /// Returns `None` for base structs (those with `base = true`).
+            #[allow(dead_code)]
+            #[must_use]
+            pub fn gts_base_schema_id() -> Option<&'static ::gts::gts::GtsSchemaId> {
+                static BASE_SCHEMA_ID: std::sync::LazyLock<Option<::gts::gts::GtsSchemaId>> =
+                    std::sync::LazyLock::new(|| {
+                        #base_schema_id_option.map(::gts::gts::GtsSchemaId::new)
+                    });
+                BASE_SCHEMA_ID.as_ref()
+            }
 
             /// Generate a GTS instance ID by appending a segment to the schema ID.
             #[allow(dead_code)]
             #[must_use]
-            pub fn make_gts_instance_id(segment: &str) -> ::gts::GtsInstanceId {
+            pub fn gts_make_instance_id(segment: &str) -> ::gts::GtsInstanceId {
                 ::gts::GtsInstanceId::new(#schema_id, segment)
             }
         }
@@ -1209,29 +1289,46 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
             #gts_schema_impl
         }
 
-        // Add helper methods for backward compatibility with tests
+        // Public API methods for schema serialization
         impl #impl_generics #struct_name #ty_generics #gts_schema_where_clause {
-            /// JSON Schema with `allOf` + `$ref` for inheritance (most memory-efficient).
-            /// Returns the schema as a JSON string.
+            /// Get the JSON Schema with `allOf` + `$ref` for inheritance as a JSON string.
             #[allow(dead_code)]
-            pub fn gts_json_schema_with_refs() -> String {
+            #[must_use]
+            pub fn gts_schema_with_refs_as_string() -> String {
                 use ::gts::GtsSchema;
                 serde_json::to_string(&Self::gts_schema_with_refs_allof()).expect("Failed to serialize schema")
             }
 
-            /// JSON Schema with `allOf` + `$ref` for inheritance (most memory-efficient).
-            /// Returns the schema as a pretty-printed JSON string.
+            /// Get the JSON Schema with `allOf` + `$ref` for inheritance as a pretty-printed JSON string.
             #[allow(dead_code)]
-            pub fn gts_json_schema_with_refs_pretty() -> String {
+            #[must_use]
+            pub fn gts_schema_with_refs_as_string_pretty() -> String {
                 use ::gts::GtsSchema;
                 serde_json::to_string_pretty(&Self::gts_schema_with_refs_allof()).expect("Failed to serialize schema")
             }
+        }
 
-            /// JSON Schema with parent inlined (currently identical to WITH_REFS).
-            /// Returns the schema as a JSON string.
+        // Instance serialization methods (require Serialize bound)
+        impl #impl_generics #struct_name #ty_generics #serialize_where_clause {
+            /// Serialize this instance to a `serde_json::Value`.
             #[allow(dead_code)]
-            pub fn gts_json_schema_inline() -> String {
-                Self::gts_json_schema_with_refs()
+            #[must_use]
+            pub fn gts_instance_json(&self) -> serde_json::Value {
+                serde_json::to_value(self).expect("Failed to serialize instance to JSON")
+            }
+
+            /// Serialize this instance to a JSON string.
+            #[allow(dead_code)]
+            #[must_use]
+            pub fn gts_instance_json_as_string(&self) -> String {
+                serde_json::to_string(self).expect("Failed to serialize instance to JSON string")
+            }
+
+            /// Serialize this instance to a pretty-printed JSON string.
+            #[allow(dead_code)]
+            #[must_use]
+            pub fn gts_instance_json_as_string_pretty(&self) -> String {
+                serde_json::to_string_pretty(self).expect("Failed to serialize instance to JSON string")
             }
         }
     };
