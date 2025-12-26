@@ -9,10 +9,10 @@
     clippy::bool_assert_comparison
 )]
 
-use gts_macros::struct_to_gts_schema;
 use gts::gts::GtsSchemaId;
-use serde::{Deserialize, Serialize};
+use gts_macros::struct_to_gts_schema;
 use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /* ============================================================
@@ -29,7 +29,7 @@ Serde rename tests - event_type field with serde(rename = "type")
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct BaseEventV1SerdeRenameV1<P> {
     #[serde(rename = "type")]
-    pub event_type: GtsSchemaId,  // This should be recognized as a valid GTS Type field
+    pub event_type: GtsSchemaId, // This should be recognized as a valid GTS Type field
     pub id: Uuid,
     pub tenant_id: Uuid,
     pub sequence_id: u64,
@@ -46,7 +46,7 @@ pub struct BaseEventV1SerdeRenameV1<P> {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct BaseEventV1GtsTypeRenameV1<P> {
     #[serde(rename = "gts_type")]
-    pub event_type: GtsSchemaId,  // This should be recognized as a valid GTS Type field
+    pub event_type: GtsSchemaId, // This should be recognized as a valid GTS Type field
     pub id: Uuid,
     pub tenant_id: Uuid,
     pub sequence_id: u64,
@@ -63,7 +63,7 @@ pub struct BaseEventV1GtsTypeRenameV1<P> {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct BaseEventV1SchemaRenameV1<P> {
     #[serde(rename = "schema")]
-    pub event_type: GtsSchemaId,  // This should be recognized as a valid GTS Type field
+    pub event_type: GtsSchemaId, // This should be recognized as a valid GTS Type field
     pub id: Uuid,
     pub tenant_id: Uuid,
     pub sequence_id: u64,
@@ -103,7 +103,10 @@ mod tests {
             payload: (),
         };
 
-        assert_eq!(event.event_type.to_string(), "gts.x.core.events.gts_type.v1~");
+        assert_eq!(
+            event.event_type.to_string(),
+            "gts.x.core.events.gts_type.v1~"
+        );
     }
 
     #[test]
@@ -123,9 +126,24 @@ mod tests {
     #[test]
     fn test_serde_rename_schema_constants() {
         // Verify that schema constants are generated correctly
-        assert_eq!(BaseEventV1SerdeRenameV1::<()>::GTS_SCHEMA_ID, "gts.x.core.events.type.v1~");
-        assert_eq!(BaseEventV1GtsTypeRenameV1::<()>::GTS_SCHEMA_ID, "gts.x.core.events.gts_type.v1~");
-        assert_eq!(BaseEventV1SchemaRenameV1::<()>::GTS_SCHEMA_ID, "gts.x.core.events.schema.v1~");
+        assert_eq!(
+            BaseEventV1SerdeRenameV1::<()>::gts_schema_id()
+                .clone()
+                .into_string(),
+            "gts.x.core.events.type.v1~"
+        );
+        assert_eq!(
+            BaseEventV1GtsTypeRenameV1::<()>::gts_schema_id()
+                .clone()
+                .into_string(),
+            "gts.x.core.events.gts_type.v1~"
+        );
+        assert_eq!(
+            BaseEventV1SchemaRenameV1::<()>::gts_schema_id()
+                .clone()
+                .into_string(),
+            "gts.x.core.events.schema.v1~"
+        );
     }
 
     #[test]

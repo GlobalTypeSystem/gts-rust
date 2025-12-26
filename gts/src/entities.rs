@@ -1434,8 +1434,11 @@ mod tests {
             entity.gts_id.as_ref().unwrap().id,
             "gts.vendor.package.namespace.type.v1.0~a.b.c.d.v1"
         );
-        // Single-segment ID doesn't have a parent schema in the chain
-        assert!(entity.schema_id != Some("gts.vendor.package.namespace.type.v1.0~".to_owned()));
+        // Chained ID should have schema_id extracted from the chain
+        assert_eq!(
+            entity.schema_id,
+            Some("gts.vendor.package.namespace.type.v1.0~".to_owned())
+        );
     }
 
     #[test]

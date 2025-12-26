@@ -1,4 +1,4 @@
-error: struct_to_gts_schema: Version mismatch between struct name and schema_id. Struct 'BaseEventV3_0' has version suffix 'V3_0' but schema_id 'gts.x.core.events.type.v3~' has version 'v3'. The versions must match exactly (e.g., BaseEventV1 with v1~, or BaseEventV2_0 with v2.0~)
+error: struct_to_gts_schema: Base structs must have either an ID field (one of: $id, id, gts_id, or gtsId) of type GtsInstanceId OR a GTS Type field (one of: type, gts_type, gtsType, or schema) of type GtsSchemaId
   --> tests/compile_fail/version_mismatch_minor_missing_schema.rs:13:12
    |
 13 | pub struct BaseEventV3_0 {

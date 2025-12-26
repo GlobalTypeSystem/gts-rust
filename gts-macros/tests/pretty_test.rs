@@ -1,7 +1,6 @@
 #[cfg(test)]
 mod tests {
     use gts_macros::struct_to_gts_schema;
-    use serde_json;
 
     #[derive(schemars::JsonSchema)]
     #[struct_to_gts_schema(
@@ -11,7 +10,7 @@ mod tests {
         properties = "id,name,value",
         base = true
     )]
-    #[allow(dead_code)]  // Test struct - fields not used, only type is needed for macro
+    #[allow(dead_code)] // Test struct - fields not used, only type is needed for macro
     struct TestPrettyStructV1 {
         id: gts::GtsInstanceId,
         name: String,
@@ -27,21 +26,35 @@ mod tests {
         let pretty = TestPrettyStructV1::gts_json_schema_with_refs_pretty();
 
         // Verify they both contain the same content (just different formatting)
-        let regular_parsed: serde_json::Value = serde_json::from_str(&regular).unwrap();
-        let pretty_parsed: serde_json::Value = serde_json::from_str(&pretty).unwrap();
+        let regular_parsed: serde_json::Value = serde_json::from_str(&regular)
+            .unwrap_or_else(|_| panic!("Failed to parse regular JSON: {}", &regular));
+        let pretty_parsed: serde_json::Value = serde_json::from_str(&pretty)
+            .unwrap_or_else(|_| panic!("Failed to parse pretty JSON: {}", &pretty));
 
-        assert_eq!(regular_parsed, pretty_parsed, "Both functions should produce the same JSON structure");
+        assert_eq!(
+            regular_parsed, pretty_parsed,
+            "Both functions should produce the same JSON structure"
+        );
 
         // Verify pretty version is longer (due to formatting)
-        assert!(pretty.len() > regular.len(), "Pretty version should be longer due to whitespace formatting");
+        assert!(
+            pretty.len() > regular.len(),
+            "Pretty version should be longer due to whitespace formatting"
+        );
 
         // Verify pretty version contains newlines and indentation
-        assert!(pretty.contains('\n'), "Pretty version should contain newlines");
-        assert!(pretty.contains("  "), "Pretty version should contain indentation");
+        assert!(
+            pretty.contains('\n'),
+            "Pretty version should contain newlines"
+        );
+        assert!(
+            pretty.contains("  "),
+            "Pretty version should contain indentation"
+        );
 
         println!("Regular version length: {}", regular.len());
         println!("Pretty version length: {}", pretty.len());
-        println!("Regular: {}", regular);
-        println!("Pretty: {}", pretty);
+        println!("Regular: {regular}");
+        println!("Pretty: {pretty}");
     }
 }

@@ -1,3 +1,4 @@
+use gts::gts::GtsSchemaId;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
@@ -5,12 +6,14 @@ use clap::Parser;
 use gts::gts_schema_for;
 use serde::{Deserialize, Serialize};
 
+use crate::test_structs::PlaceOrderDataPayloadV1;
+
 const SEPARATOR: &str =
     "================================================================================";
 
 // Include test structs to access their generated constants
 mod test_structs {
-    use super::{Deserialize, Serialize};
+    use super::{Deserialize, GtsSchemaId, Serialize};
     use gts_macros::struct_to_gts_schema;
     use schemars::JsonSchema;
 
@@ -24,7 +27,7 @@ mod test_structs {
     #[derive(Debug, Serialize, Deserialize, JsonSchema)]
     pub struct BaseEventV1<P> {
         #[serde(rename = "type")]
-        pub event_type: String,
+        pub event_type: GtsSchemaId,
         pub id: uuid::Uuid,
         pub tenant_id: uuid::Uuid,
         pub sequence_id: u64,
@@ -117,7 +120,7 @@ fn create_sample_event() -> anyhow::Result<
     >,
 > {
     Ok(test_structs::BaseEventV1 {
-        event_type: "gts.x.core.events.type.order.placed.v1~".to_owned(),
+        event_type: PlaceOrderDataPayloadV1::gts_schema_id().clone(),
         id: uuid::Uuid::parse_str("d1b475cf-8155-45c3-ab75-b245bd38116b")?,
         tenant_id: uuid::Uuid::parse_str("0a0bd7c0-e8ef-4d7d-b841-645715e25d20")?,
         sequence_id: 42,

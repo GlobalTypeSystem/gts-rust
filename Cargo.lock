@@ -487,6 +487,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "jsonschema",
+ "schemars",
  "serde",
  "serde_json",
  "serde_yaml",

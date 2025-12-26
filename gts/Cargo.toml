@@ -17,6 +17,7 @@ thiserror.workspace = true
 anyhow.workspace = true
 uuid.workspace = true
 jsonschema.workspace = true
+schemars.workspace = true
 walkdir.workspace = true
 tracing.workspace = true
 shellexpand = "3.1"

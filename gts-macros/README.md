@@ -26,6 +26,7 @@ serde = { version = "1.0", features = ["derive"] }
 use gts_macros::struct_to_gts_schema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use gts::gts::{GtsInstanceId, GtsSchemaId};
 
 // Base event type (root of the hierarchy)
 #[derive(Debug, Serialize, Deserialize)]
@@ -38,6 +39,7 @@ use uuid::Uuid;
 )]
 pub struct BaseEventV1<P> {
     pub id: Uuid,
+    pub r#type: GtsSchemaId,
     pub tenant_id: Uuid,
     pub payload: P,
 }
@@ -84,6 +86,7 @@ The macro validates your annotations at compile time, catching errors early.
 | **Property existence** | Every property in the list must exist as a field in the struct |
 | **Struct type** | Only structs with named fields are supported (no tuple structs) |
 | **Generic type constraints** | Generic type parameters must implement `GtsSchema` (only `()` or other GTS structs allowed) |
+| **Base struct field validation** | Base structs (`base = true`) must have either ID fields OR GTS Type fields, but not both (see below) |
 
 ### Compile Error Examples
 
@@ -98,6 +101,7 @@ The macro validates your annotations at compile time, catching errors early.
 )]
 pub struct BaseEventV1<P> {
     pub id: Uuid,
+    pub r#type: GtsSchemaId,
     pub payload: P,
 }
 ```
@@ -162,6 +166,113 @@ error[E0277]: the trait bound `MyStruct: GtsSchema` is not satisfied
 10 |     let event: BaseEventV1<MyStruct> = BaseEventV1 { ... };
    |                ^^^^^^^^^^^^^^^^^^^^^ the trait `GtsSchema` is not implemented for `MyStruct`
 ```
+
+**Base struct field validation - ID fields:**
+```rust
+use gts::gts::GtsInstanceId;
+
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = true,
+    schema_id = "gts.x.core.events.topic.v1~",
+    description = "Base event with ID field",
+    properties = "id,name"
+)]
+pub struct BaseEventTopicV1<P> {
+    pub id: GtsInstanceId,  // ✅ Valid ID field
+    pub name: String,
+    pub payload: P,
+}
+```
+
+**Base struct field validation - GTS Type fields:**
+```rust
+use gts::gts::GtsSchemaId;
+
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = true,
+    schema_id = "gts.x.core.events.type.v1~",
+    description = "Base event with type field",
+    properties = "r#type,name"
+)]
+pub struct BaseEventV1<P> {
+    pub id: Uuid,             // Event UUID
+    pub r#type: GtsSchemaId,  // Event Type - ✅ Valid GTS Type field
+    pub name: String,
+    pub payload: P,
+}
+```
+
+**Invalid base struct - both ID and GTS Type fields:**
+```rust
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = true,
+    schema_id = "gts.x.core.events.topic.v1~",
+    description = "Invalid base with both ID and type",
+    properties = "id,r#type,name"  // ❌ Error! Both ID and GTS Type fields
+)]
+pub struct BaseEventV1<P> {
+    pub id: GtsInstanceId,     // Event topic ID field
+    pub r#type: GtsSchemaId,   // Event type (schema) ID field - ❌ Cannot have both!
+```
+
+**Invalid base struct - wrong GTS Type field type:**
+```rust
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = true,
+    schema_id = "gts.x.core.events.type.v1~",
+    description = "Base event with wrong type field",
+    properties = "r#type,name"
+)]
+pub struct BaseEventV1<P> {
+    pub id: Uuid,        // Event UUID
+    pub r#type: String,  // Event type (schema) - ❌ Should be GtsSchemaId
+    pub name: String,
+    pub payload: P,
+}
+```
+```
+error: struct_to_gts_schema: Base structs with GTS Type fields must have at least one GTS Type field (type, gts_type, gtsType, or schema) of type GtsSchemaId
+```
+
+### Base Struct Field Validation Rules
+
+Base structs (`base = true`) must follow **exactly one** of these patterns:
+
+#### Option 1: ID Fields
+- **Supported field names**: `$id`, `id`, `gts_id`, `gtsId`
+- **Required type**: `GtsInstanceId` (or `gts::GtsInstanceId`)
+- **Use case**: Instance-based identification
+
+#### Option 2: GTS Type Fields
+- **Supported field names**: `type`, `r#type`, `gts_type`, `gtsType`, `schema`
+- **Supported serde renames**: Fields with `#[serde(rename = "type")]`, `#[serde(rename = "gts_type")]`, `#[serde(rename = "gtsType")]`, or `#[serde(rename = "schema")]`
+- **Required type**: `GtsSchemaId` (or `gts::GtsSchemaId`)
+- **Use case**: Schema-based identification
+
+**Serde rename example:**
+```rust
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = true,
+    schema_id = "gts.x.core.events.type.v1~",
+    description = "Base event with serde(rename = \"type\")",
+    properties = "event_type,id,tenant_id,sequence_id,payload"
+)]
+pub struct BaseEventV1<P> {
+    #[serde(rename = "type")]
+    pub event_type: GtsSchemaId,  // ✅ Valid - renamed to "type"
+    pub id: Uuid,
+    pub tenant_id: Uuid,
+    pub sequence_id: u64,
+    pub payload: P,
+}
+```
+
+**Important**: Base structs cannot have both ID fields AND GTS Type fields. They must choose one approach.
 
 ---
 
@@ -428,6 +539,7 @@ use uuid::Uuid;
 )]
 pub struct BaseEventV1<P> {
     pub id: Uuid,
+    pub r#type: GtsSchemaId,
     pub tenant_id: Uuid,
     pub timestamp: String,
     pub payload: P,
@@ -515,7 +627,7 @@ See `tests/inheritance_tests.rs` for a complete working example:
 )]
 pub struct BaseEventV1<P> {
     #[serde(rename = "type")]
-    pub event_type: String,
+    pub event_type: GtsSchemaId,
     pub id: Uuid,
     pub tenant_id: Uuid,
     pub sequence_id: u64,

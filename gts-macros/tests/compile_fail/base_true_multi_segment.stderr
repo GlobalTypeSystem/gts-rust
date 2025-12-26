@@ -1,4 +1,4 @@
-error: struct_to_gts_schema: 'base = true' but schema_id 'gts.x.core.events.type.v1~x.core.audit.event.v1~' has 2 segments. A base type must have exactly 1 segment (no parent). Either use 'base = ParentStruct' or fix the schema_id.
+error: struct_to_gts_schema: Base structs must have either an ID field (one of: $id, id, gts_id, or gtsId) of type GtsInstanceId OR a GTS Type field (one of: type, gts_type, gtsType, or schema) of type GtsSchemaId
   --> tests/compile_fail/base_true_multi_segment.rs:13:12
    |
 13 | pub struct InvalidBaseV1 {

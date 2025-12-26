@@ -1,62 +1,17 @@
-error[E0277]: the trait bound `MyStruct: GtsSchema` is not satisfied
+error: struct_to_gts_schema: Base structs must have either an ID field (one of: $id, id, gts_id, or gtsId) of type GtsInstanceId OR a GTS Type field (one of: type, gts_type, gtsType, or schema) of type GtsSchemaId
+  --> tests/compile_fail/non_gts_generic.rs:19:12
+   |
+19 | pub struct BaseEventV1<P> {
+   |            ^^^^^^^^^^^
+
+error[E0412]: cannot find type `BaseEventV1` in this scope
   --> tests/compile_fail/non_gts_generic.rs:33:17
    |
 33 |     let _event: BaseEventV1<MyStruct> = BaseEventV1 {
-   |                 ^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
-   |
-help: the trait `GtsSchema` is not implemented for `MyStruct`
-  --> tests/compile_fail/non_gts_generic.rs:26:1
-   |
-26 | pub struct MyStruct {
-   | ^^^^^^^^^^^^^^^^^^^
-   = help: the following other types implement trait `GtsSchema`:
-             ()
-             BaseEventV1<P>
-note: required by a bound in `BaseEventV1`
-  --> tests/compile_fail/non_gts_generic.rs:11:1
-   |
-11 | / #[struct_to_gts_schema(
-12 | |     dir_path = "schemas",
-13 | |     base = true,
-14 | |     schema_id = "gts.x.core.events.type.v1~",
-15 | |     description = "Base event type",
-16 | |     properties = "id,payload"
-17 | | )]
-   | |__^ required by this bound in `BaseEventV1`
-18 |   #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-19 |   pub struct BaseEventV1<P> {
-   |              ----------- required by a bound in this struct
-   = note: this error originates in the attribute macro `struct_to_gts_schema` (in Nightly builds, run with -Z macro-backtrace for more info)
+   |                 ^^^^^^^^^^^ not found in this scope
 
-error[E0277]: the trait bound `MyStruct: GtsSchema` is not satisfied
-  --> tests/compile_fail/non_gts_generic.rs:35:18
+error[E0422]: cannot find struct, variant or union type `BaseEventV1` in this scope
+  --> tests/compile_fail/non_gts_generic.rs:33:41
    |
-35 |           payload: MyStruct {
-   |  __________________^
-36 | |             some_id: "123".to_string(),
-37 | |         },
-   | |_________^ unsatisfied trait bound
-   |
-help: the trait `GtsSchema` is not implemented for `MyStruct`
-  --> tests/compile_fail/non_gts_generic.rs:26:1
-   |
-26 | pub struct MyStruct {
-   | ^^^^^^^^^^^^^^^^^^^
-   = help: the following other types implement trait `GtsSchema`:
-             ()
-             BaseEventV1<P>
-note: required by a bound in `BaseEventV1`
-  --> tests/compile_fail/non_gts_generic.rs:11:1
-   |
-11 | / #[struct_to_gts_schema(
-12 | |     dir_path = "schemas",
-13 | |     base = true,
-14 | |     schema_id = "gts.x.core.events.type.v1~",
-15 | |     description = "Base event type",
-16 | |     properties = "id,payload"
-17 | | )]
-   | |__^ required by this bound in `BaseEventV1`
-18 |   #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-19 |   pub struct BaseEventV1<P> {
-   |              ----------- required by a bound in this struct
-   = note: this error originates in the attribute macro `struct_to_gts_schema` (in Nightly builds, run with -Z macro-backtrace for more info)
+33 |     let _event: BaseEventV1<MyStruct> = BaseEventV1 {
+   |                                         ^^^^^^^^^^^ not found in this scope
