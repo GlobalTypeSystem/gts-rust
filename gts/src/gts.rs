@@ -320,6 +320,16 @@ impl GtsID {
             offset += part.len();
         }
 
+        // Issue #37: Single-segment instance IDs are prohibited
+        // Instance IDs must be chained with at least one type segment (e.g., 'type~instance')
+        // This check should only apply to non-wildcard, non-type single-segment IDs
+        if gts_id_segments.len() == 1 && !gts_id_segments[0].is_type && !gts_id_segments[0].is_wildcard {
+            return Err(GtsError::InvalidId {
+                id: id.to_owned(),
+                cause: "Single-segment instance IDs are prohibited. Instance IDs must be chained with at least one type segment (e.g., 'type~instance')".to_owned(),
+            });
+        }
+
         Ok(GtsID {
             id: raw.to_owned(),
             gts_id_segments,
@@ -897,8 +907,8 @@ mod tests {
 
     #[test]
     fn test_gts_id_instance() {
-        let id = GtsID::new("gts.x.core.events.event.v1.0").expect("test");
-        assert_eq!(id.id, "gts.x.core.events.event.v1.0");
+        let id = GtsID::new("gts.x.core.events.event.v1~a.b.c.d.v1.0").expect("test");
+        assert_eq!(id.id, "gts.x.core.events.event.v1~a.b.c.d.v1.0");
         assert!(!id.is_type());
     }
 
@@ -1103,7 +1113,7 @@ mod tests {
     #[test]
     fn test_gts_wildcard_instance_match() {
         let pattern = GtsWildcard::new("gts.x.core.events.*").expect("test");
-        let id = GtsID::new("gts.x.core.events.event.v1.0").expect("test");
+        let id = GtsID::new("gts.x.core.events.event.v1~a.b.c.d.v1.0").expect("test");
         assert!(id.wildcard_match(&pattern));
     }
 

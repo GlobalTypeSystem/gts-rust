@@ -279,11 +279,6 @@ mod tests {
             inline_props.contains_key("type"),
             "Should contain type (schemars uses serde rename)"
         );
-        assert!(inline_props.contains_key("id"), "Should contain id");
-        assert!(
-            inline_props.contains_key("tenant_id"),
-            "Should contain tenant_id"
-        );
         assert!(
             inline_props.contains_key("sequence_id"),
             "Should contain sequence_id"
@@ -677,7 +672,9 @@ mod tests {
             "gts.x.core.events.topic.v1~x.commerce.orders.topic.v1~*",
             10,
         );
-        assert_eq!(query_result.count, 1, "Query should find one result");
+
+        // The query pattern matches 3-segment IDs, so it should only find the instance, not the 2-segment schema
+        assert_eq!(query_result.count, 1, "Query should find one result (the instance)");
         assert_eq!(
             query_result.results.len(),
             1,

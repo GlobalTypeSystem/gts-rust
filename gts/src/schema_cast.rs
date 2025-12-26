@@ -758,8 +758,8 @@ mod tests {
     #[test]
     fn test_json_entity_cast_result_infer_direction_up() {
         let direction = GtsEntityCastResult::infer_direction(
-            "gts.vendor.package.namespace.type.v1.0",
-            "gts.vendor.package.namespace.type.v1.1", // v1.1 has higher minor version
+            "gts.vendor.package.namespace.type.v1.0~abc.app.custom.event.v1.0",
+            "gts.vendor.package.namespace.type.v1.1~abc.app.custom.event.v1.1", // v1.1 has higher minor version
         );
         assert_eq!(direction, "up");
     }
@@ -767,8 +767,8 @@ mod tests {
     #[test]
     fn test_json_entity_cast_result_infer_direction_down() {
         let direction = GtsEntityCastResult::infer_direction(
-            "gts.vendor.package.namespace.type.v1.1", // v1.1 has higher minor version
-            "gts.vendor.package.namespace.type.v1.0",
+            "gts.vendor.package.namespace.type.v1.1~abc.app.custom.event.v1.1", // v1.1 has higher minor version
+            "gts.vendor.package.namespace.type.v1.0~abc.app.custom.event.v1.0",
         );
         assert_eq!(direction, "down");
     }
@@ -777,8 +777,8 @@ mod tests {
     fn test_json_entity_cast_result_infer_direction_none() {
         // Same minor version returns "none"
         let direction = GtsEntityCastResult::infer_direction(
-            "gts.vendor.package.namespace.type.v1.0",
-            "gts.vendor.package.namespace.type.v1.0",
+            "gts.vendor.package.namespace.type.v1.0~abc.app.custom.event.v1.0",
+            "gts.vendor.package.namespace.type.v1.0~abc.app.custom.event.v1.0",
         );
         assert_eq!(direction, "none");
     }

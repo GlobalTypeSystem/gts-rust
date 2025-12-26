@@ -1180,11 +1180,10 @@ mod tests {
                 "type": "object"
             });
 
+            let schema_id = format!("gts.vendor.package.namespace.type.v{i}.0~");
+
             store
-                .register_schema(
-                    &format!("gts.vendor.package.namespace.type.v{i}.0~"),
-                    &schema_content,
-                )
+                .register_schema(&schema_id, &schema_content)
                 .expect("test");
         }
 
@@ -2973,7 +2972,7 @@ mod tests {
         let cfg = GtsConfig::default();
         for i in 0..3 {
             let content = json!({
-                "id": format!("gts.vendor.package.namespace.item{i}.v1.0"),
+                "id": format!("gts.vendor.package.namespace.item{i}.v1.0~abc.app.custom.item{i}.v1.0"),
                 "name": format!("item{i}"),
                 "status": if i % 2 == 0 { "active" } else { "inactive" }
             });
