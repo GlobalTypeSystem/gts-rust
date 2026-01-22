@@ -1,11 +1,16 @@
 [package]
 name = "gts-macros-cli"
-version.workspace = true
+version = "0.1.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+rust-version.workspace = true
 description = "Demo tool for GTS macros schema introspection and inheritance"
+keywords = ["gts", "macros", "cli"]
+categories.workspace = true
+readme.workspace = true
+publish = false
 
 [lints]
 workspace = true
@@ -23,12 +28,3 @@ anyhow.workspace = true
 uuid.workspace = true
 schemars.workspace = true
 clap.workspace = true
-
-# Include test modules for schema discovery
-[dev-dependencies]
-serde = { workspace = true, features = ["derive"] }
-
-# Build dependencies
-[build-dependencies]
-serde.workspace = true
-serde_json.workspace = true

@@ -431,7 +431,7 @@ impl GtsEntity {
     ) -> Result<GtsEntityCastResult, SchemaCastError> {
         if self.is_schema {
             // When casting a schema, from_schema might be a standard JSON Schema (no gts_id)
-            if let (Some(ref self_id), Some(ref from_id)) = (&self.gts_id, &from_schema.gts_id) {
+            if let (Some(self_id), Some(from_id)) = (&self.gts_id, &from_schema.gts_id) {
                 if self_id.id != from_id.id {
                     return Err(SchemaCastError::InternalError(format!(
                         "Internal error: {} != {}",

@@ -1,11 +1,16 @@
 [package]
 name = "gts"
-version.workspace = true
+version = "0.1.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+rust-version.workspace = true
 description = "Global Type System (GTS) library for Rust"
+keywords = ["gts", "jsonschema"]
+categories.workspace = true
+readme.workspace = true
+publish = true
 
 [lints]
 workspace = true
@@ -14,7 +19,6 @@ workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-anyhow.workspace = true
 uuid.workspace = true
 jsonschema.workspace = true
 schemars.workspace = true
@@ -22,5 +26,3 @@ walkdir.workspace = true
 tracing.workspace = true
 shellexpand = "3.1"
 serde_yaml.workspace = true
-
-[dev-dependencies]

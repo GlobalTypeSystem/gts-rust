@@ -55,7 +55,7 @@ impl GtsHttpServer {
     fn create_router(state: AppState, verbose: u8) -> Router {
         let mut router = Router::new()
             .route("/entities", get(get_entities).post(add_entity))
-            .route("/entities/:gts_id", get(get_entity))
+            .route("/entities/{gts_id}", get(get_entity))
             .route("/entities/bulk", post(add_entities))
             .route("/schemas", post(add_schema))
             .route("/validate-id", get(validate_id))

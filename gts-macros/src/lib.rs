@@ -752,7 +752,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
 
     // Find the field that uses the generic type (only for structs with fields)
     // Use the SERIALIZED name (serde rename if present, otherwise field ident)
-    if let (Some(ref gp), Some(fields)) = (&generic_param_name, struct_fields) {
+    if let (Some(gp), Some(fields)) = (&generic_param_name, struct_fields) {
         for field in fields {
             let field_type = &field.ty;
             let field_type_str = quote::quote!(#field_type).to_string().replace(' ', "");

@@ -6,8 +6,6 @@ use clap::Parser;
 use gts::gts_schema_for;
 use serde::{Deserialize, Serialize};
 
-use crate::test_structs::PlaceOrderDataPayloadV1;
-
 const SEPARATOR: &str =
     "================================================================================";
 
@@ -120,7 +118,7 @@ fn create_sample_event() -> anyhow::Result<
     >,
 > {
     Ok(test_structs::BaseEventV1 {
-        event_type: PlaceOrderDataPayloadV1::gts_schema_id().clone(),
+        event_type: test_structs::PlaceOrderDataPayloadV1::gts_schema_id().clone(),
         id: uuid::Uuid::parse_str("d1b475cf-8155-45c3-ab75-b245bd38116b")?,
         tenant_id: uuid::Uuid::parse_str("0a0bd7c0-e8ef-4d7d-b841-645715e25d20")?,
         sequence_id: 42,
