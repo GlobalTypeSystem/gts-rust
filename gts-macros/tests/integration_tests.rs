@@ -1078,3 +1078,130 @@ fn test_runtime_schema_inline_resolution_single_segment() {
     // schemars includes ALL fields (6 including internal_config)
     assert_eq!(props.len(), 6, "Should have 6 properties");
 }
+
+#[derive(Debug, Clone)]
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = true,
+    schema_id = "gts.x.test.versioned.minor.v1.0~",
+    description = "Test struct with minor version",
+    properties = "id,value"
+)]
+pub struct MinorVersionV1_0 {
+    pub id: GtsInstanceId,
+    pub value: String,
+}
+
+#[derive(Debug, Clone)]
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = true,
+    schema_id = "gts.x.test.versioned.complex.v2.5~",
+    description = "Test struct with complex minor version",
+    properties = "id,data"
+)]
+pub struct ComplexMinorV2_5 {
+    pub id: GtsInstanceId,
+    pub data: String,
+}
+
+#[test]
+fn test_version_with_underscore_v1_0() {
+    // Test that struct with V1_0 suffix works with v1.0~ schema_id
+    let schema: serde_json::Value =
+        serde_json::from_str(&MinorVersionV1_0::gts_schema_with_refs_as_string()).unwrap();
+
+    // Verify the schema ID is correct
+    assert_eq!(schema["$id"], "gts://gts.x.test.versioned.minor.v1.0~");
+    assert_eq!(schema["type"], "object");
+
+    // Verify properties exist
+    let props = schema["properties"].as_object().unwrap();
+    assert!(props.contains_key("id"));
+    assert!(props.contains_key("value"));
+}
+
+#[test]
+fn test_version_with_underscore_v2_5() {
+    // Test that struct with V2_5 suffix works with v2.5~ schema_id
+    let schema: serde_json::Value =
+        serde_json::from_str(&ComplexMinorV2_5::gts_schema_with_refs_as_string()).unwrap();
+
+    // Verify the schema ID is correct
+    assert_eq!(schema["$id"], "gts://gts.x.test.versioned.complex.v2.5~");
+    assert_eq!(schema["type"], "object");
+
+    // Verify properties exist
+    let props = schema["properties"].as_object().unwrap();
+    assert!(props.contains_key("id"));
+    assert!(props.contains_key("data"));
+}
+
+#[test]
+fn test_version_extraction_underscore_format() {
+    // Test that GtsSchema trait properly exposes the schema ID
+    assert_eq!(
+        MinorVersionV1_0::SCHEMA_ID,
+        "gts.x.test.versioned.minor.v1.0~"
+    );
+    assert_eq!(
+        ComplexMinorV2_5::SCHEMA_ID,
+        "gts.x.test.versioned.complex.v2.5~"
+    );
+}
+
+#[derive(Debug, Clone)]
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = true,
+    schema_id = "gts.x.test.single.segment.v1~",
+    description = "Base struct with single segment",
+    properties = "id,name"
+)]
+pub struct SingleSegmentBaseV1 {
+    pub id: GtsInstanceId,
+    pub name: String,
+}
+
+#[test]
+fn test_base_true_single_segment() {
+    // Test that base = true works with single segment schema_id
+    let schema: serde_json::Value =
+        serde_json::from_str(&SingleSegmentBaseV1::gts_schema_with_refs_as_string()).unwrap();
+
+    // Verify schema structure
+    assert_eq!(schema["$id"], "gts://gts.x.test.single.segment.v1~");
+    assert_eq!(schema["type"], "object");
+
+    // Base structs should have additionalProperties: false
+    assert_eq!(schema["additionalProperties"], false);
+
+    // Verify it's not using allOf (no inheritance)
+    assert!(
+        schema.get("allOf").is_none(),
+        "Base struct should not have allOf"
+    );
+}
+
+#[test]
+fn test_base_true_single_segment_no_parent() {
+    // Verify that base structs have no parent schema ID
+    assert_eq!(SingleSegmentBaseV1::gts_base_schema_id(), None);
+}
+
+#[test]
+fn test_base_true_single_segment_schema_id() {
+    // Verify schema ID is properly set
+    let schema_id = SingleSegmentBaseV1::gts_schema_id();
+    assert_eq!(schema_id.as_ref(), "gts.x.test.single.segment.v1~");
+}
+
+#[test]
+fn test_base_true_single_segment_instance_id_generation() {
+    // Test instance ID generation from base struct
+    let instance_id = SingleSegmentBaseV1::gts_make_instance_id("test.instance.v1");
+    assert_eq!(
+        instance_id.as_ref(),
+        "gts.x.test.single.segment.v1~test.instance.v1"
+    );
+}

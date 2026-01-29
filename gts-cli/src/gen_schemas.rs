@@ -53,6 +53,13 @@ enum BaseAttr {
 /// * `output` - Optional output directory override
 /// * `exclude_patterns` - Patterns to exclude (supports simple glob matching)
 /// * `verbose` - Verbosity level (0 = normal, 1+ = show skipped files)
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The source path does not exist
+/// - The output path is outside the source repository
+/// - File I/O operations fail
 pub fn generate_schemas_from_rust(
     source: &str,
     output: Option<&str>,
@@ -307,7 +314,10 @@ fn extract_and_generate_schemas(
             let parent = output_path.parent().unwrap_or(Path::new("."));
             fs::create_dir_all(parent)?;
             let parent_canonical = parent.canonicalize()?;
-            parent_canonical.join(output_path.file_name().unwrap())
+            let file_name = output_path
+                .file_name()
+                .ok_or_else(|| anyhow::anyhow!("Invalid output path: no file name"))?;
+            parent_canonical.join(file_name)
         };
 
         // Check if output path is within source repository
@@ -673,5 +683,388 @@ mod tests {
         let (req, schema) = rust_type_to_json_schema("P");
         assert!(req);
         assert_eq!(schema["type"], "object");
+    }
+
+    #[test]
+    fn test_should_exclude_path_matching_pattern() {
+        let patterns = vec!["test_*".to_owned(), "**/target/**".to_owned()];
+        let path = Path::new("src/test_helper.rs");
+        assert!(should_exclude_path(path, &patterns));
+    }
+
+    #[test]
+    fn test_should_exclude_path_no_match() {
+        let patterns = vec!["test_*".to_owned(), "**/compile_fail/**".to_owned()];
+        let path = Path::new("src/main.rs");
+        assert!(!should_exclude_path(path, &patterns));
+    }
+
+    #[test]
+    fn test_build_json_schema_base_type() {
+        use serde_json::json;
+
+        let mut field_types = HashMap::new();
+        field_types.insert("id".to_owned(), "String".to_owned());
+        field_types.insert("count".to_owned(), "i32".to_owned());
+        field_types.insert("active".to_owned(), "bool".to_owned());
+
+        let schema = build_json_schema(
+            "gts.x.test.base.v1~",
+            "BaseStruct",
+            Some("A base test struct"),
+            None, // Include all properties
+            &BaseAttr::IsBase,
+            &field_types,
+        );
+
+        assert_eq!(schema["$id"], "gts://gts.x.test.base.v1~");
+        assert_eq!(schema["$schema"], "http://json-schema.org/draft-07/schema#");
+        assert_eq!(schema["title"], "BaseStruct");
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["description"], "A base test struct");
+        assert_eq!(schema["additionalProperties"], false);
+
+        // Check properties
+        assert!(schema["properties"]["id"].is_object());
+        assert!(schema["properties"]["count"].is_object());
+        assert!(schema["properties"]["active"].is_object());
+
+        // Check required fields (all 3 should be required)
+        let required = schema["required"].as_array().unwrap();
+        assert_eq!(required.len(), 3);
+        assert!(required.contains(&json!("active")));
+        assert!(required.contains(&json!("count")));
+        assert!(required.contains(&json!("id")));
+    }
+
+    #[test]
+    fn test_build_json_schema_child_type() {
+        let mut field_types = HashMap::new();
+        field_types.insert("child_field".to_owned(), "String".to_owned());
+        field_types.insert("optional_field".to_owned(), "Option<i32>".to_owned());
+
+        let schema = build_json_schema(
+            "gts.x.test.base.v1~x.test.child.v1~",
+            "ChildStruct",
+            Some("A child test struct"),
+            None,
+            &BaseAttr::Parent("BaseStruct".to_owned()),
+            &field_types,
+        );
+
+        assert_eq!(schema["$id"], "gts://gts.x.test.base.v1~x.test.child.v1~");
+        assert_eq!(schema["title"], "ChildStruct (extends BaseStruct)");
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["description"], "A child test struct");
+
+        // Check allOf structure
+        let all_of = schema["allOf"].as_array().unwrap();
+        assert_eq!(all_of.len(), 2);
+
+        // First element should be $ref to parent
+        assert_eq!(all_of[0]["$ref"], "gts://gts.x.test.base.v1~");
+
+        // Second element should have child properties
+        assert!(all_of[1]["properties"]["child_field"].is_object());
+        assert!(all_of[1]["properties"]["optional_field"].is_object());
+
+        // Check required fields (only child_field, not optional_field)
+        let required = all_of[1]["required"].as_array().unwrap();
+        assert_eq!(required.len(), 1);
+        assert_eq!(required[0], "child_field");
+    }
+
+    #[test]
+    fn test_parse_macro_attrs_with_schema_id() {
+        let attr_body = r#"
+            dir_path = "schemas",
+            base = true,
+            schema_id = "gts.x.custom.id.v1~"
+        "#;
+
+        let attrs = parse_macro_attrs(attr_body).unwrap();
+        assert_eq!(attrs.schema_id, "gts.x.custom.id.v1~");
+        assert_eq!(attrs.dir_path, "schemas");
+        assert!(matches!(attrs.base, BaseAttr::IsBase));
+        assert!(attrs.description.is_none());
+    }
+
+    #[test]
+    fn test_extract_and_generate_schemas_single_struct() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path().canonicalize().unwrap();
+
+        // Create a test Rust file with a struct
+        let test_file = temp_path.join("test.rs");
+        let content = r#"
+use gts::GtsInstanceId;
+
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = true,
+    schema_id = "gts.x.test.person.v1~",
+    description = "A test person struct"
+)]
+pub struct Person {
+    pub id: GtsInstanceId,
+    pub name: String,
+    pub age: i32,
+}
+"#;
+        fs::write(&test_file, content).unwrap();
+
+        // Call extract_and_generate_schemas
+        let results = extract_and_generate_schemas(
+            content,
+            Some(temp_path.to_str().unwrap()),
+            &temp_path,
+            &test_file,
+        )
+        .unwrap();
+
+        // Verify results
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "gts.x.test.person.v1~");
+
+        // Verify schema file was created
+        let schema_path = Path::new(&results[0].1);
+        assert!(schema_path.exists());
+
+        // Verify schema content
+        let schema_content = fs::read_to_string(schema_path).unwrap();
+        let schema: serde_json::Value = serde_json::from_str(&schema_content).unwrap();
+
+        assert_eq!(schema["$id"], "gts://gts.x.test.person.v1~");
+        assert_eq!(schema["title"], "Person");
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["description"], "A test person struct");
+        assert!(schema["properties"]["id"].is_object());
+        assert!(schema["properties"]["name"].is_object());
+        assert!(schema["properties"]["age"].is_object());
+    }
+
+    #[test]
+    fn test_extract_and_generate_schemas_with_parent() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path().canonicalize().unwrap();
+
+        // Create a test file with parent and child structs
+        let test_file = temp_path.join("test.rs");
+        let content = r#"
+use gts::GtsInstanceId;
+
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = true,
+    schema_id = "gts.x.test.base.v1~",
+    description = "Base event"
+)]
+pub struct BaseEvent {
+    pub id: GtsInstanceId,
+    pub timestamp: String,
+}
+
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = BaseEvent,
+    schema_id = "gts.x.test.base.v1~x.test.child.v1~",
+    description = "Child event"
+)]
+pub struct ChildEvent {
+    pub event_type: String,
+    pub data: String,
+}
+"#;
+        fs::write(&test_file, content).unwrap();
+
+        // Call extract_and_generate_schemas
+        let results = extract_and_generate_schemas(
+            content,
+            Some(temp_path.to_str().unwrap()),
+            &temp_path,
+            &test_file,
+        )
+        .unwrap();
+
+        // Verify results - should have 2 schemas
+        assert_eq!(results.len(), 2);
+
+        // Find base and child schemas
+        let base_result = results
+            .iter()
+            .find(|(id, _)| id == "gts.x.test.base.v1~")
+            .unwrap();
+        let child_result = results
+            .iter()
+            .find(|(id, _)| id == "gts.x.test.base.v1~x.test.child.v1~")
+            .unwrap();
+
+        // Verify base schema
+        let base_schema_path = Path::new(&base_result.1);
+        assert!(base_schema_path.exists());
+        let base_schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(base_schema_path).unwrap()).unwrap();
+        assert_eq!(base_schema["title"], "BaseEvent");
+        assert!(base_schema["properties"]["id"].is_object());
+
+        // Verify child schema
+        let child_schema_path = Path::new(&child_result.1);
+        assert!(child_schema_path.exists());
+        let child_schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(child_schema_path).unwrap()).unwrap();
+        assert_eq!(child_schema["title"], "ChildEvent (extends BaseEvent)");
+
+        // Verify allOf structure with parent reference
+        let all_of = child_schema["allOf"].as_array().unwrap();
+        assert_eq!(all_of.len(), 2);
+        assert_eq!(all_of[0]["$ref"], "gts://gts.x.test.base.v1~");
+        assert!(all_of[1]["properties"]["event_type"].is_object());
+    }
+
+    #[test]
+    fn test_rust_type_to_json_schema_option_string() {
+        let (required, schema) = rust_type_to_json_schema("Option<String>");
+        assert!(!required);
+        assert_eq!(schema["type"][0], "string");
+        assert_eq!(schema["type"][1], "null");
+    }
+
+    #[test]
+    fn test_rust_type_to_json_schema_hashmap() {
+        let (required, schema) = rust_type_to_json_schema("HashMap<String, i32>");
+        assert!(required);
+        assert_eq!(schema["type"], "object");
+    }
+
+    #[test]
+    fn test_rust_type_to_json_schema_vec_bool() {
+        let (required, schema) = rust_type_to_json_schema("Vec<bool>");
+        assert!(required);
+        assert_eq!(schema["type"], "array");
+        assert_eq!(schema["items"]["type"], "boolean");
+    }
+
+    #[test]
+    fn test_rust_type_to_json_schema_unknown_type() {
+        let (required, schema) = rust_type_to_json_schema("CustomStruct");
+        assert!(required);
+        assert_eq!(schema["type"], "object");
+    }
+
+    #[test]
+    fn test_should_exclude_path_with_patterns() {
+        let patterns = vec!["target/**".to_owned(), "*.tmp".to_owned()];
+
+        assert!(should_exclude_path(
+            Path::new("target/debug/foo"),
+            &patterns
+        ));
+        assert!(should_exclude_path(Path::new("file.tmp"), &patterns));
+        assert!(!should_exclude_path(Path::new("src/main.rs"), &patterns));
+    }
+
+    #[test]
+    fn test_should_exclude_path_empty_patterns() {
+        let patterns = vec![];
+        assert!(!should_exclude_path(Path::new("anything.rs"), &patterns));
+    }
+
+    #[test]
+    fn test_is_in_auto_ignored_dir_specific_paths() {
+        assert!(is_in_auto_ignored_dir(Path::new(
+            "tests/compile_fail/test.rs"
+        )));
+        assert!(is_in_auto_ignored_dir(Path::new("src/compile_fail/foo.rs")));
+        assert!(!is_in_auto_ignored_dir(Path::new("target/debug")));
+        assert!(!is_in_auto_ignored_dir(Path::new("node_modules/pkg")));
+        assert!(!is_in_auto_ignored_dir(Path::new("src/main.rs")));
+        assert!(!is_in_auto_ignored_dir(Path::new("tests/test.rs")));
+    }
+
+    #[test]
+    fn test_has_ignore_directive_variations() {
+        assert!(has_ignore_directive("// gts:ignore\nstruct Foo {}"));
+        assert!(has_ignore_directive("// GTS:IGNORE\nstruct Foo {}"));
+        assert!(!has_ignore_directive("struct Foo {}\nfn bar() {}"));
+        assert!(!has_ignore_directive("struct Foo {}\n// gts:ignore"));
+    }
+
+    #[test]
+    fn test_parse_macro_attrs_edge_cases() {
+        // With base true
+        let attr1 = r#"dir_path = "schemas", base = true, schema_id = "gts.x.test.v1~""#;
+        let result1 = parse_macro_attrs(attr1).unwrap();
+        assert_eq!(result1.dir_path, "schemas");
+        assert_eq!(result1.schema_id, "gts.x.test.v1~");
+        assert!(matches!(result1.base, BaseAttr::IsBase));
+
+        // With base parent
+        let attr2 = r#"dir_path = "schemas", base = ParentStruct, schema_id = "gts.x.test.v1~""#;
+        let result2 = parse_macro_attrs(attr2).unwrap();
+        assert!(matches!(result2.base, BaseAttr::Parent(ref p) if p == "ParentStruct"));
+
+        // Missing field
+        assert!(parse_macro_attrs(r#"dir_path = "schemas""#).is_none());
+
+        // Malformed
+        assert!(parse_macro_attrs(r"invalid syntax here").is_none());
+    }
+
+    #[test]
+    fn test_generate_schemas_from_rust_with_exclude() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        // Create test file that should be excluded
+        let test_file = temp_path.join("test_excluded.rs");
+        fs::write(&test_file, "// test file").unwrap();
+
+        // Call with exclude pattern
+        let result = generate_schemas_from_rust(
+            temp_path.to_str().unwrap(),
+            None,
+            &["test_*.rs".to_owned()],
+            1, // verbose
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_generate_schemas_from_rust_with_ignore_directive() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        // Create test file with ignore directive
+        let test_file = temp_path.join("ignored.rs");
+        fs::write(&test_file, "// gts:ignore\nstruct Foo {}").unwrap();
+
+        let result = generate_schemas_from_rust(
+            temp_path.to_str().unwrap(),
+            None,
+            &[],
+            1, // verbose
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_generate_schemas_from_rust_nonexistent_path() {
+        let result =
+            generate_schemas_from_rust("/nonexistent/path/that/does/not/exist", None, &[], 0);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("does not exist"));
     }
 }

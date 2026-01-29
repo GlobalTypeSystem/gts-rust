@@ -140,20 +140,20 @@ impl GtsEntity {
         schema_id: Option<String>,
     ) -> Self {
         let mut entity = GtsEntity {
-            file,
-            list_sequence,
-            content: content.clone(),
             gts_id,
             instance_id: None,
             is_schema,
+            file,
+            list_sequence,
             label,
+            content: content.clone(),
+            gts_refs: Vec::new(),
             validation: validation.unwrap_or_default(),
             schema_id,
             selected_entity_field: None,
             selected_schema_id_field: None,
-            gts_refs: Vec::new(),
-            schema_refs: Vec::new(),
             description: String::new(),
+            schema_refs: Vec::new(),
         };
 
         // RULE: A JSON is a schema if and only if it has a "$schema" field
@@ -331,17 +331,16 @@ impl GtsEntity {
                 //          has 2 segments, so schema_id = gts.x.core.events.type.v1~
                 // But: gts.v123.p456.n789.t000.v999.888~ has only 1 segment,
                 //      so we can't determine its schema (it IS a schema ID)
-                if let Some(ref gts_id) = self.gts_id {
-                    // Only extract schema_id if there are multiple segments
-                    if gts_id.gts_id_segments.len() > 1 {
-                        // Extract schema ID: everything up to and including last ~
-                        // For a 2-segment chain, this gives first segment (parent)
-                        if let Some(last_tilde) = gts_id.id.rfind('~') {
-                            self.schema_id = Some(gts_id.id[..=last_tilde].to_string());
-                            // Mark that schema_id was extracted from the id field
-                            self.selected_schema_id_field = self.selected_entity_field.clone();
-                        }
-                    }
+                // Only extract schema_id if there are multiple segments.
+                // Extract schema ID: everything up to and including last ~
+                // For a 2-segment chain, this gives first segment (parent)
+                if let Some(ref gts_id) = self.gts_id
+                    && gts_id.gts_id_segments.len() > 1
+                    && let Some(last_tilde) = gts_id.id.rfind('~')
+                {
+                    self.schema_id = Some(gts_id.id[..=last_tilde].to_string());
+                    // Mark that schema_id was extracted from the id field
+                    self.selected_schema_id_field = self.selected_entity_field.clone();
                 }
             } else {
                 // Anonymous instance: id is a UUID or other non-GTS identifier
@@ -391,12 +390,13 @@ impl GtsEntity {
             if f == "$schema" {
                 continue;
             }
-            if let Some(v) = self.get_field_value(f) {
-                // Only accept valid GTS type IDs (ending with ~)
-                if GtsID::is_valid(&v) && v.ends_with('~') {
-                    self.selected_schema_id_field = Some(f.clone());
-                    return Some(v);
-                }
+            // Only accept valid GTS type IDs (ending with ~)
+            if let Some(v) = self.get_field_value(f)
+                && GtsID::is_valid(&v)
+                && v.ends_with('~')
+            {
+                self.selected_schema_id_field = Some(f.clone());
+                return Some(v);
             }
         }
         None
@@ -427,16 +427,15 @@ impl GtsEntity {
         from_schema: &GtsEntity,
         resolver: Option<&()>,
     ) -> Result<GtsEntityCastResult, SchemaCastError> {
-        if self.is_schema {
-            // When casting a schema, from_schema might be a standard JSON Schema (no gts_id)
-            if let (Some(self_id), Some(from_id)) = (&self.gts_id, &from_schema.gts_id)
-                && self_id.id != from_id.id
-            {
-                return Err(SchemaCastError::InternalError(format!(
-                    "Internal error: {} != {}",
-                    self_id.id, from_id.id
-                )));
-            }
+        // When casting a schema, from_schema might be a standard JSON Schema (no gts_id)
+        if self.is_schema
+            && let (Some(self_id), Some(from_id)) = (&self.gts_id, &from_schema.gts_id)
+            && self_id.id != from_id.id
+        {
+            return Err(SchemaCastError::InternalError(format!(
+                "Internal error: {} != {}",
+                self_id.id, from_id.id
+            )));
         }
 
         if !to_schema.is_schema {

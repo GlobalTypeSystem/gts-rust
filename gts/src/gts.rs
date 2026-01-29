@@ -30,7 +30,7 @@ fn is_valid_segment_token(token: &str) -> bool {
 #[derive(Debug, Error)]
 pub enum GtsError {
     #[error("Invalid GTS segment #{num} @ offset {offset}: '{segment}': {cause}")]
-    InvalidSegment {
+    Segment {
         num: usize,
         offset: usize,
         segment: String,
@@ -38,10 +38,10 @@ pub enum GtsError {
     },
 
     #[error("Invalid GTS identifier: {id}: {cause}")]
-    InvalidId { id: String, cause: String },
+    Id { id: String, cause: String },
 
     #[error("Invalid GTS wildcard pattern: {pattern}: {cause}")]
-    InvalidWildcard { pattern: String, cause: String },
+    Wildcard { pattern: String, cause: String },
 }
 
 /// Parsed GTS segment containing vendor, package, namespace, type, and version info.
@@ -64,7 +64,7 @@ impl GtsIdSegment {
     /// Creates a new GTS ID segment from a string.
     ///
     /// # Errors
-    /// Returns `GtsError::InvalidSegment` if the segment string is invalid.
+    /// Returns `GtsError::Segment` if the segment string is invalid.
     pub fn new(num: usize, offset: usize, segment: &str) -> Result<Self, GtsError> {
         let segment = segment.trim().to_owned();
         let mut seg = GtsIdSegment {
@@ -93,7 +93,7 @@ impl GtsIdSegment {
         if segment.contains('~') {
             let tilde_count = segment.matches('~').count();
             if tilde_count > 1 {
-                return Err(GtsError::InvalidSegment {
+                return Err(GtsError::Segment {
                     num: self.num,
                     offset: self.offset,
                     segment: self.segment.clone(),
@@ -104,7 +104,7 @@ impl GtsIdSegment {
                 self.is_type = true;
                 segment.pop();
             } else {
-                return Err(GtsError::InvalidSegment {
+                return Err(GtsError::Segment {
                     num: self.num,
                     offset: self.offset,
                     segment: self.segment.clone(),
@@ -116,7 +116,7 @@ impl GtsIdSegment {
         let tokens: Vec<&str> = segment.split('.').collect();
 
         if tokens.len() > 6 {
-            return Err(GtsError::InvalidSegment {
+            return Err(GtsError::Segment {
                 num: self.num,
                 offset: self.offset,
                 segment: self.segment.clone(),
@@ -125,7 +125,7 @@ impl GtsIdSegment {
         }
 
         if !segment.ends_with('*') && tokens.len() < 5 {
-            return Err(GtsError::InvalidSegment {
+            return Err(GtsError::Segment {
                 num: self.num,
                 offset: self.offset,
                 segment: self.segment.clone(),
@@ -137,7 +137,7 @@ impl GtsIdSegment {
         if !segment.ends_with('*') {
             for (i, token) in tokens.iter().take(4).enumerate() {
                 if !is_valid_segment_token(token) {
-                    return Err(GtsError::InvalidSegment {
+                    return Err(GtsError::Segment {
                         num: self.num,
                         offset: self.offset,
                         segment: self.segment.clone(),
@@ -187,7 +187,7 @@ impl GtsIdSegment {
             }
 
             if !tokens[4].starts_with('v') {
-                return Err(GtsError::InvalidSegment {
+                return Err(GtsError::Segment {
                     num: self.num,
                     offset: self.offset,
                     segment: self.segment.clone(),
@@ -196,7 +196,7 @@ impl GtsIdSegment {
             }
 
             let major_str = &tokens[4][1..];
-            self.ver_major = major_str.parse().map_err(|_| GtsError::InvalidSegment {
+            self.ver_major = major_str.parse().map_err(|_| GtsError::Segment {
                 num: self.num,
                 offset: self.offset,
                 segment: self.segment.clone(),
@@ -204,7 +204,7 @@ impl GtsIdSegment {
             })?;
 
             if major_str != self.ver_major.to_string() {
-                return Err(GtsError::InvalidSegment {
+                return Err(GtsError::Segment {
                     num: self.num,
                     offset: self.offset,
                     segment: self.segment.clone(),
@@ -219,7 +219,7 @@ impl GtsIdSegment {
                 return Ok(());
             }
 
-            let minor: u32 = tokens[5].parse().map_err(|_| GtsError::InvalidSegment {
+            let minor: u32 = tokens[5].parse().map_err(|_| GtsError::Segment {
                 num: self.num,
                 offset: self.offset,
                 segment: self.segment.clone(),
@@ -227,7 +227,7 @@ impl GtsIdSegment {
             })?;
 
             if tokens[5] != minor.to_string() {
-                return Err(GtsError::InvalidSegment {
+                return Err(GtsError::Segment {
                     num: self.num,
                     offset: self.offset,
                     segment: self.segment.clone(),
@@ -256,34 +256,34 @@ impl GtsID {
     /// Parse and validate a GTS identifier string.
     ///
     /// # Errors
-    /// Returns `GtsError::InvalidId` if the string is not a valid GTS identifier.
+    /// Returns `GtsError::Id` if the string is not a valid GTS identifier.
     pub fn new(id: &str) -> Result<Self, GtsError> {
         let raw = id.trim();
 
         // Validate lowercase
         if raw != raw.to_lowercase() {
-            return Err(GtsError::InvalidId {
+            return Err(GtsError::Id {
                 id: id.to_owned(),
                 cause: "Must be lower case".to_owned(),
             });
         }
 
         if raw.contains('-') {
-            return Err(GtsError::InvalidId {
+            return Err(GtsError::Id {
                 id: id.to_owned(),
                 cause: "Must not contain '-'".to_owned(),
             });
         }
 
         if !raw.starts_with(GTS_PREFIX) {
-            return Err(GtsError::InvalidId {
+            return Err(GtsError::Id {
                 id: id.to_owned(),
                 cause: format!("Does not start with '{GTS_PREFIX}'"),
             });
         }
 
         if raw.len() > 1024 {
-            return Err(GtsError::InvalidId {
+            return Err(GtsError::Id {
                 id: id.to_owned(),
                 cause: "Too long".to_owned(),
             });
@@ -310,7 +310,7 @@ impl GtsID {
         let mut offset = GTS_PREFIX.len();
         for (i, part) in parts.iter().enumerate() {
             if part.is_empty() || part == "~" {
-                return Err(GtsError::InvalidId {
+                return Err(GtsError::Id {
                     id: id.to_owned(),
                     cause: format!("GTS segment #{} @ offset {offset} is empty", i + 1),
                 });
@@ -327,7 +327,7 @@ impl GtsID {
             && !gts_id_segments[0].is_type
             && !gts_id_segments[0].is_wildcard
         {
-            return Err(GtsError::InvalidId {
+            return Err(GtsError::Id {
                 id: id.to_owned(),
                 cause: "Single-segment instance IDs are prohibited. Instance IDs must be chained with at least one type segment (e.g., 'type~instance')".to_owned(),
             });
@@ -466,7 +466,7 @@ impl GtsID {
     /// Splits a GTS ID with an optional attribute path.
     ///
     /// # Errors
-    /// Returns `GtsError::InvalidId` if the path is empty after the `@` separator.
+    /// Returns `GtsError::Id` if the path is empty after the `@` separator.
     pub fn split_at_path(gts_with_path: &str) -> Result<(String, Option<String>), GtsError> {
         if !gts_with_path.contains('@') {
             return Ok((gts_with_path.to_owned(), None));
@@ -479,7 +479,7 @@ impl GtsID {
         if let Some(ref p) = path
             && p.is_empty()
         {
-            return Err(GtsError::InvalidId {
+            return Err(GtsError::Id {
                 id: gts_with_path.to_owned(),
                 cause: "Attribute path cannot be empty".to_owned(),
             });
@@ -520,26 +520,26 @@ impl GtsWildcard {
     /// Creates a new GTS wildcard pattern.
     ///
     /// # Errors
-    /// Returns `GtsError::InvalidWildcard` if the pattern is invalid.
+    /// Returns `GtsError::Wildcard` if the pattern is invalid.
     pub fn new(pattern: &str) -> Result<Self, GtsError> {
         let p = pattern.trim();
 
         if !p.starts_with(GTS_PREFIX) {
-            return Err(GtsError::InvalidWildcard {
+            return Err(GtsError::Wildcard {
                 pattern: pattern.to_owned(),
                 cause: format!("Does not start with '{GTS_PREFIX}'"),
             });
         }
 
         if p.matches('*').count() > 1 {
-            return Err(GtsError::InvalidWildcard {
+            return Err(GtsError::Wildcard {
                 pattern: pattern.to_owned(),
                 cause: "The wildcard '*' token is allowed only once".to_owned(),
             });
         }
 
         if p.contains('*') && !p.ends_with(".*") && !p.ends_with("~*") {
-            return Err(GtsError::InvalidWildcard {
+            return Err(GtsError::Wildcard {
                 pattern: pattern.to_owned(),
                 cause: "The wildcard '*' token is allowed only at the end of the pattern"
                     .to_owned(),
@@ -547,7 +547,7 @@ impl GtsWildcard {
         }
 
         // Try to parse as GtsID
-        let gts_id = GtsID::new(p).map_err(|e| GtsError::InvalidWildcard {
+        let gts_id = GtsID::new(p).map_err(|e| GtsError::Wildcard {
             pattern: pattern.to_owned(),
             cause: e.to_string(),
         })?;
@@ -1293,5 +1293,157 @@ mod tests {
         let pattern = GtsWildcard::new("gts.x.core.events.*").expect("test");
         let s: &str = pattern.as_ref();
         assert_eq!(s, "gts.x.core.events.*");
+    }
+
+    #[test]
+    fn test_gts_id_new_with_uri_prefix() {
+        // Should reject gts:// prefix
+        assert!(GtsID::new("gts://x.core.v1~").is_err());
+    }
+
+    #[test]
+    fn test_gts_id_minimum_segments() {
+        // Too few segments
+        assert!(GtsID::new("gts~").is_err());
+        assert!(GtsID::new("gts.x~").is_err());
+        assert!(GtsID::new("gts.x.pkg~").is_err());
+        assert!(GtsID::new("gts.x.pkg.ns~").is_err());
+
+        // Minimum valid (vendor.package.namespace.type.version)
+        assert!(GtsID::new("gts.x.pkg.ns.type.v1~").is_ok());
+    }
+
+    #[test]
+    fn test_gts_id_invalid_characters() {
+        assert!(GtsID::new("gts.x.test!.v1~").is_err());
+        assert!(GtsID::new("gts.x.te$t.v1~").is_err());
+        assert!(GtsID::new("gts.x.te st.v1~").is_err());
+    }
+
+    #[test]
+    fn test_gts_id_uppercase_rejected() {
+        assert!(GtsID::new("gts.x.Test.v1~").is_err());
+        assert!(GtsID::new("gts.X.test.v1~").is_err());
+    }
+
+    #[test]
+    fn test_gts_id_hyphen_rejected() {
+        assert!(GtsID::new("gts.x.test-name.v1~").is_err());
+    }
+
+    #[test]
+    fn test_gts_id_digit_start_segment() {
+        // Digits at start of segment
+        assert!(GtsID::new("gts.x.9test.v1~").is_err());
+    }
+
+    #[test]
+    fn test_gts_id_with_numbers_midword() {
+        // Numbers in middle of segment are OK
+        assert!(GtsID::new("gts.x.test2name.ns.type.v1~").is_ok());
+        assert!(GtsID::new("gts.x.pkg.item3.type.v1~").is_ok());
+    }
+
+    #[test]
+    fn test_gts_wildcard_type_suffix_match() {
+        // Wildcard after type suffix
+        let pattern = GtsWildcard::new("gts.x.pkg.ns.type.v1~*").expect("test");
+        let id1 = GtsID::new("gts.x.pkg.ns.type.v1~a.b.c.child.v1~").expect("test");
+        let id2 = GtsID::new("gts.x.pkg.ns.type.v2~a.b.c.child.v1~").expect("test");
+        assert!(id1.wildcard_match(&pattern));
+        assert!(!id2.wildcard_match(&pattern));
+    }
+
+    #[test]
+    fn test_split_at_path_valid_json_pointer() {
+        let (gts, path) = GtsID::split_at_path("gts.x.test.v1~@/properties/field").expect("test");
+        assert_eq!(gts, "gts.x.test.v1~");
+        assert_eq!(path, Some("/properties/field".to_owned()));
+    }
+
+    #[test]
+    fn test_gts_id_segment_start_underscore() {
+        // Underscore at start is invalid
+        assert!(GtsID::new("gts.x._private.event.v1~").is_err());
+    }
+
+    #[test]
+    fn test_gts_id_multi_digit_versions() {
+        // Multi-digit version numbers
+        assert!(GtsID::new("gts.x.pkg.ns.event.v10~").is_ok());
+        assert!(GtsID::new("gts.x.pkg.ns.event.v1.20~").is_ok());
+    }
+
+    #[test]
+    fn test_gts_segment_too_many_tildes() {
+        // Multiple tildes together (invalid segment)
+        let seg = GtsIdSegment::new(1, 0, "x.pkg.ns.type.v1~~");
+        assert!(seg.is_err());
+        if let Err(e) = seg {
+            assert!(e.to_string().contains("Too many '~' characters"));
+        }
+    }
+
+    #[test]
+    fn test_gts_segment_tilde_not_at_end() {
+        // Tilde in middle of segment (not at end)
+        let seg = GtsIdSegment::new(1, 0, "x.pkg~mid.ns.type.v1");
+        assert!(seg.is_err());
+        if let Err(e) = seg {
+            assert!(e.to_string().contains("'~' must be at the end"));
+        }
+    }
+
+    #[test]
+    fn test_gts_segment_too_many_tokens() {
+        // More than 6 tokens in a segment
+        let seg = GtsIdSegment::new(1, 0, "x.pkg.ns.type.v1.2.extra~");
+        assert!(seg.is_err());
+        if let Err(e) = seg {
+            assert!(e.to_string().contains("Too many tokens"));
+        }
+    }
+
+    #[test]
+    fn test_gts_segment_version_without_v_prefix() {
+        // Version without 'v' prefix
+        let seg = GtsIdSegment::new(1, 0, "x.pkg.ns.type.1~");
+        assert!(seg.is_err());
+        if let Err(e) = seg {
+            assert!(e.to_string().contains("Major version must start with 'v'"));
+        }
+    }
+
+    #[test]
+    fn test_gts_segment_version_leading_zeros() {
+        // Version with leading zeros (should fail because "01" != "1")
+        let seg = GtsIdSegment::new(1, 0, "x.pkg.ns.type.v01~");
+        assert!(seg.is_err());
+        if let Err(e) = seg {
+            assert!(e.to_string().contains("Major version must be an integer"));
+        }
+    }
+
+    #[test]
+    fn test_gts_wildcard_at_various_positions() {
+        // Wildcard at vendor position
+        let result = GtsWildcard::new("gts.*");
+        assert!(result.is_ok());
+
+        // Wildcard at package position
+        let result = GtsWildcard::new("gts.x.*");
+        assert!(result.is_ok());
+
+        // Wildcard at namespace position
+        let result = GtsWildcard::new("gts.x.pkg.*");
+        assert!(result.is_ok());
+
+        // Wildcard at type position
+        let result = GtsWildcard::new("gts.x.pkg.ns.*");
+        assert!(result.is_ok());
+
+        // Wildcard at version position
+        let result = GtsWildcard::new("gts.x.pkg.ns.type.*");
+        assert!(result.is_ok());
     }
 }

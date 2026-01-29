@@ -1,0 +1,13 @@
+error: struct_to_gts_schema: Both struct name and schema_id must have a version. Struct 'BaseEvent' has no version suffix (e.g., V1) and schema_id 'gts.x.core.events.type~' has no version (e.g., v1~). Add version to both (e.g., 'BaseEventV1' with 'gts.x.foo.v1~')
+  --> tests/compile_fail/version_missing_both.rs:14:12
+   |
+14 | pub struct BaseEvent {
+   |            ^^^^^^^^^
+
+warning: unused import: `gts::GtsInstanceId`
+ --> tests/compile_fail/version_missing_both.rs:4:5
+  |
+4 | use gts::GtsInstanceId;
+  |     ^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
