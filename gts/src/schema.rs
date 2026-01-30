@@ -242,3 +242,235 @@ pub fn build_gts_allof_schema(
         ]
     })
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_unit_type_properties() {
+        // Test all unit type properties in one test
+        let schema = <()>::gts_schema();
+        assert_eq!(schema, json!({"type": "object"}));
+        assert_eq!(<()>::SCHEMA_ID, "");
+        assert_eq!(<()>::GENERIC_FIELD, None);
+    }
+
+    #[test]
+    fn test_wrap_in_nesting_path_empty_path() {
+        let properties = json!({"field1": {"type": "string"}});
+        let required = json!(["field1"]);
+
+        let result = <()>::wrap_in_nesting_path(&[], properties.clone(), required, None);
+
+        assert_eq!(result, properties);
+    }
+
+    #[test]
+    fn test_wrap_in_nesting_path_single_level() {
+        let properties = json!({"field1": {"type": "string"}});
+        let required = json!(["field1"]);
+
+        let result = <()>::wrap_in_nesting_path(&["payload"], properties, required.clone(), None);
+
+        assert_eq!(
+            result,
+            json!({
+                "payload": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {"field1": {"type": "string"}},
+                    "required": required
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn test_wrap_in_nesting_path_multi_level() {
+        let properties = json!({"field1": {"type": "string"}});
+        let required = json!(["field1"]);
+
+        let result =
+            <()>::wrap_in_nesting_path(&["payload", "data"], properties, required.clone(), None);
+
+        assert_eq!(
+            result,
+            json!({
+                "payload": {
+                    "type": "object",
+                    "properties": {
+                        "data": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {"field1": {"type": "string"}},
+                            "required": required
+                        }
+                    }
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn test_wrap_in_nesting_path_with_generic_field() {
+        let properties = json!({
+            "field1": {"type": "string"},
+            "generic_field": {"type": "number"}
+        });
+        let required = json!(["field1"]);
+
+        let result =
+            <()>::wrap_in_nesting_path(&["payload"], properties, required, Some("generic_field"));
+
+        let result_obj = result.as_object().unwrap();
+        let payload = result_obj.get("payload").unwrap();
+        let props = payload.get("properties").unwrap();
+
+        // Generic field should be just {"type": "object"}
+        assert_eq!(
+            props.get("generic_field").unwrap(),
+            &json!({"type": "object"})
+        );
+        // Other fields should be preserved
+        assert_eq!(props.get("field1").unwrap(), &json!({"type": "string"}));
+    }
+
+    #[test]
+    fn test_strip_schema_metadata_removes_all_metadata() {
+        // Test removal of all metadata fields including $id, $schema, title, description
+        let schema = json!({
+            "$id": "gts://test",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "title": "Test Schema",
+            "description": "A test",
+            "type": "object",
+            "properties": {"field": {"type": "string"}}
+        });
+
+        let result = strip_schema_metadata(&schema);
+
+        // All metadata should be removed
+        assert!(result.get("$id").is_none());
+        assert!(result.get("$schema").is_none());
+        assert!(result.get("title").is_none());
+        assert!(result.get("description").is_none());
+        // Non-metadata should be preserved
+        assert_eq!(result.get("type").unwrap(), "object");
+        assert!(result.get("properties").is_some());
+    }
+
+    #[test]
+    fn test_strip_schema_metadata_recursive() {
+        let schema = json!({
+            "$id": "gts://test",
+            "properties": {
+                "nested": {
+                    "$id": "gts://nested",
+                    "type": "string",
+                    "description": "Nested field"
+                }
+            }
+        });
+
+        let result = strip_schema_metadata(&schema);
+
+        assert!(result.get("$id").is_none());
+        let props = result.get("properties").unwrap();
+        let nested = props.get("nested").unwrap();
+        assert!(nested.get("$id").is_none());
+        assert!(nested.get("description").is_none());
+        assert_eq!(nested.get("type").unwrap(), "string");
+    }
+
+    #[test]
+    fn test_strip_schema_metadata_preserves_non_metadata() {
+        let schema = json!({
+            "$id": "gts://test",
+            "type": "object",
+            "properties": {"field": {"type": "string"}},
+            "required": ["field"],
+            "additionalProperties": false
+        });
+
+        let result = strip_schema_metadata(&schema);
+
+        assert_eq!(result.get("type").unwrap(), "object");
+        assert!(result.get("properties").is_some());
+        assert!(result.get("required").is_some());
+        assert_eq!(result.get("additionalProperties").unwrap(), &json!(false));
+    }
+
+    #[test]
+    fn test_build_gts_allof_schema_structure() {
+        let properties = json!({"field1": {"type": "string"}});
+        let required = vec!["field1"];
+
+        let result = build_gts_allof_schema(
+            "vendor.package.namespace.child.1",
+            "vendor.package.namespace.base.1",
+            "Child Schema",
+            &properties,
+            &required,
+        );
+
+        assert_eq!(
+            result.get("$id").unwrap(),
+            "gts://vendor.package.namespace.child.1"
+        );
+        assert_eq!(
+            result.get("$schema").unwrap(),
+            "http://json-schema.org/draft-07/schema#"
+        );
+        assert_eq!(result.get("title").unwrap(), "Child Schema");
+        assert_eq!(result.get("type").unwrap(), "object");
+
+        let allof = result.get("allOf").unwrap().as_array().unwrap();
+        assert_eq!(allof.len(), 2);
+    }
+
+    #[test]
+    fn test_build_gts_allof_schema_ref_format() {
+        let properties = json!({"field1": {"type": "string"}});
+        let required = vec!["field1"];
+
+        let result = build_gts_allof_schema(
+            "vendor.package.namespace.child.1",
+            "vendor.package.namespace.base.1",
+            "Child Schema",
+            &properties,
+            &required,
+        );
+
+        let allof = result.get("allOf").unwrap().as_array().unwrap();
+        let ref_obj = &allof[0];
+
+        assert_eq!(
+            ref_obj.get("$ref").unwrap(),
+            "gts://vendor.package.namespace.base.1"
+        );
+    }
+
+    #[test]
+    fn test_build_gts_allof_schema_properties_in_allof() {
+        let properties = json!({"field1": {"type": "string"}, "field2": {"type": "number"}});
+        let required = vec!["field1", "field2"];
+
+        let result = build_gts_allof_schema(
+            "vendor.package.namespace.child.1",
+            "vendor.package.namespace.base.1",
+            "Child Schema",
+            &properties,
+            &required,
+        );
+
+        let allof = result.get("allOf").unwrap().as_array().unwrap();
+        let props_obj = &allof[1];
+
+        assert_eq!(props_obj.get("type").unwrap(), "object");
+        assert_eq!(props_obj.get("properties").unwrap(), &properties);
+        assert_eq!(props_obj.get("required").unwrap(), &json!(required));
+    }
+}

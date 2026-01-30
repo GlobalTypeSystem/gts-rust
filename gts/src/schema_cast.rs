@@ -19,6 +19,7 @@ pub enum SchemaCastError {
     CastError(String),
 }
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GtsEntityCastResult {
     #[serde(rename = "from")]
@@ -686,6 +687,7 @@ mod tests {
     use serde_json::json;
 
     // Helper struct for compatibility results
+    #[allow(clippy::struct_excessive_bools)]
     #[derive(Debug, Default)]
     struct CompatibilityResult {
         is_backward_compatible: bool,
@@ -759,9 +761,9 @@ mod tests {
             added_properties: vec![],
             removed_properties: vec![],
             changed_properties: vec![],
+            is_fully_compatible: false,
             is_backward_compatible: true,
             is_forward_compatible: false,
-            is_fully_compatible: false,
             incompatibility_reasons: vec![],
             backward_errors: vec![],
             forward_errors: vec![],

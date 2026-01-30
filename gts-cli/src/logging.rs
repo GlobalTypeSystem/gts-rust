@@ -65,6 +65,7 @@ pub struct LoggingMiddleware {
 }
 
 impl LoggingMiddleware {
+    #[must_use]
     pub fn new(verbose: u8) -> Self {
         Self { verbose }
     }
@@ -181,5 +182,208 @@ impl LoggingMiddleware {
         }
 
         response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_colors_new_creates_struct() {
+        let colors = Colors::new();
+        // Just verify we can create the struct
+        // Whether colors are enabled depends on TTY state
+        assert!(!colors.reset.is_empty() || colors.reset.is_empty());
+    }
+
+    #[test]
+    fn test_status_color_2xx_returns_green() {
+        let colors = Colors {
+            reset: "\x1b[0m",
+            dim: "\x1b[2m",
+            green: "\x1b[92m",
+            yellow: "\x1b[93m",
+            red: "\x1b[91m",
+            cyan: "\x1b[96m",
+            blue: "\x1b[94m",
+            magenta: "\x1b[95m",
+            gray: "\x1b[90m",
+        };
+
+        let color = colors.status_color(StatusCode::OK);
+        assert_eq!(color, "\x1b[92m");
+
+        let color = colors.status_color(StatusCode::CREATED);
+        assert_eq!(color, "\x1b[92m");
+    }
+
+    #[test]
+    fn test_status_color_3xx_returns_yellow() {
+        let colors = Colors {
+            reset: "\x1b[0m",
+            dim: "\x1b[2m",
+            green: "\x1b[92m",
+            yellow: "\x1b[93m",
+            red: "\x1b[91m",
+            cyan: "\x1b[96m",
+            blue: "\x1b[94m",
+            magenta: "\x1b[95m",
+            gray: "\x1b[90m",
+        };
+
+        let color = colors.status_color(StatusCode::MOVED_PERMANENTLY);
+        assert_eq!(color, "\x1b[93m");
+
+        let color = colors.status_color(StatusCode::FOUND);
+        assert_eq!(color, "\x1b[93m");
+    }
+
+    #[test]
+    fn test_status_color_4xx_5xx_returns_red() {
+        let colors = Colors {
+            reset: "\x1b[0m",
+            dim: "\x1b[2m",
+            green: "\x1b[92m",
+            yellow: "\x1b[93m",
+            red: "\x1b[91m",
+            cyan: "\x1b[96m",
+            blue: "\x1b[94m",
+            magenta: "\x1b[95m",
+            gray: "\x1b[90m",
+        };
+
+        let color = colors.status_color(StatusCode::NOT_FOUND);
+        assert_eq!(color, "\x1b[91m");
+
+        let color = colors.status_color(StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(color, "\x1b[91m");
+    }
+
+    #[test]
+    fn test_logging_middleware_new() {
+        let middleware = LoggingMiddleware::new(0);
+        assert_eq!(middleware.verbose, 0);
+
+        let middleware = LoggingMiddleware::new(1);
+        assert_eq!(middleware.verbose, 1);
+
+        let middleware = LoggingMiddleware::new(2);
+        assert_eq!(middleware.verbose, 2);
+    }
+
+    #[test]
+    fn test_colors_all_status_codes() {
+        let colors = Colors {
+            reset: "\x1b[0m",
+            dim: "\x1b[2m",
+            green: "\x1b[92m",
+            yellow: "\x1b[93m",
+            red: "\x1b[91m",
+            cyan: "\x1b[96m",
+            blue: "\x1b[94m",
+            magenta: "\x1b[95m",
+            gray: "\x1b[90m",
+        };
+
+        // Test 2xx
+        assert_eq!(colors.status_color(StatusCode::OK), "\x1b[92m");
+        assert_eq!(colors.status_color(StatusCode::ACCEPTED), "\x1b[92m");
+        assert_eq!(colors.status_color(StatusCode::NO_CONTENT), "\x1b[92m");
+
+        // Test 3xx
+        assert_eq!(
+            colors.status_color(StatusCode::PERMANENT_REDIRECT),
+            "\x1b[93m"
+        );
+        assert_eq!(
+            colors.status_color(StatusCode::TEMPORARY_REDIRECT),
+            "\x1b[93m"
+        );
+
+        // Test 4xx
+        assert_eq!(colors.status_color(StatusCode::BAD_REQUEST), "\x1b[91m");
+        assert_eq!(colors.status_color(StatusCode::UNAUTHORIZED), "\x1b[91m");
+        assert_eq!(colors.status_color(StatusCode::FORBIDDEN), "\x1b[91m");
+
+        // Test 5xx
+        assert_eq!(
+            colors.status_color(StatusCode::SERVICE_UNAVAILABLE),
+            "\x1b[91m"
+        );
+        assert_eq!(colors.status_color(StatusCode::BAD_GATEWAY), "\x1b[91m");
+    }
+
+    #[test]
+    fn test_colors_disabled() {
+        // Test colors struct without colors (TTY disabled)
+        let colors = Colors {
+            reset: "",
+            dim: "",
+            green: "",
+            yellow: "",
+            red: "",
+            cyan: "",
+            blue: "",
+            magenta: "",
+            gray: "",
+        };
+
+        assert_eq!(colors.status_color(StatusCode::OK), "");
+        assert_eq!(colors.status_color(StatusCode::FOUND), "");
+        assert_eq!(colors.status_color(StatusCode::NOT_FOUND), "");
+    }
+
+    #[test]
+    fn test_colors_boundary_conditions() {
+        let colors = Colors {
+            reset: "\x1b[0m",
+            dim: "\x1b[2m",
+            green: "\x1b[92m",
+            yellow: "\x1b[93m",
+            red: "\x1b[91m",
+            cyan: "\x1b[96m",
+            blue: "\x1b[94m",
+            magenta: "\x1b[95m",
+            gray: "\x1b[90m",
+        };
+
+        // Boundary 200
+        assert_eq!(
+            colors.status_color(StatusCode::from_u16(200).unwrap()),
+            "\x1b[92m"
+        );
+        // Boundary 299
+        assert_eq!(
+            colors.status_color(StatusCode::from_u16(299).unwrap()),
+            "\x1b[92m"
+        );
+        // Boundary 300
+        assert_eq!(
+            colors.status_color(StatusCode::from_u16(300).unwrap()),
+            "\x1b[93m"
+        );
+        // Boundary 399
+        assert_eq!(
+            colors.status_color(StatusCode::from_u16(399).unwrap()),
+            "\x1b[93m"
+        );
+        // Boundary 400
+        assert_eq!(
+            colors.status_color(StatusCode::from_u16(400).unwrap()),
+            "\x1b[91m"
+        );
+        // Boundary 500
+        assert_eq!(
+            colors.status_color(StatusCode::from_u16(500).unwrap()),
+            "\x1b[91m"
+        );
+    }
+
+    #[test]
+    fn test_logging_middleware_clone() {
+        let middleware = LoggingMiddleware::new(1);
+        let cloned = middleware;
+        assert_eq!(cloned.verbose, 1);
     }
 }

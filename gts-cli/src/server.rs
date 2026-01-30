@@ -15,7 +15,7 @@ use crate::logging::LoggingMiddleware;
 
 #[derive(Clone)]
 pub struct AppState {
-    ops: Arc<Mutex<GtsOps>>,
+    pub ops: Arc<Mutex<GtsOps>>,
 }
 
 pub struct GtsHttpServer {
@@ -26,6 +26,7 @@ pub struct GtsHttpServer {
 }
 
 impl GtsHttpServer {
+    #[must_use]
     pub fn new(ops: GtsOps, host: String, port: u16, verbose: u8) -> Self {
         Self {
             ops,
@@ -35,6 +36,13 @@ impl GtsHttpServer {
         }
     }
 
+    /// Run the HTTP server
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The server fails to bind to the specified address
+    /// - The server encounters an error while serving requests
     pub async fn run(self) -> anyhow::Result<()> {
         let verbose = self.verbose;
         let state = AppState {
@@ -52,7 +60,7 @@ impl GtsHttpServer {
         Ok(())
     }
 
-    fn create_router(state: AppState, verbose: u8) -> Router {
+    pub fn create_router(state: AppState, verbose: u8) -> Router {
         let mut router = Router::new()
             .route("/entities", get(get_entities).post(add_entity))
             .route("/entities/{gts_id}", get(get_entity))
@@ -83,6 +91,7 @@ impl GtsHttpServer {
         router
     }
 
+    #[must_use]
     pub fn openapi_spec(&self) -> Value {
         json!({
             "openapi": "3.0.0",
@@ -159,15 +168,27 @@ struct SchemaRegister {
     schema_content: Value,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, serde::Serialize)]
 struct CastRequest {
     instance_id: String,
     to_schema_id: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, serde::Serialize)]
 struct ValidateInstanceRequest {
     instance_id: String,
+}
+
+// Helper function to lock mutex or return error response
+fn lock_ops(
+    mutex: &Arc<Mutex<GtsOps>>,
+) -> Result<std::sync::MutexGuard<'_, GtsOps>, impl IntoResponse> {
+    mutex.lock().map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Server state corrupted"})),
+        )
+    })
 }
 
 // Async Handlers
@@ -175,18 +196,24 @@ async fn get_entities(
     State(state): State<AppState>,
     Query(params): Query<LimitQuery>,
 ) -> impl IntoResponse {
-    let ops = state.ops.lock().unwrap();
+    let ops = match lock_ops(&state.ops) {
+        Ok(guard) => guard,
+        Err(response) => return response.into_response(),
+    };
     let result = ops.get_entities(params.limit);
-    Json(result)
+    Json(result).into_response()
 }
 
 async fn get_entity(
     State(state): State<AppState>,
     Path(gts_id): Path<String>,
 ) -> impl IntoResponse {
-    let mut ops = state.ops.lock().unwrap();
+    let mut ops = match lock_ops(&state.ops) {
+        Ok(guard) => guard,
+        Err(response) => return response.into_response(),
+    };
     let result = ops.get_entity(&gts_id);
-    Json(result)
+    Json(result).into_response()
 }
 
 async fn add_entity(
@@ -194,12 +221,15 @@ async fn add_entity(
     Query(params): Query<AddEntityQuery>,
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
-    let mut ops = state.ops.lock().unwrap();
+    let mut ops = match lock_ops(&state.ops) {
+        Ok(guard) => guard,
+        Err(response) => return response.into_response(),
+    };
     let result = ops.add_entity(&body, params.validate);
     if result.ok {
-        (StatusCode::OK, Json(result))
+        (StatusCode::OK, Json(result)).into_response()
     } else {
-        (StatusCode::UNPROCESSABLE_ENTITY, Json(result))
+        (StatusCode::UNPROCESSABLE_ENTITY, Json(result)).into_response()
     }
 }
 
@@ -207,106 +237,145 @@ async fn add_entities(
     State(state): State<AppState>,
     Json(body): Json<Vec<Value>>,
 ) -> impl IntoResponse {
-    let mut ops = state.ops.lock().unwrap();
+    let mut ops = match lock_ops(&state.ops) {
+        Ok(guard) => guard,
+        Err(response) => return response.into_response(),
+    };
     let result = ops.add_entities(&body);
-    Json(result)
+    Json(result).into_response()
 }
 
 async fn add_schema(
     State(state): State<AppState>,
     Json(body): Json<SchemaRegister>,
 ) -> impl IntoResponse {
-    let mut ops = state.ops.lock().unwrap();
+    let mut ops = match lock_ops(&state.ops) {
+        Ok(guard) => guard,
+        Err(response) => return response.into_response(),
+    };
     let result = ops.add_schema(body.type_id, &body.schema_content);
-    Json(result)
+    Json(result).into_response()
 }
 
 async fn validate_id(
     State(state): State<AppState>,
     Query(params): Query<GtsIdQuery>,
 ) -> impl IntoResponse {
-    let ops = state.ops.lock().unwrap();
-    let result = ops.validate_id(&params.gts_id);
-    Json(result)
+    let _ops = match lock_ops(&state.ops) {
+        Ok(guard) => guard,
+        Err(response) => return response.into_response(),
+    };
+    let result = GtsOps::validate_id(&params.gts_id);
+    Json(result).into_response()
 }
 
 async fn extract_id(State(state): State<AppState>, Json(body): Json<Value>) -> impl IntoResponse {
-    let ops = state.ops.lock().unwrap();
+    let ops = match lock_ops(&state.ops) {
+        Ok(guard) => guard,
+        Err(response) => return response.into_response(),
+    };
     let result = ops.extract_id(&body);
-    Json(result)
+    Json(result).into_response()
 }
 
 async fn parse_id(
     State(state): State<AppState>,
     Query(params): Query<GtsIdQuery>,
 ) -> impl IntoResponse {
-    let ops = state.ops.lock().unwrap();
-    let result = ops.parse_id(&params.gts_id);
-    Json(result)
+    let _ops = match lock_ops(&state.ops) {
+        Ok(guard) => guard,
+        Err(response) => return response.into_response(),
+    };
+    let result = GtsOps::parse_id(&params.gts_id);
+    Json(result).into_response()
 }
 
 async fn match_id_pattern(
     State(state): State<AppState>,
     Query(params): Query<MatchIdQuery>,
 ) -> impl IntoResponse {
-    let ops = state.ops.lock().unwrap();
-    let result = ops.match_id_pattern(&params.candidate, &params.pattern);
-    Json(result)
+    let _ops = match lock_ops(&state.ops) {
+        Ok(guard) => guard,
+        Err(response) => return response.into_response(),
+    };
+    let result = GtsOps::match_id_pattern(&params.candidate, &params.pattern);
+    Json(result).into_response()
 }
 
 async fn id_to_uuid(
     State(state): State<AppState>,
     Query(params): Query<GtsIdQuery>,
 ) -> impl IntoResponse {
-    let ops = state.ops.lock().unwrap();
-    let result = ops.uuid(&params.gts_id);
-    Json(result)
+    let _ops = match lock_ops(&state.ops) {
+        Ok(guard) => guard,
+        Err(response) => return response.into_response(),
+    };
+    let result = GtsOps::uuid(&params.gts_id);
+    Json(result).into_response()
 }
 
 async fn validate_instance(
     State(state): State<AppState>,
     Json(body): Json<ValidateInstanceRequest>,
 ) -> impl IntoResponse {
-    let mut ops = state.ops.lock().unwrap();
+    let mut ops = match lock_ops(&state.ops) {
+        Ok(guard) => guard,
+        Err(response) => return response.into_response(),
+    };
     let result = ops.validate_instance(&body.instance_id);
-    Json(result)
+    Json(result).into_response()
 }
 
 async fn schema_graph(
     State(state): State<AppState>,
     Query(params): Query<GtsIdQuery>,
 ) -> impl IntoResponse {
-    let mut ops = state.ops.lock().unwrap();
+    let mut ops = match lock_ops(&state.ops) {
+        Ok(guard) => guard,
+        Err(response) => return response.into_response(),
+    };
     let result = ops.schema_graph(&params.gts_id);
-    Json(result)
+    Json(result).into_response()
 }
 
 async fn compatibility(
     State(state): State<AppState>,
     Query(params): Query<CompatibilityQuery>,
 ) -> impl IntoResponse {
-    let mut ops = state.ops.lock().unwrap();
+    let mut ops = match lock_ops(&state.ops) {
+        Ok(guard) => guard,
+        Err(response) => return response.into_response(),
+    };
     let result = ops.compatibility(&params.old_schema_id, &params.new_schema_id);
-    Json(result)
+    Json(result).into_response()
 }
 
 async fn cast(State(state): State<AppState>, Json(body): Json<CastRequest>) -> impl IntoResponse {
-    let mut ops = state.ops.lock().unwrap();
+    let mut ops = match lock_ops(&state.ops) {
+        Ok(guard) => guard,
+        Err(response) => return response.into_response(),
+    };
     let result = ops.cast(&body.instance_id, &body.to_schema_id);
-    Json(result)
+    Json(result).into_response()
 }
 
 async fn query(
     State(state): State<AppState>,
     Query(params): Query<QueryParams>,
 ) -> impl IntoResponse {
-    let ops = state.ops.lock().unwrap();
+    let ops = match lock_ops(&state.ops) {
+        Ok(guard) => guard,
+        Err(response) => return response.into_response(),
+    };
     let result = ops.query(&params.expr, params.limit);
-    Json(result)
+    Json(result).into_response()
 }
 
 async fn attr(State(state): State<AppState>, Query(params): Query<AttrQuery>) -> impl IntoResponse {
-    let mut ops = state.ops.lock().unwrap();
+    let mut ops = match lock_ops(&state.ops) {
+        Ok(guard) => guard,
+        Err(response) => return response.into_response(),
+    };
     let result = ops.attr(&params.gts_with_path);
-    Json(result)
+    Json(result).into_response()
 }

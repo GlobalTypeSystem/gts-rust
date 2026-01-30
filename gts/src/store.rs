@@ -3584,4 +3584,390 @@ mod tests {
             "Error should mention invalid GTS identifier"
         );
     }
+
+    #[test]
+    fn test_validate_schema_x_gts_refs_non_schema_id() {
+        // Test error when gts_id doesn't end with '~'
+        let mut store = GtsStore::new(None);
+        let result = store.validate_schema_x_gts_refs("gts.vendor.package.namespace.type.v1.0");
+
+        assert!(result.is_err());
+        match result {
+            Err(StoreError::SchemaNotFound(msg)) => {
+                assert!(msg.contains("is not a schema"));
+                assert!(msg.contains("must end with '~'"));
+            }
+            _ => panic!("Expected SchemaNotFound error"),
+        }
+    }
+
+    #[test]
+    fn test_validate_schema_x_gts_refs_schema_not_found() {
+        // Test error when schema doesn't exist in store
+        let mut store = GtsStore::new(None);
+        let result = store.validate_schema_x_gts_refs("gts.vendor.package.namespace.type.v1.0~");
+
+        assert!(result.is_err());
+        match result {
+            Err(StoreError::SchemaNotFound(id)) => {
+                assert_eq!(id, "gts.vendor.package.namespace.type.v1.0~");
+            }
+            _ => panic!("Expected SchemaNotFound error"),
+        }
+    }
+
+    #[test]
+    fn test_validate_schema_x_gts_refs_entity_not_schema() {
+        // Test error when entity exists but is_schema is false
+        let mut store = GtsStore::new(None);
+        let cfg = GtsConfig::default();
+
+        // Create an instance with an ID that ends with '~' but is_schema=false
+        let content = json!({
+            "id": "gts.vendor.package.namespace.type.v1.0~",
+            "name": "test"
+        });
+
+        let gts_id = GtsID::new("gts.vendor.package.namespace.type.v1.0~").expect("test");
+        let entity = GtsEntity::new(
+            None,
+            None,
+            &content,
+            Some(&cfg),
+            Some(gts_id),
+            false, // is_schema = false
+            String::new(),
+            None,
+            None,
+        );
+
+        store.register(entity).expect("test");
+
+        let result = store.validate_schema_x_gts_refs("gts.vendor.package.namespace.type.v1.0~");
+        assert!(result.is_err());
+        match result {
+            Err(StoreError::SchemaNotFound(msg)) => {
+                assert!(msg.contains("is not a schema"));
+            }
+            _ => panic!("Expected SchemaNotFound error"),
+        }
+    }
+
+    #[test]
+    fn test_validate_schema_x_gts_refs_validation_error() {
+        // Test error when x-gts-ref validation fails
+        let mut store = GtsStore::new(None);
+
+        // Create a schema with invalid x-gts-ref
+        let schema_content = json!({
+            "$id": "gts://gts.vendor.package.namespace.type.v1.0~",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": {
+                "invalidRef": {
+                    "type": "string",
+                    "x-gts-ref": "invalid-gts-id"  // Invalid GTS ID format
+                }
+            }
+        });
+
+        store
+            .register_schema("gts.vendor.package.namespace.type.v1.0~", &schema_content)
+            .expect("test");
+
+        let result = store.validate_schema_x_gts_refs("gts.vendor.package.namespace.type.v1.0~");
+        assert!(result.is_err());
+        match result {
+            Err(StoreError::ValidationError(msg)) => {
+                assert!(msg.contains("x-gts-ref validation failed"));
+            }
+            _ => panic!("Expected ValidationError"),
+        }
+    }
+
+    #[test]
+    fn test_validate_schema_non_schema_id() {
+        // Test lines 443-445: ID doesn't end with '~'
+        let mut store = GtsStore::new(None);
+        let result = store.validate_schema("gts.vendor.package.namespace.type.v1.0");
+
+        assert!(result.is_err());
+        match result {
+            Err(StoreError::SchemaNotFound(msg)) => {
+                assert!(msg.contains("is not a schema"));
+                assert!(msg.contains("must end with '~'"));
+            }
+            _ => panic!("Expected SchemaNotFound error"),
+        }
+    }
+
+    #[test]
+    fn test_validate_schema_entity_not_schema() {
+        // Test lines 453-455: Entity exists but is_schema is false
+        let mut store = GtsStore::new(None);
+        let cfg = GtsConfig::default();
+
+        let content = json!({
+            "id": "gts.vendor.package.namespace.type.v1.0~",
+            "name": "test"
+        });
+
+        let gts_id = GtsID::new("gts.vendor.package.namespace.type.v1.0~").expect("test");
+        let entity = GtsEntity::new(
+            None,
+            None,
+            &content,
+            Some(&cfg),
+            Some(gts_id),
+            false, // is_schema = false
+            String::new(),
+            None,
+            None,
+        );
+
+        store.register(entity).expect("test");
+
+        let result = store.validate_schema("gts.vendor.package.namespace.type.v1.0~");
+        assert!(result.is_err());
+        match result {
+            Err(StoreError::SchemaNotFound(msg)) => {
+                assert!(msg.contains("is not a schema"));
+            }
+            _ => panic!("Expected SchemaNotFound error"),
+        }
+    }
+
+    #[test]
+    fn test_validate_schema_content_not_object() {
+        // Test error case when schema content is not an object
+        // When content is non-object (array), GtsEntity.has_schema_field() returns false
+        // so is_schema becomes false, triggering the error on line 453-455 instead of 460-462
+        let mut store = GtsStore::new(None);
+
+        // Create schema with non-object content (an array)
+        let schema_content = json!(["not", "an", "object"]);
+
+        store
+            .register_schema("gts.vendor.package.namespace.type.v1.0~", &schema_content)
+            .expect("test");
+
+        let result = store.validate_schema("gts.vendor.package.namespace.type.v1.0~");
+        assert!(result.is_err());
+        match result {
+            Err(StoreError::SchemaNotFound(msg)) => {
+                // Since the content has no $schema field, is_schema is false
+                assert!(msg.contains("is not a schema"));
+            }
+            _ => panic!("Expected SchemaNotFound error"),
+        }
+    }
+
+    // =============================================================================
+    // Additional tests for validate_instance specific error branches
+    // =============================================================================
+
+    #[test]
+    fn test_validate_instance_schema_compilation_error() {
+        // Test lines 542-544: Schema compilation error
+        let mut store = GtsStore::new(None);
+        let cfg = GtsConfig::default();
+
+        // Create an invalid schema that will fail compilation
+        let invalid_schema = json!({
+            "$id": "gts://gts.vendor.package.namespace.type.v1.0~",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "invalid-type-value"  // Invalid JSON Schema type
+        });
+
+        store
+            .register_schema("gts.vendor.package.namespace.type.v1.0~", &invalid_schema)
+            .expect("test");
+
+        // Create an instance - use chained ID format
+        let content = json!({
+            "id": "gts.vendor.package.namespace.type.v1.0~a.b.c.d.v1",
+            "name": "test"
+        });
+
+        let entity = GtsEntity::new(
+            None,
+            None,
+            &content,
+            Some(&cfg),
+            None,
+            false,
+            String::new(),
+            None,
+            Some("gts.vendor.package.namespace.type.v1.0~".to_owned()),
+        );
+
+        store.register(entity).expect("test");
+
+        let result = store.validate_instance("gts.vendor.package.namespace.type.v1.0~a.b.c.d.v1");
+        assert!(result.is_err());
+        match result {
+            Err(StoreError::ValidationError(msg)) => {
+                assert!(msg.contains("Invalid schema"), "Actual: {msg}");
+            }
+            Err(e) => panic!("Expected ValidationError for invalid schema, got: {e:?}"),
+            _ => panic!("Expected an error"),
+        }
+    }
+
+    #[test]
+    fn test_validate_instance_validation_failed() {
+        // Test lines 547-549: Instance validation failed
+        let mut store = GtsStore::new(None);
+        let cfg = GtsConfig::default();
+
+        // Create a valid schema
+        let schema = json!({
+            "$id": "gts://gts.vendor.package.namespace.type.v1.0~",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"}
+            },
+            "required": ["name"]
+        });
+
+        store
+            .register_schema("gts.vendor.package.namespace.type.v1.0~", &schema)
+            .expect("test");
+
+        // Create an instance that violates the schema (missing required field)
+        // Use chained ID format
+        let content = json!({
+            "id": "gts.vendor.package.namespace.type.v1.0~a.b.c.d.v1"
+            // missing "name" field
+        });
+
+        let entity = GtsEntity::new(
+            None,
+            None,
+            &content,
+            Some(&cfg),
+            None,
+            false,
+            String::new(),
+            None,
+            Some("gts.vendor.package.namespace.type.v1.0~".to_owned()),
+        );
+
+        store.register(entity).expect("test");
+
+        let result = store.validate_instance("gts.vendor.package.namespace.type.v1.0~a.b.c.d.v1");
+        assert!(result.is_err());
+        match result {
+            Err(StoreError::ValidationError(msg)) => {
+                assert!(msg.contains("Validation failed"));
+            }
+            other => panic!("Expected ValidationError for failed validation, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_validate_instance_x_gts_ref_validation_failed() {
+        // Test lines 556-568: x-gts-ref validation failed
+        let mut store = GtsStore::new(None);
+        let cfg = GtsConfig::default();
+
+        // Create a schema with x-gts-ref constraint
+        let schema = json!({
+            "$id": "gts://gts.vendor.package.namespace.type.v1.0~",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": {
+                "refField": {
+                    "type": "string",
+                    "x-gts-ref": "gts.vendor.package.namespace.other.v1.0~"
+                }
+            }
+        });
+
+        store
+            .register_schema("gts.vendor.package.namespace.type.v1.0~", &schema)
+            .expect("test");
+
+        // Create an instance with invalid x-gts-ref value
+        // Use chained ID format
+        let content = json!({
+            "id": "gts.vendor.package.namespace.type.v1.0~a.b.c.d.v1",
+            "refField": "invalid-reference"  // Should be a valid GTS ID
+        });
+
+        let entity = GtsEntity::new(
+            None,
+            None,
+            &content,
+            Some(&cfg),
+            None,
+            false,
+            String::new(),
+            None,
+            Some("gts.vendor.package.namespace.type.v1.0~".to_owned()),
+        );
+
+        store.register(entity).expect("test");
+
+        let result = store.validate_instance("gts.vendor.package.namespace.type.v1.0~a.b.c.d.v1");
+        assert!(result.is_err());
+        match result {
+            Err(StoreError::ValidationError(msg)) => {
+                assert!(msg.contains("x-gts-ref validation failed"));
+            }
+            _ => panic!("Expected ValidationError for x-gts-ref validation"),
+        }
+    }
+
+    #[test]
+    fn test_cast_missing_schema_for_instance() {
+        // Test lines 599-605: Instance exists but has no schema_id
+        let mut store = GtsStore::new(None);
+        let cfg = GtsConfig::default();
+
+        // Create an instance without a schema_id
+        let content = json!({
+            "id": "gts.vendor.package.namespace.type.v1.0",
+            "name": "test"
+        });
+
+        let entity = GtsEntity::new(
+            None,
+            None,
+            &content,
+            Some(&cfg),
+            None,
+            false,
+            String::new(),
+            None,
+            None,
+        );
+
+        store.register(entity).expect("test");
+
+        // Create a target schema
+        let target_schema = json!({
+            "$id": "gts://gts.vendor.package.namespace.target.v1.0~",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object"
+        });
+
+        store
+            .register_schema("gts.vendor.package.namespace.target.v1.0~", &target_schema)
+            .expect("test");
+
+        let result = store.cast(
+            "gts.vendor.package.namespace.type.v1.0",
+            "gts.vendor.package.namespace.target.v1.0~",
+        );
+
+        assert!(result.is_err());
+        match result {
+            Err(StoreError::SchemaForInstanceNotFound(id)) => {
+                assert_eq!(id, "gts.vendor.package.namespace.type.v1.0");
+            }
+            _ => panic!("Expected SchemaForInstanceNotFound error"),
+        }
+    }
 }

@@ -528,44 +528,37 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_validate_gts_pattern_exact_match() {
+    fn test_validate_gts_pattern_matching() {
         let validator = XGtsRefValidator::new();
+
+        // Test exact match
         let result = validator.validate_gts_pattern(
             "gts.x.core.events.topic.v1~",
             "gts.x.core.events.topic.v1~",
             "test_field",
         );
-        assert!(result.is_none());
-    }
+        assert!(result.is_none(), "Exact match should succeed");
 
-    #[test]
-    fn test_validate_gts_pattern_wildcard() {
-        let validator = XGtsRefValidator::new();
+        // Test wildcard match
         let result =
             validator.validate_gts_pattern("gts.x.core.events.topic.v1~", "gts.*", "test_field");
-        assert!(result.is_none());
-    }
+        assert!(result.is_none(), "Wildcard match should succeed");
 
-    #[test]
-    fn test_validate_gts_pattern_prefix_match() {
-        let validator = XGtsRefValidator::new();
+        // Test prefix match
         let result = validator.validate_gts_pattern(
             "gts.x.core.events.topic.v1~",
             "gts.x.core.*",
             "test_field",
         );
-        assert!(result.is_none());
-    }
+        assert!(result.is_none(), "Prefix match should succeed");
 
-    #[test]
-    fn test_validate_gts_pattern_mismatch() {
-        let validator = XGtsRefValidator::new();
+        // Test mismatch
         let result = validator.validate_gts_pattern(
             "gts.x.core.events.topic.v1~",
             "gts.y.core.*",
             "test_field",
         );
-        assert!(result.is_some());
+        assert!(result.is_some(), "Mismatch should return error");
     }
 
     #[test]
@@ -691,5 +684,504 @@ mod tests {
             XGtsRefValidator::strip_gts_uri_prefix("gts.x.test._.entity.v1~"),
             "gts.x.test._.entity.v1~"
         );
+        // Empty string
+        assert_eq!(XGtsRefValidator::strip_gts_uri_prefix(""), "");
+        // Partial prefix
+        assert_eq!(
+            XGtsRefValidator::strip_gts_uri_prefix("gts:/incomplete"),
+            "gts:/incomplete"
+        );
+    }
+
+    #[test]
+    fn test_validation_error_creation_and_display() {
+        let error = XGtsRefValidationError::new(
+            "test_field".to_owned(),
+            "invalid_value".to_owned(),
+            "gts.x.*".to_owned(),
+            "Test reason".to_owned(),
+        );
+
+        // Test field access
+        assert_eq!(error.field_path, "test_field");
+        assert_eq!(error.value, "invalid_value");
+        assert_eq!(error.ref_pattern, "gts.x.*");
+        assert_eq!(error.reason, "Test reason");
+
+        // Test display formatting
+        let display = format!("{error}");
+        assert!(display.contains("test_field"));
+        assert!(display.contains("Test reason"));
+    }
+
+    #[test]
+    fn test_validate_gts_pattern_failures() {
+        let validator = XGtsRefValidator::new();
+
+        // Test invalid GTS ID
+        let result = validator.validate_gts_pattern("not-a-valid-gts-id", "gts.*", "test_field");
+        assert!(result.is_some());
+        assert!(
+            result
+                .unwrap()
+                .reason
+                .contains("not a valid GTS identifier")
+        );
+
+        // Test prefix no match
+        let result = validator.validate_gts_pattern("gts.a.b.c.d.v1~", "gts.x.y.*", "test_field");
+        assert!(result.is_some());
+        assert!(result.unwrap().reason.contains("does not match pattern"));
+
+        // Test exact no match
+        let result =
+            validator.validate_gts_pattern("gts.a.b.c.d.v1~", "gts.x.y.z.w.v1~", "test_field");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_validate_gts_id_or_pattern() {
+        let validator = XGtsRefValidator::new();
+
+        // Valid exact GTS ID
+        assert!(
+            validator
+                .validate_gts_id_or_pattern("gts.x.core.events.topic.v1~", "test_field",)
+                .is_none()
+        );
+
+        // Valid wildcard
+        assert!(
+            validator
+                .validate_gts_id_or_pattern("gts.*", "test_field")
+                .is_none()
+        );
+
+        // Valid prefix wildcard
+        assert!(
+            validator
+                .validate_gts_id_or_pattern("gts.x.core.*", "test_field")
+                .is_none()
+        );
+
+        // Invalid wildcard
+        let result = validator.validate_gts_id_or_pattern("invalid.*", "test_field");
+        assert!(result.is_some());
+        assert!(
+            result
+                .unwrap()
+                .reason
+                .contains("Invalid GTS wildcard pattern")
+        );
+
+        // Invalid ID
+        let result = validator.validate_gts_id_or_pattern("not-a-valid-id", "test_field");
+        assert!(result.is_some());
+        assert!(result.unwrap().reason.contains("Invalid GTS identifier"));
+    }
+
+    #[test]
+    fn test_validate_ref_pattern() {
+        let validator = XGtsRefValidator::new();
+        let schema_with_id = json!({"$id": "gts://gts.x.test._.entity.v1~"});
+        let schema_without_id = json!({});
+
+        // Valid GTS prefix
+        assert!(
+            validator
+                .validate_ref_pattern("gts.x.y.z.w.v1~", "test_field", &schema_without_id)
+                .is_none()
+        );
+
+        // Invalid GTS prefix
+        let result =
+            validator.validate_ref_pattern("gts.INVALID", "test_field", &schema_without_id);
+        assert!(result.is_some());
+
+        // Valid JSON pointer
+        assert!(
+            validator
+                .validate_ref_pattern("/$id", "test_field", &schema_with_id)
+                .is_none()
+        );
+
+        // JSON pointer with invalid resolution
+        let schema_bad = json!({"notAnId": "not-a-valid-gts-id"});
+        let result = validator.validate_ref_pattern("/notAnId", "test_field", &schema_bad);
+        assert!(result.is_some());
+        assert!(
+            result
+                .unwrap()
+                .reason
+                .contains("not a valid GTS identifier")
+        );
+
+        // JSON pointer not found
+        let result =
+            validator.validate_ref_pattern("/nonexistent", "test_field", &schema_without_id);
+        assert!(result.is_some());
+        assert!(
+            result
+                .unwrap()
+                .reason
+                .contains("Cannot resolve reference path")
+        );
+
+        // Invalid format
+        let result =
+            validator.validate_ref_pattern("invalid-format", "test_field", &schema_without_id);
+        assert!(result.is_some());
+        assert!(
+            result
+                .unwrap()
+                .reason
+                .contains("must start with 'gts.' or '/'")
+        );
+    }
+
+    #[test]
+    fn test_validate_ref_value() {
+        let validator = XGtsRefValidator::new();
+        let schema_with_id = json!({"$id": "gts://gts.x.test._.entity.v1~"});
+        let schema_without_pattern = json!({"someField": "not-a-gts-pattern"});
+
+        // Valid GTS pattern
+        assert!(
+            validator
+                .validate_ref_value(
+                    "gts.x.test._.entity.v1~",
+                    "gts.x.test.*",
+                    "test_field",
+                    &schema_with_id,
+                )
+                .is_none()
+        );
+
+        // Valid JSON pointer
+        assert!(
+            validator
+                .validate_ref_value(
+                    "gts.x.test._.entity.v1~",
+                    "/$id",
+                    "test_field",
+                    &schema_with_id,
+                )
+                .is_none()
+        );
+
+        // JSON pointer not GTS pattern
+        let result = validator.validate_ref_value(
+            "some-value",
+            "/someField",
+            "test_field",
+            &schema_without_pattern,
+        );
+        assert!(result.is_some());
+        assert!(result.unwrap().reason.contains("is not a GTS pattern"));
+
+        // JSON pointer not found
+        let result =
+            validator.validate_ref_value("some-value", "/missing", "test_field", &json!({}));
+        assert!(result.is_some());
+        assert!(
+            result
+                .unwrap()
+                .reason
+                .contains("Cannot resolve reference path")
+        );
+    }
+
+    #[test]
+    fn test_resolve_pointer() {
+        // Simple resolution
+        let schema = json!({"$id": "gts://gts.x.test._.entity.v1~"});
+        assert_eq!(
+            XGtsRefValidator::resolve_pointer(&schema, "/$id"),
+            Some("gts.x.test._.entity.v1~".to_owned())
+        );
+
+        // Nested resolution
+        let schema = json!({
+            "properties": {
+                "name": {
+                    "x-gts-ref": "gts.x.test.*"
+                }
+            }
+        });
+        assert_eq!(
+            XGtsRefValidator::resolve_pointer(&schema, "/properties/name/x-gts-ref"),
+            Some("gts.x.test.*".to_owned())
+        );
+
+        // Not found
+        let schema = json!({"properties": {}});
+        assert_eq!(
+            XGtsRefValidator::resolve_pointer(&schema, "/nonexistent"),
+            None
+        );
+
+        // Empty path
+        let schema = json!({"$id": "test"});
+        assert_eq!(XGtsRefValidator::resolve_pointer(&schema, "/"), None);
+
+        // Non-object path
+        let schema = json!({"value": "string"});
+        assert_eq!(
+            XGtsRefValidator::resolve_pointer(&schema, "/value/nested"),
+            None
+        );
+
+        // With x-gts-ref recursion
+        let schema = json!({
+            "$id": "gts://gts.x.test._.entity.v1~",
+            "properties": {
+                "type": {
+                    "x-gts-ref": "/$id"
+                }
+            }
+        });
+        assert_eq!(
+            XGtsRefValidator::resolve_pointer(&schema, "/properties/type"),
+            Some("gts.x.test._.entity.v1~".to_owned())
+        );
+
+        // Strips gts:// URI prefix
+        let schema = json!({
+            "$id": "gts://gts.x.test._.entity.v1~",
+            "type": "gts://gts.x.another._.type.v1~"
+        });
+        assert_eq!(
+            XGtsRefValidator::resolve_pointer(&schema, "/$id"),
+            Some("gts.x.test._.entity.v1~".to_owned())
+        );
+        assert_eq!(
+            XGtsRefValidator::resolve_pointer(&schema, "/type"),
+            Some("gts.x.another._.type.v1~".to_owned())
+        );
+    }
+
+    #[test]
+    fn test_visit_schema_non_string_x_gts_ref() {
+        let validator = XGtsRefValidator::new();
+        let schema = json!({
+            "properties": {
+                "field": {
+                    "x-gts-ref": 123
+                }
+            }
+        });
+
+        let errors = validator.validate_schema(&schema, "", None);
+        assert!(!errors.is_empty());
+        assert!(errors[0].reason.contains("must be a string"));
+    }
+
+    #[test]
+    fn test_visit_schema_nested_in_properties() {
+        let validator = XGtsRefValidator::new();
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "field1": {
+                    "type": "string",
+                    "x-gts-ref": "gts.x.test.*"
+                },
+                "field2": {
+                    "type": "string",
+                    "x-gts-ref": "gts.y.test.*"
+                }
+            }
+        });
+
+        let errors = validator.validate_schema(&schema, "", None);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_visit_schema_nested_in_array() {
+        let validator = XGtsRefValidator::new();
+        let schema = json!({
+            "items": [
+                {
+                    "x-gts-ref": "gts.x.test.*"
+                },
+                {
+                    "x-gts-ref": "gts.y.test.*"
+                }
+            ]
+        });
+
+        let errors = validator.validate_schema(&schema, "", None);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_visit_instance_nested_objects() {
+        let validator = XGtsRefValidator::new();
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "outer": {
+                    "type": "object",
+                    "properties": {
+                        "inner": {
+                            "type": "string",
+                            "x-gts-ref": "gts.x.test.*"
+                        }
+                    }
+                }
+            }
+        });
+
+        // Valid nested value
+        let instance_valid = json!({
+            "outer": {
+                "inner": "gts.x.test._.entity.v1~"
+            }
+        });
+        let errors = validator.validate_instance(&instance_valid, &schema, "");
+        assert!(errors.is_empty(), "Valid nested value should pass");
+
+        // Invalid nested value
+        let instance_invalid = json!({
+            "outer": {
+                "inner": "gts.y.different._.entity.v1~"
+            }
+        });
+        let errors = validator.validate_instance(&instance_invalid, &schema, "");
+        assert!(!errors.is_empty(), "Invalid nested value should fail");
+        assert!(errors[0].field_path.contains("outer.inner"));
+    }
+
+    #[test]
+    fn test_visit_instance_array() {
+        let validator = XGtsRefValidator::new();
+        let schema = json!({
+            "type": "array",
+            "items": {
+                "type": "string",
+                "x-gts-ref": "gts.x.test.*"
+            }
+        });
+
+        let instance = json!(["gts.x.test._.entity1.v1~", "gts.x.test._.entity2.v1~"]);
+
+        let errors = validator.validate_instance(&instance, &schema, "");
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_visit_instance_array_with_error() {
+        let validator = XGtsRefValidator::new();
+        let schema = json!({
+            "type": "array",
+            "items": {
+                "type": "string",
+                "x-gts-ref": "gts.x.test.*"
+            }
+        });
+
+        let instance = json!(["gts.x.test._.entity1.v1~", "gts.y.other._.entity2.v1~"]);
+
+        let errors = validator.validate_instance(&instance, &schema, "");
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].field_path.contains("[1]"));
+    }
+
+    #[test]
+    fn test_visit_instance_schema_not_object() {
+        let validator = XGtsRefValidator::new();
+        let schema = json!("not an object");
+        let instance = json!({"field": "value"});
+
+        let errors = validator.validate_instance(&instance, &schema, "");
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_visit_instance_no_x_gts_ref() {
+        let validator = XGtsRefValidator::new();
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "field": {
+                    "type": "string"
+                }
+            }
+        });
+
+        let instance = json!({
+            "field": "any value"
+        });
+
+        let errors = validator.validate_instance(&instance, &schema, "");
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_visit_instance_value_not_string() {
+        let validator = XGtsRefValidator::new();
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "field": {
+                    "type": "number",
+                    "x-gts-ref": "gts.x.test.*"
+                }
+            }
+        });
+
+        let instance = json!({
+            "field": 123
+        });
+
+        let errors = validator.validate_instance(&instance, &schema, "");
+        // No error because value is not a string, so x-gts-ref doesn't apply
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_instance_empty_path() {
+        let validator = XGtsRefValidator::new();
+        let schema = json!({
+            "type": "string",
+            "x-gts-ref": "gts.x.test.*"
+        });
+
+        let instance = json!("gts.x.test._.entity.v1~");
+
+        let errors = validator.validate_instance(&instance, &schema, "");
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_schema_with_root_schema() {
+        let validator = XGtsRefValidator::new();
+        let root = json!({
+            "$id": "gts://gts.x.test._.root.v1~"
+        });
+
+        let schema = json!({
+            "properties": {
+                "field": {
+                    "x-gts-ref": "/$id"
+                }
+            }
+        });
+
+        let errors = validator.validate_schema(&schema, "", Some(&root));
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_strip_gts_uri_prefix_empty_string() {
+        let result = XGtsRefValidator::strip_gts_uri_prefix("");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_strip_gts_uri_prefix_partial_prefix() {
+        let result = XGtsRefValidator::strip_gts_uri_prefix("gts:/incomplete");
+        assert_eq!(result, "gts:/incomplete");
     }
 }

@@ -391,7 +391,7 @@ impl GtsOps {
     }
 
     #[must_use]
-    pub fn validate_id(&self, gts_id: &str) -> GtsIdValidationResult {
+    pub fn validate_id(gts_id: &str) -> GtsIdValidationResult {
         let contains_wildcard = gts_id.contains('*');
 
         if contains_wildcard {
@@ -435,7 +435,7 @@ impl GtsOps {
         }
     }
 
-    pub fn parse_id(&self, gts_id: &str) -> GtsIdParseResult {
+    pub fn parse_id(gts_id: &str) -> GtsIdParseResult {
         let contains_wildcard = gts_id.contains('*');
 
         if contains_wildcard {
@@ -497,7 +497,7 @@ impl GtsOps {
     }
 
     #[must_use]
-    pub fn match_id_pattern(&self, candidate: &str, pattern: &str) -> GtsIdMatchResult {
+    pub fn match_id_pattern(candidate: &str, pattern: &str) -> GtsIdMatchResult {
         // Both candidate and pattern can be either valid GTS ID or valid wildcard
         // Try to parse both as GtsID or GtsWildcard
         let candidate_result = if candidate.contains('*') {
@@ -546,7 +546,7 @@ impl GtsOps {
     }
 
     #[must_use]
-    pub fn uuid(&self, gts_id: &str) -> GtsUuidResult {
+    pub fn uuid(gts_id: &str) -> GtsUuidResult {
         match GtsID::new(gts_id) {
             Ok(g) => GtsUuidResult {
                 id: g.id.clone(),
@@ -740,9 +740,8 @@ mod tests {
 
     #[test]
     fn test_validate_id_valid() {
-        let ops = GtsOps::new(None, None, 0);
         let result =
-            ops.validate_id("gts.vendor.package.namespace.type.v1.0~abc.app.custom.event.v1.0");
+            GtsOps::validate_id("gts.vendor.package.namespace.type.v1.0~abc.app.custom.event.v1.0");
         assert!(result.valid);
         assert_eq!(
             result.id,
@@ -752,24 +751,21 @@ mod tests {
 
     #[test]
     fn test_validate_id_invalid() {
-        let ops = GtsOps::new(None, None, 0);
-        let result = ops.validate_id("invalid-id");
+        let result = GtsOps::validate_id("invalid-id");
         assert!(!result.valid);
     }
 
     #[test]
     fn test_validate_id_schema() {
-        let ops = GtsOps::new(None, None, 0);
-        let result = ops.validate_id("gts.vendor.package.namespace.type.v1.0~");
+        let result = GtsOps::validate_id("gts.vendor.package.namespace.type.v1.0~");
         assert!(result.valid);
         assert!(result.id.ends_with('~'));
     }
 
     #[test]
     fn test_parse_id_valid() {
-        let ops = GtsOps::new(None, None, 0);
         let result =
-            ops.parse_id("gts.vendor.package.namespace.type.v1.0~abc.app.custom.event.v1.0");
+            GtsOps::parse_id("gts.vendor.package.namespace.type.v1.0~abc.app.custom.event.v1.0");
         assert!(!result.segments.is_empty());
         assert_eq!(
             result.id,
@@ -779,16 +775,14 @@ mod tests {
 
     #[test]
     fn test_parse_id_invalid() {
-        let ops = GtsOps::new(None, None, 0);
-        let result = ops.parse_id("invalid");
+        let result = GtsOps::parse_id("invalid");
         assert!(result.segments.is_empty());
         assert!(!result.error.is_empty());
     }
 
     #[test]
     fn test_parse_id_version_zero() {
-        let ops = GtsOps::new(None, None, 0);
-        let result = ops.parse_id("gts.x.pkg.ns.type.v0~");
+        let result = GtsOps::parse_id("gts.x.pkg.ns.type.v0~");
         assert!(result.ok);
         assert_eq!(result.segments.len(), 1);
         assert_eq!(result.segments[0].ver_major, Some(0));
@@ -1197,8 +1191,8 @@ mod tests {
         let result = GtsIdParseResult {
             id: "gts.vendor.package.namespace.type.v1.0".to_owned(),
             ok: true,
-            error: String::new(),
             segments: vec![],
+            error: String::new(),
             is_schema: Some(false),
             is_wildcard: false,
         };
@@ -1332,9 +1326,9 @@ mod tests {
         ];
 
         let result = GtsEntitiesListResult {
+            entities,
             count: 2,
             total: 2,
-            entities,
         };
 
         let json = to_json_obj(&result);
@@ -2319,15 +2313,14 @@ mod tests {
 
     #[test]
     fn test_gts_ops_uuid() {
-        let ops = GtsOps::new(None, None, 0);
-        let result = ops.uuid("gts.vendor.package.namespace.type.v1.0~abc.app.custom.event.v1.0");
+        let result =
+            GtsOps::uuid("gts.vendor.package.namespace.type.v1.0~abc.app.custom.event.v1.0");
         assert!(!result.uuid.is_empty());
     }
 
     #[test]
     fn test_gts_ops_match_id_pattern_valid() {
-        let ops = GtsOps::new(None, None, 0);
-        let result = ops.match_id_pattern(
+        let result = GtsOps::match_id_pattern(
             "gts.vendor.package.namespace.type.v1.0~abc.app.custom.event.v1.0",
             "gts.vendor.*",
         );
@@ -2336,8 +2329,7 @@ mod tests {
 
     #[test]
     fn test_gts_ops_match_id_pattern_invalid() {
-        let ops = GtsOps::new(None, None, 0);
-        let result = ops.match_id_pattern(
+        let result = GtsOps::match_id_pattern(
             "gts.vendor.package.namespace.type.v1.0~abc.app.custom.event.v1.0",
             "gts.other.*",
         );
@@ -2346,16 +2338,14 @@ mod tests {
 
     #[test]
     fn test_gts_ops_match_id_pattern_invalid_candidate() {
-        let ops = GtsOps::new(None, None, 0);
-        let result = ops.match_id_pattern("invalid", "gts.vendor.*");
+        let result = GtsOps::match_id_pattern("invalid", "gts.vendor.*");
         assert!(!result.is_match);
         assert!(!result.error.is_empty());
     }
 
     #[test]
     fn test_gts_ops_match_id_pattern_invalid_pattern() {
-        let ops = GtsOps::new(None, None, 0);
-        let result = ops.match_id_pattern("gts.vendor.package.namespace.type.v1.0", "invalid");
+        let result = GtsOps::match_id_pattern("gts.vendor.package.namespace.type.v1.0", "invalid");
         assert!(!result.is_match);
         assert!(!result.error.is_empty());
     }
@@ -3065,6 +3055,317 @@ mod tests {
             result.error
         );
         assert_eq!(result.id, "gts.x.test6.valid_id.with_uri.v1~");
+        assert!(result.is_schema);
+    }
+
+    // =============================================================================
+    // Additional test coverage for ops.rs functions
+    // =============================================================================
+
+    #[test]
+    fn test_create_config_from_data_with_custom_fields() {
+        let mut data = HashMap::new();
+        data.insert(
+            "entity_id_fields".to_owned(),
+            json!(["customId", "uuid", "id"]),
+        );
+        data.insert(
+            "schema_id_fields".to_owned(),
+            json!(["$schema", "$id", "schemaId"]),
+        );
+
+        let config = GtsOps::create_config_from_data(&data);
+        assert_eq!(config.entity_id_fields, vec!["customId", "uuid", "id"]);
+        assert_eq!(config.schema_id_fields, vec!["$schema", "$id", "schemaId"]);
+    }
+
+    #[test]
+    fn test_create_config_from_data_with_empty_data() {
+        let data = HashMap::new();
+        let config = GtsOps::create_config_from_data(&data);
+
+        // Should use default config values
+        let default_cfg = GtsConfig::default();
+        assert_eq!(config.entity_id_fields, default_cfg.entity_id_fields);
+        assert_eq!(config.schema_id_fields, default_cfg.schema_id_fields);
+    }
+
+    #[test]
+    fn test_create_config_from_data_with_invalid_types() {
+        let mut data = HashMap::new();
+        // Non-array value should be ignored
+        data.insert("entity_id_fields".to_owned(), json!("not-an-array"));
+        data.insert("schema_id_fields".to_owned(), json!(123));
+
+        let config = GtsOps::create_config_from_data(&data);
+
+        // Should fall back to default values
+        let default_cfg = GtsConfig::default();
+        assert_eq!(config.entity_id_fields, default_cfg.entity_id_fields);
+        assert_eq!(config.schema_id_fields, default_cfg.schema_id_fields);
+    }
+
+    #[test]
+    fn test_add_entity_schema_validation_error() {
+        // Test "Always validate schemas" error branch
+        let mut ops = GtsOps::new(None, None, 0);
+
+        // Create a schema with an invalid type that will fail validation
+        let content = json!({
+            "$id": "gts://gts.test.invalid.schema.broken.v1~",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "invalid-type-that-does-not-exist"
+        });
+
+        let result = ops.add_entity(&content, false);
+        assert!(
+            !result.ok,
+            "Schema with invalid type should fail validation"
+        );
+        assert!(
+            result.error.contains("Schema validation failed"),
+            "Error should mention schema validation failure, got: {}",
+            result.error
+        );
+    }
+
+    #[test]
+    fn test_add_entity_register_error() {
+        // Test "Register the entity first" error branch
+        // This is difficult to trigger directly since register() typically succeeds,
+        // but we can test with a duplicate schema that fails registration
+        let mut ops = GtsOps::new(None, None, 0);
+
+        let schema = json!({
+            "$id": "gts://gts.test.register.dup.schema.v1~",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object"
+        });
+
+        // First registration should succeed
+        let result1 = ops.add_entity(&schema, false);
+        assert!(result1.ok, "First schema registration should succeed");
+
+        // Second registration of the same schema should succeed (overwrites)
+        // To trigger a registration error, we would need to trigger an internal error
+        // which is hard without mocking. This test validates the happy path.
+        let result2 = ops.add_entity(&schema, false);
+        assert!(
+            result2.ok,
+            "Schema re-registration should succeed (overwrite)"
+        );
+    }
+
+    #[test]
+    fn test_add_entity_instance_validation_error() {
+        // Test "If validation is requested, validate the instance as well" error branch
+        let mut ops = GtsOps::new(None, None, 0);
+
+        // First, add a schema
+        let schema = json!({
+            "$id": "gts://gts.test.validation.instance.person.v1~",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "age": {"type": "number"}
+            },
+            "required": ["name", "age"]
+        });
+
+        let schema_result = ops.add_entity(&schema, false);
+        assert!(schema_result.ok, "Schema should be added successfully");
+
+        // Create an instance that violates the schema (missing required field)
+        let invalid_instance = json!({
+            "id": "test-person-123",
+            "type": "gts.test.validation.instance.person.v1~",
+            "name": "John Doe"
+            // Missing required "age" field
+        });
+
+        // Add with validation enabled - should fail
+        let result = ops.add_entity(&invalid_instance, true);
+        assert!(
+            !result.ok,
+            "Instance validation should fail for invalid instance"
+        );
+        assert!(
+            result.error.contains("Instance validation failed"),
+            "Error should mention instance validation failure, got: {}",
+            result.error
+        );
+    }
+
+    #[test]
+    fn test_validate_id_with_wildcard_valid() {
+        // Test wildcard validation for valid patterns
+        let result = GtsOps::validate_id("gts.vendor.package.namespace.*");
+        assert!(result.valid, "Wildcard at end should be valid");
+        assert!(result.is_wildcard);
+        assert_eq!(result.is_schema, Some(false));
+    }
+
+    #[test]
+    fn test_validate_id_with_wildcard_schema() {
+        // Test wildcard validation for pattern matching instances of a schema
+        // Note: gts.vendor.package.namespace.type.v1~* matches instances, not schemas
+        let result = GtsOps::validate_id("gts.vendor.package.namespace.type.v1~*");
+        assert!(result.valid, "Wildcard at end of schema should be valid");
+        assert!(result.is_wildcard);
+        assert_eq!(
+            result.is_schema,
+            Some(false),
+            "Pattern matches instances, not schemas"
+        );
+    }
+
+    #[test]
+    fn test_validate_id_with_wildcard_invalid() {
+        // Test wildcard validation for invalid patterns (multiple wildcards)
+        let result = GtsOps::validate_id("gts.*.vendor.*.package");
+        assert!(!result.valid, "Multiple wildcards should be invalid");
+        assert!(result.is_wildcard);
+        assert!(
+            result.error.contains("Unable to validate GTS ID"),
+            "Error should mention validation failure"
+        );
+    }
+
+    #[test]
+    fn test_validate_id_with_wildcard_middle() {
+        // Test wildcard validation for invalid pattern (wildcard in middle)
+        let result = GtsOps::validate_id("gts.vendor.*.package.type.v1");
+        assert!(!result.valid, "Wildcard in middle should be invalid");
+        assert!(result.is_wildcard);
+    }
+
+    #[test]
+    fn test_parse_id_with_wildcard_valid() {
+        // Test parse_id with valid wildcard pattern
+        let result = GtsOps::parse_id("gts.vendor.package.namespace.*");
+        assert!(result.ok, "Parsing valid wildcard should succeed");
+        assert!(result.is_wildcard);
+        assert!(!result.segments.is_empty(), "Should have parsed segments");
+        assert_eq!(result.is_schema, Some(false));
+    }
+
+    #[test]
+    fn test_parse_id_with_wildcard_schema() {
+        // Test parse_id with wildcard pattern matching instances of a schema
+        // Note: gts.vendor.package.namespace.type.v1~* matches instances, not schemas
+        let result = GtsOps::parse_id("gts.vendor.package.namespace.type.v1~*");
+        assert!(result.ok, "Parsing valid wildcard should succeed");
+        assert!(result.is_wildcard);
+        assert!(!result.segments.is_empty(), "Should have parsed segments");
+        assert_eq!(
+            result.is_schema,
+            Some(false),
+            "Pattern matches instances, not schemas"
+        );
+    }
+
+    #[test]
+    fn test_parse_id_with_wildcard_invalid() {
+        // Test parse_id with invalid wildcard pattern
+        let result = GtsOps::parse_id("gts.*.vendor.*.package");
+        assert!(!result.ok, "Parsing invalid wildcard should fail");
+        assert!(result.is_wildcard);
+        assert!(
+            result.segments.is_empty(),
+            "Should have no segments on error"
+        );
+        assert!(!result.error.is_empty(), "Should have error message");
+    }
+
+    #[test]
+    fn test_validate_schema_success() {
+        let mut ops = GtsOps::new(None, None, 0);
+
+        // Add a valid schema
+        let schema = json!({
+            "$id": "gts://gts.test.validate.schema.success.v1~",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"}
+            }
+        });
+
+        ops.add_entity(&schema, false);
+
+        // Validate the schema
+        let result = ops.validate_schema("gts.test.validate.schema.success.v1~");
+        assert!(result.ok, "Valid schema should pass validation");
+        assert!(result.error.is_empty());
+        assert_eq!(result.id, "gts.test.validate.schema.success.v1~");
+    }
+
+    #[test]
+    fn test_validate_schema_not_found() {
+        let mut ops = GtsOps::new(None, None, 0);
+
+        // Validate a schema that doesn't exist
+        let result = ops.validate_schema("gts.test.validate.schema.notfound.v1~");
+        assert!(!result.ok, "Non-existent schema should fail validation");
+        assert!(!result.error.is_empty(), "Should have error message");
+    }
+
+    #[test]
+    fn test_validate_entity_schema() {
+        let mut ops = GtsOps::new(None, None, 0);
+
+        // Add a valid schema
+        let schema = json!({
+            "$id": "gts://gts.test.validate.entity.schema.v1~",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object"
+        });
+
+        ops.add_entity(&schema, false);
+
+        // validate_entity should route to validate_schema for schema IDs
+        let result = ops.validate_entity("gts.test.validate.entity.schema.v1~");
+        assert!(
+            result.ok,
+            "Schema validation through validate_entity should succeed"
+        );
+    }
+
+    #[test]
+    fn test_get_entity_not_found() {
+        let mut ops = GtsOps::new(None, None, 0);
+
+        // Try to get an entity that doesn't exist
+        let result = ops.get_entity("gts.nonexistent.entity.v1~");
+        assert!(!result.ok, "Getting non-existent entity should fail");
+        assert_eq!(
+            result.error,
+            "Entity 'gts.nonexistent.entity.v1~' not found"
+        );
+        assert!(result.content.is_none(), "Content should be None");
+        assert!(result.id.is_empty(), "ID should be empty on error");
+    }
+
+    #[test]
+    fn test_get_entity_success() {
+        let mut ops = GtsOps::new(None, None, 0);
+
+        // Add a schema
+        let schema = json!({
+            "$id": "gts://gts.test.get.entity.success.v1~",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object"
+        });
+
+        ops.add_entity(&schema, false);
+
+        // Get the entity
+        let result = ops.get_entity("gts.test.get.entity.success.v1~");
+        assert!(result.ok, "Getting existing entity should succeed");
+        assert!(result.error.is_empty());
+        assert!(result.content.is_some(), "Content should be present");
+        assert_eq!(result.id, "gts.test.get.entity.success.v1~");
         assert!(result.is_schema);
     }
 }

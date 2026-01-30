@@ -48,12 +48,10 @@ fn extract_struct_version(struct_name: &str) -> Option<Version> {
 
     // Find the last 'V' that starts a version suffix
     for i in (0..bytes.len()).rev() {
-        if bytes[i] == b'V' {
-            // Check if followed by at least one digit
-            if i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
-                v_pos = Some(i);
-                break;
-            }
+        // Check if 'V' is followed by at least one digit
+        if bytes[i] == b'V' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
+            v_pos = Some(i);
+            break;
         }
     }
 
@@ -191,21 +189,21 @@ fn is_type_named(ty: &syn::Type, name: &str) -> bool {
 /// Extract serde rename value from field attributes
 fn get_serde_rename(field: &syn::Field) -> Option<String> {
     for attr in &field.attrs {
-        if attr.path().is_ident("serde") {
-            // Parse the serde attribute using a simpler approach
-            if let Ok(meta) = attr.meta.require_list() {
-                let tokens = meta.tokens.to_string();
+        // Parse the serde attribute using a simpler approach
+        if attr.path().is_ident("serde")
+            && let Ok(meta) = attr.meta.require_list()
+        {
+            let tokens = meta.tokens.to_string();
 
-                // Look for rename = "value" pattern in the token string
-                if let Some(rename_start) = tokens.find("rename") {
-                    let rename_part = &tokens[rename_start..];
-                    if let Some(eq_pos) = rename_part.find('=') {
-                        let value_part = &rename_part[eq_pos + 1..].trim();
-                        // Extract the string value between quotes
-                        if value_part.starts_with('"') && value_part.ends_with('"') {
-                            let rename_value = &value_part[1..value_part.len() - 1];
-                            return Some(rename_value.to_owned());
-                        }
+            // Look for rename = "value" pattern in the token string
+            if let Some(rename_start) = tokens.find("rename") {
+                let rename_part = &tokens[rename_start..];
+                if let Some(eq_pos) = rename_part.find('=') {
+                    let value_part = &rename_part[eq_pos + 1..].trim();
+                    // Extract the string value between quotes
+                    if value_part.starts_with('"') && value_part.ends_with('"') {
+                        let rename_value = &value_part[1..value_part.len() - 1];
+                        return Some(rename_value.to_owned());
                     }
                 }
             }
