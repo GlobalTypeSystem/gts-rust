@@ -27,14 +27,33 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
+  read-rust-version:
+    name: Read Rust version
+    runs-on: ubuntu-latest
+    outputs:
+      rust-version: ${{ steps.read-version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read Rust version from Cargo.toml
+        id: read-version
+        shell: bash
+        run: |
+          version=$(awk -F'"' '/^[[:space:]]*rust-version[[:space:]]*=/{print $2; exit}' Cargo.toml)
+          if [ -z "$version" ]; then
+            echo "Failed to read rust-version from Cargo.toml" >&2
+            exit 1
+          fi
+          echo "version=$version" >> $GITHUB_OUTPUT
   test:
-    name: Test Suite (${{ matrix.os }}, rust=${{ matrix.rust }})
+    name: Test Suite (${{ matrix.os }}, rust=${{ needs.read-rust-version.outputs.rust-version }})
     runs-on: ${{ matrix.os }}
+    needs: read-rust-version
     strategy:
       fail-fast: false
       matrix:
         os: [ ubuntu-latest, windows-latest, macos-latest ]
-        rust: [ stable ]
 
     steps:
       - name: Force LF in working tree (w/a for Windows)
@@ -53,7 +72,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ matrix.rust }}
+          toolchain: "${{ needs.read-rust-version.outputs.rust-version }}"
           components: rustfmt, clippy
 
       # Cache Cargo registry/git + target/ across platforms.
@@ -118,6 +137,7 @@ jobs:
   security:
     name: Security (cargo-deny on Ubuntu)
     runs-on: ubuntu-latest
+    needs: read-rust-version
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -126,6 +146,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "${{ needs.read-rust-version.outputs.rust-version }}"
 
       - name: Cache Cargo/target
         uses: Swatinem/rust-cache@v2
@@ -144,6 +166,7 @@ jobs:
   coverage:
     name: Code Coverage (cargo-llvm-cov)
     runs-on: ubuntu-latest
+    needs: read-rust-version
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -153,7 +176,7 @@ jobs:
       - name: Install Rust toolchain (with llvm-tools)
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
+          toolchain: "${{ needs.read-rust-version.outputs.rust-version }}"
           components: llvm-tools-preview
 
       - name: Cache Cargo/target
@@ -214,6 +237,7 @@ jobs:
   e2e:
     name: E2E Tests (gts-spec)
     runs-on: ubuntu-latest
+    needs: read-rust-version
     env:
       PYTHONDONTWRITEBYTECODE: 1
     steps:
@@ -224,6 +248,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "${{ needs.read-rust-version.outputs.rust-version }}"
 
       - name: Cache Cargo/target
         uses: Swatinem/rust-cache@v2
