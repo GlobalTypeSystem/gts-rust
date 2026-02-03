@@ -243,22 +243,29 @@ pub fn build_gts_allof_schema(
     })
 }
 
-/// Marker trait for GTS nested types that should not be directly serialized.
+/// Marker trait for GTS nested types that are intended to be used as payloads.
 ///
 /// Types with this trait are designed to be used only as generic parameters
-/// of base GTS types (e.g., `BaseEventV1<NestedType>`). Direct serialization
-/// of these types is prohibited at compile-time.
+/// of base GTS types (e.g., `BaseEventV1<NestedType>`). They still derive
+/// `serde::Serialize` / `serde::Deserialize` and can be serialized directly
+/// with Serde, but they are **not** full GTS instance types and therefore
+/// do not expose the `gts_instance_json*` convenience methods.
 ///
 /// # Example
 ///
 /// ```ignore
-/// // This is correct - serialize the complete composed type:
-/// let event = BaseEventV1::<MyNestedTypeV1> { ... };
-/// serde_json::to_value(&event)?;  // ✅ OK
+/// use gts::GtsSchema;
 ///
-/// // This is prohibited - direct serialization of nested type:
-/// let nested = MyNestedTypeV1 { ... };
-/// serde_json::to_value(&nested)?;  // ❌ Compile error
+/// // Recommended: serialize the complete composed GTS type
+/// let event = BaseEventV1::<MyNestedTypeV1> { /* ... */ };
+/// let value = serde_json::to_value(&event)?;  // ✅ OK
+/// // or, if available on the base type:
+/// // let value = event.gts_instance_json();
+///
+/// // Also allowed: direct serialization of the nested type itself.
+/// // This uses plain Serde and does *not* go through GTS instance helpers.
+/// let nested = MyNestedTypeV1 { /* ... */ };
+/// let value = serde_json::to_value(&nested)?;  // ✅ Also OK (plain Serde)
 /// ```
 pub trait GtsNestedType: GtsSchema {
     /// Internal serialization method used by parent types.
@@ -279,7 +286,14 @@ pub trait GtsNestedType: GtsSchema {
 
 /// Helper module for serializing/deserializing GTS nested types within parent structs.
 ///
-/// Use `#[serde(serialize_with = "gts::schema::gts_nested::serialize")]` on generic fields.
+/// This module is intended for manual opt-in use when defining your own
+/// `Serialize`/`Deserialize` implementations or serde field attributes
+/// for nested GTS types, for example:
+/// `#[serde(serialize_with = "gts::schema::gts_nested::serialize")]`.
+///
+/// **Note:** The `gts-macros` crate does not currently add these serde
+/// attributes to generic fields automatically. Nested types derive `Serialize`
+/// directly, which is sufficient for parent serialization.
 pub mod gts_nested {
     use super::GtsNestedType;
 

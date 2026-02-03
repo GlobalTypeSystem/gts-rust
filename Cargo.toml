@@ -4,7 +4,7 @@ license = "Apache-2.0"
 authors = ["GTS Community"]
 repository = "https://github.com/GlobalTypeSystem/gts-rust"
 description = "Global Type System implementation in rust"
-rust-version = "1.92.0"
+rust-version = "1.93.0"
 categories = ["development-tools::build-utils"]
 readme = "README.md"
 

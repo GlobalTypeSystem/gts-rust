@@ -352,8 +352,8 @@ fn has_derive(input: &syn::DeriveInput, trait_name: &str) -> bool {
 }
 
 /// Add missing required derives (Serialize, Deserialize, `JsonSchema`)
-/// For nested types (base = `ParentType`), only `JsonSchema` is derived - Serialize/Deserialize
-/// are handled via `GtsNestedType` trait to prevent direct serialization.
+/// All types (both base and nested) get Serialize/Deserialize/JsonSchema derives.
+/// Nested types are prevented from direct serialization by not generating `gts_instance_json`* convenience methods.
 fn add_missing_derives(input: &mut syn::DeriveInput, is_nested_type: bool) {
     // Note: We still derive Serialize/Deserialize for nested types because:
     // 1. Parent types need to serialize their generic fields
@@ -723,17 +723,12 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     // Determine if this is a nested type (has a parent, not a base type)
     let is_nested_type = matches!(&args.base, BaseAttr::Parent(_));
 
-    // Add GtsSchema bound to generic type parameters so that only valid GTS types
-    // (those with struct_to_gts_schema applied, or ()) can be used as generic args.
-    // This prevents usage like BaseEventV1<SomeRandomStruct> where SomeRandomStruct
-    // is not a proper GTS schema type.
+    // Don't add trait bounds to generic type parameters at the struct level.
+    // Instead, we'll let derive macros (Serialize, Deserialize, JsonSchema) add appropriate
+    // bounds in their impl blocks. We'll add our custom bounds (GtsSchema) in our own impl blocks.
     let mut modified_input = input.clone();
-    for param in modified_input.generics.type_params_mut() {
-        param.bounds.push(syn::parse_quote!(::gts::GtsSchema));
-    }
 
     // Automatically add required derives: Serialize, Deserialize, JsonSchema
-    // For nested types, only JsonSchema is derived (no Serialize/Deserialize)
     add_missing_derives(&mut modified_input, is_nested_type);
 
     // Validate base attribute consistency with schema_id segments
@@ -876,7 +871,14 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         where_clause,
         "::gts::GtsSchema + ::schemars::JsonSchema",
     );
-    let serialize_where_clause = build_where_clause(
+    // For instance serialization methods - needs Serialize + GtsSchema (because struct bounds require it)
+    let instance_serialize_where_clause = build_where_clause(
+        generics,
+        where_clause,
+        "serde::Serialize + ::gts::GtsSchema",
+    );
+    // For GtsNestedType impl - needs both Serialize and DeserializeOwned
+    let nested_type_where_clause = build_where_clause(
         generics,
         where_clause,
         "serde::Serialize + serde::de::DeserializeOwned + ::gts::GtsSchema + ::schemars::JsonSchema",
@@ -1227,13 +1229,13 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         quote! {}
     };
 
-    // Generate instance serialization methods - only for base types (not nested types)
-    // Nested types don't implement Serialize directly, so these methods would fail
+    // Generate instance serialization convenience methods - only for base types (not nested types)
+    // Nested types still derive Serialize; they just do not get these gts_instance_json* helper methods
     let instance_serialization_impl = if is_nested_type {
         quote! {}
     } else {
         quote! {
-            impl #impl_generics #struct_name #ty_generics #serialize_where_clause {
+            impl #impl_generics #struct_name #ty_generics #instance_serialize_where_clause {
                 /// Serialize this instance to a `serde_json::Value`.
                 #[allow(dead_code)]
                 #[must_use]
@@ -1262,40 +1264,21 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     // This enables serialization through parent types while preventing direct serialization
     let nested_type_impl = if is_nested_type {
         quote! {
-            impl #impl_generics ::gts::GtsNestedType for #struct_name #ty_generics #gts_schema_where_clause {
+            impl #impl_generics ::gts::GtsNestedType for #struct_name #ty_generics #nested_type_where_clause {
                 fn gts_serialize_nested<__GTS_S>(&self, serializer: __GTS_S) -> Result<__GTS_S::Ok, __GTS_S::Error>
                 where
                     __GTS_S: serde::Serializer,
                 {
-                    // Use serde_json to serialize to Value, then serialize that
-                    // This works because we have JsonSchema derived which gives us the structure
-                    use serde::ser::SerializeMap;
-                    let root_schema = schemars::schema_for!(Self);
-                    let schema_val = serde_json::to_value(&root_schema).expect("schemars");
-
-                    // Get properties from schema to know what fields to serialize
-                    if let Some(props) = schema_val.get("properties").and_then(|v| v.as_object()) {
-                        let mut map = serializer.serialize_map(Some(props.len()))?;
-                        // For now, serialize as empty object - actual field serialization
-                        // would require more complex reflection
-                        map.end()
-                    } else {
-                        // Fallback: serialize as empty object
-                        let map = serializer.serialize_map(Some(0))?;
-                        map.end()
-                    }
+                    // Delegate to the standard serde Serialize implementation for this nested type.
+                    serde::Serialize::serialize(self, serializer)
                 }
 
                 fn gts_deserialize_nested<'de, __GTS_D>(deserializer: __GTS_D) -> Result<Self, __GTS_D::Error>
                 where
                     __GTS_D: serde::Deserializer<'de>,
                 {
-                    // For now, this is a placeholder - actual deserialization
-                    // would require more complex field handling
-                    // We use serde_json to deserialize to Value first, then convert
-                    use serde::de::Error as DeError;
-                    let _ = deserializer;
-                    Err(__GTS_D::Error::custom("GtsNestedType deserialization not yet implemented - use parent type for deserialization"))
+                    // Delegate to the standard serde Deserialize implementation for this nested type.
+                    serde::Deserialize::deserialize(deserializer)
                 }
             }
         }
@@ -1303,7 +1286,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         // Base types also need GtsNestedType implementation so they can be used as generic parameters
         // of other base types (e.g., BaseEventV1<AuditPayloadV1<PlaceOrderDataV1>>)
         quote! {
-            impl #impl_generics ::gts::GtsNestedType for #struct_name #ty_generics #serialize_where_clause {
+            impl #impl_generics ::gts::GtsNestedType for #struct_name #ty_generics #nested_type_where_clause {
                 fn gts_serialize_nested<__GTS_S>(&self, serializer: __GTS_S) -> Result<__GTS_S::Ok, __GTS_S::Error>
                 where
                     __GTS_S: serde::Serializer,
