@@ -167,7 +167,7 @@ atty = "0.2"
 chrono = "0.4"
 
 # JSON Schema validation
-jsonschema = "0.40"
+jsonschema = { version = "0.40", default-features = false }
 
 # JSON Schema generation
 schemars = { version = "1.2", features = ["uuid1"] }
