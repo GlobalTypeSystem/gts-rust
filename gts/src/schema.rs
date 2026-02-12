@@ -157,6 +157,132 @@ impl GtsSchema for () {
     }
 }
 
+/// Private trait for nested GTS struct serialization.
+///
+/// Nested structs implement this instead of `serde::Serialize` to prevent
+/// direct serialization (which would produce incomplete JSON without base struct fields).
+/// Base structs use `#[serde(serialize_with)]` to call this trait internally.
+pub trait GtsSerialize {
+    /// Serialize this value using the GTS serialization protocol.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization fails.
+    fn gts_serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer;
+}
+
+/// Private trait for nested GTS struct deserialization.
+///
+/// Nested structs implement this instead of `serde::Deserialize` to prevent
+/// direct deserialization.
+pub trait GtsDeserialize<'de>: Sized {
+    /// Deserialize this value using the GTS deserialization protocol.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if deserialization fails.
+    fn gts_deserialize<__D>(deserializer: __D) -> Result<Self, __D::Error>
+    where
+        __D: serde::Deserializer<'de>;
+}
+
+/// Internal marker trait to block direct serde serialization on nested GTS structs.
+///
+/// The macro implements this for nested structs; any direct `Serialize` impl then
+/// conflicts with the blanket impl below, producing a compile-time error.
+#[doc(hidden)]
+pub trait GtsNoDirectSerialize {}
+
+/// Internal marker trait to block direct serde deserialization on nested GTS structs.
+#[doc(hidden)]
+pub trait GtsNoDirectDeserialize {}
+
+impl<T: serde::Serialize> GtsNoDirectSerialize for T {}
+
+impl<T> GtsNoDirectDeserialize for T where for<'de> T: serde::Deserialize<'de> {}
+
+/// Blanket impl: anything with Serialize also has `GtsSerialize`.
+/// This allows standard serde types (String, i32, etc.) to be used in GTS structs.
+impl<T: serde::Serialize> GtsSerialize for T {
+    fn gts_serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serde::Serialize::serialize(self, serializer)
+    }
+}
+
+/// Blanket impl: anything with Deserialize also has `GtsDeserialize`.
+impl<'de, T: serde::Deserialize<'de>> GtsDeserialize<'de> for T {
+    fn gts_deserialize<__D>(deserializer: __D) -> Result<Self, __D::Error>
+    where
+        __D: serde::Deserializer<'de>,
+    {
+        <T as serde::Deserialize<'de>>::deserialize(deserializer)
+    }
+}
+
+/// Serialize a value via `GtsSerialize` trait.
+///
+/// Used with `#[serde(serialize_with = "gts::serialize_gts")]` on generic fields in base structs.
+///
+/// # Errors
+///
+/// Returns an error if serialization fails.
+pub fn serialize_gts<T: GtsSerialize, S: serde::Serializer>(
+    value: &T,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    value.gts_serialize(serializer)
+}
+
+/// Deserialize a value via `GtsDeserialize` trait.
+///
+/// Used with `#[serde(deserialize_with = "gts::deserialize_gts")]` on generic fields in base structs.
+///
+/// # Errors
+///
+/// Returns an error if deserialization fails.
+pub fn deserialize_gts<'de, T: GtsDeserialize<'de>, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<T, D::Error> {
+    T::gts_deserialize(deserializer)
+}
+
+/// Wrapper to serialize a GtsSerialize type using serde's Serialize trait.
+///
+/// This is used internally by the macro to serialize generic fields in nested structs.
+/// Generic fields may not implement Serialize directly (only GtsSerialize), so this
+/// wrapper bridges the gap.
+#[doc(hidden)]
+pub struct GtsSerializeWrapper<'a, T: GtsSerialize + ?Sized>(pub &'a T);
+
+impl<T: GtsSerialize + ?Sized> serde::Serialize for GtsSerializeWrapper<'_, T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.0.gts_serialize(serializer)
+    }
+}
+
+/// Wrapper for deserializing into a GtsDeserialize type.
+///
+/// Used internally by the macro for generic field deserialization in nested structs.
+#[doc(hidden)]
+pub struct GtsDeserializeWrapper<T>(pub T);
+
+impl<'de, T: GtsDeserialize<'de>> serde::Deserialize<'de> for GtsDeserializeWrapper<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        T::gts_deserialize(deserializer).map(GtsDeserializeWrapper)
+    }
+}
+
 /// Generate a GTS-style schema for a nested type with allOf and $ref to base.
 ///
 /// This macro generates a schema where:

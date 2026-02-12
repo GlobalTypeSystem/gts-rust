@@ -28,7 +28,7 @@ use uuid::Uuid;
 use gts::gts::{GtsInstanceId, GtsSchemaId};
 
 // Base event type (root of the hierarchy)
-// Note: #[derive(Serialize, Deserialize, JsonSchema)] is added automatically!
+// Note: Base structs get Serialize/Deserialize/JsonSchema automatically.
 #[derive(Debug)]
 #[struct_to_gts_schema(
     dir_path = "schemas",
@@ -83,11 +83,12 @@ The macro validates your annotations at compile time, catching errors early.
 ### Automatic Derives
 
 The macro automatically adds these derives to your struct:
-- `serde::Serialize`
-- `serde::Deserialize`
-- `schemars::JsonSchema`
+- **Base structs** (`base = true`): `serde::Serialize`, `serde::Deserialize`, `schemars::JsonSchema`
+- **Nested structs** (`base = ParentStruct`): `schemars::JsonSchema` only  
+  (direct Serialize/Deserialize is intentionally blocked)
 
-**Do NOT add these derives manually** - they will conflict. You can add other derives like `Debug`, `Clone`, etc.
+**Do NOT add Serialize/Deserialize manually for nested structs** - direct serialization is prohibited.  
+You can add other derives like `Debug`, `Clone`, etc.
 
 ```rust
 // ✅ Correct - only add Debug, Clone, etc.

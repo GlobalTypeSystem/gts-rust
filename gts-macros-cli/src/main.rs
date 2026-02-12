@@ -39,7 +39,7 @@ mod test_structs {
         description = "Audit event with user context",
         properties = "user_agent,user_id,ip_address,data"
     )]
-    #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+    #[derive(Debug, JsonSchema)]
     pub struct AuditPayloadV1<D> {
         pub user_agent: String,
         pub user_id: uuid::Uuid,
@@ -54,7 +54,7 @@ mod test_structs {
         description = "Order placement audit event",
         properties = "order_id,product_id"
     )]
-    #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+    #[derive(Debug, JsonSchema)]
     pub struct PlaceOrderDataV1<E> {
         pub order_id: uuid::Uuid,
         pub product_id: uuid::Uuid,
@@ -68,7 +68,7 @@ mod test_structs {
         description = "Order placement audit event",
         properties = "order_id"
     )]
-    #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+    #[derive(Debug, JsonSchema)]
     pub struct PlaceOrderDataPayloadV1 {
         pub order_id: uuid::Uuid,
     }

@@ -351,17 +351,148 @@ fn has_derive(input: &syn::DeriveInput, trait_name: &str) -> bool {
     })
 }
 
+/// Helper struct for parsing derive lists.
+struct DeriveList(syn::punctuated::Punctuated<syn::Path, syn::Token![,]>);
+impl syn::parse::Parse for DeriveList {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        Ok(DeriveList(syn::punctuated::Punctuated::parse_terminated(
+            input,
+        )?))
+    }
+}
+
+/// Check if a derive list contains a specific trait by name.
+fn derive_list_contains(
+    derives: &syn::punctuated::Punctuated<syn::Path, syn::Token![,]>,
+    trait_name: &str,
+) -> bool {
+    derives.iter().any(|path| {
+        path.segments
+            .last()
+            .is_some_and(|seg| seg.ident == trait_name)
+    })
+}
+
+/// Check if an attribute is a `derive`/`cfg_attr` that includes a specific trait.
+fn attr_derives_trait(attr: &syn::Attribute, trait_name: &str) -> bool {
+    if attr.path().is_ident("derive") {
+        if let Ok(meta) = attr.meta.require_list()
+            && let Ok(DeriveList(derives)) = syn::parse2::<DeriveList>(meta.tokens.clone())
+        {
+            return derive_list_contains(&derives, trait_name);
+        }
+        return false;
+    }
+
+    if attr.path().is_ident("cfg_attr") {
+        let syn::Meta::List(list) = &attr.meta else {
+            return false;
+        };
+        let nested: syn::punctuated::Punctuated<syn::Meta, syn::Token![,]> =
+            match list.parse_args_with(syn::punctuated::Punctuated::parse_terminated) {
+                Ok(meta) => meta,
+                Err(_) => return false,
+            };
+        for meta in nested {
+            if let syn::Meta::List(inner) = meta
+                && inner.path.is_ident("derive")
+                && let Ok(DeriveList(derives)) = syn::parse2::<DeriveList>(inner.tokens)
+                && derive_list_contains(&derives, trait_name)
+            {
+                return true;
+            }
+        }
+
+        // Fallback: if parsing fails or cfg_attr is complex, do a token scan
+        let tokens = list.tokens.to_string();
+        return tokens.contains(trait_name);
+    }
+
+    false
+}
+
+/// Check if attributes include Serialize or Deserialize derives (direct or `cfg_attr`).
+fn has_serde_derives(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        attr_derives_trait(attr, "Serialize") || attr_derives_trait(attr, "Deserialize")
+    })
+}
+
+/// Remove specific derive traits from the input.
+///
+/// For nested structs, we need to remove Serialize and Deserialize derives
+/// to prevent direct serialization. This enforces that nested GTS structs
+/// can only be serialized through their base struct wrapper.
+fn remove_derives(input: &mut syn::DeriveInput, traits_to_remove: &[&str]) {
+    let mut new_attrs = Vec::new();
+
+    for attr in input.attrs.drain(..) {
+        if !attr.path().is_ident("derive") {
+            new_attrs.push(attr);
+            continue;
+        }
+
+        // Parse the derive list and filter out unwanted traits
+        if let Ok(meta) = attr.meta.require_list() {
+            let tokens = &meta.tokens;
+
+            // Parse as punctuated paths
+            if let Ok(DeriveList(derives)) = syn::parse2::<DeriveList>(tokens.clone()) {
+                // Filter out the traits to remove
+                let kept_derives: Vec<_> = derives
+                    .iter()
+                    .filter(|path| {
+                        let path_str = quote::quote!(#path).to_string();
+                        !traits_to_remove.iter().any(|t| path_str.contains(t))
+                    })
+                    .collect();
+
+                if !kept_derives.is_empty() {
+                    // Rebuild the derive attribute with only kept traits
+                    new_attrs.push(syn::parse_quote!(#[derive(#(#kept_derives),*)]));
+                }
+                // If all traits were removed, don't add any derive
+            } else {
+                // Couldn't parse, keep the original
+                new_attrs.push(attr);
+            }
+        } else {
+            new_attrs.push(attr);
+        }
+    }
+
+    input.attrs = new_attrs;
+}
+
 /// Add missing required derives (Serialize, Deserialize, `JsonSchema`)
-fn add_missing_derives(input: &mut syn::DeriveInput) {
-    let derives_to_add: Vec<&str> = [
-        ("Serialize", "serde::Serialize"),
-        ("Deserialize", "serde::Deserialize"),
-        ("JsonSchema", "schemars::JsonSchema"),
-    ]
-    .into_iter()
-    .filter(|(check, _)| !has_derive(input, check))
-    .map(|(_, full)| full)
-    .collect();
+///
+/// For nested structs (`base = ParentStruct`), Serialize and Deserialize are NOT added.
+/// This prevents direct serialization of nested structs - they can only be serialized
+/// through their base struct wrapper.
+fn add_missing_derives(input: &mut syn::DeriveInput, base: &BaseAttr) {
+    // For nested structs (base = ParentStruct), only add JsonSchema
+    // Serialize/Deserialize will be provided via GtsSerialize/GtsDeserialize traits
+    let is_nested = matches!(base, BaseAttr::Parent(_));
+
+    let derives_to_add: Vec<&str> = if is_nested {
+        // Nested struct: only JsonSchema
+        [("JsonSchema", "schemars::JsonSchema")]
+            .into_iter()
+            .filter(|(check, _)| !has_derive(input, check))
+            .map(|(_, full)| full)
+            .collect()
+    } else {
+        // Base struct: all three derives
+        [
+            ("Serialize", "serde::Serialize"),
+            ("Deserialize", "serde::Deserialize"),
+            ("JsonSchema", "schemars::JsonSchema"),
+        ]
+        .into_iter()
+        .filter(|(check, _)| !has_derive(input, check))
+        .map(|(_, full)| full)
+        .collect()
+    };
 
     if !derives_to_add.is_empty() {
         let derives_str = derives_to_add.join(", ");
@@ -399,6 +530,63 @@ fn validate_base_segments(
             ),
         )),
         _ => Ok(()),
+    }
+}
+
+/// Add serde attributes for GtsSerialize/GtsDeserialize on base structs with generic fields.
+///
+/// For base structs (`base = true`) with a generic parameter P, this adds:
+/// - `#[serde(bound(serialize = "P: ::gts::GtsSerialize", deserialize = "P: ::gts::GtsDeserialize<'de>"))]` on the struct
+/// - `#[serde(serialize_with = "::gts::serialize_gts", deserialize_with = "::gts::deserialize_gts")]` on the generic field
+fn add_gts_serde_attrs(input: &mut syn::DeriveInput, base: &BaseAttr) {
+    // Only for base structs
+    if !matches!(base, BaseAttr::IsBase) {
+        return;
+    }
+
+    // Get the generic type parameter name if present
+    let generic_param_name: Option<String> = input
+        .generics
+        .type_params()
+        .next()
+        .map(|tp| tp.ident.to_string());
+
+    let Some(generic_param) = generic_param_name else {
+        return; // No generic parameter, nothing to do
+    };
+
+    // Build the bound strings
+    let serialize_bound = format!("{generic_param}: ::gts::GtsSerialize");
+    let deserialize_bound = format!("{generic_param}: ::gts::GtsDeserialize<'de>");
+
+    // Add serde bound attribute on the struct
+    let bound_attr: syn::Attribute = syn::parse_quote!(
+        #[serde(bound(
+            serialize = #serialize_bound,
+            deserialize = #deserialize_bound
+        ))]
+    );
+    input.attrs.push(bound_attr);
+
+    // Add serialize_with/deserialize_with attributes on the generic field
+    if let syn::Data::Struct(ref mut data_struct) = input.data
+        && let syn::Fields::Named(ref mut fields) = data_struct.fields
+    {
+        for field in &mut fields.named {
+            // Check if this field's type is the generic parameter
+            let field_type = &field.ty;
+            let field_type_str = quote::quote!(#field_type).to_string().replace(' ', "");
+            if field_type_str == generic_param {
+                // Add serde attributes to this field
+                let field_attr: syn::Attribute = syn::parse_quote!(
+                    #[serde(
+                        serialize_with = "::gts::serialize_gts",
+                        deserialize_with = "::gts::deserialize_gts"
+                    )]
+                );
+                field.attrs.push(field_attr);
+            }
+        }
     }
 }
 
@@ -743,8 +931,27 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         param.bounds.push(syn::parse_quote!(::gts::GtsSchema));
     }
 
+    // For nested structs, remove Serialize/Deserialize to prevent direct serialization
+    // This is critical for Issue #24: nested structs can only be serialized through base struct
+    if matches!(&args.base, BaseAttr::Parent(_)) {
+        if has_serde_derives(&input.attrs) {
+            return syn::Error::new_spanned(
+                &input.ident,
+                "struct_to_gts_schema: Nested structs must not derive Serialize/Deserialize. \
+                 Serialize them through the base struct instead.",
+            )
+            .to_compile_error()
+            .into();
+        }
+        remove_derives(&mut modified_input, &["Serialize", "Deserialize"]);
+    }
+
     // Automatically add required derives: Serialize, Deserialize, JsonSchema
-    add_missing_derives(&mut modified_input);
+    // For nested structs, only JsonSchema is added (no direct serialization)
+    add_missing_derives(&mut modified_input, &args.base);
+
+    // For base structs with generic fields, add serde attributes for GtsSerialize/GtsDeserialize
+    add_gts_serde_attrs(&mut modified_input, &args.base);
 
     // Validate base attribute consistency with schema_id segments
     if let Err(err) = validate_base_segments(&input, &args.base, &args.schema_id) {
@@ -762,7 +969,8 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     let schema_file_path = format!("{dir_path}/{schema_id}.schema.json");
 
     // Extract generics to properly handle generic structs
-    let generics = &input.generics;
+    // Use modified_input.generics which has the GtsSchema bounds added
+    let generics = &modified_input.generics;
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     // Get the generic type parameter name if present
@@ -882,7 +1090,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     let serialize_where_clause = build_where_clause(
         generics,
         where_clause,
-        "serde::Serialize + ::gts::GtsSchema",
+        "::gts::GtsSerialize + ::gts::GtsSchema",
     );
 
     let gts_schema_impl = if has_generic {
@@ -1138,12 +1346,17 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     // Check if this is a unit struct - we need to add an allow attribute for clippy
     // because quote! may emit {} instead of ; for unit structs
     let is_unit_struct = matches!(&input.data, Data::Struct(data_struct) if matches!(&data_struct.fields, Fields::Unit));
+    let is_base_unit_struct = is_unit_struct && matches!(args.base, BaseAttr::IsBase);
+
     if is_unit_struct {
         modified_input
             .attrs
             .push(syn::parse_quote!(#[allow(clippy::empty_structs_with_brackets)]));
+    }
 
-        // For unit structs, we provide custom Serialize/Deserialize implementations
+    // For BASE unit structs only, we provide custom Serialize/Deserialize implementations
+    // (nested unit structs get GtsSerialize/GtsDeserialize instead)
+    if is_base_unit_struct {
         // Remove our auto-added Serialize/Deserialize derives since we provide custom impls
         // Keep JsonSchema from our auto-added derives
         modified_input.attrs.retain(|attr| {
@@ -1167,8 +1380,9 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
             .push(syn::parse_quote!(#[derive(schemars::JsonSchema)]));
     }
 
-    // Generate custom serialization implementation for unit structs to serialize as {} instead of null
-    let custom_serialize_impl = if is_unit_struct {
+    // Generate custom serialization implementation for BASE unit structs to serialize as {} instead of null
+    // (nested unit structs get GtsSerialize/GtsDeserialize impls instead)
+    let custom_serialize_impl = if is_base_unit_struct {
         quote! {
             // Custom Serialize implementation for unit structs to serialize as {} instead of null
             impl #impl_generics serde::Serialize for #struct_name #ty_generics #where_clause {
@@ -1227,6 +1441,306 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         quote! {}
     };
 
+    // Generate GtsSerialize/GtsDeserialize impls for nested structs (base = ParentStruct)
+    // These structs don't have Serialize/Deserialize derives, so they need explicit impls
+    let gts_serialize_impl = if matches!(&args.base, BaseAttr::Parent(_)) && !is_unit_struct {
+        // Collect field information for serialization, including whether each field is the generic type
+        let fields_for_serialize: Vec<_> = struct_fields
+            .map(|fields| {
+                fields
+                    .iter()
+                    .filter_map(|field| {
+                        let ident = field.ident.as_ref()?;
+                        // Use serde rename if present, otherwise use field name
+                        let serialize_name =
+                            get_serde_rename(field).unwrap_or_else(|| ident.to_string());
+                        // Check if this field's type is the generic parameter
+                        let is_generic = generic_param_name.as_ref().is_some_and(|gp| {
+                            let field_type = &field.ty;
+                            let field_type_str =
+                                quote::quote!(#field_type).to_string().replace(' ', "");
+                            field_type_str == *gp
+                        });
+                        Some((ident.clone(), serialize_name, is_generic))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let num_fields = fields_for_serialize.len();
+        let field_serialize_calls: Vec<_> = fields_for_serialize
+            .iter()
+            .map(|(ident, serialize_name, is_generic)| {
+                if *is_generic {
+                    // For generic fields, use GtsSerializeWrapper
+                    quote! {
+                        state.serialize_field(#serialize_name, &::gts::GtsSerializeWrapper(&self.#ident))?;
+                    }
+                } else {
+                    quote! {
+                        state.serialize_field(#serialize_name, &self.#ident)?;
+                    }
+                }
+            })
+            .collect();
+
+        let field_idents: Vec<_> = fields_for_serialize
+            .iter()
+            .map(|(ident, _, _)| ident)
+            .collect();
+        let field_names: Vec<_> = fields_for_serialize
+            .iter()
+            .map(|(_, name, _)| name.as_str())
+            .collect();
+        let _fields_is_generic: Vec<_> = fields_for_serialize
+            .iter()
+            .map(|(_, _, is_generic)| *is_generic)
+            .collect();
+
+        let struct_name_str = struct_name.to_string();
+
+        // Get the type param identifiers for use in impl<'de, ...>
+        // Include GtsSchema bound since the struct definition requires it
+        let type_param_idents: Vec<_> = generics.type_params().map(|p| &p.ident).collect();
+
+        // Build the impl generics for deserialize: impl<'de, T1: GtsSchema, T2: GtsSchema, ...>
+        // The GtsSchema bound is required because the struct definition has it
+        let de_impl_generics = if type_param_idents.is_empty() {
+            quote! { 'de }
+        } else {
+            quote! { 'de, #(#type_param_idents: ::gts::GtsSchema),* }
+        };
+
+        // Build base where clause that includes GtsSchema bound (required by struct definition)
+        let gts_schema_where = if let Some(ref gp) = generic_param_name {
+            let gp_ident: syn::Ident = syn::parse_str(gp).expect("valid ident");
+            if let Some(existing) = where_clause {
+                quote! { #existing #gp_ident: ::gts::GtsSchema, }
+            } else {
+                quote! { where #gp_ident: ::gts::GtsSchema }
+            }
+        } else {
+            quote! { #where_clause }
+        };
+
+        // Build where clause for GtsSerialize that includes GtsSchema + GtsSerialize bounds
+        let gts_serialize_where = if let Some(ref gp) = generic_param_name {
+            let gp_ident: syn::Ident = syn::parse_str(gp).expect("valid ident");
+            if let Some(existing) = where_clause {
+                quote! { #existing #gp_ident: ::gts::GtsSchema + ::gts::GtsSerialize, }
+            } else {
+                quote! { where #gp_ident: ::gts::GtsSchema + ::gts::GtsSerialize }
+            }
+        } else {
+            quote! { #where_clause }
+        };
+
+        // Build where clause for GtsDeserialize that includes GtsSchema + GtsDeserialize bounds
+        let gts_deserialize_where = if let Some(ref gp) = generic_param_name {
+            let gp_ident: syn::Ident = syn::parse_str(gp).expect("valid ident");
+            if let Some(existing) = where_clause {
+                quote! { #existing #gp_ident: ::gts::GtsSchema + ::gts::GtsDeserialize<'de>, }
+            } else {
+                quote! { where #gp_ident: ::gts::GtsSchema + ::gts::GtsDeserialize<'de> }
+            }
+        } else {
+            quote! { #where_clause }
+        };
+
+        // Generate field visit code - for generic fields, use GtsDeserializeWrapper
+        let field_visit_code: Vec<_> = fields_for_serialize
+            .iter()
+            .map(|(ident, name, is_generic)| {
+                if *is_generic {
+                    quote! {
+                        Field::#ident => {
+                            if #ident.is_some() {
+                                return Err(serde::de::Error::duplicate_field(#name));
+                            }
+                            let wrapper: ::gts::GtsDeserializeWrapper<_> = map.next_value()?;
+                            #ident = Some(wrapper.0);
+                        }
+                    }
+                } else {
+                    quote! {
+                        Field::#ident => {
+                            if #ident.is_some() {
+                                return Err(serde::de::Error::duplicate_field(#name));
+                            }
+                            #ident = Some(map.next_value()?);
+                        }
+                    }
+                }
+            })
+            .collect();
+
+        quote! {
+            // GtsSerialize implementation for nested struct (no direct serialization allowed)
+            impl #impl_generics ::gts::GtsSerialize for #struct_name #ty_generics #gts_serialize_where {
+                fn gts_serialize<__S>(&self, serializer: __S) -> Result<__S::Ok, __S::Error>
+                where
+                    __S: serde::Serializer,
+                {
+                    use serde::ser::SerializeStruct;
+                    let mut state = serializer.serialize_struct(#struct_name_str, #num_fields)?;
+                    #(#field_serialize_calls)*
+                    state.end()
+                }
+            }
+
+            // GtsDeserialize implementation for nested struct
+            impl<#de_impl_generics> ::gts::GtsDeserialize<'de> for #struct_name #ty_generics #gts_deserialize_where {
+                fn gts_deserialize<__D>(deserializer: __D) -> Result<Self, __D::Error>
+                where
+                    __D: serde::Deserializer<'de>,
+                {
+                    use serde::de::{Deserialize, Deserializer, MapAccess, Visitor};
+                    use std::fmt;
+
+                    #[allow(non_camel_case_types)]
+                    #[derive(serde::Deserialize)]
+                    #[serde(field_identifier, rename_all = "snake_case")]
+                    enum Field {
+                        #(#field_idents,)*
+                        #[serde(other)]
+                        Unknown,
+                    }
+
+                    struct StructVisitor #ty_generics (std::marker::PhantomData<fn() -> #struct_name #ty_generics>) #gts_schema_where;
+
+                    impl<#de_impl_generics> Visitor<'de> for StructVisitor #ty_generics #gts_deserialize_where {
+                        type Value = #struct_name #ty_generics;
+
+                        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                            formatter.write_str(concat!("struct ", #struct_name_str))
+                        }
+
+                        fn visit_map<__M>(self, mut map: __M) -> Result<Self::Value, __M::Error>
+                        where
+                            __M: MapAccess<'de>,
+                        {
+                            #(let mut #field_idents: Option<_> = None;)*
+
+                            while let Some(key) = map.next_key::<Field>()? {
+                                match key {
+                                    #(#field_visit_code)*
+                                    Field::Unknown => {
+                                        let _: serde::de::IgnoredAny = map.next_value()?;
+                                    }
+                                }
+                            }
+
+                            #(let #field_idents = #field_idents
+                                .ok_or_else(|| serde::de::Error::missing_field(#field_names))?;)*
+
+                            Ok(#struct_name {
+                                #(#field_idents,)*
+                            })
+                        }
+                    }
+
+                    const FIELDS: &[&str] = &[#(#field_names,)*];
+                    deserializer.deserialize_struct(#struct_name_str, FIELDS, StructVisitor(std::marker::PhantomData))
+                }
+            }
+        }
+    } else if matches!(&args.base, BaseAttr::Parent(_)) && is_unit_struct {
+        // Unit struct nested type - simple impls
+        quote! {
+            impl ::gts::GtsSerialize for #struct_name {
+                fn gts_serialize<__S>(&self, serializer: __S) -> Result<__S::Ok, __S::Error>
+                where
+                    __S: serde::Serializer,
+                {
+                    use serde::ser::SerializeMap;
+                    let map = serializer.serialize_map(Some(0))?;
+                    map.end()
+                }
+            }
+
+            impl<'de> ::gts::GtsDeserialize<'de> for #struct_name {
+                fn gts_deserialize<__D>(deserializer: __D) -> Result<Self, __D::Error>
+                where
+                    __D: serde::Deserializer<'de>,
+                {
+                    use serde::de::{Deserializer, MapAccess, Visitor};
+                    use std::fmt;
+
+                    struct UnitVisitor;
+
+                    impl<'de> Visitor<'de> for UnitVisitor {
+                        type Value = #struct_name;
+
+                        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                            formatter.write_str("unit struct")
+                        }
+
+                        fn visit_map<__M>(self, _map: __M) -> Result<Self::Value, __M::Error>
+                        where
+                            __M: MapAccess<'de>,
+                        {
+                            Ok(#struct_name)
+                        }
+
+                        fn visit_unit<__E>(self) -> Result<Self::Value, __E>
+                        where
+                            __E: serde::de::Error,
+                        {
+                            Ok(#struct_name)
+                        }
+                    }
+
+                    deserializer.deserialize_any(UnitVisitor)
+                }
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    // Block direct serde Serialize/Deserialize impls on nested structs.
+    // If a user tries to add them manually, this will conflict with the blanket impls.
+    let no_direct_serde_impl = if matches!(&args.base, BaseAttr::Parent(_)) {
+        quote! {
+            impl #impl_generics ::gts::GtsNoDirectSerialize for #struct_name #ty_generics #where_clause {}
+            impl #impl_generics ::gts::GtsNoDirectDeserialize for #struct_name #ty_generics #where_clause {}
+        }
+    } else {
+        quote! {}
+    };
+
+    // For nested structs, we don't generate instance serialization methods (gts_instance_json, etc.)
+    // because they don't have Serialize. Instead, they must be serialized through their base struct.
+    let instance_methods_impl = if matches!(&args.base, BaseAttr::Parent(_)) {
+        quote! {}
+    } else {
+        quote! {
+            // Instance serialization methods (require Serialize bound)
+            impl #impl_generics #struct_name #ty_generics #serialize_where_clause {
+                /// Serialize this instance to a `serde_json::Value`.
+                #[allow(dead_code)]
+                #[must_use]
+                pub fn gts_instance_json(&self) -> serde_json::Value {
+                    serde_json::to_value(self).expect("Failed to serialize instance to JSON")
+                }
+
+                /// Serialize this instance to a JSON string.
+                #[allow(dead_code)]
+                #[must_use]
+                pub fn gts_instance_json_as_string(&self) -> String {
+                    serde_json::to_string(self).expect("Failed to serialize instance to JSON string")
+                }
+
+                /// Serialize this instance to a pretty-printed JSON string.
+                #[allow(dead_code)]
+                #[must_use]
+                pub fn gts_instance_json_as_string_pretty(&self) -> String {
+                    serde_json::to_string_pretty(self).expect("Failed to serialize instance to JSON string")
+                }
+            }
+        }
+    };
+
     let expanded = quote! {
         #modified_input
 
@@ -1235,6 +1749,10 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
 
         // Custom serialization for unit structs to serialize as {} instead of null
         #custom_serialize_impl
+
+        // GtsSerialize/GtsDeserialize impls for nested structs
+        #gts_serialize_impl
+        #no_direct_serde_impl
 
         impl #impl_generics #struct_name #ty_generics #gts_schema_where_clause {
             /// File path where the GTS schema will be generated by the CLI.
@@ -1314,29 +1832,8 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
             }
         }
 
-        // Instance serialization methods (require Serialize bound)
-        impl #impl_generics #struct_name #ty_generics #serialize_where_clause {
-            /// Serialize this instance to a `serde_json::Value`.
-            #[allow(dead_code)]
-            #[must_use]
-            pub fn gts_instance_json(&self) -> serde_json::Value {
-                serde_json::to_value(self).expect("Failed to serialize instance to JSON")
-            }
-
-            /// Serialize this instance to a JSON string.
-            #[allow(dead_code)]
-            #[must_use]
-            pub fn gts_instance_json_as_string(&self) -> String {
-                serde_json::to_string(self).expect("Failed to serialize instance to JSON string")
-            }
-
-            /// Serialize this instance to a pretty-printed JSON string.
-            #[allow(dead_code)]
-            #[must_use]
-            pub fn gts_instance_json_as_string_pretty(&self) -> String {
-                serde_json::to_string_pretty(self).expect("Failed to serialize instance to JSON string")
-            }
-        }
+        // Instance serialization methods (only for base structs)
+        #instance_methods_impl
     };
 
     TokenStream::from(expanded)
