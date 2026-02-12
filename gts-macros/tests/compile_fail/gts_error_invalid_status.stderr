@@ -1,0 +1,5 @@
+error: gts_error: HTTP status code must be between 100 and 599
+ --> tests/compile_fail/gts_error_invalid_status.rs:5:14
+  |
+5 |     status = 999,
+  |              ^^^

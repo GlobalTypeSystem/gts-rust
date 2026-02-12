@@ -535,6 +535,7 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 name = "gts"
 version = "0.7.8"
 dependencies = [
+ "http",
  "jsonschema",
  "schemars",
  "serde",
@@ -574,6 +575,7 @@ name = "gts-macros"
 version = "0.7.8"
 dependencies = [
  "gts",
+ "http",
  "jsonschema",
  "proc-macro2",
  "quote",
