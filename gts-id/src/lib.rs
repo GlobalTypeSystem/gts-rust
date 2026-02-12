@@ -110,7 +110,7 @@ pub fn parse_u32_exact(value: &str) -> Option<u32> {
 /// # Arguments
 /// * `segment_num` - 1-based segment number (used in error messages and format hints)
 /// * `segment` - The raw segment string, possibly including a trailing `~`
-/// * `allow_wildcards` - If `true`, wildcard `*` tokens are accepted at any position
+/// * `allow_wildcards` - If `true`, a trailing wildcard `*` token is accepted as the final token
 ///
 /// # Errors
 /// Returns a human-readable error message if the segment is invalid.
@@ -170,24 +170,28 @@ pub fn validate_segment(
     }
 
     // Validate first 4 tokens (vendor, package, namespace, type).
-    // This validation is skipped when the segment ends with '*' because wildcard
-    // segments like "x.pkg.*" are allowed at runtime. Wildcards in the middle
-    // (e.g., "x.*.ns.type.v1") are rejected here because '*' fails is_valid_segment_token.
-    if !ends_with_wildcard {
-        for (i, token) in tokens.iter().take(4).enumerate() {
-            if !is_valid_segment_token(token) {
-                let token_name = match i {
-                    0 => "vendor",
-                    1 => "package",
-                    2 => "namespace",
-                    3 => "type",
-                    _ => "token",
-                };
-                return Err(format!(
-                    "Invalid {token_name} token '{token}'. \
-                     Must start with [a-z_] and contain only [a-z0-9_]"
-                ));
+    // A trailing '*' wildcard is allowed as the final token, but all tokens
+    // before it must still pass validation. Wildcards in the middle
+    // (e.g., "x.*.ns.type.v1") are rejected because '*' fails is_valid_segment_token.
+    for (i, token) in tokens.iter().take(4).enumerate() {
+        if allow_wildcards && *token == "*" {
+            if i == tokens.len() - 1 {
+                break; // '*' as final token is handled in the parsing section below
             }
+            return Err("Wildcard '*' is only allowed as the final token".to_owned());
+        }
+        if !is_valid_segment_token(token) {
+            let token_name = match i {
+                0 => "vendor",
+                1 => "package",
+                2 => "namespace",
+                3 => "type",
+                _ => "token",
+            };
+            return Err(format!(
+                "Invalid {token_name} token '{token}'. \
+                 Must start with [a-z_] and contain only [a-z0-9_]"
+            ));
         }
     }
 
@@ -241,6 +245,9 @@ pub fn validate_segment(
 
     if tokens.len() > 4 {
         if allow_wildcards && tokens[4] == "*" {
+            if 4 != tokens.len() - 1 {
+                return Err("Wildcard '*' is only allowed as the final token".to_owned());
+            }
             result.is_wildcard = true;
             return Ok(result);
         }
@@ -528,6 +535,33 @@ mod tests {
         let parsed = validate_segment(1, "x.*", true).unwrap();
         assert!(parsed.is_wildcard);
         assert_eq!(parsed.vendor, "x");
+    }
+
+    #[test]
+    fn test_wildcard_invalid_token_before_star() {
+        // Tokens before '*' must still be validated
+        let err = validate_segment(1, "1bad.*", true).unwrap_err();
+        assert!(err.contains("Invalid vendor token"), "got: {err}");
+    }
+
+    #[test]
+    fn test_wildcard_in_middle_rejected() {
+        // '*' in a non-final position must be rejected
+        let err = validate_segment(1, "x.*.ns.type.v1", true).unwrap_err();
+        assert!(
+            err.contains("only allowed as the final token"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_wildcard_at_version_position_not_final() {
+        // '*' at version position (4) with extra token after it must be rejected
+        let err = validate_segment(1, "x.pkg.ns.type.*.extra", true).unwrap_err();
+        assert!(
+            err.contains("only allowed as the final token"),
+            "got: {err}"
+        );
     }
 
     #[test]
