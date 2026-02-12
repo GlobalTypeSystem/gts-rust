@@ -4,7 +4,7 @@
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{
-    Data, DeriveInput, Fields, LitStr, Token,
+    Data, DeriveInput, Fields, Ident, LitInt, LitStr, Token,
     parse::{Parse, ParseStream},
     parse_macro_input,
 };
@@ -1315,4 +1315,405 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     };
 
     TokenStream::from(expanded)
+}
+
+// =============================================================================
+// gts_error macro
+// =============================================================================
+
+/// GTS URI prefix for error type identifiers.
+const GTS_URI_PREFIX: &str = "gts://";
+
+/// Parsed arguments for the `#[gts_error(...)]` attribute macro.
+struct GtsErrorArgs {
+    /// GTS type segment (e.g., `cf.system.logical.not_found.v1`)
+    error_type: String,
+    /// Optional base error type (e.g., `BaseError`). Absent for root errors.
+    base: Option<syn::Path>,
+    /// HTTP status code (e.g., 404)
+    status: u16,
+    /// Human-readable error title (e.g., "Not Found")
+    title: String,
+}
+
+impl Parse for GtsErrorArgs {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let mut error_type: Option<String> = None;
+        let mut base: Option<syn::Path> = None;
+        let mut status: Option<u16> = None;
+        let mut title: Option<String> = None;
+
+        while !input.is_empty() {
+            let key: Ident = input.parse()?;
+            input.parse::<Token![=]>()?;
+
+            match key.to_string().as_str() {
+                "r#type" | "type" => {
+                    let value: LitStr = input.parse()?;
+                    error_type = Some(value.value());
+                }
+                "base" => {
+                    let value: syn::Path = input.parse()?;
+                    base = Some(value);
+                }
+                "status" => {
+                    let value: LitInt = input.parse()?;
+                    let code: u16 = value.base10_parse()?;
+                    if !(100..=599).contains(&code) {
+                        return Err(syn::Error::new_spanned(
+                            value,
+                            "gts_error: HTTP status code must be between 100 and 599",
+                        ));
+                    }
+                    status = Some(code);
+                }
+                "title" => {
+                    let value: LitStr = input.parse()?;
+                    title = Some(value.value());
+                }
+                other => {
+                    return Err(syn::Error::new_spanned(
+                        key,
+                        format!(
+                            "gts_error: Unknown attribute: '{other}'. Expected: type, base, status, title"
+                        ),
+                    ));
+                }
+            }
+
+            // Consume optional trailing comma
+            if input.peek(Token![,]) {
+                input.parse::<Token![,]>()?;
+            }
+        }
+
+        let error_type = error_type.ok_or_else(|| {
+            syn::Error::new(
+                input.span(),
+                "gts_error: Missing required attribute: 'type'",
+            )
+        })?;
+        let status = status.ok_or_else(|| {
+            syn::Error::new(
+                input.span(),
+                "gts_error: Missing required attribute: 'status'",
+            )
+        })?;
+        let title = title.ok_or_else(|| {
+            syn::Error::new(
+                input.span(),
+                "gts_error: Missing required attribute: 'title'",
+            )
+        })?;
+
+        Ok(GtsErrorArgs {
+            error_type,
+            base,
+            status,
+            title,
+        })
+    }
+}
+
+/// Field-level attribute for `#[gts_error(...)]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GtsErrorFieldAttr {
+    /// Exclude this field from metadata.
+    SkipMetadata,
+    /// Serialize this field as `metadata["errors"]` array.
+    AsErrors,
+}
+
+/// Parse field-level `#[gts_error(...)]` attributes from a struct field.
+fn parse_gts_error_field_attrs(field: &syn::Field) -> syn::Result<Option<GtsErrorFieldAttr>> {
+    for attr in &field.attrs {
+        if !attr.path().is_ident("gts_error") {
+            continue;
+        }
+
+        let mut result = None;
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("skip_metadata") {
+                result = Some(GtsErrorFieldAttr::SkipMetadata);
+                Ok(())
+            } else if meta.path.is_ident("as_errors") {
+                result = Some(GtsErrorFieldAttr::AsErrors);
+                Ok(())
+            } else {
+                Err(meta.error(
+                    "gts_error: Unknown field attribute. Expected: skip_metadata, as_errors",
+                ))
+            }
+        })?;
+
+        return Ok(result);
+    }
+    Ok(None)
+}
+
+/// Attribute macro for defining GTS error types.
+///
+/// Annotates a struct to generate GTS error type identification, `Display` and `Error`
+/// trait implementations, and the `GtsError` trait implementation.
+///
+/// # Attributes
+///
+/// - `type` — GTS type segment (e.g., `"gts.cf.core.errors.err.v1"` for root, `"cf.system.logical.not_found.v1"` for child)
+/// - `base` — *(optional)* Base error type to chain from (e.g., `BaseError`). Omit for root errors.
+/// - `status` — HTTP status code (100–599)
+/// - `title` — Human-readable error title
+///
+/// # Field Attributes
+///
+/// - `#[gts_error(skip_metadata)]` — Exclude this field from the error metadata
+/// - `#[gts_error(as_errors)]` — Serialize this field as `metadata["errors"]` array
+///
+/// # Example
+///
+/// ```ignore
+/// use gts_macros::gts_error;
+///
+/// // Root error (no base)
+/// #[gts_error(
+///     r#type = "gts.cf.core.errors.err.v1",
+///     status = 500,
+///     title = "Error",
+/// )]
+/// pub struct BaseError;
+///
+/// // Child error (chains from BaseError)
+/// #[gts_error(
+///     r#type = "cf.types_registry.entity.not_found.v1",
+///     base = BaseError,
+///     status = 404,
+///     title = "Entity Not Found",
+/// )]
+/// pub struct EntityNotFoundError {
+///     pub gts_id: String,
+///     #[gts_error(skip_metadata)]
+///     pub internal_details: String,
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn gts_error(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(attr as GtsErrorArgs);
+    let input = parse_macro_input!(item as DeriveInput);
+
+    match gts_error_impl(&args, input) {
+        Ok(tokens) => tokens,
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+fn gts_error_impl(args: &GtsErrorArgs, mut input: DeriveInput) -> syn::Result<TokenStream> {
+    // Only named structs are supported
+    let fields = match &input.data {
+        Data::Struct(data) => match &data.fields {
+            Fields::Named(named) => &named.named,
+            Fields::Unnamed(_) => {
+                return Err(syn::Error::new_spanned(
+                    &input.ident,
+                    "gts_error: Tuple structs are not supported. Use a struct with named fields.",
+                ));
+            }
+            Fields::Unit => {
+                // Unit structs are allowed (no metadata fields)
+                &syn::punctuated::Punctuated::new()
+            }
+        },
+        Data::Enum(_) => {
+            return Err(syn::Error::new_spanned(
+                &input.ident,
+                "gts_error: Only structs are supported, not enums.",
+            ));
+        }
+        Data::Union(_) => {
+            return Err(syn::Error::new_spanned(
+                &input.ident,
+                "gts_error: Only structs are supported, not unions.",
+            ));
+        }
+    };
+
+    let error_type_segment = &args.error_type;
+    let status = args.status;
+    let title = &args.title;
+
+    // Build gts_id() implementation based on whether this is a root or child error
+    let gts_id_impl = if let Some(ref base_path) = args.base {
+        // Child error: compose GTS ID from base type's gts_id() at runtime
+        quote! {
+            #[must_use]
+            fn gts_id() -> &'static str {
+                static VALUE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+                    let base_id = <#base_path as ::gts::GtsError>::gts_id();
+                    let base_chain = base_id.strip_prefix("gts://").unwrap_or(base_id);
+                    format!("gts://{}{}", base_chain, concat!(#error_type_segment, "~"))
+                });
+                &VALUE
+            }
+        }
+    } else {
+        // Root error: GTS ID is a simple literal
+        let gts_id_literal = format!("{GTS_URI_PREFIX}{}~", args.error_type);
+        quote! {
+            #[must_use]
+            fn gts_id() -> &'static str {
+                #gts_id_literal
+            }
+        }
+    };
+
+    // Build struct-level gts_id() method (delegates to trait)
+    let struct_gts_id_impl = quote! {
+        /// Full GTS type URI for this error.
+        #[must_use]
+        pub fn gts_id() -> &'static str {
+            <Self as ::gts::GtsError>::gts_id()
+        }
+    };
+
+    // Parse field attributes and build metadata insertion code
+    let mut metadata_inserts = Vec::new();
+    let mut has_metadata_fields = false;
+
+    for field in fields {
+        let field_name = field
+            .ident
+            .as_ref()
+            .expect("Named field must have an ident");
+        let field_name_str = field_name.to_string();
+
+        let field_attr = parse_gts_error_field_attrs(field)?;
+
+        match field_attr {
+            Some(GtsErrorFieldAttr::SkipMetadata) => {
+                // Skip this field entirely
+            }
+            Some(GtsErrorFieldAttr::AsErrors) => {
+                has_metadata_fields = true;
+                metadata_inserts.push(quote! {
+                    if let Ok(val) = serde_json::to_value(&self.#field_name) {
+                        metadata.insert("errors".to_owned(), val);
+                    }
+                });
+            }
+            None => {
+                has_metadata_fields = true;
+                metadata_inserts.push(quote! {
+                    if let Ok(val) = serde_json::to_value(&self.#field_name) {
+                        metadata.insert(#field_name_str.to_owned(), val);
+                    }
+                });
+            }
+        }
+    }
+
+    // Build the error_metadata() body
+    let metadata_body = if has_metadata_fields {
+        quote! {
+            let mut metadata = std::collections::HashMap::new();
+            #(#metadata_inserts)*
+            if metadata.is_empty() {
+                None
+            } else {
+                Some(metadata)
+            }
+        }
+    } else {
+        quote! { None }
+    };
+
+    // Strip #[gts_error(...)] attributes from fields before emitting the struct,
+    // since the compiler doesn't recognize them as inert helper attributes.
+    if let Data::Struct(ref mut data) = input.data
+        && let Fields::Named(ref mut named) = data.fields
+    {
+        for field in &mut named.named {
+            field
+                .attrs
+                .retain(|attr| !attr.path().is_ident("gts_error"));
+        }
+    }
+
+    // Add derives if missing
+    add_missing_error_derives(&mut input);
+
+    let struct_name = &input.ident;
+
+    let expanded = quote! {
+        #input
+
+        impl #struct_name {
+            #struct_gts_id_impl
+
+            /// HTTP status code for this error type.
+            #[must_use]
+            pub fn status() -> http::StatusCode {
+                <Self as ::gts::GtsError>::status()
+            }
+
+            /// Static human-readable title for this error type.
+            pub const TITLE: &'static str = #title;
+        }
+
+        impl ::gts::GtsError for #struct_name {
+            #gts_id_impl
+
+            #[must_use]
+            fn status() -> http::StatusCode {
+                http::StatusCode::from_u16(#status).expect("gts_error: status validated at compile time")
+            }
+
+            const TITLE: &'static str = #title;
+
+            #[must_use]
+            fn error_metadata(&self) -> Option<std::collections::HashMap<String, serde_json::Value>> {
+                #metadata_body
+            }
+        }
+
+        impl std::fmt::Display for #struct_name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{}: {}", Self::TITLE, Self::gts_id())
+            }
+        }
+
+        impl std::error::Error for #struct_name {}
+    };
+
+    Ok(TokenStream::from(expanded))
+}
+
+/// Add `Debug` and `Clone` derives if not already present on the struct.
+fn add_missing_error_derives(input: &mut DeriveInput) {
+    let required_derives = ["Debug", "Clone"];
+
+    let mut existing_derives = Vec::new();
+    for attr in &input.attrs {
+        if attr.path().is_ident("derive")
+            && let Ok(nested) = attr.parse_args_with(
+                syn::punctuated::Punctuated::<syn::Path, Token![,]>::parse_terminated,
+            )
+        {
+            for path in &nested {
+                if let Some(ident) = path.get_ident() {
+                    existing_derives.push(ident.to_string());
+                }
+            }
+        }
+    }
+
+    let mut missing_derives: Vec<syn::Path> = Vec::new();
+    for derive_name in &required_derives {
+        if !existing_derives.iter().any(|d| d == derive_name) {
+            missing_derives.push(syn::parse_str(derive_name).expect("valid derive path"));
+        }
+    }
+
+    if !missing_derives.is_empty() {
+        input
+            .attrs
+            .push(syn::parse_quote!(#[derive(#(#missing_derives),*)]));
+    }
 }

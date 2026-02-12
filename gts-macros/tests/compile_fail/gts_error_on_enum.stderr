@@ -1,0 +1,5 @@
+error: gts_error: Only structs are supported, not enums.
+ --> tests/compile_fail/gts_error_on_enum.rs:8:10
+  |
+8 | pub enum NotAStructError {
+  |          ^^^^^^^^^^^^^^^
