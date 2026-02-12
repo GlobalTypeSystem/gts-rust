@@ -1256,4 +1256,194 @@ mod tests {
         let result = GtsWildcard::new("gts.x.pkg.ns.type.*");
         assert!(result.is_ok());
     }
+
+    // ---- Additional edge case tests ----
+
+    #[test]
+    fn test_gts_instance_id_partial_eq_string_types() {
+        let id = GtsInstanceId::new("gts.x.core.events.topic.v1~", "vendor.app.orders.v1");
+        let s = "gts.x.core.events.topic.v1~vendor.app.orders.v1";
+        assert_eq!(id, s);
+        assert_eq!(id, s.to_owned());
+        assert_eq!(id, &s.to_owned());
+    }
+
+    #[test]
+    fn test_gts_schema_id_partial_eq_string_types() {
+        let id = GtsSchemaId::new("gts.x.core.events.topic.v1~");
+        let s = "gts.x.core.events.topic.v1~";
+        assert_eq!(id, s);
+        assert_eq!(id, s.to_owned());
+        assert_eq!(id, &s.to_owned());
+    }
+
+    #[test]
+    fn test_gts_instance_id_deref() {
+        let id = GtsInstanceId::new("gts.x.core.events.topic.v1~", "vendor.app.orders.v1");
+        let deref_str: &str = &*id;
+        assert_eq!(deref_str, "gts.x.core.events.topic.v1~vendor.app.orders.v1");
+    }
+
+    #[test]
+    fn test_gts_schema_id_deref() {
+        let id = GtsSchemaId::new("gts.x.core.events.topic.v1~");
+        let deref_str: &str = &*id;
+        assert_eq!(deref_str, "gts.x.core.events.topic.v1~");
+    }
+
+    #[test]
+    fn test_gts_instance_id_into_string() {
+        let id = GtsInstanceId::new("gts.x.core.events.topic.v1~", "vendor.app.orders.v1");
+        let s = id.into_string();
+        assert_eq!(s, "gts.x.core.events.topic.v1~vendor.app.orders.v1");
+    }
+
+    #[test]
+    fn test_gts_schema_id_into_string() {
+        let id = GtsSchemaId::new("gts.x.core.events.topic.v1~");
+        let s = id.into_string();
+        assert_eq!(s, "gts.x.core.events.topic.v1~");
+    }
+
+    #[test]
+    fn test_gts_instance_id_display() {
+        let id = GtsInstanceId::new("gts.x.core.events.topic.v1~", "vendor.app.orders.v1");
+        assert_eq!(
+            format!("{id}"),
+            "gts.x.core.events.topic.v1~vendor.app.orders.v1"
+        );
+    }
+
+    #[test]
+    fn test_gts_schema_id_display() {
+        let id = GtsSchemaId::new("gts.x.core.events.topic.v1~");
+        assert_eq!(format!("{id}"), "gts.x.core.events.topic.v1~");
+    }
+
+    #[test]
+    fn test_gts_instance_id_from_conversion() {
+        let id = GtsInstanceId::new("gts.x.core.events.topic.v1~", "vendor.app.orders.v1");
+        let s: String = id.into();
+        assert_eq!(s, "gts.x.core.events.topic.v1~vendor.app.orders.v1");
+    }
+
+    #[test]
+    fn test_gts_schema_id_from_conversion() {
+        let id = GtsSchemaId::new("gts.x.core.events.topic.v1~");
+        let s: String = id.into();
+        assert_eq!(s, "gts.x.core.events.topic.v1~");
+    }
+
+    #[test]
+    fn test_gts_id_single_segment_instance_rejected() {
+        // Issue #37: Single-segment instance IDs are prohibited
+        let result = GtsID::new("gts.x.core.events.event.v1");
+        assert!(result.is_err());
+        if let Err(GtsError::Id { cause, .. }) = result {
+            assert!(
+                cause.contains("Single-segment instance IDs are prohibited"),
+                "got: {cause}"
+            );
+        } else {
+            panic!("Expected Id error");
+        }
+    }
+
+    #[test]
+    fn test_gts_id_single_segment_type_allowed() {
+        // Single-segment type IDs (with ~) are allowed
+        let result = GtsID::new("gts.x.core.events.event.v1~");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_gts_id_chained_instance_allowed() {
+        // Chained instance IDs (type~ + instance) are allowed
+        let result = GtsID::new("gts.x.core.events.event.v1~vendor.app.orders.v1");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_gts_wildcard_match_with_version_flexibility() {
+        // Pattern v1 should match v1.0
+        let pattern = GtsWildcard::new("gts.x.core.events.event.v1~").expect("test");
+        let id_with_minor = GtsID::new("gts.x.core.events.event.v1.0~").expect("test");
+        assert!(id_with_minor.wildcard_match(&pattern));
+    }
+
+    #[test]
+    fn test_gts_wildcard_no_match_different_major_version() {
+        // Pattern v2 should not match v1
+        let pattern = GtsWildcard::new("gts.x.core.events.event.v2~").expect("test");
+        let id = GtsID::new("gts.x.core.events.event.v1~").expect("test");
+        assert!(!id.wildcard_match(&pattern));
+    }
+
+    #[test]
+    fn test_gts_id_invalid_segment_count() {
+        // Too few segments after gts. prefix
+        let result = GtsID::new("gts.x.pkg.ns.type~");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_gts_instance_id_json_schema_value() {
+        let schema = GtsInstanceId::json_schema_value();
+        assert_eq!(schema["type"], "string");
+        assert_eq!(schema["format"], "gts-instance-id");
+        assert_eq!(schema["title"], "GTS Instance ID");
+        assert_eq!(schema["description"], "GTS instance identifier");
+        assert_eq!(schema["x-gts-ref"], "gts.*");
+    }
+
+    #[test]
+    fn test_gts_schema_id_json_schema_value() {
+        let schema = GtsSchemaId::json_schema_value();
+        assert_eq!(schema["type"], "string");
+        assert_eq!(schema["format"], "gts-schema-id");
+        assert_eq!(schema["title"], "GTS Schema ID");
+        assert_eq!(schema["description"], "GTS schema identifier");
+        assert_eq!(schema["x-gts-ref"], "gts.*");
+    }
+
+    #[test]
+    fn test_gts_id_segment_offset_tracking() {
+        let id = GtsID::new("gts.x.core.events.event.v1~vendor.app.orders.order.v1~").expect("test");
+        assert_eq!(id.gts_id_segments.len(), 2);
+        // First segment starts after "gts." (offset 4)
+        assert_eq!(id.gts_id_segments[0].offset, 4);
+        // Second segment starts after first segment
+        assert!(id.gts_id_segments[1].offset > id.gts_id_segments[0].offset);
+    }
+
+    #[test]
+    fn test_gts_wildcard_with_minor_version_specific() {
+        // Pattern with minor version should only match exact minor version
+        let pattern = GtsWildcard::new("gts.x.core.events.event.v1.0~").expect("test");
+        let id_match = GtsID::new("gts.x.core.events.event.v1.0~").expect("test");
+        let id_no_match = GtsID::new("gts.x.core.events.event.v1.1~").expect("test");
+        assert!(id_match.wildcard_match(&pattern));
+        assert!(!id_no_match.wildcard_match(&pattern));
+    }
+
+    #[test]
+    fn test_gts_uri_prefix_constant() {
+        // Verify URI prefix is correctly defined
+        assert_eq!(GTS_URI_PREFIX, "gts://");
+        assert_eq!(GTS_PREFIX, "gts.");
+    }
+
+    #[test]
+    fn test_gts_id_get_type_id_none_for_single_segment() {
+        let id = GtsID::new("gts.x.core.events.event.v1~").expect("test");
+        assert!(id.get_type_id().is_none());
+    }
+
+    #[test]
+    fn test_gts_id_get_type_id_for_chained() {
+        let id = GtsID::new("gts.x.core.events.event.v1~vendor.app.orders.v1~").expect("test");
+        let type_id = id.get_type_id();
+        assert!(type_id.is_some());
+        assert_eq!(type_id.unwrap(), "gts.x.core.events.event.v1~");
+    }
 }

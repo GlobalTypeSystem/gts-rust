@@ -661,4 +661,77 @@ mod tests {
         let segments = validate_gts_id("  gts.x.core.events.event.v1~  ", false).unwrap();
         assert_eq!(segments.len(), 1);
     }
+
+    // ---- Regression tests for wildcard validation fix ----
+
+    #[test]
+    fn test_wildcard_with_invalid_token_before_rejected() {
+        // Regression test for: "fix: validate tokens before wildcard in GTS segments"
+        // Invalid tokens before wildcard must be rejected
+        let err = validate_segment(1, "1bad.*", true).unwrap_err();
+        assert!(
+            err.contains("Invalid vendor token"),
+            "Expected invalid vendor token error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_wildcard_all_tokens_before_validated() {
+        // All tokens before wildcard must pass validation
+        let err = validate_segment(1, "valid.2bad.*", true).unwrap_err();
+        assert!(
+            err.contains("Invalid package token"),
+            "Expected invalid package token error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_wildcard_at_end_with_valid_tokens() {
+        // Valid tokens before wildcard should work
+        let parsed = validate_segment(1, "x.pkg.*", true).unwrap();
+        assert!(parsed.is_wildcard);
+        assert_eq!(parsed.vendor, "x");
+        assert_eq!(parsed.package, "pkg");
+    }
+
+    #[test]
+    fn test_wildcard_not_allowed_when_flag_false() {
+        // Wildcard should be rejected when allow_wildcards = false
+        let err = validate_segment(1, "x.pkg.ns.*", false).unwrap_err();
+        assert!(
+            err.contains("Too few tokens"),
+            "Expected too few tokens error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_wildcard_in_middle_always_rejected() {
+        // Wildcard in middle position must be rejected
+        let err = validate_segment(1, "x.*.ns.type.v1", true).unwrap_err();
+        assert!(
+            err.contains("only allowed as the final token"),
+            "Expected wildcard position error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_gts_id_wildcard_patterns() {
+        // Test wildcard patterns at GTS ID level
+        assert!(validate_gts_id("gts.x.pkg.*", true).is_ok());
+        assert!(validate_gts_id("gts.x.pkg.ns.*", true).is_ok());
+        assert!(validate_gts_id("gts.x.pkg.ns.type.*", true).is_ok());
+        assert!(validate_gts_id("gts.x.pkg.ns.type.v1~*", true).is_ok());
+    }
+
+    #[test]
+    fn test_wildcard_uppercase_rejected() {
+        // Uppercase tokens before wildcard must be rejected
+        let err = validate_gts_id("gts.X.pkg.*", true).unwrap_err();
+        match err {
+            GtsIdError::Id { cause, .. } => {
+                assert!(cause.contains("lowercase"), "got: {cause}");
+            }
+            GtsIdError::Segment { .. } => panic!("expected Id error for uppercase"),
+        }
+    }
 }
