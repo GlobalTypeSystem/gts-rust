@@ -4199,8 +4199,12 @@ fn test_op13_traits_ref_to_nonexistent_schema() {
         .register_schema("gts.x.test13.badref.base.v1~x.test13._.leaf.v1~", &derived)
         .expect("register derived");
 
-    // Should not panic — unresolvable $ref is dropped gracefully
-    let _result = store.validate_schema_traits("gts.x.test13.badref.base.v1~x.test13._.leaf.v1~");
+    // Unresolvable $ref causes validation to fail (jsonschema can't resolve it)
+    let result = store.validate_schema_traits("gts.x.test13.badref.base.v1~x.test13._.leaf.v1~");
+    assert!(
+        result.is_err(),
+        "Unresolvable $ref should cause validation error"
+    );
 }
 
 #[test]
