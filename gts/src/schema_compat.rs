@@ -512,7 +512,6 @@ fn check_enumerated_values_against_base(
             }
         }
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -955,9 +954,13 @@ mod tests {
             }
         }));
         let errs = validate_schema_compatibility(&base, &derived, "base~", "derived~");
-        assert!(!errs.is_empty(), "const 32 < minimum 42 should fail: {errs:?}");
         assert!(
-            errs.iter().any(|e| e.contains("violates") && e.contains("minimum")),
+            !errs.is_empty(),
+            "const 32 < minimum 42 should fail: {errs:?}"
+        );
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("violates") && e.contains("minimum")),
             "error should mention minimum violation: {errs:?}"
         );
     }
@@ -978,7 +981,10 @@ mod tests {
             }
         }));
         let errs = validate_schema_compatibility(&base, &derived, "base~", "derived~");
-        assert!(errs.is_empty(), "const 50 >= minimum 42 should pass: {errs:?}");
+        assert!(
+            errs.is_empty(),
+            "const 50 >= minimum 42 should pass: {errs:?}"
+        );
     }
 
     #[test]
@@ -997,7 +1003,10 @@ mod tests {
             }
         }));
         let errs = validate_schema_compatibility(&base, &derived, "base~", "derived~");
-        assert!(!errs.is_empty(), "enum value 200 > maximum 100 should fail: {errs:?}");
+        assert!(
+            !errs.is_empty(),
+            "enum value 200 > maximum 100 should fail: {errs:?}"
+        );
     }
 
     #[test]
@@ -1016,7 +1025,10 @@ mod tests {
             }
         }));
         let errs = validate_schema_compatibility(&base, &derived, "base~", "derived~");
-        assert!(errs.is_empty(), "all enum values in range should pass: {errs:?}");
+        assert!(
+            errs.is_empty(),
+            "all enum values in range should pass: {errs:?}"
+        );
     }
 
     #[test]
@@ -1035,6 +1047,9 @@ mod tests {
             }
         }));
         let errs = validate_schema_compatibility(&base, &derived, "base~", "derived~");
-        assert!(!errs.is_empty(), "const 'toolong' exceeds maxLength 5: {errs:?}");
+        assert!(
+            !errs.is_empty(),
+            "const 'toolong' exceeds maxLength 5: {errs:?}"
+        );
     }
 }
