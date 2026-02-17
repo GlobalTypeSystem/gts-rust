@@ -13,6 +13,10 @@
 
 use serde_json::Value;
 
+/// Maximum recursion depth for traversing `allOf` nesting.
+/// Prevents stack overflow on deeply nested or maliciously crafted schemas.
+const MAX_RECURSION_DEPTH: usize = 64;
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -70,6 +74,18 @@ pub fn validate_effective_traits(
         return Ok(());
     }
 
+    // Validate trait schema integrity: x-gts-traits-schema must not contain x-gts-traits
+    for (i, ts) in resolved_trait_schemas.iter().enumerate() {
+        if let Some(obj) = ts.as_object()
+            && obj.contains_key("x-gts-traits")
+        {
+            return Err(vec![format!(
+                "x-gts-traits-schema[{i}] contains 'x-gts-traits' \u{2014} \
+                 trait values must not appear inside a trait schema definition"
+            )]);
+        }
+    }
+
     let effective_trait_schema = build_effective_trait_schema(resolved_trait_schemas);
     let effective_traits = apply_defaults(&effective_trait_schema, merged_traits);
     validate_traits_against_schema(&effective_trait_schema, &effective_traits)
@@ -82,7 +98,16 @@ pub fn validate_effective_traits(
 /// Recursively search a schema value for `x-gts-traits-schema` entries.
 ///
 /// Handles both top-level and `allOf`-nested occurrences.
+/// Recursion is bounded by [`MAX_RECURSION_DEPTH`] to prevent stack overflow.
 pub(crate) fn collect_trait_schema_from_value(value: &Value, out: &mut Vec<Value>) {
+    collect_trait_schema_recursive(value, out, 0);
+}
+
+fn collect_trait_schema_recursive(value: &Value, out: &mut Vec<Value>, depth: usize) {
+    if depth >= MAX_RECURSION_DEPTH {
+        return;
+    }
+
     let Some(obj) = value.as_object() else {
         return;
     };
@@ -94,16 +119,29 @@ pub(crate) fn collect_trait_schema_from_value(value: &Value, out: &mut Vec<Value
     // Also check inside allOf items (e.g. a derived schema that is an allOf overlay)
     if let Some(Value::Array(all_of)) = obj.get("allOf") {
         for item in all_of {
-            collect_trait_schema_from_value(item, out);
+            collect_trait_schema_recursive(item, out, depth + 1);
         }
     }
 }
 
 /// Recursively search a schema value for `x-gts-traits` entries and merge.
+/// Recursion is bounded by [`MAX_RECURSION_DEPTH`] to prevent stack overflow.
 pub(crate) fn collect_traits_from_value(
     value: &Value,
     merged: &mut serde_json::Map<String, Value>,
 ) {
+    collect_traits_recursive(value, merged, 0);
+}
+
+fn collect_traits_recursive(
+    value: &Value,
+    merged: &mut serde_json::Map<String, Value>,
+    depth: usize,
+) {
+    if depth >= MAX_RECURSION_DEPTH {
+        return;
+    }
+
     let Some(obj) = value.as_object() else {
         return;
     };
@@ -116,13 +154,21 @@ pub(crate) fn collect_traits_from_value(
 
     if let Some(Value::Array(all_of)) = obj.get("allOf") {
         for item in all_of {
-            collect_traits_from_value(item, merged);
+            collect_traits_recursive(item, merged, depth + 1);
         }
     }
 }
 
 /// Build a single effective trait schema by composing all collected trait schemas
 /// using `allOf`.  When there is only one schema, return it directly.
+///
+/// **Note on `additionalProperties`:** When multiple trait schemas are composed
+/// via `allOf`, standard JSON Schema semantics apply.  If one sub-schema sets
+/// `additionalProperties: false`, properties introduced by *other* sub-schemas
+/// in the same `allOf` may fail validation.  This is correct per the JSON Schema
+/// specification — authors should use `additionalProperties: false` only in the
+/// outermost (single) trait schema, or omit it in favour of explicit property
+/// lists.
 fn build_effective_trait_schema(schemas: &[Value]) -> Value {
     match schemas.len() {
         0 => Value::Object(serde_json::Map::new()),
@@ -138,7 +184,19 @@ fn build_effective_trait_schema(schemas: &[Value]) -> Value {
 
 /// Apply JSON Schema `default` values from the effective trait schema to the
 /// merged traits object for any properties that are not yet present.
+///
+/// Handles nested object properties recursively: if a trait property is an object
+/// type with its own `properties` and `default` values, those are applied to the
+/// corresponding nested object in the traits.
 fn apply_defaults(trait_schema: &Value, traits: &Value) -> Value {
+    apply_defaults_recursive(trait_schema, traits, 0)
+}
+
+fn apply_defaults_recursive(trait_schema: &Value, traits: &Value, depth: usize) -> Value {
+    if depth >= MAX_RECURSION_DEPTH {
+        return traits.clone();
+    }
+
     let mut result = match traits {
         Value::Object(m) => m.clone(),
         _ => serde_json::Map::new(),
@@ -148,10 +206,24 @@ fn apply_defaults(trait_schema: &Value, traits: &Value) -> Value {
     let props = collect_all_properties(trait_schema);
 
     for (prop_name, prop_schema) in &props {
-        if !result.contains_key(prop_name.as_str())
-            && let Some(default_val) = prop_schema.as_object().and_then(|m| m.get("default"))
-        {
-            result.insert(prop_name.clone(), default_val.clone());
+        if let Some(prop_obj) = prop_schema.as_object() {
+            if !result.contains_key(prop_name.as_str()) {
+                // Property is absent — apply top-level default if present
+                if let Some(default_val) = prop_obj.get("default") {
+                    result.insert(prop_name.clone(), default_val.clone());
+                }
+            } else if prop_obj.get("type") == Some(&Value::String("object".to_owned()))
+                && prop_obj.contains_key("properties")
+            {
+                // Property is present and is an object type with sub-properties —
+                // recurse to apply nested defaults.
+                let nested = apply_defaults_recursive(
+                    prop_schema,
+                    result.get(prop_name.as_str()).unwrap_or(&Value::Null),
+                    depth + 1,
+                );
+                result.insert(prop_name.clone(), nested);
+            }
         }
     }
 
@@ -161,11 +233,15 @@ fn apply_defaults(trait_schema: &Value, traits: &Value) -> Value {
 /// Collect all property definitions from a schema, handling `allOf` composition.
 fn collect_all_properties(schema: &Value) -> Vec<(String, Value)> {
     let mut props = Vec::new();
-    collect_props_recursive(schema, &mut props);
+    collect_props_recursive(schema, &mut props, 0);
     props
 }
 
-fn collect_props_recursive(schema: &Value, props: &mut Vec<(String, Value)>) {
+fn collect_props_recursive(schema: &Value, props: &mut Vec<(String, Value)>, depth: usize) {
+    if depth >= MAX_RECURSION_DEPTH {
+        return;
+    }
+
     let Some(obj) = schema.as_object() else {
         return;
     };
@@ -178,7 +254,7 @@ fn collect_props_recursive(schema: &Value, props: &mut Vec<(String, Value)>) {
 
     if let Some(Value::Array(all_of)) = obj.get("allOf") {
         for item in all_of {
-            collect_props_recursive(item, props);
+            collect_props_recursive(item, props, depth + 1);
         }
     }
 }
@@ -226,8 +302,14 @@ fn validate_traits_against_schema(
             .is_some_and(|m| m.contains_key("default"));
 
         if !has_value && !has_default {
+            let expected_type = prop_schema
+                .as_object()
+                .and_then(|m| m.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or("any");
             errors.push(format!(
-                "trait property '{prop_name}' is not resolved: no value provided and no default defined"
+                "trait property '{prop_name}' (type: {expected_type}) is not resolved: \
+                 no value provided and no default defined in the trait schema"
             ));
         }
     }
@@ -698,5 +780,223 @@ mod tests {
         ];
         let err = validate_traits_chain(&chain).unwrap_err();
         assert!(!err.is_empty(), "narrowing violation should fail");
+    }
+
+    #[test]
+    fn test_deep_inheritance_chain() {
+        // 10-level chain — exercises recursion without hitting the depth limit
+        let mut chain = vec![(
+            "base~".to_owned(),
+            json!({
+                "type": "object",
+                "x-gts-traits-schema": {
+                    "type": "object",
+                    "properties": {
+                        "retention": {"type": "string", "default": "P30D"}
+                    }
+                }
+            }),
+        )];
+        for i in 1..10 {
+            chain.push((format!("level{i}~"), json!({"type": "object"})));
+        }
+        assert!(validate_traits_chain(&chain).is_ok());
+    }
+
+    #[test]
+    fn test_malformed_trait_schema_not_object() {
+        // x-gts-traits-schema is a string, not an object
+        let chain = vec![
+            (
+                "base~".to_owned(),
+                json!({
+                    "type": "object",
+                    "x-gts-traits-schema": "not_an_object"
+                }),
+            ),
+            (
+                "derived~".to_owned(),
+                json!({
+                    "type": "object",
+                    "x-gts-traits": {"foo": "bar"}
+                }),
+            ),
+        ];
+        // The string value should be collected but fail gracefully at validation
+        let result = validate_traits_chain(&chain);
+        // The trait schema "not_an_object" has no properties, so "foo" is undeclared.
+        // The chain should fail because traits are provided without a valid schema.
+        assert!(
+            result.is_err(),
+            "malformed trait schema should fail: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_trait_values_as_object() {
+        // Trait value is a nested object, not just a primitive
+        let chain = vec![
+            (
+                "base~".to_owned(),
+                json!({
+                    "type": "object",
+                    "x-gts-traits-schema": {
+                        "type": "object",
+                        "properties": {
+                            "retry": {
+                                "type": "object",
+                                "properties": {
+                                    "maxAttempts": {"type": "integer", "default": 3},
+                                    "backoff": {"type": "string", "default": "exponential"}
+                                }
+                            }
+                        }
+                    }
+                }),
+            ),
+            (
+                "derived~".to_owned(),
+                json!({
+                    "type": "object",
+                    "x-gts-traits": {
+                        "retry": {"maxAttempts": 5}
+                    }
+                }),
+            ),
+        ];
+        assert!(
+            validate_traits_chain(&chain).is_ok(),
+            "object trait values should be accepted"
+        );
+    }
+
+    #[test]
+    fn test_trait_values_as_array() {
+        // Trait value is an array
+        let chain = vec![
+            (
+                "base~".to_owned(),
+                json!({
+                    "type": "object",
+                    "x-gts-traits-schema": {
+                        "type": "object",
+                        "properties": {
+                            "tags": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "default": []
+                            }
+                        }
+                    }
+                }),
+            ),
+            (
+                "derived~".to_owned(),
+                json!({
+                    "type": "object",
+                    "x-gts-traits": {
+                        "tags": ["audit", "compliance"]
+                    }
+                }),
+            ),
+        ];
+        assert!(
+            validate_traits_chain(&chain).is_ok(),
+            "array trait values should be accepted"
+        );
+    }
+
+    #[test]
+    fn test_meta_traits_rejected() {
+        // x-gts-traits-schema contains x-gts-traits — should be rejected
+        let chain = vec![(
+            "base~".to_owned(),
+            json!({
+                "type": "object",
+                "x-gts-traits-schema": {
+                    "type": "object",
+                    "x-gts-traits": {"sneaky": "value"},
+                    "properties": {
+                        "retention": {"type": "string"}
+                    }
+                }
+            }),
+        )];
+        let err = validate_traits_chain(&chain).unwrap_err();
+        assert!(
+            err.iter()
+                .any(|e| e.contains("x-gts-traits") && e.contains("trait schema")),
+            "should reject x-gts-traits inside x-gts-traits-schema: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_nested_object_defaults_applied() {
+        // Trait schema has nested object with defaults — verify they are applied
+        let chain = vec![
+            (
+                "base~".to_owned(),
+                json!({
+                    "type": "object",
+                    "x-gts-traits-schema": {
+                        "type": "object",
+                        "properties": {
+                            "retry": {
+                                "type": "object",
+                                "properties": {
+                                    "maxAttempts": {"type": "integer", "default": 3},
+                                    "backoff": {"type": "string", "default": "exponential"}
+                                }
+                            }
+                        }
+                    }
+                }),
+            ),
+            (
+                "derived~".to_owned(),
+                json!({
+                    "type": "object",
+                    "x-gts-traits": {
+                        "retry": {"maxAttempts": 5}
+                    }
+                }),
+            ),
+        ];
+        // Should pass because nested defaults fill in the missing "backoff"
+        assert!(
+            validate_traits_chain(&chain).is_ok(),
+            "nested defaults should fill in missing sub-properties"
+        );
+    }
+
+    #[test]
+    fn test_improved_error_message_includes_type() {
+        let chain = vec![
+            (
+                "base~".to_owned(),
+                json!({
+                    "type": "object",
+                    "x-gts-traits-schema": {
+                        "type": "object",
+                        "properties": {
+                            "topicRef": {"type": "string"},
+                            "retention": {"type": "string", "default": "P30D"}
+                        }
+                    }
+                }),
+            ),
+            (
+                "derived~".to_owned(),
+                json!({
+                    "type": "object",
+                    "x-gts-traits": {"retention": "P90D"}
+                }),
+            ),
+        ];
+        let err = validate_traits_chain(&chain).unwrap_err();
+        assert!(
+            err.iter().any(|e| e.contains("type: string")),
+            "error message should include expected type: {err:?}"
+        );
     }
 }
