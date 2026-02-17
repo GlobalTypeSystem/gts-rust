@@ -24,7 +24,7 @@ Featureset:
 - [x] **OP#9 - Version Casting**: Transform instances between compatible MINOR versions
 - [x] **OP#10 - Query Execution**: Filter identifier collections using the GTS query language
 - [x] **OP#11 - Attribute Access**: Retrieve property values and metadata using the attribute selector (`@`)
-- [x] **OP#12 - Schema Validation**: Validate schema against its precedent schema
+- [x] **OP#12 - Schema Validation (schema-vs-schema)**: Validate a derived schema against its base schema in a chained ID
 
 See details in [gts/README.md](gts/README.md)
 
