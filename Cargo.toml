@@ -9,7 +9,7 @@ categories = ["development-tools::build-utils"]
 readme = "README.md"
 
 [workspace]
-members = ["gts", "gts-cli", "gts-id", "gts-macros", "gts-macros-cli"]
+members = ["gts", "gts-cli", "gts-id", "gts-macros", "gts-macros-cli", "gts-validator"]
 resolver = "2"
 
 [workspace.lints.rust]
@@ -145,6 +145,7 @@ gts-cli = { version = "0.8.1", path = "gts-cli" }
 gts-id = { version = "0.8.1", path = "gts-id" }
 gts-macros = { version = "0.8.1", path = "gts-macros" }
 gts-macros-cli = { version = "0.8.1", path = "gts-macros-cli" }
+gts-validator = { version = "0.7.8", path = "gts-validator" }
 
 # Core dependencies
 serde = { version = "1.0", features = ["derive"] }
@@ -175,6 +176,10 @@ schemars = { version = "1.2", features = ["uuid1"] }
 
 # File system
 walkdir = "2.5"
+glob = "0.3"
+
+# CLI and terminal output
+colored = "3.0"
 
 # Format parsing
 serde-saphyr = "0.0.10"
