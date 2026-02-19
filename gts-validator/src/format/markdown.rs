@@ -91,10 +91,10 @@ pub fn scan_markdown_content(
     content: &str,
     path: &Path,
     vendor: Option<&str>,
-    strict: bool,
+    heuristic: bool,
     skip_tokens: &[String],
 ) -> Vec<ValidationError> {
-    let pattern = if strict {
+    let pattern = if heuristic {
         &*GTS_DISCOVERY_PATTERN_RELAXED
     } else {
         &*GTS_DISCOVERY_PATTERN_WELL_FORMED
@@ -221,7 +221,7 @@ pub fn scan_markdown_file(
     path: &Path,
     vendor: Option<&str>,
     max_file_size: u64,
-    strict: bool,
+    heuristic: bool,
 ) -> Vec<ValidationError> {
     // Check file size
     if let Ok(metadata) = std::fs::metadata(path)
@@ -236,7 +236,7 @@ pub fn scan_markdown_file(
         Err(_e) => return vec![],
     };
 
-    scan_markdown_content(&content, path, vendor, strict, &[])
+    scan_markdown_content(&content, path, vendor, heuristic, &[])
 }
 
 #[cfg(test)]
@@ -373,14 +373,14 @@ gts.invalid.pattern.here.v1~
     }
 
     #[test]
-    fn test_scan_markdown_strict_mode_catches_malformed() {
+    fn test_scan_markdown_heuristic_mode_catches_malformed() {
         let file = create_temp_md("The type is gts.my-vendor.core.events.type.v1~");
-        let errors_strict = scan_markdown_file(file.path(), None, 10_485_760, true);
+        let errors_heuristic = scan_markdown_file(file.path(), None, 10_485_760, true);
         let errors_normal = scan_markdown_file(file.path(), None, 10_485_760, false);
 
         assert!(
-            !errors_strict.is_empty(),
-            "Strict mode should catch malformed ID with hyphens"
+            !errors_heuristic.is_empty(),
+            "Heuristic mode should catch malformed ID with hyphens"
         );
         assert!(
             errors_normal.is_empty(),
@@ -389,13 +389,13 @@ gts.invalid.pattern.here.v1~
     }
 
     #[test]
-    fn test_scan_markdown_strict_mode_catches_extra_dots() {
+    fn test_scan_markdown_heuristic_mode_catches_extra_dots() {
         let file = create_temp_md("The type is gts.x.core.events.type.name.v1~");
-        let errors_strict = scan_markdown_file(file.path(), None, 10_485_760, true);
+        let errors_heuristic = scan_markdown_file(file.path(), None, 10_485_760, true);
 
         assert!(
-            !errors_strict.is_empty(),
-            "Strict mode should catch ID with extra segments"
+            !errors_heuristic.is_empty(),
+            "Heuristic mode should catch ID with extra segments"
         );
     }
 
@@ -418,7 +418,7 @@ gts.invalid.pattern.here.v1~
             content,
             Path::new("test.md"),
             None,
-            true, // strict to ensure the relaxed regex would catch it
+            true, // heuristic mode to ensure the relaxed regex would catch it
             &["**given**".to_owned()],
         );
         assert!(

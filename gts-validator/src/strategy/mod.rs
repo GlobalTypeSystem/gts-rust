@@ -7,13 +7,6 @@
 
 pub mod fs;
 
-/// A single item to validate.
-#[derive(Debug, Clone)]
-pub struct ValidationItem {
-    /// The textual content to scan.
-    pub content: String,
-}
-
 /// Content format for dispatching to the correct scanner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContentFormat {

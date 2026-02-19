@@ -6,53 +6,56 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use crate::error::ValidationError;
+use crate::error::{ScanError, ScanErrorKind, ValidationError};
 use crate::normalize::normalize_candidate;
 use crate::validator::validate_candidate;
 
 /// Scan JSON content for GTS identifiers.
+///
+/// # Errors
+///
+/// Returns a `ScanError` if the content is not valid JSON.
+/// Invalid JSON must be reported as a scan failure — never silently ignored.
 pub fn scan_json_content(
     content: &str,
     path: &Path,
     vendor: Option<&str>,
     scan_keys: bool,
-) -> Vec<ValidationError> {
-    let value: Value = match serde_json::from_str(content) {
-        Ok(v) => v,
-        Err(_e) => return vec![],
-    };
+) -> Result<Vec<ValidationError>, ScanError> {
+    let value: Value = serde_json::from_str(content).map_err(|e| ScanError {
+        file: path.to_owned(),
+        kind: ScanErrorKind::JsonParseError,
+        message: format!("JSON parse error: {e}"),
+    })?;
 
     let mut errors = Vec::new();
     walk_json_value(&value, path, vendor, &mut errors, "$", scan_keys);
-    errors
+    Ok(errors)
 }
 
-/// Scan a JSON file for GTS identifiers (file-based convenience wrapper).
+/// Scan a JSON file for GTS identifiers (file-based convenience wrapper for tests).
 #[cfg(test)]
 pub fn scan_json_file(
     path: &Path,
     vendor: Option<&str>,
     max_file_size: u64,
     scan_keys: bool,
-) -> Vec<ValidationError> {
-    // Check file size
-    if let Ok(metadata) = std::fs::metadata(path)
-        && metadata.len() > max_file_size
-    {
-        return vec![];
-    }
+) -> Result<Vec<ValidationError>, ScanError> {
+    use crate::strategy::fs::{ScanResult, read_file_bounded};
 
-    // Read as UTF-8; skip file on encoding error
-    let content = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(_e) => return vec![],
+    let content = match read_file_bounded(path, max_file_size) {
+        ScanResult::Ok(c) => c,
+        ScanResult::Err(e) => return Err(e),
     };
 
     scan_json_content(&content, path, vendor, scan_keys)
 }
 
 /// Walk a JSON value tree and validate GTS identifiers in string values.
-/// This is shared by both JSON and YAML scanners.
+/// This is shared by both JSON and YAML scanners (YAML documents are
+/// deserialized to `serde_json::Value` and validated through this same path).
+/// Markdown scanning uses regex-based discovery instead, where the pattern
+/// itself stops at tilde-followed-by-dot to naturally exclude filenames.
 pub fn walk_json_value(
     value: &Value,
     path: &Path,
@@ -80,7 +83,8 @@ pub fn walk_json_value(
             // Only consider strings that look like GTS identifiers
             // Skip filenames that contain GTS IDs (e.g., "gts.x.core.type.v1~.schema.json")
             // A string is likely a filename if it contains a tilde followed by a dot and extension
-            let looks_like_filename = candidate_str.contains("~.")
+            let looks_like_filename = !candidate_str.starts_with("gts://")
+                && candidate_str.contains("~.")
                 && candidate_str
                     .rfind('.')
                     .is_some_and(|pos| pos > candidate_str.rfind('~').unwrap_or(0));
@@ -197,7 +201,7 @@ mod tests {
     fn test_scan_json_valid_id() {
         let content = r#"{"$id": "gts://gts.x.core.events.type.v1~"}"#;
         let file = create_temp_json(content);
-        let errors = scan_json_file(file.path(), None, 10_485_760, false);
+        let errors = scan_json_file(file.path(), None, 10_485_760, false).unwrap();
         assert!(errors.is_empty(), "Unexpected errors: {errors:?}");
     }
 
@@ -205,7 +209,7 @@ mod tests {
     fn test_scan_json_invalid_id() {
         let content = r#"{"$id": "gts.invalid"}"#;
         let file = create_temp_json(content);
-        let errors = scan_json_file(file.path(), None, 10_485_760, false);
+        let errors = scan_json_file(file.path(), None, 10_485_760, false).unwrap();
         assert!(!errors.is_empty());
     }
 
@@ -213,7 +217,7 @@ mod tests {
     fn test_scan_json_xgts_ref_wildcard() {
         let content = r#"{"x-gts-ref": "gts.x.core.*"}"#;
         let file = create_temp_json(content);
-        let errors = scan_json_file(file.path(), None, 10_485_760, false);
+        let errors = scan_json_file(file.path(), None, 10_485_760, false).unwrap();
         assert!(
             errors.is_empty(),
             "Wildcards in x-gts-ref should be allowed"
@@ -224,7 +228,7 @@ mod tests {
     fn test_scan_json_xgts_ref_bare_wildcard() {
         let content = r#"{"x-gts-ref": "*"}"#;
         let file = create_temp_json(content);
-        let errors = scan_json_file(file.path(), None, 10_485_760, false);
+        let errors = scan_json_file(file.path(), None, 10_485_760, false).unwrap();
         assert!(
             errors.is_empty(),
             "Bare wildcard in x-gts-ref should be skipped"
@@ -235,7 +239,7 @@ mod tests {
     fn test_scan_json_xgts_ref_relative_pointer() {
         let content = r#"{"x-gts-ref": "/$id"}"#;
         let file = create_temp_json(content);
-        let errors = scan_json_file(file.path(), None, 10_485_760, false);
+        let errors = scan_json_file(file.path(), None, 10_485_760, false).unwrap();
         assert!(
             errors.is_empty(),
             "Relative pointers in x-gts-ref should be skipped"
@@ -252,7 +256,7 @@ mod tests {
             }
         }"#;
         let file = create_temp_json(content);
-        let errors = scan_json_file(file.path(), None, 10_485_760, false);
+        let errors = scan_json_file(file.path(), None, 10_485_760, false).unwrap();
         assert!(
             errors.is_empty(),
             "Nested values should be found and validated"
@@ -268,7 +272,7 @@ mod tests {
             ]
         }"#;
         let file = create_temp_json(content);
-        let errors = scan_json_file(file.path(), None, 10_485_760, false);
+        let errors = scan_json_file(file.path(), None, 10_485_760, false).unwrap();
         assert!(
             errors.is_empty(),
             "Array values should be found and validated"
@@ -276,21 +280,23 @@ mod tests {
     }
 
     #[test]
-    fn test_scan_json_invalid_json() {
+    fn test_scan_json_invalid_json_is_scan_error() {
         let content = r#"{"invalid": json}"#;
         let file = create_temp_json(content);
-        let errors = scan_json_file(file.path(), None, 10_485_760, false);
+        let result = scan_json_file(file.path(), None, 10_485_760, false);
         assert!(
-            errors.is_empty(),
-            "Invalid JSON should be skipped with warning"
+            result.is_err(),
+            "Invalid JSON must produce a ScanError, not silent success"
         );
+        let err = result.unwrap_err();
+        assert_eq!(err.kind, crate::error::ScanErrorKind::JsonParseError);
     }
 
     #[test]
     fn test_scan_json_error_includes_json_path() {
         let content = r#"{"properties": {"type": {"x-gts-ref": "gts.invalid"}}}"#;
         let file = create_temp_json(content);
-        let errors = scan_json_file(file.path(), None, 10_485_760, false);
+        let errors = scan_json_file(file.path(), None, 10_485_760, false).unwrap();
         assert!(!errors.is_empty());
         assert!(errors[0].json_path.contains("properties.type.x-gts-ref"));
     }
@@ -299,7 +305,7 @@ mod tests {
     fn test_scan_json_vendor_mismatch() {
         let content = r#"{"$id": "gts://gts.hx.core.events.type.v1~"}"#;
         let file = create_temp_json(content);
-        let errors = scan_json_file(file.path(), Some("x"), 10_485_760, false);
+        let errors = scan_json_file(file.path(), Some("x"), 10_485_760, false).unwrap();
         assert!(!errors.is_empty());
         assert!(errors[0].error.contains("Vendor mismatch"));
     }
@@ -308,7 +314,7 @@ mod tests {
     fn test_scan_json_keys_not_scanned_by_default() {
         let content = r#"{"gts.x.core.type.v1~": "value"}"#;
         let file = create_temp_json(content);
-        let errors = scan_json_file(file.path(), None, 10_485_760, false);
+        let errors = scan_json_file(file.path(), None, 10_485_760, false).unwrap();
         assert!(errors.is_empty(), "Keys should not be scanned by default");
     }
 
@@ -316,7 +322,7 @@ mod tests {
     fn test_scan_json_keys_scanned_when_enabled() {
         let content = r#"{"gts.x.core.events.type.v1~": "value"}"#;
         let file = create_temp_json(content);
-        let errors = scan_json_file(file.path(), None, 10_485_760, true);
+        let errors = scan_json_file(file.path(), None, 10_485_760, true).unwrap();
         assert!(
             errors.is_empty(),
             "Valid GTS ID keys should pass validation"
@@ -327,7 +333,7 @@ mod tests {
     fn test_scan_json_invalid_key_when_scanning_enabled() {
         let content = r#"{"gts.invalid": "value"}"#;
         let file = create_temp_json(content);
-        let errors = scan_json_file(file.path(), None, 10_485_760, true);
+        let errors = scan_json_file(file.path(), None, 10_485_760, true).unwrap();
         assert!(
             !errors.is_empty(),
             "Invalid GTS ID keys should be caught when key scanning is enabled"

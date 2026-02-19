@@ -34,8 +34,5 @@ serde-saphyr.workspace = true
 # Error handling
 anyhow.workspace = true
 
-# For colored terminal output
-colored.workspace = true
-
 [dev-dependencies]
-tempfile = "3.8"
+tempfile = "3.15"

@@ -6,7 +6,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use crate::error::ValidationError;
+use crate::error::{ScanError, ScanErrorKind, ValidationError};
 use crate::format::json::walk_json_value;
 
 fn split_yaml_documents(content: &str) -> Vec<String> {
@@ -34,63 +34,96 @@ fn split_yaml_documents(content: &str) -> Vec<String> {
 }
 
 /// Scan YAML content for GTS identifiers.
+///
+/// Returns `(validation_errors, scan_errors)`:
+/// - `validation_errors`: GTS ID validation failures found in successfully-parsed documents.
+/// - `scan_errors`: per-document parse failures in multi-document streams, or a single
+///   file-level parse failure if no document could be parsed at all.
+///
+/// This separation ensures malformed YAML documents are counted in `failed_files`
+/// and never silently mixed into the validation error layer.
 pub fn scan_yaml_content(
     content: &str,
     path: &Path,
     vendor: Option<&str>,
     scan_keys: bool,
-) -> Vec<ValidationError> {
-    let mut errors = Vec::new();
+) -> (Vec<ValidationError>, Vec<ScanError>) {
+    let mut validation_errors = Vec::new();
+    let mut scan_errors = Vec::new();
 
     // Parse all documents with the YAML stream parser first.
     // If this fails (e.g., one malformed document in the stream), fall back to per-document
     // parsing so valid sibling documents are still validated.
     let documents: Vec<Value> = match serde_saphyr::from_multiple(content) {
         Ok(docs) => docs,
-        Err(_e) => {
-            for segment in split_yaml_documents(content) {
-                let value: Value = match serde_saphyr::from_str(&segment) {
-                    Ok(doc) => doc,
-                    Err(_segment_err) => continue,
-                };
+        Err(stream_err) => {
+            let segments = split_yaml_documents(content);
+            let mut any_parsed = false;
 
-                walk_json_value(&value, path, vendor, &mut errors, "$", scan_keys);
+            for (idx, segment) in segments.iter().enumerate() {
+                match serde_saphyr::from_str::<Value>(segment) {
+                    Ok(doc) => {
+                        any_parsed = true;
+                        walk_json_value(&doc, path, vendor, &mut validation_errors, "$", scan_keys);
+                    }
+                    Err(doc_err) => {
+                        // Per-document parse failure → ScanError (not ValidationError)
+                        scan_errors.push(ScanError {
+                            file: path.to_owned(),
+                            kind: ScanErrorKind::YamlParseError,
+                            message: format!(
+                                "YAML parse error in document {} of multi-document stream: {doc_err}",
+                                idx + 1
+                            ),
+                        });
+                    }
+                }
             }
 
-            return errors;
+            if !any_parsed {
+                // No document parsed at all — replace per-doc errors with a single file-level error
+                scan_errors.clear();
+                scan_errors.push(ScanError {
+                    file: path.to_owned(),
+                    kind: ScanErrorKind::YamlParseError,
+                    message: format!("YAML parse error: {stream_err}"),
+                });
+            }
+
+            return (validation_errors, scan_errors);
         }
     };
 
     for value in documents {
-        // Reuse the JSON walker since both operate on serde_json::Value
-        walk_json_value(&value, path, vendor, &mut errors, "$", scan_keys);
+        walk_json_value(&value, path, vendor, &mut validation_errors, "$", scan_keys);
     }
 
-    errors
+    (validation_errors, scan_errors)
 }
 
-/// Scan a YAML file for GTS identifiers (file-based convenience wrapper).
+/// Scan a YAML file for GTS identifiers (file-based convenience wrapper for tests).
+///
+/// Returns `Err` if the file cannot be read or if any scan-level error occurred.
+/// Returns `Ok(validation_errors)` if the file was parsed (even partially for multi-doc streams).
 #[cfg(test)]
 pub fn scan_yaml_file(
     path: &Path,
     vendor: Option<&str>,
     max_file_size: u64,
     scan_keys: bool,
-) -> Vec<ValidationError> {
-    // Check file size
-    if let Ok(metadata) = std::fs::metadata(path)
-        && metadata.len() > max_file_size
-    {
-        return vec![];
-    }
+) -> Result<Vec<ValidationError>, ScanError> {
+    use crate::strategy::fs::{ScanResult, read_file_bounded};
 
-    // Read as UTF-8; skip file on encoding error
-    let content = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(_e) => return vec![],
+    let content = match read_file_bounded(path, max_file_size) {
+        ScanResult::Ok(c) => c,
+        ScanResult::Err(e) => return Err(e),
     };
 
-    scan_yaml_content(&content, path, vendor, scan_keys)
+    let (val_errs, scan_errs) = scan_yaml_content(&content, path, vendor, scan_keys);
+    if let Some(first_scan_err) = scan_errs.into_iter().next() {
+        return Err(first_scan_err);
+    }
+    Ok(val_errs)
 }
 
 #[cfg(test)]
@@ -111,7 +144,7 @@ mod tests {
 $id: gts://gts.x.core.events.type.v1~
 ";
         let file = create_temp_yaml(content);
-        let errors = scan_yaml_file(file.path(), None, 10_485_760, false);
+        let errors = scan_yaml_file(file.path(), None, 10_485_760, false).unwrap();
         assert!(errors.is_empty(), "Unexpected errors: {errors:?}");
     }
 
@@ -121,7 +154,7 @@ $id: gts://gts.x.core.events.type.v1~
 $id: gts.invalid
 ";
         let file = create_temp_yaml(content);
-        let errors = scan_yaml_file(file.path(), None, 10_485_760, false);
+        let errors = scan_yaml_file(file.path(), None, 10_485_760, false).unwrap();
         assert!(!errors.is_empty());
     }
 
@@ -131,7 +164,7 @@ $id: gts.invalid
 x-gts-ref: gts.x.core.*
 ";
         let file = create_temp_yaml(content);
-        let errors = scan_yaml_file(file.path(), None, 10_485_760, false);
+        let errors = scan_yaml_file(file.path(), None, 10_485_760, false).unwrap();
         assert!(
             errors.is_empty(),
             "Wildcards in x-gts-ref should be allowed"
@@ -144,7 +177,7 @@ x-gts-ref: gts.x.core.*
 x-gts-ref: "*"
 "#;
         let file = create_temp_yaml(content);
-        let errors = scan_yaml_file(file.path(), None, 10_485_760, false);
+        let errors = scan_yaml_file(file.path(), None, 10_485_760, false).unwrap();
         assert!(
             errors.is_empty(),
             "Bare wildcard in x-gts-ref should be skipped"
@@ -159,7 +192,7 @@ properties:
     x-gts-ref: gts.x.core.events.type.v1~
 ";
         let file = create_temp_yaml(content);
-        let errors = scan_yaml_file(file.path(), None, 10_485_760, false);
+        let errors = scan_yaml_file(file.path(), None, 10_485_760, false).unwrap();
         assert!(
             errors.is_empty(),
             "Nested values should be found and validated"
@@ -174,7 +207,7 @@ capabilities:
   - gts.x.core.events.topic.v1~
 ";
         let file = create_temp_yaml(content);
-        let errors = scan_yaml_file(file.path(), None, 10_485_760, false);
+        let errors = scan_yaml_file(file.path(), None, 10_485_760, false).unwrap();
         assert!(
             errors.is_empty(),
             "Array values should be found and validated"
@@ -182,16 +215,17 @@ capabilities:
     }
 
     #[test]
-    fn test_scan_yaml_invalid_yaml() {
-        let content = r"
-invalid: yaml: syntax:
-";
+    fn test_scan_yaml_invalid_yaml_is_scan_error() {
+        // Completely invalid YAML (not parseable as any document) must be a ScanError
+        let content = ": : :\n  - [unclosed\n";
         let file = create_temp_yaml(content);
-        let errors = scan_yaml_file(file.path(), None, 10_485_760, false);
+        let result = scan_yaml_file(file.path(), None, 10_485_760, false);
         assert!(
-            errors.is_empty(),
-            "Invalid YAML should be skipped with warning"
+            result.is_err(),
+            "Completely invalid YAML must produce a ScanError, not silent success"
         );
+        let err = result.unwrap_err();
+        assert_eq!(err.kind, crate::error::ScanErrorKind::YamlParseError);
     }
 
     #[test]
@@ -202,10 +236,15 @@ $id: gts.x.core.events.type.v1~
 ---
 $id: gts.invalid
 ";
-        let errors = scan_yaml_content(content, Path::new("multi.yaml"), None, false);
+        let (val_errs, scan_errs) =
+            scan_yaml_content(content, Path::new("multi.yaml"), None, false);
+        assert!(
+            scan_errs.is_empty(),
+            "No scan errors expected for well-formed stream: {scan_errs:?}"
+        );
         // Both documents are parsed — gts.invalid in doc 2 must produce an error
         assert!(
-            !errors.is_empty(),
+            !val_errs.is_empty(),
             "Multi-document YAML: second document with invalid ID should be caught, got no errors"
         );
     }
@@ -221,11 +260,21 @@ invalid: yaml: syntax:
 $id: gts.y.core.pkg.mytype.v1~
 ";
         // With vendor "x", both valid docs should produce vendor-mismatch errors.
-        // If the malformed middle doc caused an early return, errors would be empty.
-        let errors = scan_yaml_content(content, Path::new("multi.yaml"), Some("x"), false);
+        // The malformed middle doc must produce a ScanError, not suppress valid docs.
+        let (val_errs, scan_errs) =
+            scan_yaml_content(content, Path::new("multi.yaml"), Some("x"), false);
         assert!(
-            !errors.is_empty(),
+            !val_errs.is_empty(),
             "Valid documents must be validated even when a sibling document is malformed, got no errors"
+        );
+        assert!(
+            !scan_errs.is_empty(),
+            "Malformed document must produce a ScanError, got none"
+        );
+        assert_eq!(
+            scan_errs[0].kind,
+            crate::error::ScanErrorKind::YamlParseError,
+            "Malformed doc scan error must have YamlParseError kind"
         );
     }
 }

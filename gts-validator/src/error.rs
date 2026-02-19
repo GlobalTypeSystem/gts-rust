@@ -4,6 +4,54 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
+/// The kind of scan-level failure that prevented a file from being validated.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ScanErrorKind {
+    /// An I/O error occurred while reading the file.
+    IoError,
+    /// The file exceeded the configured maximum size limit.
+    FileTooLarge,
+    /// The file content could not be parsed as valid JSON.
+    JsonParseError,
+    /// The file content could not be parsed as valid YAML.
+    YamlParseError,
+    /// The file content is not valid UTF-8.
+    InvalidEncoding,
+    /// The resolved path is outside the repository root (symlink escape).
+    OutsideRepository,
+    /// A resource limit (`max_files` or `max_total_bytes`) was reached, truncating the scan.
+    LimitExceeded,
+    /// A directory traversal error (permission denied, loop detected, etc.).
+    WalkError,
+    /// An exclude glob pattern could not be parsed.
+    InvalidExcludePattern,
+}
+
+/// A scan-level error: a file that could not be validated at all.
+///
+/// These are distinct from `ValidationError` (which represents a GTS ID that
+/// was found and failed validation). A `ScanError` means the file could not
+/// even be read or parsed — CI must treat these as failures.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ScanError {
+    /// The file path that could not be scanned.
+    pub file: PathBuf,
+    /// The kind of failure.
+    pub kind: ScanErrorKind,
+    /// Human-readable description of the failure.
+    pub message: String,
+}
+
+impl ScanError {
+    /// Format the error for human-readable output.
+    #[must_use]
+    pub fn format_human_readable(&self) -> String {
+        format!("{}: [scan error] {}", self.file.display(), self.message)
+    }
+}
+
 /// A single validation error found in a documentation/config file.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[non_exhaustive]
