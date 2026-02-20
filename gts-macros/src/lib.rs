@@ -1226,6 +1226,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                     "$id": format!("gts://{}", schema_id),
                     "$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
+                    "additionalProperties": false,
                     "allOf": [
                         { "$ref": format!("gts://{}", parent_schema_id) },
                         {
@@ -1331,6 +1332,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                     "$id": format!("gts://{}", schema_id),
                     "$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
+                    "additionalProperties": false,
                     "allOf": [
                         { "$ref": format!("gts://{}", parent_schema_id) },
                         {
