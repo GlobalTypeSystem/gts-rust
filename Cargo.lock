@@ -533,7 +533,7 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "gts"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "gts-id",
  "jsonschema",
@@ -551,7 +551,7 @@ dependencies = [
 
 [[package]]
 name = "gts-cli"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "atty",
@@ -572,14 +572,14 @@ dependencies = [
 
 [[package]]
 name = "gts-id"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "gts-macros"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "gts",
  "gts-id",
@@ -596,7 +596,7 @@ dependencies = [
 
 [[package]]
 name = "gts-macros-cli"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "clap",
