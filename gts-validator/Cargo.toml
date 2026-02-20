@@ -1,0 +1,38 @@
+[package]
+name = "gts-validator"
+version = "0.7.8"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "GTS identifier validator for documentation and configuration files"
+keywords = ["gts", "validator", "documentation", "linting"]
+categories.workspace = true
+readme = "README.md"
+publish = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# GTS library for ID validation
+gts.workspace = true
+
+# File system traversal
+walkdir.workspace = true
+glob.workspace = true
+
+# Regex for pattern matching
+regex.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+serde-saphyr.workspace = true
+
+# Error handling
+anyhow.workspace = true
+
+[dev-dependencies]
+tempfile = "3.15"
