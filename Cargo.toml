@@ -140,12 +140,12 @@ verbose_file_reads = "deny"
 module_name_repetitions = "allow"
 
 [workspace.dependencies]
-gts = { version = "0.8.1", path = "gts" }
-gts-cli = { version = "0.8.1", path = "gts-cli" }
-gts-id = { version = "0.8.1", path = "gts-id" }
-gts-macros = { version = "0.8.1", path = "gts-macros" }
-gts-macros-cli = { version = "0.8.1", path = "gts-macros-cli" }
-gts-validator = { version = "0.7.8", path = "gts-validator" }
+gts = { version = "0.8.2", path = "gts" }
+gts-cli = { version = "0.8.2", path = "gts-cli" }
+gts-id = { version = "0.8.2", path = "gts-id" }
+gts-macros = { version = "0.8.2", path = "gts-macros" }
+gts-macros-cli = { version = "0.8.2", path = "gts-macros-cli" }
+gts-validator = { version = "0.8.2", path = "gts-validator" }
 
 # Core dependencies
 serde = { version = "1.0", features = ["derive"] }
