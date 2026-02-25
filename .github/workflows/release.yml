@@ -1,0 +1,534 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'   # Broad glob; strict semver validation is enforced in the validate job
+
+concurrency:
+  group: release-global   # Global key: serializes all release runs, not just per-tag
+  cancel-in-progress: false   # Never cancel an in-flight release
+
+permissions:
+  contents: read   # Default: least privilege; github-release job overrides to write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+
+  validate:
+    name: Validate & CI Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      rust-version: ${{ steps.check.outputs.rust-version }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+          fetch-depth: 0   # Required for branch provenance check
+          persist-credentials: false
+
+      - name: Validate semver tag format
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          # Disallow leading zeros (e.g. v01.2.3) and pre-release suffixes
+          if ! echo "${TAG}" | grep -qE '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "ERROR: Tag '${TAG}' is not a valid semver tag (vMAJOR.MINOR.PATCH, no leading zeros, no pre-release suffixes)"
+            exit 1
+          fi
+
+      - name: Verify tagged commit is reachable from origin/main
+        shell: bash
+        run: |
+          git fetch origin main
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+            echo "ERROR: Tagged commit ${GITHUB_SHA} is not reachable from origin/main."
+            echo "Tags must be created from commits that are part of the main branch history."
+            exit 1
+          fi
+
+      - name: Verify version consistency across all crates and workspace
+        id: check
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          EXPECTED="${TAG#v}"   # strip leading 'v'
+
+          check_version() {
+            local file="$1"
+            local ver
+            ver=$(awk -F'"' '/^[[:space:]]*version[[:space:]]*=/{print $2; exit}' "${file}")
+            if [ -z "${ver}" ]; then
+              echo "ERROR: ${file}: could not extract version field"
+              exit 1
+            fi
+            if [ "${ver}" != "${EXPECTED}" ]; then
+              echo "ERROR: ${file} has version '${ver}', expected '${EXPECTED}'"
+              exit 1
+            fi
+            echo "  OK ${file}: ${ver}"
+          }
+
+          echo "Checking crate versions against tag ${TAG}:"
+          check_version "gts-id/Cargo.toml"
+          check_version "gts-macros/Cargo.toml"
+          check_version "gts/Cargo.toml"
+          check_version "gts-cli/Cargo.toml"
+          check_version "gts-macros-cli/Cargo.toml"
+          check_version "gts-validator/Cargo.toml"
+
+          # Verify workspace.dependencies versions for all known internal crates.
+          # Uses explicit key list to avoid false negatives from pattern drift.
+          # Parser is scoped strictly to the [workspace.dependencies] section to
+          # prevent false matches from [patch.crates-io] or other similarly named blocks.
+          echo "Checking workspace.dependencies versions in Cargo.toml:"
+          FAIL=0
+          for WS_KEY in gts gts-id gts-macros gts-cli gts-macros-cli gts-validator; do
+            # Collect all version matches for this key, only inside [workspace.dependencies]
+            MATCHES=$(awk -v key="${WS_KEY}" '
+              /^[[:space:]]*\[workspace\.dependencies\]/ { in_wsdeps=1; next }
+              /^[[:space:]]*\[/                          { in_wsdeps=0 }
+              in_wsdeps && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" { found=1 }
+              found && /[[:space:]]*version[[:space:]]*=/ { match($0, /version[[:space:]]*=[[:space:]]*"([^"]+)"/, a); print a[1]; found=0 }
+            ' Cargo.toml)
+            MATCH_COUNT=$(echo "${MATCHES}" | grep -c .)
+            WS_VER=$(echo "${MATCHES}" | head -1)
+            if [ -z "${WS_VER}" ] || [ "${MATCH_COUNT}" -eq 0 ]; then
+              echo "ERROR: workspace.dependencies[${WS_KEY}] not found — all expected keys must be present"
+              FAIL=1
+            elif [ "${MATCH_COUNT}" -gt 1 ]; then
+              echo "ERROR: workspace.dependencies[${WS_KEY}] has ${MATCH_COUNT} matches — duplicate key declarations are ambiguous"
+              FAIL=1
+            elif [ "${WS_VER}" != "${EXPECTED}" ]; then
+              echo "ERROR: workspace.dependencies[${WS_KEY}] has version '${WS_VER}', expected '${EXPECTED}'"
+              FAIL=1
+            else
+              echo "  OK workspace.dependencies[${WS_KEY}]: ${WS_VER}"
+            fi
+          done
+          [ $FAIL -eq 0 ] || exit 1
+
+          RUST_VER=$(awk -F'"' '/^[[:space:]]*rust-version[[:space:]]*=/{print $2; exit}' Cargo.toml)
+          if [ -z "${RUST_VER}" ]; then
+            echo "WARNING: rust-version not found in Cargo.toml, defaulting to 'stable'"
+            RUST_VER="stable"
+          fi
+          echo "version=${EXPECTED}" >> "$GITHUB_OUTPUT"
+          echo "rust-version=${RUST_VER}" >> "$GITHUB_OUTPUT"
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@30eab0fabba9ea3f522099957e668b21876aa39e # v2.66.6
+        with:
+          tool: cargo-deny@0.16.1   # pin version; update intentionally
+
+      - name: Assert deny.toml policy file exists
+        shell: bash
+        run: |
+          if [ ! -f deny.toml ]; then
+            echo "ERROR: deny.toml not found at repo root."
+            echo "Create deny.toml with explicit advisories/licenses/sources policy before enabling the release gate."
+            echo "See Step 2b in the implementation checklist."
+            exit 1
+          fi
+          echo "deny.toml found."
+
+      - name: cargo deny check (security)
+        run: cargo deny check
+
+  build-binaries:
+    name: Build binary (${{ matrix.target }})
+    needs: validate
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            archive_ext: tar.gz
+            binary_name: gts
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            archive_ext: tar.gz
+            binary_name: gts
+            cross: true              # uses cross-rs for ARM cross-compilation
+          - target: aarch64-apple-darwin
+            runner: macos-latest     # Apple Silicon runner; verify with 'uname -m' == arm64
+            archive_ext: tar.gz
+            binary_name: gts
+            expected_arch: arm64
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            archive_ext: zip
+            binary_name: gts.exe
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Assert runner architecture
+        if: matrix.expected_arch != ''
+        shell: bash
+        run: |
+          ACTUAL=$(uname -m)
+          if [ "${ACTUAL}" != "${{ matrix.expected_arch }}" ]; then
+            echo "ERROR: Expected runner arch '${{ matrix.expected_arch }}' but got '${ACTUAL}'"
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@9bc92bc5598b4f3bec5d910d352094982cb0c3b9 # stable
+        with:
+          toolchain: ${{ needs.validate.outputs.rust-version }}
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+        with:
+          key: release-${{ matrix.target }}
+
+      # Install cross for ARM Linux cross-compilation
+      - name: Install cross
+        if: matrix.cross == true
+        uses: taiki-e/install-action@30eab0fabba9ea3f522099957e668b21876aa39e # v2.66.6
+        with:
+          tool: cross@0.2.5   # pin version; update intentionally
+
+      # Native build (all platforms except ARM Linux)
+      - name: Build (native)
+        if: matrix.cross != true
+        run: cargo build --release --target ${{ matrix.target }} -p gts-cli --locked
+
+      # Free disk space before cross-compilation: cross pulls a large Docker image
+      # and the ARM Linux build can exhaust the ~14 GB available on ubuntu-latest.
+      # Sourced from hyperspot's release workflow; only applied to cross-compiled targets.
+      - name: Free disk space (cross targets only)
+        if: matrix.cross == true
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: true
+
+      # Cross-compiled build (ARM Linux)
+      - name: Build (cross)
+        if: matrix.cross == true
+        run: cross build --release --target ${{ matrix.target }} -p gts-cli --locked
+
+      # Smoke test (Linux/macOS): verify the binary responds to --help
+      - name: Smoke test binary (bash)
+        if: matrix.cross != true && matrix.runner != 'windows-latest'
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target }}/release/${{ matrix.binary_name }}"
+          echo "Smoke testing ${BIN}..."
+          "${BIN}" --help
+          echo "Smoke test passed."
+
+      # Smoke test (Windows): use pwsh to avoid bash/exe invocation quirks
+      - name: Smoke test binary (pwsh)
+        if: matrix.runner == 'windows-latest'
+        shell: pwsh
+        run: |
+          $BIN = "target\${{ matrix.target }}\release\${{ matrix.binary_name }}"
+          Write-Host "Smoke testing $BIN..."
+          & $BIN --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "Smoke test passed."
+
+      # ── Package: Linux / macOS → tar.gz ──
+      - name: Package (tar.gz)
+        if: matrix.archive_ext == 'tar.gz'
+        shell: bash
+        run: |
+          VERSION="${{ needs.validate.outputs.version }}"
+          TARGET="${{ matrix.target }}"
+          ARCHIVE="gts-v${VERSION}-${TARGET}.tar.gz"
+          STAGING="gts-v${VERSION}-${TARGET}"
+          mkdir -p "${STAGING}"
+          cp "target/${TARGET}/release/${{ matrix.binary_name }}" "${STAGING}/"
+          cp README.md LICENSE NOTICE "${STAGING}/"
+          tar -czf "${ARCHIVE}" "${STAGING}"
+          echo "ASSET=${ARCHIVE}" >> "$GITHUB_ENV"
+
+      # ── Package: Windows → zip ──
+      - name: Package (zip)
+        if: matrix.archive_ext == 'zip'
+        shell: pwsh
+        run: |
+          $VERSION = "${{ needs.validate.outputs.version }}"
+          $TARGET  = "${{ matrix.target }}"
+          $ARCHIVE = "gts-v${VERSION}-${TARGET}.zip"
+          $STAGING = "gts-v${VERSION}-${TARGET}"
+          New-Item -ItemType Directory -Path $STAGING | Out-Null
+          Copy-Item "target\${TARGET}\release\${{ matrix.binary_name }}" $STAGING\
+          Copy-Item README.md, LICENSE, NOTICE $STAGING\
+          Compress-Archive -Path $STAGING -DestinationPath $ARCHIVE
+          "ASSET=${ARCHIVE}" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: binary-${{ matrix.target }}
+          path: ${{ env.ASSET }}
+          retention-days: 1
+
+  github-release:
+    name: Create GitHub Release
+    needs: [validate, build-binaries]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write   # Required to create GitHub Releases and upload assets
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Verify required tools are available
+        shell: bash
+        run: |
+          FAIL=0
+          for tool in tar unzip sha256sum; do
+            if ! command -v "${tool}" > /dev/null 2>&1; then
+              echo "ERROR: required tool '${tool}' not found on runner."
+              FAIL=1
+            else
+              echo "  OK ${tool}: $(${tool} --version 2>&1 | head -1)"
+            fi
+          done
+          [ $FAIL -eq 0 ] || exit 1
+
+      - name: Download all binary artifacts
+        uses: actions/download-artifact@95815c38cf2ff2164869cbab79da8d1f422bc89e # v4.2.1
+        with:
+          pattern: binary-*
+          merge-multiple: true
+          path: dist/
+
+      - name: Generate source archives
+        shell: bash
+        run: |
+          set -euxo pipefail
+          VERSION="${{ needs.validate.outputs.version }}"
+          git archive --format=tar.gz --prefix="gts-v${VERSION}/" HEAD \
+            -o "dist/gts-v${VERSION}-source.tar.gz"
+          git archive --format=zip --prefix="gts-v${VERSION}/" HEAD \
+            -o "dist/gts-v${VERSION}-source.zip"
+
+      - name: Generate SHA-256 checksums
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Assert expected release assets are present
+        shell: bash
+        run: |
+          VERSION="${{ needs.validate.outputs.version }}"
+          EXPECTED_FILES=(
+            "dist/gts-v${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+            "dist/gts-v${VERSION}-aarch64-unknown-linux-gnu.tar.gz"
+            "dist/gts-v${VERSION}-aarch64-apple-darwin.tar.gz"
+            "dist/gts-v${VERSION}-x86_64-pc-windows-msvc.zip"
+            "dist/gts-v${VERSION}-source.tar.gz"
+            "dist/gts-v${VERSION}-source.zip"
+            "dist/SHA256SUMS.txt"
+          )
+          FAIL=0
+          for f in "${EXPECTED_FILES[@]}"; do
+            if [ ! -f "${f}" ]; then
+              echo "ERROR: expected release asset missing: ${f}"
+              FAIL=1
+            elif [ ! -s "${f}" ]; then
+              echo "ERROR: expected release asset is empty (zero bytes): ${f}"
+              FAIL=1
+            else
+              echo "  OK ${f}"
+            fi
+          done
+          # Archive sanity: verify tar.gz and zip archives are readable
+          for f in dist/*.tar.gz; do
+            if ! tar -tzf "${f}" > /dev/null 2>&1; then
+              echo "ERROR: archive failed integrity check: ${f}"
+              FAIL=1
+            fi
+          done
+          for f in dist/*.zip; do
+            if ! unzip -t "${f}" > /dev/null 2>&1; then
+              echo "ERROR: zip archive failed integrity check: ${f}"
+              FAIL=1
+            fi
+          done
+          [ $FAIL -eq 0 ] || exit 1
+
+      - name: Validate SHA256SUMS.txt manifest completeness
+        shell: bash
+        run: |
+          VERSION="${{ needs.validate.outputs.version }}"
+          EXPECTED_BASENAMES=(
+            "gts-v${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+            "gts-v${VERSION}-aarch64-unknown-linux-gnu.tar.gz"
+            "gts-v${VERSION}-aarch64-apple-darwin.tar.gz"
+            "gts-v${VERSION}-x86_64-pc-windows-msvc.zip"
+            "gts-v${VERSION}-source.tar.gz"
+            "gts-v${VERSION}-source.zip"
+          )
+          FAIL=0
+          for name in "${EXPECTED_BASENAMES[@]}"; do
+            if ! grep -qF "${name}" dist/SHA256SUMS.txt; then
+              echo "ERROR: SHA256SUMS.txt is missing entry for: ${name}"
+              FAIL=1
+            else
+              # Validate the line is well-formed: 64 lowercase hex chars, whitespace, then filename
+              if ! grep -qE "^[0-9a-f]{64}[[:space:]]+${name}$" dist/SHA256SUMS.txt; then
+                echo "ERROR: SHA256SUMS.txt entry for '${name}' has malformed hash (expected 64 hex chars)"
+                FAIL=1
+              else
+                echo "  OK SHA256SUMS.txt entry valid: ${name}"
+              fi
+            fi
+          done
+          ACTUAL_COUNT=$(grep -c '[[:space:]]' dist/SHA256SUMS.txt || true)
+          EXPECTED_COUNT=${#EXPECTED_BASENAMES[@]}
+          if [ "${ACTUAL_COUNT}" -ne "${EXPECTED_COUNT}" ]; then
+            echo "ERROR: SHA256SUMS.txt has ${ACTUAL_COUNT} entries, expected ${EXPECTED_COUNT}"
+            FAIL=1
+          fi
+          [ $FAIL -eq 0 ] || exit 1
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "GTS v${{ needs.validate.outputs.version }}"
+          draft: false
+          prerelease: false
+          # generate_release_notes provides auto-generated notes as a fallback.
+          # For curated notes: create a RELEASE_NOTES.md at repo root before tagging
+          # and reference it via the 'body_path' field instead.
+          generate_release_notes: true
+          files: |
+            dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-crates:
+    name: Publish to crates.io
+    needs: [validate, github-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: crates-io    # Required for secret scoping; reviewer gate is optional
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@9bc92bc5598b4f3bec5d910d352094982cb0c3b9 # stable
+        with:
+          toolchain: ${{ needs.validate.outputs.rust-version }}
+
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+
+      - name: Verify jq availability
+        shell: bash
+        run: |
+          if ! command -v jq > /dev/null 2>&1; then
+            echo "ERROR: jq is not available on this runner. Install jq or use a runner image that includes it."
+            exit 1
+          fi
+          echo "jq $(jq --version) available."
+
+      # Preflight: cargo publish --dry-run validates packaging AND metadata without uploading.
+      # Using --dry-run (not --no-verify) ensures full verification runs as a last-mile check.
+      # CARGO_REGISTRY_TOKEN is not set here: --dry-run does not upload to the registry
+      # and does not require a valid token on the network path exercised by preflight.
+      - name: cargo publish dry-run preflight (all publishable crates)
+        run: |
+          cargo publish -p gts-id --dry-run --locked
+          cargo publish -p gts-macros --dry-run --locked
+          cargo publish -p gts --dry-run --locked
+          cargo publish -p gts-validator --dry-run --locked
+
+      # Publish in dependency order. Shared helper functions enforce identical retry/reconcile/wait
+      # behavior across all crates, eliminating per-crate duplication and drift risk.
+      # is_published: checks crates.io API for exact version presence.
+      # publish_with_retry: runs cargo publish with 3-attempt retry + post-failure reconciliation.
+      # wait_visible: polls API every 15s (up to 5min) + 5s buffer for sparse index propagation.
+      - name: Publish all crates in dependency order
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.validate.outputs.version }}"
+
+          is_published() {
+            local crate="$1"
+            curl -sf --max-time 15 --retry 3 "https://crates.io/api/v1/crates/${crate}/${VERSION}" \
+              | jq -e --arg v "${VERSION}" '.version.num == $v' > /dev/null 2>&1
+          }
+
+          publish_with_retry() {
+            local crate="$1"
+            if is_published "${crate}"; then
+              echo "${crate} ${VERSION} already published, skipping."
+              return 0
+            fi
+            for attempt in 1 2 3; do
+              # Token scoped to this single invocation only, not the surrounding shell environment
+              if CARGO_REGISTRY_TOKEN="${{ secrets.CARGO_REGISTRY_TOKEN }}" cargo publish -p "${crate}" --locked; then
+                echo "${crate} published successfully on attempt ${attempt}."
+                return 0
+              fi
+              echo "Publish attempt ${attempt} failed. Re-checking crates.io API for reconciliation..."
+              if is_published "${crate}"; then
+                echo "${crate} ${VERSION} found on crates.io — treating as successful publish."
+                return 0
+              fi
+              if [ $attempt -lt 3 ]; then
+                echo "Not yet visible. Retrying in 30s..."
+                sleep 30
+              else
+                echo "ERROR: ${crate} publish failed after 3 attempts and version not found on crates.io."
+                return 1
+              fi
+            done
+          }
+
+          wait_visible() {
+            local crate="$1"
+            for i in $(seq 1 20); do
+              if is_published "${crate}"; then
+                echo "${crate} ${VERSION} visible via API (sparse index propagation may still be in progress)."
+                sleep 5   # small extra buffer for sparse index lag
+                return 0
+              fi
+              echo "Attempt ${i}/20: ${crate} ${VERSION} not yet visible, waiting 15s..."
+              sleep 15
+            done
+            echo "ERROR: ${crate} ${VERSION} did not appear in crates.io API after 5 minutes."
+            return 1
+          }
+
+          publish_with_retry gts-id
+          wait_visible gts-id
+
+          publish_with_retry gts-macros
+          wait_visible gts-macros
+
+          publish_with_retry gts
+          wait_visible gts
+
+          publish_with_retry gts-validator
+          wait_visible gts-validator   # symmetrical: ensures gts-validator is queryable before workflow reports success

@@ -1,0 +1,130 @@
+# cargo-deny configuration for security, licenses, bans, and sources.
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+################################################################################
+# Dependency graph construction
+################################################################################
+[graph]
+# Optionally restrict targets to check (kept commented by default).
+# targets = [
+#   "x86_64-unknown-linux-gnu",
+#   { triple = "wasm32-unknown-unknown", features = ["atomics"] },
+# ]
+# all-features = true
+# exclude-dev = true
+# exclude-unpublished = false
+
+################################################################################
+# Security advisories (RustSec)
+################################################################################
+[advisories]
+# Local clone/cache of the RustSec advisory DB
+db-path = ".cargo/advisory-db"
+# Upstream advisory DBs to use
+db-urls = ["https://github.com/RustSec/advisory-db"]
+
+# Yanked crate versions still use classic lint levels.
+# one of: "deny" | "warn" | "allow"
+yanked = "warn"
+
+# List of advisory IDs to ignore (RUSTSEC-YYYY-XXXX, etc.)
+ignore = [
+  # "RUSTSEC-0000-0000",
+]
+
+# Note:
+# - Modern cargo-deny versions treat vulnerabilities as hard errors by default.
+# - If you must silence a specific vuln, add its ID to `ignore` above.
+
+################################################################################
+# License policy
+################################################################################
+[licenses]
+# Allow-list of SPDX license IDs
+allow = [
+  "MIT",
+  "MIT-0",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "ISC",
+  "Unicode-3.0",
+  "CDLA-Permissive-2.0",
+  "MPL-2.0",
+  "OpenSSL",
+  "Zlib"
+]
+
+# Confidence threshold (0.0..1.0) for license text detection
+confidence-threshold = 0.8
+
+# Per-crate exceptions (license(s) allowed only for a specific crate/version)
+exceptions = [
+  # { name = "some-crate", version = "*", allow = ["Zlib"] },
+]
+
+# Private workspace crates handling
+[licenses.private]
+# If true, ignore unpublished/private workspace crates for license checks
+ignore = false
+# Private registries considered "published" for the rule above
+registries = [
+  # "https://example.com/registry",
+]
+
+################################################################################
+# Duplicate versions / wildcards / bans
+################################################################################
+[bans]
+# Multiple versions of the same crate in the graph
+multiple-versions = "warn"
+
+# Version wildcards like "*"
+wildcards = "allow"
+
+# How to highlight in dot graphs when multiple versions are present
+# "lowest-version" | "simplest-path" | "all"
+highlight = "all"
+
+# Default lint level for `default-features` on workspace deps (requires the
+# `workspace-dependencies` feature in cargo-deny to take effect)
+workspace-default-features = "allow"
+
+# Allow-list of specific crates (use carefully)
+allow = [
+  # { name = "ansi_term", version = "=0.11.0" },
+]
+
+# Deny-list of specific crates (optionally with version ranges/wrappers)
+deny = [
+  # { name = "some-bad-crate", version = "*", wrappers = [] },
+]
+
+# Skip specific crate versions when checking for duplicates
+skip = [
+  # { name = "ansi_term", version = "=0.11.0" },
+]
+
+# Remove a crate subtree entirely from the graph for checks (stronger than skip)
+skip-tree = [
+  # { name = "ansi_term", version = "=0.11.0", depth = 1 },
+]
+
+################################################################################
+# Allowed sources (registries and git)
+################################################################################
+[sources]
+# Non-allowed registry encountered
+unknown-registry = "warn"
+
+# Non-allowed git source encountered
+unknown-git = "warn"
+
+# Allowed crate registries (empty list => none allowed)
+# Default crates.io index:
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+# Allowed git repositories (empty => none)
+allow-git = []
