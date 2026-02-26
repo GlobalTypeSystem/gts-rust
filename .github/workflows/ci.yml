@@ -129,6 +129,12 @@ jobs:
       - name: cargo test
         run: cargo test --workspace --no-fail-fast
 
+      # Smoke test installability of gts-validator as a standalone CLI.
+      - name: cargo install smoke test (gts-validator)
+        run: |
+          cargo install --path gts-validator --force
+          gts-validator --help
+
       # Print sccache stats when active
       - name: sccache stats
         if: env.SCCACHE_OK == '1'

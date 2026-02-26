@@ -614,6 +614,7 @@ name = "gts-validator"
 version = "0.8.2"
 dependencies = [
  "anyhow",
+ "clap",
  "glob",
  "gts",
  "regex",
