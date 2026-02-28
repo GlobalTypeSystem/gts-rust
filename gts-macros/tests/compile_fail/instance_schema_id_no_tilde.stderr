@@ -1,0 +1,5 @@
+error: gts_well_known_instance: schema_id must end with '~' (type marker), got 'gts.x.core.events.topic.v1'
+ --> tests/compile_fail/instance_schema_id_no_tilde.rs:7:17
+  |
+7 |     schema_id = "gts.x.core.events.topic.v1",
+  |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^

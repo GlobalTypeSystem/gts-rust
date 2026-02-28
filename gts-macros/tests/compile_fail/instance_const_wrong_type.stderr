@@ -1,0 +1,5 @@
+error: gts_well_known_instance: The annotated const must have type `&str`, got `u32`. Usage: `const NAME: &str = r#"{ ... }"#;`
+  --> tests/compile_fail/instance_const_wrong_type.rs:10:21
+   |
+10 | const ORDERS_TOPIC: u32 = 42;
+   |                     ^^^

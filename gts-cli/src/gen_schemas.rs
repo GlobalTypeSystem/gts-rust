@@ -4,28 +4,8 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use walkdir::WalkDir;
 
-/// Directories that are automatically ignored (e.g., trybuild `compile_fail` tests)
-const AUTO_IGNORE_DIRS: &[&str] = &["compile_fail"];
-
-/// Reason why a file was skipped
-#[derive(Debug, Clone, Copy)]
-enum SkipReason {
-    ExcludePattern,
-    AutoIgnoredDir,
-    IgnoreDirective,
-}
-
-impl std::fmt::Display for SkipReason {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ExcludePattern => write!(f, "matched --exclude pattern"),
-            Self::AutoIgnoredDir => write!(f, "in auto-ignored directory (compile_fail)"),
-            Self::IgnoreDirective => write!(f, "has // gts:ignore directive"),
-        }
-    }
-}
+use crate::gen_common::{compute_sandbox_root, safe_canonicalize_nonexistent, walk_rust_files};
 
 /// Parsed macro attributes from `#[struct_to_gts_schema(...)]`
 #[derive(Debug, Clone)]
@@ -58,7 +38,7 @@ enum BaseAttr {
 ///
 /// Returns an error if:
 /// - The source path does not exist
-/// - The output path is outside the source repository
+/// - The output path is outside the sandbox boundary
 /// - File I/O operations fail
 pub fn generate_schemas_from_rust(
     source: &str,
@@ -73,73 +53,20 @@ pub fn generate_schemas_from_rust(
         bail!("Source path does not exist: {source}");
     }
 
-    // Canonicalize source path to detect path traversal attempts
     let source_canonical = source_path.canonicalize()?;
+    let sandbox_root = compute_sandbox_root(&source_canonical, output)?;
 
     let mut schemas_generated = 0;
-    let mut files_scanned = 0;
-    let mut files_skipped = 0;
 
-    // Walk through all .rs files
-    for entry in WalkDir::new(source_path)
-        .follow_links(true)
-        .into_iter()
-        .filter_map(Result::ok)
-    {
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("rs") {
-            continue;
-        }
-
-        // Check if path should be excluded
-        if should_exclude_path(path, exclude_patterns) {
-            files_skipped += 1;
-            if verbose > 0 {
-                println!(
-                    "  Skipped: {} ({})",
-                    path.display(),
-                    SkipReason::ExcludePattern
-                );
-            }
-            continue;
-        }
-
-        // Check for auto-ignored directories (e.g., compile_fail)
-        if is_in_auto_ignored_dir(path) {
-            files_skipped += 1;
-            if verbose > 0 {
-                println!(
-                    "  Skipped: {} ({})",
-                    path.display(),
-                    SkipReason::AutoIgnoredDir
-                );
-            }
-            continue;
-        }
-
-        files_scanned += 1;
-        if let Ok(content) = fs::read_to_string(path) {
-            // Check for gts:ignore directive
-            if has_ignore_directive(&content) {
-                files_skipped += 1;
-                if verbose > 0 {
-                    println!(
-                        "  Skipped: {} ({})",
-                        path.display(),
-                        SkipReason::IgnoreDirective
-                    );
-                }
-                continue;
-            }
-
-            // Parse the file and extract schema information
-            let results = extract_and_generate_schemas(&content, output, &source_canonical, path)?;
+    let (files_scanned, files_skipped) =
+        walk_rust_files(source_path, exclude_patterns, verbose, |path, content| {
+            let results = extract_and_generate_schemas(content, output, &sandbox_root, path)?;
             schemas_generated += results.len();
             for (schema_id, file_path) in results {
                 println!("  Generated schema: {schema_id} @ {file_path}");
             }
-        }
-    }
+            Ok(())
+        })?;
 
     println!("\nSummary:");
     println!("  Files scanned: {files_scanned}");
@@ -153,68 +80,6 @@ pub fn generate_schemas_from_rust(
     }
 
     Ok(())
-}
-
-/// Check if a path matches any of the exclude patterns
-fn should_exclude_path(path: &Path, patterns: &[String]) -> bool {
-    let path_str = path.to_string_lossy();
-
-    for pattern in patterns {
-        if matches_glob_pattern(&path_str, pattern) {
-            return true;
-        }
-    }
-
-    false
-}
-
-/// Simple glob pattern matching
-/// Supports: * (any characters), ** (any path segments)
-fn matches_glob_pattern(path: &str, pattern: &str) -> bool {
-    // Convert glob pattern to regex
-    let regex_pattern = pattern
-        .replace('.', r"\.")
-        .replace("**", "<<DOUBLESTAR>>")
-        .replace('*', "[^/]*")
-        .replace("<<DOUBLESTAR>>", ".*");
-
-    if let Ok(re) = Regex::new(&format!("(^|/){regex_pattern}($|/)")) {
-        re.is_match(path)
-    } else {
-        // Fallback to simple contains check
-        path.contains(pattern)
-    }
-}
-
-/// Check if path is in an auto-ignored directory (e.g., `compile_fail`)
-fn is_in_auto_ignored_dir(path: &Path) -> bool {
-    path.components().any(|component| {
-        if let Some(name) = component.as_os_str().to_str() {
-            AUTO_IGNORE_DIRS.contains(&name)
-        } else {
-            false
-        }
-    })
-}
-
-/// Check if file content starts with the gts:ignore directive
-fn has_ignore_directive(content: &str) -> bool {
-    // Check first few lines for the directive
-    for line in content.lines().take(10) {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        // Check for the directive (case-insensitive)
-        if trimmed.to_lowercase().starts_with("// gts:ignore") {
-            return true;
-        }
-        // If we hit a non-comment, non-empty line, stop looking
-        if !trimmed.starts_with("//") && !trimmed.starts_with("#!") {
-            break;
-        }
-    }
-    false
 }
 
 /// Parse the attribute body of `#[struct_to_gts_schema(...)]` to extract individual attributes
@@ -267,7 +132,7 @@ fn parse_macro_attrs(attr_body: &str) -> Option<MacroAttrs> {
 fn extract_and_generate_schemas(
     content: &str,
     output_override: Option<&str>,
-    source_root: &Path,
+    sandbox_root: &Path,
     source_file: &Path,
 ) -> Result<Vec<(String, String)>> {
     // Match #[struct_to_gts_schema(...)] followed by struct definition
@@ -292,44 +157,36 @@ fn extract_and_generate_schemas(
             continue;
         };
 
-        // Convert schema_id to filename-safe format
-        // e.g., "gts.x.core.events.type.v1~" -> "gts.x.core.events.type.v1~"
         let schema_file_rel = format!("{}/{}.schema.json", attrs.dir_path, attrs.schema_id);
 
-        // Determine output path
-        let output_path = if let Some(output_dir) = output_override {
-            // Use CLI-provided output directory
+        // Determine raw (unvalidated) output path
+        let raw_output_path = if let Some(output_dir) = output_override {
             Path::new(output_dir).join(&schema_file_rel)
         } else {
-            // Use path from macro (relative to source file's directory)
-            let source_dir = source_file.parent().unwrap_or(source_root);
+            let source_dir = source_file.parent().unwrap_or(sandbox_root);
             source_dir.join(&schema_file_rel)
         };
 
-        // Security check: ensure output path doesn't escape source repository
-        let output_canonical = if output_path.exists() {
-            output_path.canonicalize()?
-        } else {
-            // For non-existent files, canonicalize the parent directory
-            let parent = output_path.parent().unwrap_or(Path::new("."));
-            fs::create_dir_all(parent)?;
-            let parent_canonical = parent.canonicalize()?;
-            let file_name = output_path
-                .file_name()
-                .ok_or_else(|| anyhow::anyhow!("Invalid output path: no file name"))?;
-            parent_canonical.join(file_name)
-        };
+        // Validate path against sandbox BEFORE any filesystem writes (fix validate-before-mkdir bug)
+        let output_canonical = safe_canonicalize_nonexistent(&raw_output_path).map_err(|e| {
+            anyhow::anyhow!(
+                "Security error in {}:{} - dir_path '{}': {}",
+                source_file.display(),
+                struct_name,
+                attrs.dir_path,
+                e
+            )
+        })?;
 
-        // Check if output path is within source repository
-        if !output_canonical.starts_with(source_root) {
+        if !output_canonical.starts_with(sandbox_root) {
             bail!(
-                "Security error in {}:{} - dir_path '{}' attempts to write outside source repository. \
+                "Security error in {}:{} - dir_path '{}' attempts to write outside sandbox boundary. \
                 Resolved to: {}, but must be within: {}",
                 source_file.display(),
                 struct_name,
                 attrs.dir_path,
                 output_canonical.display(),
-                source_root.display()
+                sandbox_root.display()
             );
         }
 
@@ -352,16 +209,15 @@ fn extract_and_generate_schemas(
             &field_types,
         );
 
-        // Create parent directories
-        if let Some(parent) = output_path.parent() {
+        // Create parent directories (only after sandbox validation passes)
+        if let Some(parent) = raw_output_path.parent() {
             fs::create_dir_all(parent)?;
         }
 
         // Write schema file
-        fs::write(&output_path, serde_json::to_string_pretty(&schema)?)?;
+        fs::write(&raw_output_path, serde_json::to_string_pretty(&schema)?)?;
 
-        // Add to results (schema_id, file_path)
-        results.push((attrs.schema_id, output_path.display().to_string()));
+        results.push((attrs.schema_id, raw_output_path.display().to_string()));
     }
 
     Ok(results)
@@ -556,10 +412,12 @@ fn rust_type_to_json_schema(rust_type: &str) -> (bool, serde_json::Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gen_common::{
+        has_ignore_directive, is_in_auto_ignored_dir, matches_glob_pattern, should_exclude_path,
+    };
 
     #[test]
     fn test_matches_glob_pattern() {
-        // Test simple patterns
         assert!(matches_glob_pattern(
             "src/tests/compile_fail/test.rs",
             "compile_fail"
@@ -568,12 +426,8 @@ mod tests {
             "tests/compile_fail/test.rs",
             "compile_fail"
         ));
-
-        // Test wildcard patterns
         assert!(matches_glob_pattern("src/tests/foo.rs", "tests/*"));
         assert!(matches_glob_pattern("src/examples/bar.rs", "examples/*"));
-
-        // Test double-star patterns
         assert!(matches_glob_pattern("a/b/c/d/test.rs", "**/test.rs"));
     }
 

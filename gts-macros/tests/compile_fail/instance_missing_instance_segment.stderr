@@ -1,0 +1,10 @@
+error: unexpected end of input, gts_well_known_instance: Missing required attribute: instance_segment
+ --> tests/compile_fail/instance_missing_instance_segment.rs:5:1
+  |
+5 | / #[gts_well_known_instance(
+6 | |     dir_path = "instances",
+7 | |     schema_id = "gts.x.core.events.topic.v1~"
+8 | | )]
+  | |__^
+  |
+  = note: this error originates in the attribute macro `gts_well_known_instance` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -1,0 +1,5 @@
+error: gts_well_known_instance: instance_segment must not end with '~' — that is a schema/type marker. Instance segments do not end with '~'
+ --> tests/compile_fail/instance_segment_ends_with_tilde.rs:8:24
+  |
+8 |     instance_segment = "x.commerce._.orders.v1~"
+  |                        ^^^^^^^^^^^^^^^^^^^^^^^^^

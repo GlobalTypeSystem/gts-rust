@@ -220,6 +220,7 @@ async fn test_run_generate_from_rust_command() -> Result<()> {
             source: source_path.to_str().unwrap().to_owned(),
             output: Some(output_path.to_str().unwrap().to_owned()),
             exclude: vec![],
+            mode: gts_cli::cli::GenerateMode::Schemas,
         },
     };
 

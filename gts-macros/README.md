@@ -423,6 +423,96 @@ The CLI automatically maps Rust types to JSON Schema types:
 
 ---
 
+## `#[gts_well_known_instance]` — Well-Known Instance Declaration
+
+The `#[gts_well_known_instance]` attribute macro declares a **well-known GTS instance** as a `const` JSON string literal. It provides:
+
+1. **Compile-time validation** of `schema_id`, `instance_segment`, and the composed instance ID format.
+2. **CLI extraction** — the `gts generate-from-rust --mode instances` command scans for these annotations, validates the JSON payload, injects the `"id"` field, and writes the instance file.
+
+The macro passes the annotated `const` through **unchanged** at compile time. It is purely metadata for the CLI extraction step.
+
+### Usage
+
+```rust
+#[gts_macros::gts_well_known_instance(
+    dir_path = "instances",
+    schema_id = "gts.x.core.events.topic.v1~",
+    instance_segment = "x.commerce._.orders.v1.0"
+)]
+pub const ORDERS_TOPIC: &str = r#"{
+    "name": "orders",
+    "description": "Order lifecycle events topic",
+    "retention": "P90D",
+    "partitions": 16
+}"#;
+```
+
+### Parameters
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `dir_path` | Yes | Output directory for the generated instance file (relative to source file or `--output`) |
+| `schema_id` | Yes | GTS schema ID this instance conforms to — **must end with `~`** |
+| `instance_segment` | Yes | Appended to `schema_id` to form the full instance ID — **must not end with `~`**, must not be a bare `*` |
+
+The full instance ID is `schema_id + instance_segment`, e.g.:
+```
+gts.x.core.events.topic.v1~x.commerce._.orders.v1.0
+```
+
+### Generated file
+
+The CLI writes `{dir_path}/{schema_id}{instance_segment}.instance.json` with the `"id"` field automatically injected:
+
+```json
+{
+  "id": "gts.x.core.events.topic.v1~x.commerce._.orders.v1.0",
+  "name": "orders",
+  "description": "Order lifecycle events topic",
+  "retention": "P90D",
+  "partitions": 16
+}
+```
+
+### CLI command
+
+```bash
+# Generate only instance files
+gts generate-from-rust --source src/ --mode instances
+
+# Generate both schemas and instances
+gts generate-from-rust --source src/ --mode all
+
+# Override output directory
+gts generate-from-rust --source src/ --output out/ --mode instances
+```
+
+### Rules and restrictions
+
+- The annotated item **must be a `const`** (not `static`) of type `&str`.
+- The const value **must be a string literal** — raw strings (`r#"..."#`) or regular strings (`"..."`). `concat!()` and other macro invocations are not supported.
+- The JSON body **must be a JSON object** (`{ ... }`). Arrays, scalars, and `null` are not valid.
+- The JSON body **must not contain an `"id"` field** — the CLI injects it automatically from `schema_id + instance_segment`.
+- Files in `compile_fail/` directories and files with a `// gts:ignore` directive are skipped.
+- Items behind `#[cfg(...)]` gates (e.g., `#[cfg(test)]`) are still extracted — extraction is lexical, not conditional.
+
+### Compile-time validation errors
+
+| Violation | Error |
+|-----------|-------|
+| Missing `schema_id` | `Missing required attribute: schema_id` |
+| Missing `instance_segment` | `Missing required attribute: instance_segment` |
+| Missing `dir_path` | `Missing required attribute: dir_path` |
+| `schema_id` without trailing `~` | `schema_id must end with '~' (type marker)` |
+| `instance_segment` ending with `~` | `instance_segment must not end with '~'` |
+| `instance_segment = "*"` (bare wildcard) | `instance_segment must not be a bare wildcard '*'` |
+| Applied to a `static` item | `Only \`const\` items are supported` |
+| Applied to a `const` with type other than `&str` | `The annotated const must have type \`&str\`` |
+| Const value is `concat!()` or other macro | `The const value must be a string literal` |
+
+---
+
 ## Purpose 3: Runtime API
 
 The macro generates associated constants, methods, and implements the `GtsSchema` trait for runtime use.
