@@ -24,7 +24,8 @@ pub fn generate_single_instance(
     sandbox_root: &Path,
 ) -> Result<String> {
     let composed = format!("{}{}", inst.attrs.schema_id, inst.attrs.instance_segment);
-    let file_rel = format!("{}/{}.instance.json", inst.attrs.dir_path, composed);
+    let file_rel =
+        std::path::Path::new(&inst.attrs.dir_path).join(format!("{composed}.instance.json"));
 
     let raw_output_path = if let Some(od) = output {
         Path::new(od).join(&file_rel)

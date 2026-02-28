@@ -372,7 +372,14 @@ fn gts_ignore_directive_skips_file() {
 
 #[test]
 fn missing_source_path_errors() {
-    let err = run("/nonexistent/path/absolutely/not/here", None, &[]).unwrap_err();
+    // Use a path guaranteed not to exist on any platform by constructing it
+    // inside a TempDir that is immediately dropped (and thus deleted).
+    let nonexistent = {
+        let tmp = TempDir::new().unwrap();
+        tmp.path().join("no_such_subdir_xyz")
+        // tmp is dropped here — the parent dir is deleted
+    };
+    let err = run(nonexistent.to_str().unwrap(), None, &[]).unwrap_err();
     assert!(err.to_string().contains("does not exist"), "Got: {err}");
 }
 
