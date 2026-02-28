@@ -568,7 +568,7 @@ fn zero_hash_raw_string_is_accepted() {
         "    schema_id = \"gts.x.core.events.topic.v1~\",\n",
         "    instance_segment = \"x.commerce._.orders.v1.0\"\n",
         ")]\n",
-        "pub const ZERO_HASH: &str = r\"{\"name\":\"zero\"}\";\n"
+        "pub const ZERO_HASH: &str = r#\"{\"name\":\"zero\"}\"#;\n"
     );
     write(&root, "zero_hash.rs", src);
 

@@ -127,6 +127,7 @@ fn blank_string_literals(s: &str) -> String {
                 // Found r<hashes>", now scan for closing "<hashes>#
                 let content_start = hash_end + 1;
                 let mut scan = content_start;
+                let mut close_span: Option<(usize, usize)> = None;
                 'raw: while scan < len {
                     if bytes[scan] == b'"' {
                         // Check for the required number of closing hashes
@@ -137,17 +138,22 @@ fn blank_string_literals(s: &str) -> String {
                             close += 1;
                         }
                         if count == hashes {
-                            // Blank the content between opening and closing delimiters
-                            for byte in &mut out[content_start..scan] {
-                                if byte.is_ascii() {
-                                    *byte = b' ';
-                                }
-                            }
-                            pos = close;
+                            close_span = Some((scan, close));
                             break 'raw;
                         }
                     }
                     scan += 1;
+                }
+                if let Some((content_end, close)) = close_span {
+                    for byte in &mut out[content_start..content_end] {
+                        if byte.is_ascii() {
+                            *byte = b' ';
+                        }
+                    }
+                    pos = close;
+                } else {
+                    // Unterminated raw string: advance to avoid infinite loop.
+                    pos += 1;
                 }
                 continue;
             }
