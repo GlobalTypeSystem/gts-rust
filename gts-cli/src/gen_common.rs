@@ -42,10 +42,9 @@ pub fn should_exclude_path(path: &Path, patterns: &[String]) -> bool {
 #[must_use]
 pub fn matches_glob_pattern(path: &str, pattern: &str) -> bool {
     let normalized = path.replace('\\', "/");
-    let regex_pattern = pattern
-        .replace('.', r"\.")
-        .replace("**", "<<DOUBLESTAR>>")
-        .replace('*', "[^/]*")
+    let regex_pattern = regex::escape(pattern)
+        .replace(r"\*\*", "<<DOUBLESTAR>>")
+        .replace(r"\*", "[^/]*")
         .replace("<<DOUBLESTAR>>", ".*");
 
     if let Ok(re) = Regex::new(&format!("(^|/){regex_pattern}($|/)")) {
@@ -313,6 +312,16 @@ mod tests {
         assert!(matches_glob_pattern("src/tests/foo.rs", "tests/*"));
         assert!(matches_glob_pattern("src/examples/bar.rs", "examples/*"));
         assert!(matches_glob_pattern("a/b/c/d/test.rs", "**/test.rs"));
+    }
+
+    #[test]
+    fn test_matches_glob_pattern_literal_metacharacters() {
+        // '+' is a regex quantifier but must be treated as a literal in glob patterns.
+        assert!(matches_glob_pattern("src/foo+bar.rs", "foo+bar.rs"));
+        assert!(!matches_glob_pattern("src/fooXbar.rs", "foo+bar.rs"));
+        // '[' and ']' are regex character-class delimiters but must be literal.
+        assert!(matches_glob_pattern("src/foo[0].rs", "foo[0].rs"));
+        assert!(!matches_glob_pattern("src/foo0.rs", "foo[0].rs"));
     }
 
     #[test]
