@@ -221,6 +221,16 @@ pub fn safe_canonicalize_nonexistent(path: &Path) -> Result<PathBuf> {
         }
     }
 
+    // Normalize to an absolute path so that canonical_ancestor is always absolute.
+    // This ensures starts_with(sandbox_root) comparisons work when the caller
+    // passes a relative output directory.
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let path = path.as_path();
+
     if path.exists() {
         return Ok(path.canonicalize()?);
     }
