@@ -1,0 +1,13 @@
+error: struct_to_gts_schema: Field `gts_type` has type `GtsSchemaId` but is not listed in `properties`. Either add `gts_type` to the `properties` list, or remove it from the struct (use `RateLimitErrorV1::gts_schema_id()` or `RateLimitErrorV1::SCHEMA_ID` to access the schema ID at runtime).
+  --> tests/compile_fail/gts_field_not_in_properties.rs:15:9
+   |
+15 |     pub gts_type: GtsSchemaId,
+   |         ^^^^^^^^
+
+warning: unused import: `gts::gts::GtsSchemaId`
+ --> tests/compile_fail/gts_field_not_in_properties.rs:4:5
+  |
+4 | use gts::gts::GtsSchemaId;
+  |     ^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

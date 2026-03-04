@@ -166,7 +166,7 @@ Chained inheritance w/o new attributes
     base = true,
     schema_id = "gts.x.core.events.topic.v1~",
     description = "Base topic type definition",
-    properties = "name,description"
+    properties = "id,name,description"
 )]
 #[derive(Debug)]
 pub struct TopicV1<P> {
@@ -226,6 +226,38 @@ The macro automatically generates:
 
 No more manual schema implementation needed!
 ============================================================ */
+
+/* ============================================================
+Issue #72: Base struct without type/id field
+============================================================ */
+
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = true,
+    schema_id = "gts.x.core.errors.quota_failure.v1~",
+    description = "Quota failure with one or more violations",
+    properties = "violations"
+)]
+#[derive(Debug, Clone)]
+pub struct QuotaFailureV1 {
+    pub violations: Vec<String>,
+}
+
+/* ============================================================
+Issue #72: Base struct without gts_type field
+============================================================ */
+
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = true,
+    schema_id = "gts.x.core.errors.rate_limit.v1~",
+    description = "Rate limit error without gts_type field",
+    properties = "retry_after"
+)]
+#[derive(Debug, Clone)]
+pub struct RateLimitErrorV1 {
+    pub retry_after: u64,
+}
 
 /* ============================================================
 Demo
@@ -2752,6 +2784,95 @@ mod tests {
         assert!(
             inner_props.get("content_value").is_some(),
             "inner_data.properties should have 'content_value'"
+        );
+    }
+
+    /* ============================================================
+    Issue #72: gts_type field blocks Deserialize
+    ============================================================ */
+
+    #[test]
+    fn test_base_struct_without_type_or_id_field() {
+        // QuotaFailureV1 has no type/id field at all — should compile and work
+        let quota = QuotaFailureV1 {
+            violations: vec!["exceeded".to_string()],
+        };
+
+        // Serialization should work
+        let json = serde_json::to_string(&quota).unwrap();
+        assert!(json.contains("exceeded"));
+
+        // Round-trip deserialization should work
+        let deserialized: QuotaFailureV1 = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.violations, vec!["exceeded".to_string()]);
+
+        // Schema ID should still be accessible via trait
+        assert_eq!(
+            QuotaFailureV1::gts_schema_id().as_ref(),
+            "gts.x.core.errors.quota_failure.v1~"
+        );
+    }
+
+    #[test]
+    fn test_base_struct_without_gts_type_field() {
+        // RateLimitErrorV1 has no gts_type field — schema ID is accessed via generated methods
+        let error = RateLimitErrorV1 { retry_after: 30 };
+
+        // Serialization works normally
+        let json_value = serde_json::to_value(&error).unwrap();
+        assert_eq!(json_value["retry_after"], 30);
+        assert!(json_value.get("gts_type").is_none());
+
+        // Deserialization works normally
+        let json_str = r#"{"retry_after": 60}"#;
+        let deserialized: RateLimitErrorV1 = serde_json::from_str(json_str).unwrap();
+        assert_eq!(deserialized.retry_after, 60);
+
+        // Schema ID is still accessible via the generated method
+        assert_eq!(
+            RateLimitErrorV1::gts_schema_id().as_ref(),
+            "gts.x.core.errors.rate_limit.v1~"
+        );
+    }
+
+    #[test]
+    fn test_gts_type_in_properties_preserved() {
+        // TopicV1WithGtsTypeV1 has gts_type IN properties — should be serialized normally
+        let topic = TopicV1WithGtsTypeV1::<OrderTopicConfigV1> {
+            gts_type: GtsSchemaId::new("gts.x.core.events.topic.v1~"),
+            name: "orders".to_string(),
+            description: None,
+            config: OrderTopicConfigV1,
+        };
+
+        let json_value = serde_json::to_value(&topic).unwrap();
+        assert!(
+            json_value.get("gts_type").is_some(),
+            "gts_type should be present when listed in properties"
+        );
+        assert_eq!(json_value["gts_type"], "gts.x.core.events.topic.v1~");
+    }
+
+    #[test]
+    fn test_id_uuid_field_not_treated_as_gts_id() {
+        // BaseEventV1 has `id: Uuid` which should NOT be treated as a GTS ID field.
+        // It should compile and serialize normally without serde skip.
+        let event = BaseEventV1::<SimplePayloadV1> {
+            event_type: SimplePayloadV1::gts_schema_id().clone(),
+            id: uuid::Uuid::new_v4(),
+            tenant_id: uuid::Uuid::new_v4(),
+            sequence_id: 1,
+            payload: SimplePayloadV1 {
+                message: "test".to_string(),
+                severity: 5,
+            },
+        };
+
+        let json_value = serde_json::to_value(&event).unwrap();
+        // id should be present (it's a regular Uuid field, not GtsInstanceId)
+        assert!(
+            json_value.get("id").is_some(),
+            "id: Uuid should be serialized normally"
         );
     }
 }

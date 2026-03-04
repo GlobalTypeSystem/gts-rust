@@ -112,7 +112,7 @@ pub struct MyStructV1 { ... }
 | **Property existence** | Every property in the list must exist as a field in the struct |
 | **Struct type** | Only structs with named fields are supported (no tuple structs) |
 | **Generic type constraints** | Generic type parameters must implement `GtsSchema` (only `()` or other GTS structs allowed) |
-| **Base struct field validation** | Base structs (`base = true`) must have either ID fields OR GTS Type fields, but not both (see below) |
+| **Base struct field validation** | Base structs (`base = true`) may optionally have ID fields OR GTS Type fields in `properties`, but not both. GTS fields must be in `properties` if present (see below) |
 
 ### Compile Error Examples
 
@@ -193,7 +193,21 @@ error[E0277]: the trait bound `MyStruct: GtsSchema` is not satisfied
    |                ^^^^^^^^^^^^^^^^^^^^^ the trait `GtsSchema` is not implemented for `MyStruct`
 ```
 
-**Base struct field validation - ID fields:**
+**Base struct without ID or type field (simplest form):**
+```rust
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = true,
+    schema_id = "gts.x.core.errors.quota_failure.v1~",
+    description = "Quota failure with one or more violations",
+    properties = "violations"
+)]
+pub struct QuotaFailureV1 {
+    pub violations: Vec<String>,  // ✅ No type/id field needed
+}
+```
+
+**Base struct with ID field in properties:**
 ```rust
 use gts::gts::GtsInstanceId;
 
@@ -205,13 +219,13 @@ use gts::gts::GtsInstanceId;
     properties = "id,name"
 )]
 pub struct BaseEventTopicV1<P> {
-    pub id: GtsInstanceId,  // ✅ Valid ID field
+    pub id: GtsInstanceId,  // ✅ Valid ID field (in properties)
     pub name: String,
     pub payload: P,
 }
 ```
 
-**Base struct field validation - GTS Type fields:**
+**Base struct with GTS Type field in properties:**
 ```rust
 use gts::gts::GtsSchemaId;
 
@@ -223,61 +237,70 @@ use gts::gts::GtsSchemaId;
     properties = "r#type,name"
 )]
 pub struct BaseEventV1<P> {
-    pub id: Uuid,             // Event UUID
-    pub r#type: GtsSchemaId,  // Event Type - ✅ Valid GTS Type field
+    pub id: Uuid,             // Event UUID (not a GTS field)
+    pub r#type: GtsSchemaId,  // Event Type - ✅ Valid GTS Type field (in properties)
     pub name: String,
     pub payload: P,
 }
 ```
 
-**Invalid base struct - both ID and GTS Type fields:**
+**GTS type/id field NOT in properties (compile error):**
+```rust
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = true,
+    schema_id = "gts.x.core.errors.rate_limit.v1~",
+    description = "Rate limit error",
+    properties = "retry_after"
+)]
+pub struct RateLimitErrorV1 {
+    pub gts_type: GtsSchemaId,  // ❌ Error! Must be in properties or removed
+    pub retry_after: u64,
+}
+```
+```
+error: struct_to_gts_schema: Field `gts_type` has type `GtsSchemaId` but is not listed
+       in `properties`. Either add `gts_type` to the `properties` list, or remove it
+       from the struct (use `RateLimitErrorV1::gts_schema_id()` or
+       `RateLimitErrorV1::SCHEMA_ID` to access the schema ID at runtime).
+```
+
+**Invalid base struct - both ID and GTS Type fields in properties:**
 ```rust
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
     schema_id = "gts.x.core.events.topic.v1~",
     description = "Invalid base with both ID and type",
-    properties = "id,r#type,name"  // ❌ Error! Both ID and GTS Type fields
+    properties = "id,r#type,name"  // ❌ Error! Both ID and GTS Type fields in properties
 )]
 pub struct BaseEventV1<P> {
     pub id: GtsInstanceId,     // Event topic ID field
     pub r#type: GtsSchemaId,   // Event type (schema) ID field - ❌ Cannot have both!
 ```
 
-**Invalid base struct - wrong GTS Type field type:**
-```rust
-#[struct_to_gts_schema(
-    dir_path = "schemas",
-    base = true,
-    schema_id = "gts.x.core.events.type.v1~",
-    description = "Base event with wrong type field",
-    properties = "r#type,name"
-)]
-pub struct BaseEventV1<P> {
-    pub id: Uuid,        // Event UUID
-    pub r#type: String,  // Event type (schema) - ❌ Should be GtsSchemaId
-    pub name: String,
-    pub payload: P,
-}
-```
-```
-error: struct_to_gts_schema: Base structs with GTS Type fields must have at least one GTS Type field (type, gts_type, gtsType, or schema) of type GtsSchemaId
-```
-
 ### Base Struct Field Validation Rules
 
-Base structs (`base = true`) must follow **exactly one** of these patterns:
+Base structs (`base = true`) may **optionally** include ID or GTS Type fields. When present in `properties`, they are validated:
 
-#### Option 1: ID Fields
+#### Option 1: No ID/Type Field
+- The simplest form — no ID or type field needed
+- Schema ID is always available via `Self::gts_schema_id()` through the `GtsSchema` trait
+- Use case: Simple data structs, error types, configuration objects
+
+#### Option 2: ID Fields (in `properties`)
 - **Supported field names**: `$id`, `id`, `gts_id`, `gtsId`
 - **Required type**: `GtsInstanceId` (or `gts::GtsInstanceId`)
 - **Use case**: Instance-based identification
 
-#### Option 2: GTS Type Fields
+#### Option 3: GTS Type Fields (in `properties`)
 - **Supported field names**: `type`, `r#type`, `gts_type`, `gtsType`, `schema`
 - **Supported serde renames**: Fields with `#[serde(rename = "type")]`, `#[serde(rename = "gts_type")]`, `#[serde(rename = "gtsType")]`, or `#[serde(rename = "schema")]`
 - **Required type**: `GtsSchemaId` (or `gts::GtsSchemaId`)
-- **Use case**: Schema-based identification
+- **Use case**: Schema-based identification / type discriminator
+
+#### GTS Fields Must Be in Properties
+If a GTS type/id field (e.g., `gts_type: GtsSchemaId` or `id: GtsInstanceId`) is present on the struct, it **must** be listed in `properties`. If you don't need the field in JSON, simply remove it from the struct — the schema ID is always accessible via `Self::gts_schema_id()` or `Self::SCHEMA_ID`.
 
 **Serde rename example:**
 ```rust
@@ -298,7 +321,7 @@ pub struct BaseEventV1<P> {
 }
 ```
 
-**Important**: Base structs cannot have both ID fields AND GTS Type fields. They must choose one approach.
+**Important**: Base structs cannot have both ID fields AND GTS Type fields in `properties`. They must choose one approach (or use neither).
 
 ---
 

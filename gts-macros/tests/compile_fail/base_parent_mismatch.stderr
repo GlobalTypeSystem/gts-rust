@@ -1,11 +1,11 @@
-error: struct_to_gts_schema: Base structs must have either an ID field (one of: $id, id, gts_id, or gtsId) of type GtsInstanceId OR a GTS Type field (one of: type, gts_type, gtsType, or schema) of type GtsSchemaId
-  --> tests/compile_fail/base_parent_mismatch.rs:15:12
+error[E0080]: evaluation panicked: struct_to_gts_schema: Base struct 'BaseEventV1' schema ID must match parent segment 'gts.x.wrong.parent.type.v1~' from schema_id
+  --> tests/compile_fail/base_parent_mismatch.rs:23:1
    |
-15 | pub struct BaseEventV1<P> {
-   |            ^^^^^^^^^^^
-
-error[E0412]: cannot find type `BaseEventV1` in this scope
-  --> tests/compile_fail/base_parent_mismatch.rs:25:12
-   |
-25 |     base = BaseEventV1,
-   |            ^^^^^^^^^^^ not found in this scope
+23 | / #[struct_to_gts_schema(
+24 | |     dir_path = "schemas",
+25 | |     base = BaseEventV1,
+26 | |     schema_id = "gts.x.wrong.parent.type.v1~x.core.audit.event.v1~",
+27 | |     description = "This should fail",
+28 | |     properties = "user_id"
+29 | | )]
+   | |__^ evaluation of `_::_` failed here

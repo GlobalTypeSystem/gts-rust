@@ -235,55 +235,53 @@ fn validate_base_struct_fields(
         return Ok(());
     }
 
-    // Check for presence of ID and GTS Type fields (including serde renames)
-    let has_id_field = fields.iter().any(|f| field_name_matches(f, ID_FIELD_NAMES));
+    let property_names: Vec<String> = args
+        .properties
+        .split(',')
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .collect();
 
-    let has_type_field = fields.iter().any(|f| {
-        field_name_matches(f, TYPE_FIELD_NAMES) || has_matching_serde_rename(f, SERDE_TYPE_RENAMES)
-    });
-
-    if !has_id_field && !has_type_field {
-        return Err(syn::Error::new_spanned(
-            &input.ident,
-            format!(
-                "struct_to_gts_schema: Base structs must have either an ID field (one of: {}) OR a GTS Type field (one of: {}), but not both.",
-                ID_FIELD_NAMES.join(", "),
-                TYPE_FIELD_NAMES.join(", ")
-            ),
-        ));
-    }
-
-    // Validate field types
-    validate_field_types(input, fields)
+    // Only validate type/id fields that are listed in properties.
+    // Fields not in properties are treated as regular fields (no GTS validation).
+    validate_field_types(input, fields, &property_names)
 }
 
-/// Validate that field types are correct for ID and GTS Type fields
+/// Validate that field types are correct for ID and GTS Type fields.
+/// Only validates fields that are listed in the `properties` list — fields not in
+/// properties are treated as regular fields and not subject to GTS type validation.
 fn validate_field_types(
     input: &syn::DeriveInput,
     fields: &syn::punctuated::Punctuated<syn::Field, syn::token::Comma>,
+    property_names: &[String],
 ) -> Result<(), syn::Error> {
+    // Only consider fields that are in the properties list
+    let is_in_properties = |field: &syn::Field| -> bool {
+        field
+            .ident
+            .as_ref()
+            .is_some_and(|ident| property_names.contains(&ident.to_string()))
+    };
+
     let has_valid_id_field = fields.iter().any(|field| {
-        field_name_matches(field, ID_FIELD_NAMES) && is_type_gts_instance_id(&field.ty)
+        is_in_properties(field)
+            && field_name_matches(field, ID_FIELD_NAMES)
+            && is_type_gts_instance_id(&field.ty)
     });
 
     let has_valid_type_field = fields.iter().any(|field| {
         let is_type_field = field_name_matches(field, TYPE_FIELD_NAMES)
             || has_matching_serde_rename(field, SERDE_TYPE_RENAMES);
-        is_type_field && is_type_gts_schema_id(&field.ty)
+        is_in_properties(field) && is_type_field && is_type_gts_schema_id(&field.ty)
     });
 
-    // Enforce "either/or but not both" logic
+    // Enforce "either/or but not both" logic (only for valid GTS fields in properties).
+    // Fields with recognized names but non-GTS types (e.g., `id: Uuid`) are treated as
+    // regular fields and don't trigger this check.
     if has_valid_id_field && has_valid_type_field {
         return Err(syn::Error::new_spanned(
             &input.ident,
-            "struct_to_gts_schema: Base structs must have either an ID field (one of: $id, id, gts_id, or gtsId) of type GtsInstanceId OR a GTS Type field (one of: type, gts_type, gtsType, or schema) of type GtsSchemaId, but not both. Found both valid ID and GTS Type fields.",
-        ));
-    }
-
-    if !has_valid_id_field && !has_valid_type_field {
-        return Err(syn::Error::new_spanned(
-            &input.ident,
-            "struct_to_gts_schema: Base structs must have either an ID field (one of: $id, id, gts_id, or gtsId) of type GtsInstanceId OR a GTS Type field (one of: type, gts_type, gtsType, or schema) of type GtsSchemaId",
+            "struct_to_gts_schema: Base structs cannot have both an ID field (GtsInstanceId) and a GTS Type field (GtsSchemaId) in properties. Found both valid ID and GTS Type fields.",
         ));
     }
 
@@ -588,6 +586,65 @@ fn add_gts_serde_attrs(input: &mut syn::DeriveInput, base: &BaseAttr) {
             }
         }
     }
+}
+
+/// Validate that GTS type/id fields (e.g., `gts_type: GtsSchemaId`, `id: GtsInstanceId`) are
+/// listed in `properties` when present on a base struct.
+///
+/// If a struct has a recognized GTS field but doesn't list it in `properties`, it's likely
+/// a mistake — the macro already provides `SCHEMA_ID` and `gts_schema_id()` for accessing
+/// the schema ID at runtime. Fields not in properties would be invisible to serde, so there's
+/// no reason to declare them on the struct.
+fn validate_gts_fields_in_properties(
+    input: &syn::DeriveInput,
+    base: &BaseAttr,
+    properties: &str,
+) -> Result<(), syn::Error> {
+    if !matches!(base, BaseAttr::IsBase) {
+        return Ok(());
+    }
+
+    let property_names: Vec<String> = properties
+        .split(',')
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if let syn::Data::Struct(ref data_struct) = input.data
+        && let syn::Fields::Named(ref fields) = data_struct.fields
+    {
+        for field in &fields.named {
+            let Some(ident) = &field.ident else {
+                continue;
+            };
+            let field_name = ident.to_string();
+
+            let is_gts_id_field =
+                field_name_matches(field, ID_FIELD_NAMES) && is_type_gts_instance_id(&field.ty);
+            let is_gts_type_field = (field_name_matches(field, TYPE_FIELD_NAMES)
+                || has_matching_serde_rename(field, SERDE_TYPE_RENAMES))
+                && is_type_gts_schema_id(&field.ty);
+
+            if (is_gts_id_field || is_gts_type_field) && !property_names.contains(&field_name) {
+                let type_desc = if is_gts_type_field {
+                    "GtsSchemaId"
+                } else {
+                    "GtsInstanceId"
+                };
+                return Err(syn::Error::new_spanned(
+                    ident,
+                    format!(
+                        "struct_to_gts_schema: Field `{field_name}` has type `{type_desc}` but is not listed in `properties`. \
+                         Either add `{field_name}` to the `properties` list, or remove it from the struct \
+                         (use `{}::gts_schema_id()` or `{}::SCHEMA_ID` to access the schema ID at runtime).",
+                        input.ident, input.ident
+                    ),
+                ));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Build a custom where clause with additional trait bounds on generic params
@@ -952,6 +1009,13 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
 
     // For base structs with generic fields, add serde attributes for GtsSerialize/GtsDeserialize
     add_gts_serde_attrs(&mut modified_input, &args.base);
+
+    // Validate that GTS type/id fields are listed in properties when present
+    if let Err(err) =
+        validate_gts_fields_in_properties(&modified_input, &args.base, &args.properties)
+    {
+        return err.to_compile_error().into();
+    }
 
     // Validate base attribute consistency with schema_id segments
     if let Err(err) = validate_base_segments(&input, &args.base, &args.schema_id) {
