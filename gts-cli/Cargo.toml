@@ -29,7 +29,6 @@ axum.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-atty.workspace = true
 chrono.workspace = true
 regex.workspace = true
 walkdir.workspace = true

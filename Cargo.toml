@@ -9,7 +9,14 @@ categories = ["development-tools::build-utils"]
 readme = "README.md"
 
 [workspace]
-members = ["gts", "gts-cli", "gts-id", "gts-macros", "gts-macros-cli", "gts-validator"]
+members = [
+    "gts",
+    "gts-cli",
+    "gts-id",
+    "gts-macros",
+    "gts-macros-cli",
+    "gts-validator",
+]
 resolver = "2"
 
 [workspace.lints.rust]
@@ -165,7 +172,7 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-atty = "0.2"
+
 chrono = "0.4"
 
 # JSON Schema validation

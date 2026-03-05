@@ -27,7 +27,7 @@ generate-schemas: build
 	./target/release/gts generate-from-rust --source .
 
 # Run all checks and build
-all: check build generate-schemas
+all: check deny build generate-schemas
 
 # Check code formatting
 fmt:

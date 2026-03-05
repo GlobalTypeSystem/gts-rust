@@ -18,7 +18,8 @@ struct Colors {
 impl Colors {
     fn new() -> Self {
         // Check if stderr is a TTY (terminal)
-        let use_colors = atty::is(atty::Stream::Stderr);
+        use std::io::IsTerminal;
+        let use_colors = std::io::stderr().is_terminal();
 
         if use_colors {
             Self {

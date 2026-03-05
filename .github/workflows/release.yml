@@ -123,9 +123,9 @@ jobs:
           echo "rust-version=${RUST_VER}" >> "$GITHUB_OUTPUT"
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@30eab0fabba9ea3f522099957e668b21876aa39e # v2.66.6
+        uses: taiki-e/install-action@385db9cc6bf65d19775b02084a4b698eaca9a4f2 # v2
         with:
-          tool: cargo-deny@0.16.1   # pin version; update intentionally
+          tool: cargo-deny@0.19.0   # pin version; update intentionally
 
       - name: Assert deny.toml policy file exists
         shell: bash
@@ -197,7 +197,7 @@ jobs:
       # Install cross for ARM Linux cross-compilation
       - name: Install cross
         if: matrix.cross == true
-        uses: taiki-e/install-action@30eab0fabba9ea3f522099957e668b21876aa39e # v2.66.6
+        uses: taiki-e/install-action@385db9cc6bf65d19775b02084a4b698eaca9a4f2 # v2
         with:
           tool: cross@0.2.5   # pin version; update intentionally
 
