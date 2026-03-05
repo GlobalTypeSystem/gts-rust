@@ -1016,25 +1016,31 @@ impl GtsStore {
     ///
     /// # Errors
     /// Returns `StoreError` if validation fails.
-    pub fn validate_instance(&mut self, gts_id: &str) -> Result<(), StoreError> {
-        let gid = GtsID::new(gts_id).map_err(|_| StoreError::ObjectNotFound(gts_id.to_owned()))?;
+    pub fn validate_instance(&mut self, instance_id: &str) -> Result<(), StoreError> {
+        // Try to parse as GTS ID first (for well-known instances)
+        // If that fails, use the instance_id directly (for anonymous instances with UUIDs)
+        let lookup_id = if let Ok(gid) = GtsID::new(instance_id) {
+            gid.id
+        } else {
+            instance_id.to_owned()
+        };
 
         let obj = self
-            .get(&gid.id)
-            .ok_or_else(|| StoreError::ObjectNotFound(gts_id.to_owned()))?
+            .get(&lookup_id)
+            .ok_or_else(|| StoreError::ObjectNotFound(instance_id.to_owned()))?
             .clone();
 
         let schema_id = obj
             .schema_id
             .as_ref()
-            .ok_or_else(|| StoreError::SchemaForInstanceNotFound(gid.id.clone()))?
+            .ok_or_else(|| StoreError::SchemaForInstanceNotFound(lookup_id.clone()))?
             .clone();
 
         let schema = self.get_schema_content(&schema_id)?;
 
         tracing::info!(
             "Validating instance {} against schema {}",
-            gts_id,
+            instance_id,
             schema_id
         );
 
