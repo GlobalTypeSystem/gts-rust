@@ -1,0 +1,5 @@
+error: gts_well_known_instance: instance_segment must not be a bare wildcard '*'. Wildcards are not valid in generated instance IDs
+ --> tests/compile_fail/instance_segment_bare_wildcard.rs:8:24
+  |
+8 |     instance_segment = "*"
+  |                        ^^^

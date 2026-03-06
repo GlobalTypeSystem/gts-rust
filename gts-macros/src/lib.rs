@@ -1840,3 +1840,241 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
 
     TokenStream::from(expanded)
 }
+
+/// Arguments for the `#[gts_well_known_instance]` macro.
+/// This is a parse-only validation type; fields are validated during `Parse` and not retained.
+struct GtsInstanceArgs;
+
+impl Parse for GtsInstanceArgs {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let mut dir_path: Option<String> = None;
+        let mut schema_id: Option<String> = None;
+        let mut instance_segment: Option<String> = None;
+        let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        while !input.is_empty() {
+            let key: syn::Ident = input.parse()?;
+            input.parse::<Token![=]>()?;
+
+            let key_str = key.to_string();
+            if !seen_keys.insert(key_str.clone()) {
+                return Err(syn::Error::new_spanned(
+                    key,
+                    format!(
+                        "gts_well_known_instance: Duplicate attribute '{key_str}'. Each attribute must appear exactly once."
+                    ),
+                ));
+            }
+
+            match key_str.as_str() {
+                "dir_path" => {
+                    let value: LitStr = input.parse()?;
+                    dir_path = Some(value.value());
+                }
+                "schema_id" => {
+                    let value: LitStr = input.parse()?;
+                    let id = value.value();
+                    // schema_id must end with ~ (type marker)
+                    if !id.ends_with('~') {
+                        return Err(syn::Error::new_spanned(
+                            value,
+                            format!(
+                                "gts_well_known_instance: schema_id must end with '~' (type marker), got '{id}'"
+                            ),
+                        ));
+                    }
+                    // General GTS ID validation
+                    if let Err(e) = gts_id::validate_gts_id(&id, false) {
+                        let msg = match &e {
+                            gts_id::GtsIdError::Id { cause, .. } => {
+                                format!("Invalid GTS schema ID: {cause}")
+                            }
+                            gts_id::GtsIdError::Segment { num, cause, .. } => {
+                                format!("Segment #{num}: {cause}")
+                            }
+                        };
+                        return Err(syn::Error::new_spanned(
+                            value,
+                            format!("gts_well_known_instance: {msg}"),
+                        ));
+                    }
+                    schema_id = Some(id);
+                }
+                "instance_segment" => {
+                    let value: LitStr = input.parse()?;
+                    let seg = value.value();
+
+                    // Reject instance_segment ending with ~ (type/schema marker)
+                    if seg.ends_with('~') {
+                        return Err(syn::Error::new_spanned(
+                            value,
+                            "gts_well_known_instance: instance_segment must not end with '~' \u{2014} that is a schema/type marker. Instance segments do not end with '~'",
+                        ));
+                    }
+
+                    // Reject wildcard-only instance_segment
+                    if seg == "*" {
+                        return Err(syn::Error::new_spanned(
+                            value,
+                            "gts_well_known_instance: instance_segment must not be a bare wildcard '*'. Wildcards are not valid in generated instance IDs",
+                        ));
+                    }
+
+                    // Validate the segment using gts_id::validate_segment (no wildcards)
+                    if let Err(cause) = gts_id::validate_segment(2, &seg, false) {
+                        return Err(syn::Error::new_spanned(
+                            value,
+                            format!(
+                                "gts_well_known_instance: Invalid instance_segment '{seg}': {cause}"
+                            ),
+                        ));
+                    }
+
+                    instance_segment = Some(seg);
+                }
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        key,
+                        "gts_well_known_instance: Unknown attribute. Expected: dir_path, schema_id, instance_segment",
+                    ));
+                }
+            }
+
+            if input.peek(Token![,]) {
+                input.parse::<Token![,]>()?;
+            }
+        }
+
+        // Validate composed instance ID after both parts are parsed
+        let schema_id_val = schema_id.ok_or_else(|| {
+            input.error("gts_well_known_instance: Missing required attribute: schema_id")
+        })?;
+        let instance_segment_val = instance_segment.ok_or_else(|| {
+            input.error("gts_well_known_instance: Missing required attribute: instance_segment")
+        })?;
+        let _dir_path_val = dir_path.ok_or_else(|| {
+            input.error("gts_well_known_instance: Missing required attribute: dir_path")
+        })?;
+
+        // Validate the composed instance ID (schema_id + instance_segment forms a valid GTS instance ID)
+        let composed = format!("{schema_id_val}{instance_segment_val}");
+        if let Err(e) = gts_id::validate_gts_id(&composed, false) {
+            let msg = match &e {
+                gts_id::GtsIdError::Id { cause, .. } => {
+                    format!("Invalid composed instance ID '{composed}': {cause}")
+                }
+                gts_id::GtsIdError::Segment { num, cause, .. } => {
+                    format!("Invalid composed instance ID '{composed}': Segment #{num}: {cause}")
+                }
+            };
+            return Err(input.error(format!("gts_well_known_instance: {msg}")));
+        }
+
+        Ok(GtsInstanceArgs)
+    }
+}
+
+/// Declare a well-known GTS instance as a const JSON string literal.
+///
+/// This macro:
+/// 1. **At compile time**: validates the `schema_id` and `instance_segment` GTS ID formats
+///    and verifies the annotated item is a `const` of type `&str`.
+/// 2. **At generate time**: the CLI (`gts generate-from-rust --mode instances`) scans for
+///    these annotations, validates the JSON payload, injects the `"id"` field, and writes
+///    `{dir_path}/{schema_id}{instance_segment}.instance.json`.
+///
+/// The macro passes the annotated `const` item through unchanged -- it is purely metadata
+/// for the CLI extraction step.
+///
+/// # Arguments
+///
+/// * `dir_path` - Output directory for the generated instance file (relative to crate root or `--output`)
+/// * `schema_id` - GTS schema ID this instance conforms to (must end with `~`)
+/// * `instance_segment` - Appended to `schema_id` to form the full instance ID (must not end with `~`)
+///
+/// # Example
+///
+/// ```ignore
+/// use gts_macros::gts_well_known_instance;
+///
+/// #[gts_well_known_instance(
+///     dir_path = "instances",
+///     schema_id = "gts.x.core.events.topic.v1~",
+///     instance_segment = "x.commerce._.orders.v1.0"
+/// )]
+/// const ORDERS_TOPIC: &str = r#"{
+///     "name": "orders",
+///     "description": "Order lifecycle events topic",
+///     "retention": "P90D",
+///     "partitions": 16
+/// }"#;
+/// ```
+///
+/// The CLI generates:
+/// `instances/gts.x.core.events.topic.v1~x.commerce._.orders.v1.0.instance.json`
+/// with an injected `"id"` field: `"gts.x.core.events.topic.v1~x.commerce._.orders.v1.0"`.
+#[proc_macro_attribute]
+pub fn gts_well_known_instance(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let _args = parse_macro_input!(attr as GtsInstanceArgs);
+
+    // Parse the annotated item -- must be a const item
+    let item_clone = item.clone();
+    let parsed: syn::Result<syn::ItemConst> = syn::parse(item_clone);
+
+    match parsed {
+        Err(_) => {
+            return syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "gts_well_known_instance: Only `const` items are supported. \
+                 Usage: `const NAME: &str = r#\"{ ... }\"#;`",
+            )
+            .to_compile_error()
+            .into();
+        }
+        Ok(item_const) => {
+            // Validate the const has type &str (or &'lifetime str) using AST matching.
+            // This is more robust than stringifying tokens and avoids false rejections
+            // from formatting differences (spaces, lifetime names, etc.).
+            let ty = &item_const.ty;
+            let is_ref_str = match ty.as_ref() {
+                syn::Type::Reference(syn::TypeReference { elem, .. }) => {
+                    matches!(elem.as_ref(), syn::Type::Path(p) if p.qself.is_none() && p.path.is_ident("str"))
+                }
+                _ => false,
+            };
+            if !is_ref_str {
+                let ty_str = quote::quote!(#ty).to_string().replace(' ', "");
+                return syn::Error::new_spanned(
+                    ty,
+                    format!(
+                        "gts_well_known_instance: The annotated const must have type `&str`, got `{ty_str}`. \
+                         Usage: `const NAME: &str = r#\"{{ ... }}\"#;`"
+                    ),
+                )
+                .to_compile_error()
+                .into();
+            }
+
+            // Validate the const value is a string literal (not a macro invocation)
+            match item_const.expr.as_ref() {
+                syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(_),
+                    ..
+                }) => {}
+                _ => {
+                    return syn::Error::new_spanned(
+                        &item_const.expr,
+                        "gts_well_known_instance: The const value must be a string literal \
+                         (raw string `r#\"...\"#` or regular string `\"...\"`). \
+                         Macro invocations like `concat!()` are not supported.",
+                    )
+                    .to_compile_error()
+                    .into();
+                }
+            }
+        }
+    }
+
+    // Pass the item through unchanged -- this macro is purely metadata for the CLI
+    item
+}

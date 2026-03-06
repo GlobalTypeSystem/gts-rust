@@ -21,6 +21,7 @@ path = "src/main.rs"
 
 [dependencies]
 gts.workspace = true
+gts-id.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true

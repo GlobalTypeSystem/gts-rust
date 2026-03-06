@@ -1,0 +1,10 @@
+error: unexpected end of input, gts_well_known_instance: Missing required attribute: dir_path
+ --> tests/compile_fail/instance_missing_dir_path.rs:5:1
+  |
+5 | / #[gts_well_known_instance(
+6 | |     schema_id = "gts.x.core.events.topic.v1~",
+7 | |     instance_segment = "x.commerce._.orders.v1.0"
+8 | | )]
+  | |__^
+  |
+  = note: this error originates in the attribute macro `gts_well_known_instance` (in Nightly builds, run with -Z macro-backtrace for more info)
