@@ -1,6 +1,6 @@
 # Proposal: Align gts-rust Macro with GTS Specification
 
-**ADR**: [001-macro-alighnment-adr.md](./001-macro-alignment-adr.md) | **Implementation Plan**: [001-macro-alignment-implementation-plan.md](./001-macro-alignment-implementation-plan.md)
+**ADR**: [001-macro-alignment-adr.md](./001-macro-alignment-adr.md) | **Implementation Plan**: [001-macro-alignment-implementation-plan.md](./001-macro-alignment-implementation-plan.md)
 **Issue**: [#72 - gts_type field blocks Deserialize](https://github.com/GlobalTypeSystem/gts-rust/issues/72)
 **Branch**: `gts-macro-proposal`
 
@@ -8,25 +8,27 @@
 
 ## 1. Purpose
 
-This proposal replaces the `#[struct_to_gts_schema]` attribute macro with a `#[derive(GtsSchema)]` derive macro. The primary motivation is not a cosmetic redesign -- it is to correct assumptions in the current macro that contradict the GTS specification and to build a foundation that can grow with the spec.
+The `#[struct_to_gts_schema]` macro has been the primary integration point between Rust structs and the Global Type System. It delivers compile-time validation, JSON Schema generation, and a runtime API from a single annotation. As the GTS specification has matured and usage has grown, several areas have emerged where the macro's assumptions can be brought into closer alignment with the spec.
 
-The current macro enforces constraints the GTS specification explicitly leaves to implementations, silently manipulates user code in ways that cause bugs, and couples orthogonal concerns into a single monolithic invocation. This proposal decomposes the macro into focused, composable units that align with the spec and follow Rust ecosystem conventions.
+This proposal evolves the macro from `#[struct_to_gts_schema]` to `#[derive(GtsSchema)]` with `#[gts(...)]` attributes. The goals are:
+
+- Align field and identity requirements with the GTS specification (v0.8)
+- Support the full range of GTS document categories (Spec SS11.1, Rule C)
+- Enable spec-correct `x-gts-ref` annotations (Spec SS9.6)
+- Give users explicit control over serde derives while preserving safety defaults
+- Structure the codebase for future spec features like schema traits (SS9.7)
+
+All existing compile-time validations, runtime behavior, and schema output are preserved. The old macro continues to work alongside the new one during migration.
 
 ---
 
 ## 2. Opportunities for Alignment
 
-### 2.1 Mandatory identity fields contradict the specification
+### 2.1 Supporting all GTS document categories
 
-The current macro requires every base struct to declare either a `GtsSchemaId` field (for anonymous instances) or a `GtsInstanceId` field (for well-known instances). This is enforced at compile time:
+The current macro requires every base struct to declare either a `GtsSchemaId` field (for anonymous instances) or a `GtsInstanceId` field (for well-known instances). This was a reasonable default when the macro was written, as the primary use case was event types that always carry identity fields.
 
-```
-Base structs must have either an ID field (one of: $id, id, gts_id, gtsId)
-of type GtsInstanceId OR a GTS Type field (one of: type, gts_type, gtsType,
-schema) of type GtsSchemaId
-```
-
-The GTS specification (v0.8) defines **five** categories of JSON documents (Spec SS11.1, Rule C). Only two of the five require identity fields:
+However, the GTS specification (v0.8) defines **five** categories of JSON documents (Spec SS11.1, Rule C). Only two of the five require identity fields:
 
 | Category | Identity field required? | Example |
 |---|---|---|
@@ -36,20 +38,20 @@ The GTS specification (v0.8) defines **five** categories of JSON documents (Spec
 | 4. **Well-known GTS instances** | **Yes** -- GTS instance ID in `id` field | Event topics, modules |
 | 5. **Anonymous GTS instances** | **Yes** -- GTS type ID in `type` field | Events, audit records |
 
-The spec includes concrete examples of GTS schemas whose instances have **no** GTS identity field:
+The spec includes concrete examples of GTS schemas whose instances have no GTS identity field:
 
 - `gts.x.commerce.orders.order.v1.0~` -- Order schema. The `id` field is a plain UUID, not a `GtsInstanceId`. There is no `type` field.
 - `gts.x.core.idp.contact.v1.0~` -- Contact schema. Same pattern: UUID `id`, no GTS identity.
 
 These are valid GTS entity schemas (category 1) that produce instances falling under category 3. They are referenced by other GTS types (e.g., an event's `subjectType` references the order schema) but their instances do not self-identify via GTS.
 
-The spec is explicit about this being a design choice, not an oversight (SS11.1):
+The spec notes this explicitly (SS11.1):
 
 > *"The exact field names used for instance IDs and instance types are **implementation-defined** and may be **configuration-driven** (different systems may look for identifiers in different fields)."*
 
-The macro's requirement is not grounded in the spec. It forces users into workarounds like Issue #72, where a dummy `gts_type` field must be added with fragile serde attributes just to satisfy the macro.
+This gap surfaced as Issue #72, where data entity structs are forced to add a dummy `gts_type` field with fragile serde workarounds to satisfy the macro's requirement.
 
-### 2.2 No distinction between self-reference and cross-reference
+### 2.2 Distinguishing self-reference from cross-reference
 
 The GTS specification defines two kinds of `x-gts-ref` annotations on schema properties (SS9.6):
 
@@ -84,39 +86,42 @@ The module schema (`gts.x.core.modules.module.v1~.schema.json`) shows the same p
 }
 ```
 
-The current macro treats **all** `GtsSchemaId` fields identically, generating `"x-gts-ref": "gts.*"` for every one. It has no mechanism to distinguish a field that identifies *this* entity from a field that references *another* entity.
+The current macro treats all `GtsSchemaId` fields identically, generating `"x-gts-ref": "gts.*"` for every one. It does not yet have a mechanism to distinguish a field that identifies *this* entity from a field that references *another* entity. This proposal adds that mechanism through field-level annotations.
 
-### 2.3 Hidden serde manipulation
+### 2.3 Making serde derives visible
 
-The current macro silently adds `Serialize`, `Deserialize`, and `JsonSchema` derives to base structs, and silently removes `Serialize`/`Deserialize` from nested structs. This means:
+The current macro automatically adds `Serialize`, `Deserialize`, and `JsonSchema` derives to base structs, and blocks `Serialize`/`Deserialize` on nested structs. This approach successfully prevents nested structs from producing incomplete JSON, which was the original design goal.
 
-- Users cannot see which traits are derived by reading the struct definition
-- Adding `Serialize` to a nested struct for testing is silently stripped
-- The macro's serde attribute injection (`#[serde(bound(...))]`, `#[serde(serialize_with)]`) is invisible in source code
-- Issue #72 exists precisely because the macro's serde injection for identity fields doesn't handle deserialization correctly
+The tradeoff is that users cannot see which traits are derived by reading the struct definition. The macro's serde attribute injection (`#[serde(bound(...))]`, `#[serde(serialize_with)]`) is invisible in source code. Issue #72 arose in part because the macro's serde handling for identity fields didn't account for deserialization correctly -- a problem that's harder to diagnose when the serde configuration isn't visible.
 
-### 2.4 Redundant properties parameter
+This proposal makes all derives explicit while preserving the same safety default: nested structs are still blocked from direct serialization unless the user opts out with `allow_direct_serde`.
 
-The macro requires `properties = "event_type,id,tenant_id,payload"` -- a comma-separated string that duplicates the struct's field list. If a field is added to the struct but omitted from `properties`, it silently disappears from the generated JSON Schema. The macro catches the inverse (a property listed that doesn't exist as a field), but the more dangerous case -- a forgotten field -- is not caught.
+### 2.4 Auto-deriving properties from struct fields
 
-### 2.5 Confusing `base` semantics
+The current macro requires `properties = "event_type,id,tenant_id,payload"` -- a comma-separated string that lists which fields appear in the schema. This serves as both a schema surface declaration and a typo check (the macro validates that every listed property exists as a field).
 
-The `base` attribute conflates two orthogonal concepts:
+The tradeoff is that the more dangerous direction isn't caught: if a field is added to the struct but omitted from `properties`, it silently disappears from the generated JSON Schema. For a system focused on diffable API contracts, this means a schema diff would show no change even though the wire format changed.
 
-| `base` value | GTS meaning | Serialization meaning |
-|---|---|---|
-| `base = true` | Root type in hierarchy | Gets `Serialize`/`Deserialize` |
-| `base = ParentStruct` | Child type inheriting from parent | Blocked from direct serialization |
+This proposal auto-derives properties from struct fields, catching changes in both directions. Fields can be excluded from the schema with `#[gts(skip)]` or `#[serde(skip)]`.
 
-`base = true` carries no information -- it is the default state. `base = ParentStruct` uses the word "base" to mean the opposite of what it says.
+### 2.5 Clearer inheritance declaration
+
+The current macro uses `base` to declare a struct's position in the hierarchy:
+
+| `base` value | Meaning |
+|---|---|
+| `base = true` | Root type (no parent) |
+| `base = ParentStruct` | Child type inheriting from parent |
+
+`base = true` is the default state and carries no information. This proposal removes the need to declare root types explicitly -- the absence of `extends` means root -- and uses `extends = ParentStruct` for child types, which reads more naturally in the context of GTS's left-to-right inheritance model (SS2.2, SS3.2).
 
 ---
 
-## 3. What the Proposal Changes
+## 3. What Changes
 
 ### 3.1 Entry point: Derive macro with `#[gts(...)]` attributes
 
-The single `#[struct_to_gts_schema]` attribute macro is replaced with `#[derive(GtsSchema)]` and `#[gts(...)]` attributes at both the struct and field level.
+The single `#[struct_to_gts_schema]` attribute macro evolves into `#[derive(GtsSchema)]` with `#[gts(...)]` attributes at both the struct and field level.
 
 **Before:**
 
@@ -247,7 +252,7 @@ pub struct QuotaViolationV1 {
 }
 ```
 
-No dummy field. No serde workaround. The struct represents exactly what the GTS spec intends -- a data entity schema whose instances don't carry GTS identity fields, like `order.v1.0~` or `contact.v1.0~` in the spec examples.
+No dummy field. No serde workaround. The struct represents what the GTS spec intends -- a data entity schema whose instances don't carry GTS identity fields, like `order.v1.0~` or `contact.v1.0~` in the spec examples.
 
 When identity fields *are* needed, they are annotated explicitly:
 
@@ -281,7 +286,7 @@ The field-level attributes are validated at compile time:
 
 The macro no longer injects or removes serde derives. Users explicitly declare `Serialize` and `Deserialize` where needed.
 
-Nested structs (those with `extends`) are still blocked from direct serialization by default -- serializing a nested payload alone produces incomplete JSON (missing the base event envelope). This is enforced via marker trait conflicts (`GtsNoDirectSerialize` / `GtsNoDirectDeserialize`). The user can opt out with `allow_direct_serde` for testing or standalone use:
+Nested structs (those with `extends`) are still blocked from direct serialization by default -- serializing a nested payload alone produces incomplete JSON (missing the base event envelope). This safety behavior, which was an intentional and valuable part of the original design, is preserved via marker trait conflicts (`GtsNoDirectSerialize` / `GtsNoDirectDeserialize`). The user can opt out with `allow_direct_serde` for testing or standalone use:
 
 ```rust
 #[derive(Debug, Serialize, Deserialize, JsonSchema, GtsSchema)]
@@ -297,7 +302,7 @@ Without `allow_direct_serde`, deriving `Serialize` on a nested struct produces a
 
 ### 3.5 Auto-derived properties
 
-The `properties` parameter is removed. All named struct fields are included in the generated JSON Schema by default. To exclude a field:
+The `properties` parameter is replaced with auto-derivation from struct fields. All named fields are included in the generated JSON Schema by default. To exclude a field:
 
 ```rust
 #[gts(skip)]                    // excluded from schema, still serializable
@@ -325,7 +330,7 @@ The generated JSON Schemas are **structurally identical** between old and new ma
 
 ### 4.2 Improvements
 
-**`description` included in runtime schemas.** The old macro stores the `description` attribute but omits it from `gts_schema_with_refs()` output. The new macro includes it, consistent with every spec example schema (`events.type.v1~`, `events.topic.v1~`, `orders.order.v1.0~`, `modules.module.v1~` -- all include `description`).
+**`description` included in runtime schemas.** The current macro stores the `description` attribute but omits it from `gts_schema_with_refs()` output. The updated macro includes it, consistent with every spec example schema (`events.type.v1~`, `events.topic.v1~`, `orders.order.v1.0~`, `modules.module.v1~` -- all include `description`).
 
 **Spec-correct `x-gts-ref` on identity fields.** As described in section 3.3, annotated identity fields generate `"x-gts-ref": "/$id"` while unannotated `GtsSchemaId` fields retain `"x-gts-ref": "gts.*"`.
 
@@ -364,17 +369,17 @@ Compare the `type` property above with the spec's base event schema (`gts.x.core
 }
 ```
 
-Both use `"x-gts-ref": "/$id"` on the type discriminator field. The old macro would generate `"x-gts-ref": "gts.*"` here.
+Both use `"x-gts-ref": "/$id"` on the type discriminator field. The current macro generates `"x-gts-ref": "gts.*"` here.
 
 ---
 
 ## 5. Extensibility
 
-The old macro is ~1,843 lines in a single file (`lib.rs`). The new implementation is split into focused modules:
+The current macro is ~1,843 lines in a single file (`lib.rs`). The updated implementation splits into focused modules:
 
 ```
 gts-macros/src/
-  lib.rs                  Entry points (old + new macro)
+  lib.rs                  Entry points (current + updated macro)
   gts_schema_derive.rs    #[derive(GtsSchema)] orchestration
   gts_attrs.rs            Struct-level #[gts(...)] parsing
   gts_field_attrs.rs      Field-level #[gts(...)] parsing
@@ -428,20 +433,20 @@ The proposal preserves all existing runtime behavior:
 
 ## 7. Test Coverage
 
-235 tests pass, covering both old and new macros:
+235 tests pass, covering both current and updated macros:
 
 | Test suite | Count | What it validates |
 |---|---|---|
-| `compile_fail_tests` (v1) | 31 | Old macro compile-time error cases |
-| `compile_fail_v2_tests` | 21 | New macro compile-time error cases |
-| `integration_tests` (v1) | 45 | Old macro runtime behavior |
-| `v2_integration_tests` | 22 | New macro runtime behavior |
+| `compile_fail_tests` (v1) | 31 | Current macro compile-time error cases |
+| `compile_fail_v2_tests` | 21 | Updated macro compile-time error cases |
+| `integration_tests` (v1) | 45 | Current macro runtime behavior |
+| `v2_integration_tests` | 22 | Updated macro runtime behavior |
 | `v2_inheritance_tests` | 14 | Multi-level inheritance chains (2-level, 3-level) |
 | `v2_serialization_tests` | 10 | Serialize / deserialize round-trips |
 | `v2_serde_rename_tests` | 5 | Per-field `#[serde(rename)]` handling |
-| `v2_parity_tests` | 17 | Old vs new macro output comparison |
-| `inheritance_tests` (v1) | 45 | Old macro inheritance chains |
-| `inheritance_tests_mixed` | 7 | Mixed old/new macro interop |
+| `v2_parity_tests` | 17 | Current vs updated macro output comparison |
+| `inheritance_tests` (v1) | 45 | Current macro inheritance chains |
+| `inheritance_tests_mixed` | 7 | Mixed current/updated macro interop |
 | Other | 18 | Pretty printing, serde rename (v1) |
 
 The **17 parity tests** are the most critical -- they define equivalent structs using both macros and assert identical schema output, serialization output, deserialization behavior, trait constants, and runtime API results.
@@ -450,7 +455,7 @@ The **17 parity tests** are the most critical -- they define equivalent structs 
 
 ## 8. Migration
 
-Both macros coexist. The old macro continues to work without changes.
+Both macros coexist. The current macro continues to work without changes.
 
 Migration per struct:
 
@@ -459,7 +464,7 @@ Migration per struct:
 3. Replace `base = true` with nothing; replace `base = Parent` with `extends = Parent`
 4. Remove `properties = "..."` -- add `#[gts(skip)]` to fields that were excluded
 5. Add `#[gts(type_field)]` or `#[gts(instance_id)]` to identity fields if present
-6. Remove dummy identity fields that existed only to satisfy the old macro's requirement
+6. Remove dummy identity fields that existed only to satisfy the current macro's requirement
 
 ---
 
