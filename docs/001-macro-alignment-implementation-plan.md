@@ -1,6 +1,6 @@
 # Implementation Plan: ADR-001 Macro Redesign
 
-This plan implements the redesign specified in [ADR-001](./001-macro-redesign.md). The work is structured in phases that can each be independently tested and merged.
+This plan implements the redesign specified in [ADR-001](./001-macro-alignment-adr.md). The work is structured in phases that can each be independently tested and merged.
 
 Each phase references the GTS specification sections that justify the design choices. Spec references use the format `[Spec §X.Y]` pointing to [`.gts-spec/README.md`](/.gts-spec/README.md).
 

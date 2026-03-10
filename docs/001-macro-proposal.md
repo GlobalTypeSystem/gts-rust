@@ -1,6 +1,6 @@
 # Proposal: Align gts-rust Macro with GTS Specification
 
-**ADR**: [001-macro-redesign.md](./001-macro-alignment-adr.md) | **Implementation Plan**: [001-macro-redesign-plan.md](./001-macro-alignment-implementation-plan.md)
+**ADR**: [001-macro-alighnment-adr.md](./001-macro-alignment-adr.md) | **Implementation Plan**: [001-macro-alignment-implementation-plan.md](./001-macro-alignment-implementation-plan.md)
 **Issue**: [#72 - gts_type field blocks Deserialize](https://github.com/GlobalTypeSystem/gts-rust/issues/72)
 **Branch**: `gts-macro-proposal`
 
@@ -14,7 +14,7 @@ The current macro enforces constraints the GTS specification explicitly leaves t
 
 ---
 
-## 2. What the Current Macro Gets Wrong
+## 2. Opportunities for Alignment
 
 ### 2.1 Mandatory identity fields contradict the specification
 
