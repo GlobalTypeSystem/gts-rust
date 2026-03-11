@@ -13,10 +13,10 @@ The `#[struct_to_gts_schema]` macro has been the primary integration point betwe
 This proposal evolves the macro from `#[struct_to_gts_schema]` to `#[derive(GtsSchema)]` with `#[gts(...)]` attributes. The goals are:
 
 - Align field and identity requirements with the GTS specification (v0.8)
-- Support the full range of GTS document categories (Spec SS11.1, Rule C)
-- Enable spec-correct `x-gts-ref` annotations (Spec SS9.6)
+- Support the full range of GTS document categories ([Spec §11.1, Rule C](https://github.com/GlobalTypeSystem/gts-spec#111-global-rules-schema-vs-instance-normalization-and-document-categories))
+- Enable spec-correct `x-gts-ref` annotations ([Spec §9.6](https://github.com/GlobalTypeSystem/gts-spec#96---x-gts-ref-support))
 - Give users explicit control over serde derives while preserving safety defaults
-- Structure the codebase for future spec features like schema traits (SS9.7)
+- Structure the codebase for future spec features like schema traits ([§9.7](https://github.com/GlobalTypeSystem/gts-spec#97---schema-traits-x-gts-traits-schema--x-gts-traits))
 
 All existing compile-time validations, runtime behavior, and schema output are preserved. The old macro continues to work alongside the new one during migration.
 
@@ -28,7 +28,7 @@ All existing compile-time validations, runtime behavior, and schema output are p
 
 The current macro requires every base struct to declare either a `GtsSchemaId` field (for anonymous instances) or a `GtsInstanceId` field (for well-known instances). This was a reasonable default when the macro was written, as the primary use case was event types that always carry identity fields.
 
-However, the GTS specification (v0.8) defines **five** categories of JSON documents (Spec SS11.1, Rule C). Only two of the five require identity fields:
+However, the GTS specification (v0.8) defines **five** categories of JSON documents ([Spec §11.1, Rule C](https://github.com/GlobalTypeSystem/gts-spec#111-global-rules-schema-vs-instance-normalization-and-document-categories)). Only two of the five require identity fields:
 
 | Category | Identity field required? | Example |
 |---|---|---|
@@ -45,7 +45,7 @@ The spec includes concrete examples of GTS schemas whose instances have no GTS i
 
 These are valid GTS entity schemas (category 1) that produce instances falling under category 3. They are referenced by other GTS types (e.g., an event's `subjectType` references the order schema) but their instances do not self-identify via GTS.
 
-The spec notes this explicitly (SS11.1):
+The spec notes this explicitly ([§11.1](https://github.com/GlobalTypeSystem/gts-spec#111-global-rules-schema-vs-instance-normalization-and-document-categories)):
 
 > *"The exact field names used for instance IDs and instance types are **implementation-defined** and may be **configuration-driven** (different systems may look for identifiers in different fields)."*
 
@@ -53,7 +53,7 @@ This gap surfaced as Issue #72, where data entity structs are forced to add a du
 
 ### 2.2 Distinguishing self-reference from cross-reference
 
-The GTS specification defines two kinds of `x-gts-ref` annotations on schema properties (SS9.6):
+The GTS specification defines two kinds of `x-gts-ref` annotations on schema properties ([§9.6](https://github.com/GlobalTypeSystem/gts-spec#96---x-gts-ref-support)):
 
 - **`"x-gts-ref": "/$id"`** -- Self-reference. The field's value must equal the current schema's `$id`. Used on fields that identify *this* entity.
 - **`"x-gts-ref": "gts.*"`** -- Cross-reference. The field's value can be any valid GTS identifier. Used on fields that reference *other* entities.
@@ -113,7 +113,7 @@ The current macro uses `base` to declare a struct's position in the hierarchy:
 | `base = true` | Root type (no parent) |
 | `base = ParentStruct` | Child type inheriting from parent |
 
-`base = true` is the default state and carries no information. This proposal removes the need to declare root types explicitly -- the absence of `extends` means root -- and uses `extends = ParentStruct` for child types, which reads more naturally in the context of GTS's left-to-right inheritance model (SS2.2, SS3.2).
+`base = true` is the default state and carries no information. This proposal removes the need to declare root types explicitly -- the absence of `extends` means root -- and uses `extends = ParentStruct` for child types, which reads more naturally in the context of GTS's left-to-right inheritance model ([§2.2](https://github.com/GlobalTypeSystem/gts-spec#22-chained-identifiers), [§3.2](https://github.com/GlobalTypeSystem/gts-spec#32-gts-types-inheritance)).
 
 ---
 
@@ -169,7 +169,7 @@ pub struct BaseEventV1<P: GtsSchema> {
 | `Serialize`, `Deserialize`, `JsonSchema` are explicit | User controls all derives. No hidden injection. |
 | `base = true` removed | Root types are the default -- no declaration needed. |
 | `properties = "..."` removed | Properties are auto-derived from struct fields. |
-| `#[gts(type_field)]` added to `event_type` | Explicit opt-in marks this as the identity field (SS9.6: `"x-gts-ref": "/$id"`). |
+| `#[gts(type_field)]` added to `event_type` | Explicit opt-in marks this as the identity field ([§9.6](https://github.com/GlobalTypeSystem/gts-spec#96---x-gts-ref-support): `"x-gts-ref": "/$id"`). |
 | `P: GtsSchema` bound is visible | Generic constraint is in source, not injected. |
 
 ### 3.2 Inheritance: `extends` replaces `base`
@@ -206,13 +206,13 @@ pub struct AuditPayloadV1<D: GtsSchema> {
 }
 ```
 
-`extends = BaseEventV1` reads as what it means: this type extends the base event type. The `allOf` + `$ref` schema composition is generated from this declaration, following the GTS chained identifier model (SS2.2, SS3.2):
+`extends = BaseEventV1` reads as what it means: this type extends the base event type. The `allOf` + `$ref` schema composition is generated from this declaration, following the GTS chained identifier model ([§2.2](https://github.com/GlobalTypeSystem/gts-spec#22-chained-identifiers), [§3.2](https://github.com/GlobalTypeSystem/gts-spec#32-gts-types-inheritance)):
 
 > *"Multiple GTS identifiers can be chained with `~` to express derivation and conformance. The chain follows **left-to-right inheritance** semantics."*
 
 The compile-time validations remain identical:
-- Schema ID segment count must match `extends` presence (SS2.2)
-- Parent's `SCHEMA_ID` must match the parent segment in `schema_id` (SS3.2)
+- Schema ID segment count must match `extends` presence ([§2.2](https://github.com/GlobalTypeSystem/gts-spec#22-chained-identifiers))
+- Parent's `SCHEMA_ID` must match the parent segment in `schema_id` ([§3.2](https://github.com/GlobalTypeSystem/gts-spec#32-gts-types-inheritance))
 - Parent struct must have exactly one generic parameter
 
 ### 3.3 Optional identity fields with explicit annotations
@@ -257,20 +257,20 @@ No dummy field. No serde workaround. The struct represents what the GTS spec int
 When identity fields *are* needed, they are annotated explicitly:
 
 ```rust
-// Well-known instance (Spec SS3.7: named instance with GTS instance ID)
+// Well-known instance (Spec §3.7: named instance with GTS instance ID)
 #[gts(instance_id)]
 pub id: GtsInstanceId,          // generates "x-gts-ref": "/$id"
 
-// Anonymous instance (Spec SS3.7: opaque id + GTS type discriminator)
+// Anonymous instance (Spec §3.7: opaque id + GTS type discriminator)
 #[gts(type_field)]
 #[serde(rename = "type")]
 pub event_type: GtsSchemaId,    // generates "x-gts-ref": "/$id"
 
-// Cross-reference (Spec SS9.6: reference to another entity's schema)
+// Cross-reference (Spec §9.6: reference to another entity's schema)
 pub subject_type: GtsSchemaId,  // generates "x-gts-ref": "gts.*"
 ```
 
-This maps directly to the spec's distinction in SS9.6:
+This maps directly to the spec's distinction in [§9.6](https://github.com/GlobalTypeSystem/gts-spec#96---x-gts-ref-support):
 
 > *"`x-gts-ref": "/$id"` -- relative self-reference; field value must equal the current schema's `$id`"*
 >
@@ -279,7 +279,7 @@ This maps directly to the spec's distinction in SS9.6:
 The field-level attributes are validated at compile time:
 - `#[gts(type_field)]` must be on a `GtsSchemaId` field
 - `#[gts(instance_id)]` must be on a `GtsInstanceId` field
-- The two are mutually exclusive (a schema's instances are either well-known or anonymous, per SS3.7)
+- The two are mutually exclusive (a schema's instances are either well-known or anonymous, per [§3.7](https://github.com/GlobalTypeSystem/gts-spec#37-well-known-and-anonymous-instances))
 - At most one of each per struct
 
 ### 3.4 User-controlled serialization
@@ -320,11 +320,11 @@ The generated JSON Schemas are **structurally identical** between old and new ma
 
 ### 4.1 Unchanged
 
-- `$id` with `gts://` prefix (SS9.1)
+- `$id` with `gts://` prefix ([§9.1](https://github.com/GlobalTypeSystem/gts-spec#91---identifier-reference-in-json-and-json-schema))
 - `$schema` set to `http://json-schema.org/draft-07/schema#`
 - `type: "object"`, `additionalProperties: false`
 - `properties` and `required` arrays
-- `allOf` + `$ref` composition for inherited types (SS9.1)
+- `allOf` + `$ref` composition for inherited types ([§9.1](https://github.com/GlobalTypeSystem/gts-spec#91---identifier-reference-in-json-and-json-schema))
 - Generic field nesting via `wrap_in_nesting_path`
 - `GtsSchemaId` / `GtsInstanceId` inline representation
 
@@ -398,7 +398,7 @@ This structure is designed to grow with the GTS specification. Concrete examples
 
 No other modules are touched.
 
-**Adding schema traits** (SS9.7 -- `x-gts-traits-schema` / `x-gts-traits`): The spec defines a trait system for schema-level metadata like retention rules and topic associations. The current macro doesn't support this. The modular design accommodates it via new struct-level attributes (e.g., `#[gts(traits_schema = "...")]`) following the same parse-validate-generate pipeline. The spec examples show this pattern:
+**Adding schema traits** ([§9.7](https://github.com/GlobalTypeSystem/gts-spec#97---schema-traits-x-gts-traits-schema--x-gts-traits) -- `x-gts-traits-schema` / `x-gts-traits`): The spec defines a trait system for schema-level metadata like retention rules and topic associations. The current macro doesn't support this. The modular design accommodates it via new struct-level attributes (e.g., `#[gts(traits_schema = "...")]`) following the same parse-validate-generate pipeline. The spec examples show this pattern:
 
 ```json
 "x-gts-traits-schema": {
@@ -472,12 +472,12 @@ Migration per struct:
 
 | Spec section | Topic | How this proposal uses it |
 |---|---|---|
-| SS2.2 | Chained identifiers | `extends` models left-to-right inheritance via chained `~` segments |
-| SS3.2 | Type inheritance | Compile-time validation of parent-child segment matching; `allOf` + `$ref` generation |
-| SS3.7 | Well-known vs anonymous instances | `#[gts(instance_id)]` for well-known, `#[gts(type_field)]` for anonymous -- both optional |
-| SS4.1 | Versioning | Version match validation between struct name suffix and schema ID |
-| SS9.1 | `$id` and `$ref` conventions | Generated schemas use `gts://` prefix on `$id` and `$ref` |
-| SS9.6 | `x-gts-ref` support | Identity fields get `"/$id"`, cross-reference fields get `"gts.*"` |
-| SS9.7 | Schema traits | Not yet implemented; modular design accommodates future support |
-| SS11.1, Rule C | Five document categories | Identity fields made optional -- not all schemas produce self-identifying instances |
-| SS11.1 | Implementation-defined field names | Field annotations replace hardcoded name matching |
+| [§2.2](https://github.com/GlobalTypeSystem/gts-spec#22-chained-identifiers) | Chained identifiers | `extends` models left-to-right inheritance via chained `~` segments |
+| [§3.2](https://github.com/GlobalTypeSystem/gts-spec#32-gts-types-inheritance) | Type inheritance | Compile-time validation of parent-child segment matching; `allOf` + `$ref` generation |
+| [§3.7](https://github.com/GlobalTypeSystem/gts-spec#37-well-known-and-anonymous-instances) | Well-known vs anonymous instances | `#[gts(instance_id)]` for well-known, `#[gts(type_field)]` for anonymous -- both optional |
+| [§4.1](https://github.com/GlobalTypeSystem/gts-spec#41-compatibility-modes) | Versioning | Version match validation between struct name suffix and schema ID |
+| [§9.1](https://github.com/GlobalTypeSystem/gts-spec#91---identifier-reference-in-json-and-json-schema) | `$id` and `$ref` conventions | Generated schemas use `gts://` prefix on `$id` and `$ref` |
+| [§9.6](https://github.com/GlobalTypeSystem/gts-spec#96---x-gts-ref-support) | `x-gts-ref` support | Identity fields get `"/$id"`, cross-reference fields get `"gts.*"` |
+| [§9.7](https://github.com/GlobalTypeSystem/gts-spec#97---schema-traits-x-gts-traits-schema--x-gts-traits) | Schema traits | Not yet implemented; modular design accommodates future support |
+| [§11.1](https://github.com/GlobalTypeSystem/gts-spec#111-global-rules-schema-vs-instance-normalization-and-document-categories), Rule C | Five document categories | Identity fields made optional -- not all schemas produce self-identifying instances |
+| [§11.1](https://github.com/GlobalTypeSystem/gts-spec#111-global-rules-schema-vs-instance-normalization-and-document-categories) | Implementation-defined field names | Field annotations replace hardcoded name matching |

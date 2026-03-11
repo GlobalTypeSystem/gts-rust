@@ -2,7 +2,7 @@
 
 This plan implements the redesign specified in [ADR-001](./001-macro-alignment-adr.md). The work is structured in phases that can each be independently tested and merged.
 
-Each phase references the GTS specification sections that justify the design choices. Spec references use the format `[Spec §X.Y]` pointing to [`.gts-spec/README.md`](/.gts-spec/README.md).
+Each phase references the GTS specification sections that justify the design choices. Spec references link to the [GTS Specification](https://github.com/GlobalTypeSystem/gts-spec).
 
 ---
 
@@ -35,23 +35,23 @@ enum GtsFieldAttr {
 ```
 
 **Spec justification:**
-- `schema_id` — maps to the `$id` in JSON Schema documents [Spec §9.1, §11.1 Rule C category 1]
-- `extends` — models left-to-right inheritance via chained identifiers [Spec §2.2, §3.2]
-- `type_field` / `instance_id` — optional, maps to anonymous instance `type` field [Spec §3.7, §11.1 Rule C categories 4-5] or well-known instance `id` field. Made optional because not all GTS schemas require instance-level identity (e.g., `order.v1.0~`, `contact.v1.0~` have plain UUID `id` fields with no GTS semantics) [Spec §11.1 Rule C category 3]. **This is the fix for Issue #72.**
-- Field names are implementation-defined [Spec §11.1: "field names are implementation-defined and may be configuration-driven"]
+- `schema_id` — maps to the `$id` in JSON Schema documents [[Spec §9.1](https://github.com/GlobalTypeSystem/gts-spec#91---identifier-reference-in-json-and-json-schema), [§11.1 Rule C](https://github.com/GlobalTypeSystem/gts-spec#111-global-rules-schema-vs-instance-normalization-and-document-categories)]
+- `extends` — models left-to-right inheritance via chained identifiers [[Spec §2.2](https://github.com/GlobalTypeSystem/gts-spec#22-chained-identifiers), [§3.2](https://github.com/GlobalTypeSystem/gts-spec#32-gts-types-inheritance)]
+- `type_field` / `instance_id` — optional, maps to anonymous instance `type` field [[Spec §3.7](https://github.com/GlobalTypeSystem/gts-spec#37-well-known-and-anonymous-instances), [§11.1 Rule C](https://github.com/GlobalTypeSystem/gts-spec#111-global-rules-schema-vs-instance-normalization-and-document-categories)] or well-known instance `id` field. Made optional because not all GTS schemas require instance-level identity (e.g., `order.v1.0~`, `contact.v1.0~` have plain UUID `id` fields with no GTS semantics) [[Spec §11.1 Rule C](https://github.com/GlobalTypeSystem/gts-spec#111-global-rules-schema-vs-instance-normalization-and-document-categories)]. **This is the fix for Issue #72.**
+- Field names are implementation-defined [[Spec §11.1](https://github.com/GlobalTypeSystem/gts-spec#111-global-rules-schema-vs-instance-normalization-and-document-categories)]
 
 ### 1.2 Validation (carried over from current macro)
 
 Implement all validations that apply to the new design:
 
-- `schema_id` format validation via `gts_id::validate_gts_id()` [Spec §2.1, §2.3, §8.1]
-- Version match between struct name suffix and schema ID [Spec §4]
-- Segment count: no `extends` → single segment; `extends` → multi-segment [Spec §2.2: chained identifiers express type derivation]
+- `schema_id` format validation via `gts_id::validate_gts_id()` [Spec §2.1, §2.3, §8.1](https://github.com/GlobalTypeSystem/gts-spec)
+- Version match between struct name suffix and schema ID [Spec §4](https://github.com/GlobalTypeSystem/gts-spec#4-versioning)
+- Segment count: no `extends` → single segment; `extends` → multi-segment [[Spec §2.2](https://github.com/GlobalTypeSystem/gts-spec#22-chained-identifiers)]
 - Only named structs (no tuple structs, enums)
-- Max 1 generic type parameter (GTS inheritance is single-chain, not multi-branch) [Spec §3.2]
-- `#[gts(type_field)]` must be on a `GtsSchemaId` field — the `type` field value is a GTS type identifier (ending with `~`) [Spec §3.7: anonymous instances, §11.1 Rule C category 5]
-- `#[gts(instance_id)]` must be on a `GtsInstanceId` field — the `id` field value is a GTS instance identifier (no trailing `~`) [Spec §3.7: well-known instances, §11.1 Rule C category 4]
-- `#[gts(type_field)]` and `#[gts(instance_id)]` are mutually exclusive — a schema's instances follow either the well-known or anonymous pattern [Spec §3.7: "well-known" vs "anonymous" are distinct categories]
+- Max 1 generic type parameter (GTS inheritance is single-chain, not multi-branch) [[Spec §3.2](https://github.com/GlobalTypeSystem/gts-spec#32-gts-types-inheritance)]
+- `#[gts(type_field)]` must be on a `GtsSchemaId` field — the `type` field value is a GTS type identifier (ending with `~`) [[Spec §3.7](https://github.com/GlobalTypeSystem/gts-spec#37-well-known-and-anonymous-instances), [§11.1 Rule C](https://github.com/GlobalTypeSystem/gts-spec#111-global-rules-schema-vs-instance-normalization-and-document-categories)]
+- `#[gts(instance_id)]` must be on a `GtsInstanceId` field — the `id` field value is a GTS instance identifier (no trailing `~`) [[Spec §3.7](https://github.com/GlobalTypeSystem/gts-spec#37-well-known-and-anonymous-instances), [§11.1 Rule C](https://github.com/GlobalTypeSystem/gts-spec#111-global-rules-schema-vs-instance-normalization-and-document-categories)]
+- `#[gts(type_field)]` and `#[gts(instance_id)]` are mutually exclusive — a schema's instances follow either the well-known or anonymous pattern [[Spec §3.7](https://github.com/GlobalTypeSystem/gts-spec#37-well-known-and-anonymous-instances)]
 - At most one `#[gts(type_field)]` and one `#[gts(instance_id)]` per struct
 - Unknown `#[gts(...)]` attributes emit clear errors
 
@@ -94,23 +94,23 @@ If the struct does not already derive `schemars::JsonSchema`, inject it. This is
 ### 2.2 GtsSchema trait implementation
 
 Generate the `GtsSchema` trait impl with:
-- `SCHEMA_ID` — from `schema_id` attribute [Spec §9.1 — maps to `$id` in JSON Schema]
+- `SCHEMA_ID` — from `schema_id` attribute [[Spec §9.1](https://github.com/GlobalTypeSystem/gts-spec#91---identifier-reference-in-json-and-json-schema)]
 - `GENERIC_FIELD` — detected from struct fields (field whose type matches the generic param)
 - `gts_schema_with_refs()` / `gts_schema_with_refs_allof()` — runtime schema generation using `schemars::schema_for!(Self)`, resolving `$ref` for `GtsSchemaId`/`GtsInstanceId`
-- `innermost_schema_id()`, `innermost_schema()`, `collect_nesting_path()` — for generic base structs [Spec §3.2 — left-to-right inheritance chain traversal]
+- `innermost_schema_id()`, `innermost_schema()`, `collect_nesting_path()` — for generic base structs [[Spec §3.2](https://github.com/GlobalTypeSystem/gts-spec#32-gts-types-inheritance)]
 - `wrap_in_nesting_path()` — inherited from trait default
 
 For `extends` structs:
-- `allOf` + `$ref` schema composition [Spec §9.1 — `$ref` must use `gts://` prefix; Spec §3.2 — derived types use `allOf` to reference base]
-- Compile-time assertion that parent's `SCHEMA_ID` matches [Spec §3.1 — chain validation]
+- `allOf` + `$ref` schema composition [[Spec §9.1](https://github.com/GlobalTypeSystem/gts-spec#91---identifier-reference-in-json-and-json-schema), [§3.2](https://github.com/GlobalTypeSystem/gts-spec#32-gts-types-inheritance)]
+- Compile-time assertion that parent's `SCHEMA_ID` matches [[Spec §3.1](https://github.com/GlobalTypeSystem/gts-spec#31-gts-types)]
 - Property nesting under parent's generic field
 
 ### 2.3 Runtime API methods
 
 Generate on the struct impl:
-- `gts_schema_id() -> &'static GtsSchemaId` (LazyLock) [Spec §9.1 — schema `$id` access]
-- `gts_base_schema_id() -> Option<&'static GtsSchemaId>` (LazyLock) [Spec §3.2 — parent segment extraction]
-- `gts_make_instance_id(segment) -> GtsInstanceId` [Spec §3.7 — instance ID = schema chain + instance segment]
+- `gts_schema_id() -> &'static GtsSchemaId` (LazyLock) [[Spec §9.1](https://github.com/GlobalTypeSystem/gts-spec#91---identifier-reference-in-json-and-json-schema)]
+- `gts_base_schema_id() -> Option<&'static GtsSchemaId>` (LazyLock) [[Spec §3.2](https://github.com/GlobalTypeSystem/gts-spec#32-gts-types-inheritance)]
+- `gts_make_instance_id(segment) -> GtsInstanceId` [[Spec §3.7](https://github.com/GlobalTypeSystem/gts-spec#37-well-known-and-anonymous-instances)]
 - `gts_schema_with_refs_as_string() -> String`
 - `gts_schema_with_refs_as_string_pretty() -> String`
 - `gts_instance_json(&self) -> Value` — with `where Self: Serialize` bound
@@ -131,7 +131,7 @@ The `gts_schema_with_refs_allof()` method should include `"description"` in the 
 
 When generating the runtime schema, if a field has `#[gts(type_field)]` or `#[gts(instance_id)]`, override its schema property to use `"x-gts-ref": "/$id"` instead of the default `"x-gts-ref": "gts.*"` from `json_schema_value()`.
 
-**Spec justification** [Spec §9.6]:
+**Spec justification** [[Spec §9.6](https://github.com/GlobalTypeSystem/gts-spec#96---x-gts-ref-support)]:
 - `"x-gts-ref": "/$id"` — relative self-reference; field value must equal the current schema's `$id`. Used on identity fields that identify *this* entity (e.g., `type` on events, `id` on topics).
 - `"x-gts-ref": "gts.*"` — generic reference; field must be any valid GTS identifier. Used on fields that reference *other* entities (e.g., `subjectType` referencing an order schema).
 

@@ -102,7 +102,7 @@ The GTS specification (v0.8) provides clear guidance that contradicts several as
 
 ### 3.1 Identity fields are not universally required
 
-The spec defines five categories of JSON documents (spec section 11.1, Rule C):
+The spec defines five categories of JSON documents ([spec §11.1, Rule C](https://github.com/GlobalTypeSystem/gts-spec#111-global-rules-schema-vs-instance-normalization-and-document-categories)):
 
 1. **GTS entity schemas** — have `$schema` and `$id` starting with `gts://`
 2. **Non-GTS schemas** — have `$schema` but no GTS `$id`
@@ -173,15 +173,15 @@ The spec shows multiple patterns:
 | `orders.order.v1.0~` | UUID | (none) | Plain data entity |
 | `idp.contact.v1.0~` | UUID | (none) | Plain data entity |
 
-**Conclusion**: There is no single "correct" identity pattern. The choice is domain-specific and implementation-defined (spec section 11.1). The macro should support these patterns, not mandate one.
+**Conclusion**: There is no single "correct" identity pattern. The choice is domain-specific and implementation-defined ([spec §11.1](https://github.com/GlobalTypeSystem/gts-spec#111-global-rules-schema-vs-instance-normalization-and-document-categories)). The macro should support these patterns, not mandate one.
 
 ### 3.4 Field names are implementation-defined
 
-From spec section 11.1:
+From [spec §11.1](https://github.com/GlobalTypeSystem/gts-spec#111-global-rules-schema-vs-instance-normalization-and-document-categories):
 
 > *"The exact field names used for instance IDs and instance types are **implementation-defined** and may be **configuration-driven** (different systems may look for identifiers in different fields)."*
 
-And spec section 9.1:
+And [spec §9.1](https://github.com/GlobalTypeSystem/gts-spec#91---identifier-reference-in-json-and-json-schema):
 
 > *"Field naming: typically `id` (alternatives: `gtsId`, `gts_id`)"*
 > *"Field naming: `type` (alternatives: `gtsType`, `gts_type`)"*
@@ -286,12 +286,12 @@ pub internal_cache: HashMap<String, String>,
 
 **`#[gts(type_field)]`:**
 - Validates that the field type is `GtsSchemaId`
-- In the generated JSON Schema, annotates the property with `"x-gts-ref": "/$id"` per spec section 9.6
+- In the generated JSON Schema, annotates the property with `"x-gts-ref": "/$id"` per [spec §9.6](https://github.com/GlobalTypeSystem/gts-spec#96---x-gts-ref-support)
 - Can only appear once per struct, and is mutually exclusive with `#[gts(instance_id)]`
 
 **`#[gts(instance_id)]`:**
 - Validates that the field type is `GtsInstanceId`
-- In the generated JSON Schema, annotates the property with `"x-gts-ref": "/$id"` per spec section 9.6
+- In the generated JSON Schema, annotates the property with `"x-gts-ref": "/$id"` per [spec §9.6](https://github.com/GlobalTypeSystem/gts-spec#96---x-gts-ref-support)
 - Can only appear once per struct, and is mutually exclusive with `#[gts(type_field)]`
 
 **`#[gts(skip)]`:**
@@ -581,7 +581,7 @@ The current macro generates all `GtsSchemaId` fields with a generic `x-gts-ref`:
 "type": { "type": "string", "format": "gts-schema-id", "x-gts-ref": "gts.*" }
 ```
 
-But the GTS spec examples (section 9.6) use a more precise self-reference annotation on identity fields — `"x-gts-ref": "/$id"` — meaning "this field's value must equal the current schema's `$id`":
+But the GTS spec examples ([§9.6](https://github.com/GlobalTypeSystem/gts-spec#96---x-gts-ref-support)) use a more precise self-reference annotation on identity fields — `"x-gts-ref": "/$id"` — meaning "this field's value must equal the current schema's `$id`":
 
 ```json
 "type": { "type": "string", "x-gts-ref": "/$id" }
@@ -667,7 +667,7 @@ The current macro has 31 compile-fail tests. The redesign affects their status:
 
 2. **`GTS_SCHEMA_PROPERTIES` constant**: ~~The current macro generates `GTS_SCHEMA_PROPERTIES: &'static str` as a comma-separated string derived from the `properties` parameter. With `properties` removed, this constant could either be auto-generated from struct fields or removed entirely.~~ **Resolved**: The derive macro will auto-generate this constant from the struct's field names, excluding fields with `#[gts(skip)]` or `#[serde(skip)]`. The struct fields are already available to the macro at compile time — no user input needed.
 
-3. **Schema traits (`x-gts-traits-schema` / `x-gts-traits`)**: The GTS spec (section 9.7) defines a trait system for schema-level metadata — semantic annotations like retention rules, topic associations, and processing directives that are not part of the instance data model. The current macro does not generate these, and this ADR does not address them. Examples from the spec:
+3. **Schema traits (`x-gts-traits-schema` / `x-gts-traits`)**: The GTS spec ([§9.7](https://github.com/GlobalTypeSystem/gts-spec#97---schema-traits-x-gts-traits-schema--x-gts-traits)) defines a trait system for schema-level metadata — semantic annotations like retention rules, topic associations, and processing directives that are not part of the instance data model. The current macro does not generate these, and this ADR does not address them. Examples from the spec:
 
    - Base event schema defines a trait schema:
      ```json
