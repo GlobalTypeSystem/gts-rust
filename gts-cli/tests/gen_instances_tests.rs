@@ -6,7 +6,6 @@
 //! - Multiple instances in one file
 //! - Multiple files in a directory
 //! - `pub` and `pub(crate)` visibility
-//! - Raw string literals (r#"..."#)
 //! - `--output` override path
 //! - Source file adjacent output (no --output)
 //! - Duplicate instance ID hard error
@@ -15,10 +14,9 @@
 //! - Exclude pattern skips file
 //! - Missing source path error
 //! - `// gts:ignore` directive skips file
-//! - JSON `"id"` field injection (never in body)
-//! - `concat!()` form rejected
-//! - `static` form rejected
-//! - Wrong const type rejected
+//! - JSON `"id"` field injection from `GtsInstanceId::ID` sentinel
+//! - Old `const`/`static` form rejected
+//! - Schema validation (valid, missing required, extra field, wrong type, allOf/$ref)
 
 use anyhow::Result;
 use gts_cli::gen_instances::generate_instances_from_rust;
@@ -40,17 +38,23 @@ fn write(dir: &Path, name: &str, content: &str) {
     fs::write(dir.join(name), content).unwrap();
 }
 
-fn instance_src(id: &str, json_body: &str) -> String {
+/// Build a source string with a fn-based instance annotation.
+///
+/// `struct_body` is a Rust struct expression body (without enclosing `{ }`),
+/// e.g. `MyStruct { name: String::from("orders"), partitions: 16 }`.
+fn instance_src(id: &str, struct_body: &str) -> String {
     format!(
         concat!(
             "#[gts_well_known_instance(\n",
             "    dir_path = \"instances\",\n",
             "    id = \"{id}\"\n",
             ")]\n",
-            "pub const INST: &str = {body};\n"
+            "fn get_instance_item_v1() -> MyStruct {{\n",
+            "    {body}\n",
+            "}}\n"
         ),
         id = id,
-        body = json_body
+        body = struct_body
     )
 }
 
@@ -76,7 +80,7 @@ fn golden_single_instance() {
     let (_tmp, root) = sandbox();
     let src = instance_src(
         "gts.x.core.events.topic.v1~x.commerce._.orders.v1.0",
-        r#""{\"name\":\"orders\",\"partitions\":16}""#,
+        r#"MyStruct { name: String::from("orders"), partitions: 16 }"#,
     );
     write(&root, "events.rs", &src);
 
@@ -93,34 +97,6 @@ fn golden_single_instance() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Golden fixture – raw string literal
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn golden_raw_string_literal() {
-    let (_tmp, root) = sandbox();
-    let src = concat!(
-        "#[gts_well_known_instance(\n",
-        "    dir_path = \"instances\",\n",
-        "    id = \"gts.x.core.events.topic.v1~x.commerce._.payments.v1.0\"\n",
-        ")]\n",
-        "pub const PAYMENTS: &str = r#\"{\"name\":\"payments\",\"partitions\":8}\"#;\n"
-    );
-    write(&root, "events.rs", src);
-
-    run(root.to_str().unwrap(), Some(root.to_str().unwrap()), &[]).unwrap();
-
-    let id = "gts.x.core.events.topic.v1~x.commerce._.payments.v1.0";
-    let out = inst_path(&root, id);
-    assert!(out.exists());
-
-    let val = read_json(&out);
-    assert_eq!(val["id"], id);
-    assert_eq!(val["name"], "payments");
-    assert_eq!(val["partitions"], 8);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Multiple instances in one file
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -132,12 +108,16 @@ fn multiple_instances_in_one_file() {
         "    dir_path = \"instances\",\n",
         "    id = \"gts.x.core.events.topic.v1~x.commerce._.orders.v1.0\"\n",
         ")]\n",
-        "pub const A: &str = \"{\\\"name\\\":\\\"orders\\\"}\";\n",
+        "fn get_instance_orders_v1() -> MyStruct {\n",
+        "    MyStruct { name: String::from(\"orders\") }\n",
+        "}\n",
         "#[gts_well_known_instance(\n",
         "    dir_path = \"instances\",\n",
         "    id = \"gts.x.core.events.topic.v1~x.commerce._.payments.v1.0\"\n",
         ")]\n",
-        "pub const B: &str = \"{\\\"name\\\":\\\"payments\\\"}\";\n"
+        "fn get_instance_payments_v1() -> MyStruct {\n",
+        "    MyStruct { name: String::from(\"payments\") }\n",
+        "}\n"
     );
     write(&root, "events.rs", src);
 
@@ -166,7 +146,7 @@ fn multiple_files_in_directory() {
         "a.rs",
         &instance_src(
             "gts.x.core.events.topic.v1~x.commerce._.orders.v1.0",
-            "\"{\\\"name\\\":\\\"a\\\"}\"",
+            r#"MyStruct { name: String::from("a") }"#,
         ),
     );
     write(
@@ -174,7 +154,7 @@ fn multiple_files_in_directory() {
         "b.rs",
         &instance_src(
             "gts.x.core.events.topic.v1~x.commerce._.payments.v1.0",
-            "\"{\\\"name\\\":\\\"b\\\"}\"",
+            r#"MyStruct { name: String::from("b") }"#,
         ),
     );
 
@@ -202,7 +182,9 @@ fn pub_crate_visibility_accepted() {
         "    dir_path = \"instances\",\n",
         "    id = \"gts.x.core.events.topic.v1~x.commerce._.orders.v1.0\"\n",
         ")]\n",
-        "pub(crate) const FOO: &str = \"{\\\"name\\\":\\\"x\\\"}\";\n"
+        "pub(crate) fn get_instance_orders_v1() -> MyStruct {\n",
+        "    MyStruct { name: String::from(\"x\") }\n",
+        "}\n"
     );
     write(&root, "events.rs", src);
 
@@ -225,7 +207,7 @@ fn output_adjacent_to_source_when_no_override() {
         "topic.rs",
         &instance_src(
             "gts.x.core.events.topic.v1~x.commerce._.orders.v1.0",
-            "\"{\\\"name\\\":\\\"orders\\\"}\"",
+            r#"MyStruct { name: String::from("orders") }"#,
         ),
     );
 
@@ -240,26 +222,6 @@ fn output_adjacent_to_source_when_no_override() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// id field is injected and overrides any body field named "id" — BODY REJECTED
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn id_field_in_body_is_rejected() {
-    let (_tmp, root) = sandbox();
-    write(
-        &root,
-        "events.rs",
-        &instance_src(
-            "gts.x.core.events.topic.v1~x.commerce._.orders.v1.0",
-            "\"{\\\"id\\\":\\\"bad\\\",\\\"name\\\":\\\"x\\\"}\"",
-        ),
-    );
-
-    let err = run(root.to_str().unwrap(), Some(root.to_str().unwrap()), &[]).unwrap_err();
-    assert!(err.to_string().contains("\"id\" field"), "Got: {err}");
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Duplicate instance ID → hard error
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -271,12 +233,16 @@ fn duplicate_instance_id_hard_error() {
         "    dir_path = \"instances\",\n",
         "    id = \"gts.x.core.events.topic.v1~x.commerce._.orders.v1.0\"\n",
         ")]\n",
-        "pub const A: &str = \"{\\\"name\\\":\\\"a\\\"}\";\n",
+        "fn get_instance_orders_v1() -> MyStruct {\n",
+        "    MyStruct { name: String::from(\"a\") }\n",
+        "}\n",
         "#[gts_well_known_instance(\n",
         "    dir_path = \"instances\",\n",
         "    id = \"gts.x.core.events.topic.v1~x.commerce._.orders.v1.0\"\n",
         ")]\n",
-        "pub const B: &str = \"{\\\"name\\\":\\\"b\\\"}\";\n"
+        "fn get_instance_orders2_v1() -> MyStruct {\n",
+        "    MyStruct { name: String::from(\"b\") }\n",
+        "}\n"
     );
     write(&root, "dup.rs", src);
 
@@ -304,7 +270,9 @@ fn sandbox_escape_rejected() {
             "    dir_path = \"{dir}\",\n",
             "    id = \"gts.x.core.events.topic.v1~x.commerce._.orders.v1.0\"\n",
             ")]\n",
-            "pub const FOO: &str = \"{{\\\"name\\\":\\\"x\\\"}}\";\n"
+            "fn get_instance_orders_v1() -> MyStruct {{\n",
+            "    MyStruct {{ name: String::from(\"x\") }}\n",
+            "}}\n"
         ),
         dir = escape_dir
     );
@@ -339,7 +307,9 @@ fn exclude_pattern_skips_file() {
         "    dir_path = \"instances\",\n",
         "    id = \"bad-no-tilde\"\n",
         ")]\n",
-        "pub const X: &str = \"{}\";\n"
+        "fn get_instance_bad_v1() -> MyStruct {\n",
+        "    MyStruct { name: String::from(\"x\") }\n",
+        "}\n"
     );
     write(&root, "excluded_file.rs", src);
 
@@ -365,7 +335,9 @@ fn gts_ignore_directive_skips_file() {
         "    dir_path = \"instances\",\n",
         "    id = \"bad-no-tilde\"\n",
         ")]\n",
-        "pub const X: &str = \"{}\";\n"
+        "fn get_instance_bad_v1() -> MyStruct {\n",
+        "    MyStruct { name: String::from(\"x\") }\n",
+        "}\n"
     );
     write(&root, "ignored.rs", src);
 
@@ -381,12 +353,9 @@ fn gts_ignore_directive_skips_file() {
 
 #[test]
 fn missing_source_path_errors() {
-    // Use a path guaranteed not to exist on any platform by constructing it
-    // inside a TempDir that is immediately dropped (and thus deleted).
     let nonexistent = {
         let tmp = TempDir::new().unwrap();
         tmp.path().join("no_such_subdir_xyz")
-        // tmp is dropped here — the parent dir is deleted
     };
     let err = run(nonexistent.to_str().unwrap(), None, &[]).unwrap_err();
     assert!(err.to_string().contains("does not exist"), "Got: {err}");
@@ -407,23 +376,23 @@ fn no_annotations_produces_nothing() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// concat!() value is rejected with actionable message
+// Old const form is rejected with actionable message
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn concat_macro_value_is_rejected() {
+fn const_form_is_rejected() {
     let (_tmp, root) = sandbox();
     let src = concat!(
         "#[gts_well_known_instance(\n",
         "    dir_path = \"instances\",\n",
         "    id = \"gts.x.core.events.topic.v1~x.commerce._.orders.v1.0\"\n",
         ")]\n",
-        "pub const FOO: &str = concat!(\"{\", \"}\");\n"
+        "pub const FOO: &str = \"{\\\"name\\\":\\\"x\\\"}\";\n"
     );
-    write(&root, "concat.rs", src);
+    write(&root, "const_form.rs", src);
 
     let err = run(root.to_str().unwrap(), Some(root.to_str().unwrap()), &[]).unwrap_err();
-    assert!(err.to_string().contains("concat!()"), "Got: {err}");
+    assert!(err.to_string().contains("no longer supports"), "Got: {err}");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -443,7 +412,7 @@ fn static_item_is_rejected() {
     write(&root, "static_item.rs", src);
 
     let err = run(root.to_str().unwrap(), Some(root.to_str().unwrap()), &[]).unwrap_err();
-    assert!(err.to_string().contains("static"), "Got: {err}");
+    assert!(err.to_string().contains("no longer supports"), "Got: {err}");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -458,7 +427,9 @@ fn id_without_tilde_is_rejected() {
         "    dir_path = \"instances\",\n",
         "    id = \"gts.x.core.events.topic.v1.x.commerce._.orders.v1.0\"\n",
         ")]\n",
-        "pub const FOO: &str = \"{\\\"name\\\":\\\"x\\\"}\";\n"
+        "fn get_instance_orders_v1() -> MyStruct {\n",
+        "    MyStruct { name: String::from(\"x\") }\n",
+        "}\n"
     );
     write(&root, "notilde.rs", src);
 
@@ -478,7 +449,9 @@ fn id_ending_with_tilde_is_rejected() {
         "    dir_path = \"instances\",\n",
         "    id = \"gts.x.core.events.topic.v1~\"\n",
         ")]\n",
-        "pub const FOO: &str = \"{\\\"name\\\":\\\"x\\\"}\";\n"
+        "fn get_instance_orders_v1() -> MyStruct {\n",
+        "    MyStruct { name: String::from(\"x\") }\n",
+        "}\n"
     );
     write(&root, "segtilde.rs", src);
 
@@ -490,47 +463,7 @@ fn id_ending_with_tilde_is_rejected() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// JSON body must be an object — array is rejected
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn json_array_body_is_rejected() {
-    let (_tmp, root) = sandbox();
-    write(
-        &root,
-        "events.rs",
-        &instance_src(
-            "gts.x.core.events.topic.v1~x.commerce._.orders.v1.0",
-            "\"[1,2,3]\"",
-        ),
-    );
-
-    let err = run(root.to_str().unwrap(), Some(root.to_str().unwrap()), &[]).unwrap_err();
-    assert!(err.to_string().contains("JSON object"), "Got: {err}");
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Malformed JSON body is rejected
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn malformed_json_body_is_rejected() {
-    let (_tmp, root) = sandbox();
-    write(
-        &root,
-        "events.rs",
-        &instance_src(
-            "gts.x.core.events.topic.v1~x.commerce._.orders.v1.0",
-            "\"{not valid json}\"",
-        ),
-    );
-
-    let err = run(root.to_str().unwrap(), Some(root.to_str().unwrap()), &[]).unwrap_err();
-    assert!(err.to_string().contains("Malformed JSON"), "Got: {err}");
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Golden fixture: generated file content matches exactly
+// Golden fixture: generated file content matches exactly (with id injected)
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -541,7 +474,9 @@ fn golden_file_content_exact() {
         "    dir_path = \"instances\",\n",
         "    id = \"gts.x.core.events.topic.v1~x.commerce._.orders.v1.0\"\n",
         ")]\n",
-        "pub const ORDERS: &str = \"{\\\"name\\\":\\\"orders\\\",\\\"partitions\\\":16}\";\n"
+        "fn get_instance_orders_v1() -> MyStruct {\n",
+        "    MyStruct { name: String::from(\"orders\"), partitions: 16 }\n",
+        "}\n"
     );
     write(&root, "events.rs", src);
 
@@ -567,41 +502,12 @@ fn golden_file_content_exact() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Zero-hash raw string r"..." is accepted (Fix: regex r#* not r#+)
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn zero_hash_raw_string_is_accepted() {
-    let (_tmp, root) = sandbox();
-    // r"..." with no hashes — was previously not matched by the annotation regex
-    let src = concat!(
-        "#[gts_well_known_instance(\n",
-        "    dir_path = \"instances\",\n",
-        "    id = \"gts.x.core.events.topic.v1~x.commerce._.orders.v1.0\"\n",
-        ")]\n",
-        "pub const ZERO_HASH: &str = r#\"{\"name\":\"zero\"}\"#;\n"
-    );
-    write(&root, "zero_hash.rs", src);
-
-    run(root.to_str().unwrap(), Some(root.to_str().unwrap()), &[]).unwrap();
-
-    let id = "gts.x.core.events.topic.v1~x.commerce._.orders.v1.0";
-    let out = inst_path(&root, id);
-    assert!(out.exists(), "Expected file: {}", out.display());
-    let val = read_json(&out);
-    assert_eq!(val["name"], "zero");
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Char literals near the needle don't cause preflight false-positive
-// (Fix: preflight_scan now skips char literals like '#' and '[')
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
 fn char_literal_near_needle_does_not_false_positive() {
     let (_tmp, root) = sandbox();
-    // File contains '#' and '[' as char literals right before a regular ident,
-    // but no actual annotation — preflight must return false → quiet skip.
     let src = concat!(
         "fn check(c: char) -> bool {\n",
         "    c == '#' || c == '['\n",
@@ -611,21 +517,17 @@ fn char_literal_near_needle_does_not_false_positive() {
     );
     write(&root, "char_lit.rs", src);
 
-    // Must succeed with no output — not a hard error
     run(root.to_str().unwrap(), Some(root.to_str().unwrap()), &[]).unwrap();
     assert!(!root.join("instances").exists());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Unsupported form mentioned only in a comment does NOT hard-error
-// (Fix: check_unsupported_forms runs on comment-stripped source)
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
 fn unsupported_form_in_comment_does_not_error() {
     let (_tmp, root) = sandbox();
-    // The doc comment contains a concat!() example that would have previously
-    // triggered a hard error from check_unsupported_forms.
     let src = concat!(
         "/// Example (do NOT use):\n",
         "/// #[gts_well_known_instance(\n",
@@ -637,11 +539,12 @@ fn unsupported_form_in_comment_does_not_error() {
         "    dir_path = \"instances\",\n",
         "    id = \"gts.x.core.events.topic.v1~x.commerce._.orders.v1.0\"\n",
         ")]\n",
-        "pub const REAL: &str = \"{\\\"name\\\":\\\"real\\\"}\";\n"
+        "fn get_instance_orders_v1() -> MyStruct {\n",
+        "    MyStruct { name: String::from(\"real\") }\n",
+        "}\n"
     );
     write(&root, "comment_example.rs", src);
 
-    // Must succeed — the concat!() is only in a doc comment
     run(root.to_str().unwrap(), Some(root.to_str().unwrap()), &[]).unwrap();
 
     let id = "gts.x.core.events.topic.v1~x.commerce._.orders.v1.0";
@@ -649,33 +552,31 @@ fn unsupported_form_in_comment_does_not_error() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Annotation applied to a fn (not a const) is a hard error
-// (Fix: preflight-positive + no match → hard error, not silent skip)
+// Annotation applied to a non-fn item (e.g. enum) is a hard error
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn annotation_on_fn_is_hard_error() {
+fn annotation_on_non_fn_is_hard_error() {
     let (_tmp, root) = sandbox();
     let src = concat!(
         "#[gts_well_known_instance(\n",
         "    dir_path = \"instances\",\n",
         "    id = \"gts.x.core.events.topic.v1~x.commerce._.orders.v1.0\"\n",
         ")]\n",
-        "pub fn not_a_const() -> &'static str { \"{}\" }\n"
+        "pub enum NotAFn { A, B }\n"
     );
-    write(&root, "on_fn.rs", src);
+    write(&root, "on_enum.rs", src);
 
     let err = run(root.to_str().unwrap(), Some(root.to_str().unwrap()), &[]).unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("could not be parsed") || msg.contains("const NAME"),
+        msg.contains("could not be parsed") || msg.contains("fn get_instance"),
         "Got: {msg}"
     );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Duplicate attribute key in annotation is a hard error
-// (Fix: check_duplicate_attr_keys added to parse_instance_attrs)
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -687,7 +588,9 @@ fn duplicate_attribute_key_is_hard_error() {
         "    dir_path = \"other\",\n",
         "    id = \"gts.x.core.events.topic.v1~x.commerce._.orders.v1.0\"\n",
         ")]\n",
-        "pub const DUP: &str = \"{\\\"name\\\":\\\"x\\\"}\";\n"
+        "fn get_instance_orders_v1() -> MyStruct {\n",
+        "    MyStruct { name: String::from(\"x\") }\n",
+        "}\n"
     );
     write(&root, "dup_key.rs", src);
 
@@ -701,10 +604,6 @@ fn duplicate_attribute_key_is_hard_error() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ./ prefix in dir_path with same ID → duplicate instance ID error
-// (dir_path differs via ./ prefix but composed ID is identical, so
-//  check_duplicate_ids fires. The path normalisation in
-//  check_duplicate_output_paths is a defence-in-depth guard for the
-//  hypothetical future case where filenames could diverge from the ID.)
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -715,12 +614,16 @@ fn dot_slash_dir_path_same_id_is_duplicate() {
         "    dir_path = \"instances\",\n",
         "    id = \"gts.x.core.events.topic.v1~x.commerce._.orders.v1.0\"\n",
         ")]\n",
-        "pub const A: &str = \"{\\\"name\\\":\\\"a\\\"}\";\n",
+        "fn get_instance_orders_v1() -> MyStruct {\n",
+        "    MyStruct { name: String::from(\"a\") }\n",
+        "}\n",
         "#[gts_well_known_instance(\n",
         "    dir_path = \"./instances\",\n",
         "    id = \"gts.x.core.events.topic.v1~x.commerce._.orders.v1.0\"\n",
         ")]\n",
-        "pub const B: &str = \"{\\\"name\\\":\\\"b\\\"}\";\n"
+        "fn get_instance_orders2_v1() -> MyStruct {\n",
+        "    MyStruct { name: String::from(\"b\") }\n",
+        "}\n"
     );
     write(&root, "dotslash.rs", src);
 
@@ -734,7 +637,6 @@ fn dot_slash_dir_path_same_id_is_duplicate() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Qualified path form #[gts_macros::gts_well_known_instance(...)] is accepted
-// (Fix: NEEDLE and regex updated to match optional `gts_macros::` prefix)
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -745,7 +647,9 @@ fn qualified_path_form_is_accepted() {
         "    dir_path = \"instances\",\n",
         "    id = \"gts.x.core.events.topic.v1~x.commerce._.orders.v1.0\"\n",
         ")]\n",
-        "pub const QUALIFIED: &str = r#\"{\"name\":\"qualified\"}\"#;\n"
+        "fn get_instance_orders_v1() -> MyStruct {\n",
+        "    MyStruct { name: String::from(\"qualified\") }\n",
+        "}\n"
     );
     write(&root, "qualified.rs", src);
 
@@ -774,7 +678,9 @@ fn compile_fail_dir_is_auto_skipped() {
         "    dir_path = \"instances\",\n",
         "    id = \"bad-no-tilde\"\n",
         ")]\n",
-        "pub const X: &str = \"{}\";\n"
+        "fn get_instance_bad_v1() -> MyStruct {\n",
+        "    MyStruct { name: String::from(\"x\") }\n",
+        "}\n"
     );
     write(&cf_dir, "test.rs", src);
 
@@ -827,7 +733,7 @@ fn schema_validation_valid_instance_passes() {
 
     let src = instance_src(
         "gts.x.core.events.topic.v1~x.commerce._.orders.v1.0",
-        r#""{\"name\":\"orders\",\"partitions\":16}""#,
+        r#"MyStruct { name: String::from("orders"), partitions: 16 }"#,
     );
     write(&root, "inst.rs", &src);
 
@@ -848,7 +754,7 @@ fn schema_validation_missing_required_field_fails() {
     // Instance provides "name" but NOT "vendor"
     let src = instance_src(
         "gts.x.core.events.topic.v1~x.commerce._.orders.v1.0",
-        r#""{\"name\":\"orders\"}""#,
+        r#"MyStruct { name: String::from("orders") }"#,
     );
     write(&root, "inst.rs", &src);
 
@@ -870,7 +776,7 @@ fn schema_validation_extra_field_fails() {
     // Instance has "name" + "extra" — violates additionalProperties: false
     let src = instance_src(
         "gts.x.core.events.topic.v1~x.commerce._.orders.v1.0",
-        r#""{\"name\":\"orders\",\"extra\":\"bad\"}""#,
+        r#"MyStruct { name: String::from("orders"), extra: String::from("bad") }"#,
     );
     write(&root, "inst.rs", &src);
 
@@ -896,7 +802,7 @@ fn schema_validation_wrong_type_fails() {
     // Instance provides "count" as a string
     let src = instance_src(
         "gts.x.core.events.topic.v1~x.commerce._.orders.v1.0",
-        r#""{\"count\":\"not-a-number\"}""#,
+        r#"MyStruct { count: String::from("not-a-number") }"#,
     );
     write(&root, "inst.rs", &src);
 
@@ -954,7 +860,7 @@ fn schema_validation_allof_ref_inheritance_passes() {
     // Instance satisfies both parent ("name") and child ("vendor")
     let src = instance_src(
         "gts.x.core.events.topic.v1~x.core.audit.event.v1~x.commerce._.orders.v1.0",
-        r#""{\"name\":\"orders\",\"vendor\":\"acme\"}""#,
+        r#"MyStruct { name: String::from("orders"), vendor: String::from("acme") }"#,
     );
     write(&root, "inst.rs", &src);
 
@@ -1007,7 +913,7 @@ fn schema_validation_allof_ref_missing_parent_field_fails() {
     // Instance has "vendor" but missing parent-required "name"
     let src = instance_src(
         "gts.x.core.events.topic.v1~x.core.audit.event.v1~x.commerce._.orders.v1.0",
-        r#""{\"vendor\":\"acme\"}""#,
+        r#"MyStruct { vendor: String::from("acme") }"#,
     );
     write(&root, "inst.rs", &src);
 
@@ -1026,7 +932,7 @@ fn schema_validation_no_schema_on_disk_passes() {
     // No schema written — validation should be skipped silently
     let src = instance_src(
         "gts.x.core.events.topic.v1~x.commerce._.orders.v1.0",
-        r#""{\"name\":\"orders\"}""#,
+        r#"MyStruct { name: String::from("orders") }"#,
     );
     write(&root, "inst.rs", &src);
 

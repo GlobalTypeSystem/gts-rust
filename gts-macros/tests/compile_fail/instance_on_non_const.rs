@@ -1,4 +1,4 @@
-//! Test: gts_well_known_instance applied to a non-const item (static)
+//! Test: gts_well_known_instance rejects static items (only fn items are supported)
 
 use gts_macros::gts_well_known_instance;
 

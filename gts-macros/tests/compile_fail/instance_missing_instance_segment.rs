@@ -6,6 +6,6 @@ use gts_macros::gts_well_known_instance;
     dir_path = "instances",
     instance_segment = "x.commerce._.orders.v1.0"
 )]
-const ORDERS_TOPIC: &str = r#"{"name": "orders"}"#;
+fn get_instance_orders_v1() -> () {}
 
 fn main() {}

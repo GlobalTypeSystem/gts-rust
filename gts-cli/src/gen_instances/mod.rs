@@ -1,7 +1,7 @@
 pub mod attrs;
 pub mod parser;
 pub mod schema_check;
-pub mod string_lit;
+pub mod struct_expr;
 pub mod writer;
 
 use anyhow::{Result, bail};
@@ -179,7 +179,9 @@ fn print_summary(files_scanned: usize, files_skipped: usize, instances_generated
     println!("  Files skipped:      {files_skipped}");
     println!("  Instances generated: {instances_generated}");
     if instances_generated == 0 {
-        println!("\n  No instances found. Annotate consts with `#[gts_well_known_instance(...)]`.");
+        println!(
+            "\n  No instances found. Annotate fn items with `#[gts_well_known_instance(...)]`."
+        );
     }
 }
 
@@ -193,16 +195,18 @@ mod tests {
         fs::write(dir.join(name), content).unwrap();
     }
 
-    fn valid_src(id: &str, json_body: &str) -> String {
+    fn valid_src(id: &str, struct_body: &str) -> String {
         format!(
             concat!(
                 "#[gts_well_known_instance(\n",
                 "    dir_path = \"instances\",\n",
                 "    id = \"{}\"\n",
                 ")]\n",
-                "pub const FOO: &str = {};\n"
+                "fn get_instance_item_v1() -> MyStruct {{\n",
+                "    {}\n",
+                "}}\n"
             ),
-            id, json_body
+            id, struct_body
         )
     }
 
@@ -216,7 +220,7 @@ mod tests {
             "module.rs",
             &valid_src(
                 "gts.x.core.events.topic.v1~x.commerce._.orders.v1.0",
-                r#""{\"name\": \"orders\", \"partitions\": 16}""#,
+                r#"MyStruct { name: String::from("orders"), partitions: 16 }"#,
             ),
         );
 
@@ -256,12 +260,16 @@ mod tests {
             "    dir_path = \"instances\",\n",
             "    id = \"gts.x.core.events.topic.v1~x.commerce._.orders.v1.0\"\n",
             ")]\n",
-            "const A: &str = \"{\\\"name\\\": \\\"a\\\"}\";\n",
+            "fn get_instance_orders_v1() -> MyStruct {\n",
+            "    MyStruct { name: String::from(\"a\") }\n",
+            "}\n",
             "#[gts_well_known_instance(\n",
             "    dir_path = \"instances\",\n",
             "    id = \"gts.x.core.events.topic.v1~x.commerce._.orders.v1.0\"\n",
             ")]\n",
-            "const B: &str = \"{\\\"name\\\": \\\"b\\\"}\";\n"
+            "fn get_instance_orders2_v1() -> MyStruct {\n",
+            "    MyStruct { name: String::from(\"b\") }\n",
+            "}\n"
         );
         write_src(&root, "dup.rs", dup_src);
 
@@ -295,7 +303,9 @@ mod tests {
                 "    dir_path = \"instances\",\n",
                 "    id = \"bad-no-tilde\"\n",
                 ")]\n",
-                "const X: &str = \"{}\";\n"
+                "fn get_instance_bad_v1() -> MyStruct {\n",
+                "    MyStruct { name: String::from(\"x\") }\n",
+                "}\n"
             ),
         );
 

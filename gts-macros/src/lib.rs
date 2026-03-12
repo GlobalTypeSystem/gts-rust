@@ -1841,14 +1841,19 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     TokenStream::from(expanded)
 }
 
-/// Arguments for the `#[gts_well_known_instance]` macro.
-/// This is a parse-only validation type; fields are validated during `Parse` and not retained.
-struct GtsInstanceArgs;
+/// Parsed arguments for the `#[gts_well_known_instance]` macro.
+#[allow(dead_code)]
+struct GtsInstanceArgs {
+    /// The full instance ID (e.g., `gts.x.core.events.topic.v1~x.commerce._.orders.v1.0`)
+    id: String,
+    /// The schema portion of the ID (up to and including `~`, e.g., `gts.x.core.events.topic.v1~`)
+    schema_id: String,
+}
 
 impl Parse for GtsInstanceArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut dir_path: Option<String> = None;
-        let mut id: Option<(String, proc_macro2::Span)> = None;
+        let mut id: Option<(String, String, proc_macro2::Span)> = None;
         let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         while !input.is_empty() {
@@ -1942,7 +1947,8 @@ impl Parse for GtsInstanceArgs {
                         ));
                     }
 
-                    id = Some((full_id, value.span()));
+                    let schema_id = schema_part.to_owned();
+                    id = Some((full_id, schema_id, value.span()));
                 }
                 _ => {
                     return Err(syn::Error::new_spanned(
@@ -1957,54 +1963,186 @@ impl Parse for GtsInstanceArgs {
             }
         }
 
-        let _id_val = id.ok_or_else(|| {
+        let (id_val, schema_id, _span) = id.ok_or_else(|| {
             input.error("gts_well_known_instance: Missing required attribute: id")
         })?;
         let _dir_path_val = dir_path.ok_or_else(|| {
             input.error("gts_well_known_instance: Missing required attribute: dir_path")
         })?;
 
-        Ok(GtsInstanceArgs)
+        Ok(GtsInstanceArgs {
+            id: id_val,
+            schema_id,
+        })
     }
 }
 
-/// Declare a well-known GTS instance as a const JSON string literal.
+/// Extract version from a `snake_case` function name suffix.
+///
+/// Pattern: `..._v{MAJOR}` or `..._v{MAJOR}_{MINOR}` at the end.
+///
+/// Examples:
+/// - `get_instance_orders_v1` → Some(Version { major: 1, minor: None })
+/// - `get_instance_config_v1_2` → Some(Version { major: 1, minor: Some(2) })
+/// - `get_instance_orders` → None
+fn extract_fn_version(fn_name: &str) -> Option<Version> {
+    // Find the last "_v" followed by a digit
+    let bytes = fn_name.as_bytes();
+    let mut v_pos = None;
+
+    for i in 0..bytes.len().saturating_sub(2) {
+        if bytes[i] == b'_' && bytes[i + 1] == b'v' && bytes[i + 2].is_ascii_digit() {
+            v_pos = Some(i + 2); // Position after "_v"
+        }
+    }
+
+    let v_pos = v_pos?;
+    let version_part = &fn_name[v_pos..]; // e.g., "1" or "1_2"
+
+    // Parse version: MAJOR or MAJOR_MINOR
+    if let Some(underscore_pos) = version_part.find('_') {
+        // Has minor version: MAJOR_MINOR
+        let major_str = &version_part[..underscore_pos];
+        let minor_str = &version_part[underscore_pos + 1..];
+
+        let major = major_str.parse::<u32>().ok()?;
+        let minor = minor_str.parse::<u32>().ok()?;
+        Some(Version {
+            major,
+            minor: Some(minor),
+        })
+    } else {
+        // Only major version
+        let major = version_part.parse::<u32>().ok()?;
+        Some(Version { major, minor: None })
+    }
+}
+
+/// Validate that the function name follows the `get_instance_*_v{N}` convention
+/// and that its version suffix matches the schema version from the `id` attribute.
+fn validate_instance_fn_name(fn_ident: &syn::Ident, schema_id: &str) -> syn::Result<()> {
+    let fn_name = fn_ident.to_string();
+
+    // 1. Must start with `get_instance_`
+    if !fn_name.starts_with("get_instance_") {
+        return Err(syn::Error::new_spanned(
+            fn_ident,
+            format!(
+                "gts_well_known_instance: Function name must start with 'get_instance_', \
+                 got '{fn_name}'. Example: 'get_instance_orders_v1'"
+            ),
+        ));
+    }
+
+    // 2. Must have a descriptive middle part (at least one char between prefix and version)
+    let after_prefix = &fn_name["get_instance_".len()..];
+    if after_prefix.is_empty() {
+        return Err(syn::Error::new_spanned(
+            fn_ident,
+            format!(
+                "gts_well_known_instance: Function name must have a descriptive name after \
+                 'get_instance_', got '{fn_name}'. Example: 'get_instance_orders_v1'"
+            ),
+        ));
+    }
+
+    // 3. Extract and validate version suffix
+    let fn_version = extract_fn_version(&fn_name);
+    let schema_version = extract_schema_version(schema_id);
+
+    match (fn_version, schema_version) {
+        (Some(fv), Some(sv)) if fv != sv => Err(syn::Error::new_spanned(
+            fn_ident,
+            format!(
+                "gts_well_known_instance: Version mismatch between function name and schema ID. \
+                 Function '{fn_name}' has version suffix '_{fv_str}' but schema_id '{schema_id}' \
+                 has version '{sv_str}'. The versions must match \
+                 (e.g., get_instance_orders_v1 with v1~, or get_instance_orders_v2_0 with v2.0~)",
+                fv_str = fv.to_schema_version(),
+                sv_str = sv.to_schema_version()
+            ),
+        )),
+        (Some(_), Some(_)) => Ok(()), // Versions match
+        (None, Some(sv)) => Err(syn::Error::new_spanned(
+            fn_ident,
+            format!(
+                "gts_well_known_instance: schema_id '{schema_id}' has version '{sv_str}' but \
+                 function '{fn_name}' does not have a version suffix. \
+                 Add '_{sv_str}' suffix to the function name \
+                 (e.g., '{fn_name}_{sv_str}')",
+                sv_str = sv.to_schema_version()
+            ),
+        )),
+        (Some(fv), None) => Err(syn::Error::new_spanned(
+            fn_ident,
+            format!(
+                "gts_well_known_instance: Function '{fn_name}' has version suffix '_{fv_str}' but \
+                 cannot extract version from schema_id '{schema_id}'. \
+                 Expected format with version like 'gts.x.foo.v1~' or 'gts.x.foo.v1.0~'",
+                fv_str = fv.to_schema_version()
+            ),
+        )),
+        (None, None) => Err(syn::Error::new_spanned(
+            fn_ident,
+            format!(
+                "gts_well_known_instance: Both function name and schema_id must have a version. \
+                 Function '{fn_name}' has no version suffix (e.g., _v1) and schema_id '{schema_id}' \
+                 has no version (e.g., v1~). Add version to both \
+                 (e.g., '{fn_name}_v1' with 'gts.x.foo.v1~')"
+            ),
+        )),
+    }
+}
+
+/// Declare a well-known GTS instance as a typed function returning a schema struct.
 ///
 /// This macro:
-/// 1. **At compile time**: validates the `id` GTS instance ID format
-///    and verifies the annotated item is a `const` of type `&str`.
+/// 1. **At compile time**: validates the `id` GTS instance ID format,
+///    enforces function naming convention (`get_instance_*_v{N}`),
+///    validates the version suffix matches the schema version from `id`,
+///    and emits a compile-time assertion that the return type's `GtsSchema::SCHEMA_ID`
+///    matches the schema portion of `id`.
 /// 2. **At generate time**: the CLI (`gts generate-from-rust --mode instances`) scans for
-///    these annotations, validates the JSON payload, injects the `"id"` field, and writes
-///    `{dir_path}/{id}.instance.json`.
+///    these annotations, extracts the struct expression from the function body, builds
+///    the JSON object, injects the `"id"` field, and writes `{dir_path}/{id}.instance.json`.
 ///
-/// The macro passes the annotated `const` item through unchanged -- it is purely metadata
-/// for the CLI extraction step.
+/// The macro passes the annotated function through with `#[allow(dead_code)]` -- the function
+/// is never called at runtime, it is purely metadata for the CLI extraction step and for
+/// compile-time type checking.
 ///
-/// **Note:** This macro validates the `id` *format* only (GTS ID structure). It does **not**
-/// validate the instance JSON body against its parent schema at compile time. Schema conformance
-/// validation is performed by the CLI (`gts generate-from-rust`) when schema files are present
-/// on disk (e.g. after `--mode all` or a prior `--mode schemas` run).
+/// The Rust source is never modified -- `GtsInstanceId::ID` stays in the code permanently.
+/// The CLI reads the source and writes separate JSON files to the output directory.
 ///
 /// # Arguments
 ///
 /// * `dir_path` - Output directory for the generated instance file (relative to crate root or `--output`)
 /// * `id` - Full GTS instance ID (must contain `~` separating schema from instance segment, must not end with `~`)
 ///
+/// # Naming Convention
+///
+/// The function name must follow the pattern `get_instance_{name}_v{N}`:
+/// - **Prefix**: `get_instance_` (required)
+/// - **Middle**: descriptive name in `snake_case` (e.g., `orders`, `audit_trail`)
+/// - **Suffix**: `_v{N}` or `_v{N}_{M}` -- must match the schema version from the `id` attribute
+///
 /// # Example
 ///
 /// ```ignore
+/// use gts::GtsInstanceId;
 /// use gts_macros::gts_well_known_instance;
 ///
 /// #[gts_well_known_instance(
 ///     dir_path = "instances",
 ///     id = "gts.x.core.events.topic.v1~x.commerce._.orders.v1.0"
 /// )]
-/// const ORDERS_TOPIC: &str = r#"{
-///     "name": "orders",
-///     "description": "Order lifecycle events topic",
-///     "retention": "P90D",
-///     "partitions": 16
-/// }"#;
+/// fn get_instance_orders_v1() -> BaseEventTopicV1<()> {
+///     BaseEventTopicV1 {
+///         id: GtsInstanceId::ID,
+///         name: String::from("orders"),
+///         partitions: 16,
+///         properties: (),
+///     }
+/// }
 /// ```
 ///
 /// The CLI generates:
@@ -2012,66 +2150,98 @@ impl Parse for GtsInstanceArgs {
 /// with an injected `"id"` field: `"gts.x.core.events.topic.v1~x.commerce._.orders.v1.0"`.
 #[proc_macro_attribute]
 pub fn gts_well_known_instance(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let _args = parse_macro_input!(attr as GtsInstanceArgs);
+    let args = parse_macro_input!(attr as GtsInstanceArgs);
 
-    // Parse the annotated item -- must be a const item
-    let item_clone = item.clone();
-    let parsed: syn::Result<syn::ItemConst> = syn::parse(item_clone);
-
-    match parsed {
+    // Parse the annotated item -- must be a function
+    let item_fn: syn::ItemFn = match syn::parse(item) {
+        Ok(f) => f,
         Err(_) => {
             return syn::Error::new(
                 proc_macro2::Span::call_site(),
-                "gts_well_known_instance: Only `const` items are supported. \
-                 Usage: `const NAME: &str = r#\"{ ... }\"#;`",
+                "gts_well_known_instance: Only `fn` items are supported. \
+                 Usage: `fn get_instance_name_v1() -> SchemaType<()> { SchemaType { ... } }`",
             )
             .to_compile_error()
             .into();
         }
-        Ok(item_const) => {
-            // Validate the const has type &str (or &'lifetime str) using AST matching.
-            // This is more robust than stringifying tokens and avoids false rejections
-            // from formatting differences (spaces, lifetime names, etc.).
-            let ty = &item_const.ty;
-            let is_ref_str = match ty.as_ref() {
-                syn::Type::Reference(syn::TypeReference { elem, .. }) => {
-                    matches!(elem.as_ref(), syn::Type::Path(p) if p.qself.is_none() && p.path.is_ident("str"))
-                }
-                _ => false,
-            };
-            if !is_ref_str {
-                let ty_str = quote::quote!(#ty).to_string().replace(' ', "");
-                return syn::Error::new_spanned(
-                    ty,
-                    format!(
-                        "gts_well_known_instance: The annotated const must have type `&str`, got `{ty_str}`. \
-                         Usage: `const NAME: &str = r#\"{{ ... }}\"#;`"
-                    ),
-                )
-                .to_compile_error()
-                .into();
-            }
+    };
 
-            // Validate the const value is a string literal (not a macro invocation)
-            match item_const.expr.as_ref() {
-                syn::Expr::Lit(syn::ExprLit {
-                    lit: syn::Lit::Str(_),
-                    ..
-                }) => {}
-                _ => {
-                    return syn::Error::new_spanned(
-                        &item_const.expr,
-                        "gts_well_known_instance: The const value must be a string literal \
-                         (raw string `r#\"...\"#` or regular string `\"...\"`). \
-                         Macro invocations like `concat!()` are not supported.",
-                    )
-                    .to_compile_error()
-                    .into();
-                }
-            }
-        }
+    // Validate function has no arguments
+    if !item_fn.sig.inputs.is_empty() {
+        return syn::Error::new_spanned(
+            &item_fn.sig.inputs,
+            "gts_well_known_instance: Instance function must take no arguments.",
+        )
+        .to_compile_error()
+        .into();
     }
 
-    // Pass the item through unchanged -- this macro is purely metadata for the CLI
-    item
+    // Validate function has a return type
+    let return_type = match &item_fn.sig.output {
+        syn::ReturnType::Type(_, ty) => ty.clone(),
+        syn::ReturnType::Default => {
+            return syn::Error::new_spanned(
+                &item_fn.sig,
+                "gts_well_known_instance: Instance function must have a return type \
+                 (the schema struct type). Example: `fn get_instance_orders_v1() -> BaseEventTopicV1<()>`",
+            )
+            .to_compile_error()
+            .into();
+        }
+    };
+
+    // Validate function naming convention and version match
+    if let Err(e) = validate_instance_fn_name(&item_fn.sig.ident, &args.schema_id) {
+        return e.to_compile_error().into();
+    }
+
+    // Build compile-time assertion: return type's SCHEMA_ID == schema portion of id
+    let schema_id_str = &args.schema_id;
+    let fn_name = &item_fn.sig.ident;
+
+    // Generate a unique const name for the assertion to avoid collisions
+    let assert_ident = syn::Ident::new(
+        &format!("_ASSERT_SCHEMA_ID_{}", fn_name.to_string().to_uppercase()),
+        fn_name.span(),
+    );
+
+    let expanded = quote! {
+        #[allow(dead_code)]
+        #item_fn
+
+        // Compile-time assertion: the return type must implement GtsSchema and
+        // its SCHEMA_ID must match the schema portion of the `id` attribute.
+        #[doc(hidden)]
+        #[allow(non_upper_case_globals)]
+        const #assert_ident: () = {
+            // This const block triggers a compile error if:
+            // 1. The return type does not implement GtsSchema (type error)
+            // 2. The SCHEMA_ID does not match (assert! failure)
+            const EXPECTED: &str = #schema_id_str;
+            const ACTUAL: &str = <#return_type as ::gts::GtsSchema>::SCHEMA_ID;
+
+            // Const-compatible string equality check (byte-by-byte)
+            const fn const_str_eq(a: &[u8], b: &[u8]) -> bool {
+                if a.len() != b.len() {
+                    return false;
+                }
+                let mut i = 0;
+                while i < a.len() {
+                    if a[i] != b[i] {
+                        return false;
+                    }
+                    i += 1;
+                }
+                true
+            }
+
+            assert!(
+                const_str_eq(ACTUAL.as_bytes(), EXPECTED.as_bytes()),
+                "gts_well_known_instance: Schema ID mismatch. The return type's GtsSchema::SCHEMA_ID \
+                 does not match the schema portion of the `id` attribute."
+            );
+        };
+    };
+
+    TokenStream::from(expanded)
 }

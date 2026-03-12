@@ -1,4 +1,4 @@
-//! Test: gts_well_known_instance applied to a const with wrong type (not &str)
+//! Test: gts_well_known_instance rejects const items (only fn items are supported)
 
 use gts_macros::gts_well_known_instance;
 

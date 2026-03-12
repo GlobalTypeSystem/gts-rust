@@ -3,14 +3,14 @@ use regex::Regex;
 use std::path::Path;
 
 use super::attrs::{InstanceAttrs, parse_instance_attrs};
-use super::string_lit::decode_string_literal;
+use super::struct_expr::struct_expr_to_json;
 
 /// A parsed and validated instance annotation, ready for file generation.
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct ParsedInstance {
     pub attrs: InstanceAttrs,
-    /// Raw JSON body string (as written in the const value, decoded from the literal).
+    /// JSON body extracted from the function's struct expression (without "id" field).
     pub json_body: String,
     /// Absolute path of the source file containing this annotation.
     pub source_file: String,
@@ -18,7 +18,7 @@ pub struct ParsedInstance {
     pub line: usize,
 }
 
-/// Extract all `#[gts_well_known_instance]`-annotated consts from a source text.
+/// Extract all `#[gts_well_known_instance]`-annotated functions from a source text.
 ///
 /// Three outcomes per the extraction contract:
 /// 1. No annotation token found (preflight negative) → `Ok(vec![])` (fast path, no errors)
@@ -27,6 +27,9 @@ pub struct ParsedInstance {
 ///
 /// # Errors
 /// Returns an error if an annotation is found but cannot be parsed or validated.
+///
+/// # Panics
+/// Panics if the annotation regex produces a match with no capture group (should never happen).
 pub fn extract_instances_from_source(
     content: &str,
     source_file: &Path,
@@ -46,18 +49,26 @@ pub fn extract_instances_from_source(
     let mut instances = Vec::new();
 
     for cap in annotation_re.captures_iter(&stripped) {
-        let full_start = cap.get(0).map_or(0, |m| m.start());
+        let Some(full_match) = cap.get(0) else {
+            continue;
+        };
+        let full_start = full_match.start();
+        let match_end = full_match.end();
         let line = byte_offset_to_line(full_start, &line_offsets);
 
         let attr_body = &cap[1];
         let attrs = parse_instance_attrs(attr_body, &source_file_str, line)?;
 
-        let raw_literal = &cap[2];
-        let json_body = decode_string_literal(raw_literal).map_err(|e| {
-            anyhow::anyhow!("{source_file_str}:{line}: Failed to decode string literal: {e}")
+        // The regex matches up to (but not including) the opening `{`.
+        // Use brace-depth counting to extract the function body.
+        let (_body_end, fn_body) = extract_fn_body_at(&stripped, match_end).ok_or_else(|| {
+            anyhow::anyhow!(
+                "{source_file_str}:{line}: Could not find function body for \
+                 #[gts_well_known_instance] annotation. Expected `{{ ... }}` after function signature."
+            )
         })?;
 
-        validate_json_body(&json_body, &source_file_str, line)?;
+        let json_body = extract_json_from_fn_body(fn_body, &source_file_str, line)?;
 
         instances.push(ParsedInstance {
             attrs,
@@ -72,59 +83,86 @@ pub fn extract_instances_from_source(
 
     // Preflight was positive but neither the main regex nor unsupported-form
     // checks matched anything — the annotation is in a form we don't recognise
-    // (e.g. applied to a fn, enum, or a completely garbled attribute body).
+    // (e.g. applied to a const, enum, or a completely garbled attribute body).
     // This is a hard error per the extraction contract.
     if instances.is_empty() {
         let needle_line = find_needle_line(content, &line_offsets);
         bail!(
             "{source_file_str}:{needle_line}: `#[gts_well_known_instance]` annotation found \
-             but could not be parsed. The annotation must be on a `const NAME: &str = <literal>;` \
-             item. Check for typos, unsupported item kinds, or missing required attributes."
+             but could not be parsed. The annotation must be on a \
+             `fn get_instance_name_v1() -> SchemaType {{ ... }}` item. \
+             Check for typos, unsupported item kinds, or missing required attributes."
         );
     }
 
     Ok(instances)
 }
 
-/// Validate that the decoded JSON body is a non-empty object without an `"id"` field.
-fn validate_json_body(json_body: &str, source_file: &str, line: usize) -> Result<()> {
-    let json_val: serde_json::Value = serde_json::from_str(json_body).map_err(|e| {
+/// Extract JSON from a function body by parsing the struct expression.
+///
+/// The function body should contain a single struct expression (the last/only
+/// expression in the block). This is parsed with `syn` and converted to JSON
+/// via the `struct_expr` module.
+fn extract_json_from_fn_body(fn_body: &str, source_file: &str, line: usize) -> Result<String> {
+    // Wrap the body in braces if it isn't already (the regex captures the content inside {})
+    let block_src = format!("{{ {fn_body} }}");
+    let block: syn::Block = syn::parse_str(&block_src).map_err(|e| {
+        anyhow::anyhow!("{source_file}:{line}: Failed to parse function body as Rust code: {e}")
+    })?;
+
+    // Find the struct expression — it should be the last expression in the block
+    // (either the trailing expression or the last statement that is an expression)
+    let struct_expr = extract_struct_expr_from_block(&block).ok_or_else(|| {
         anyhow::anyhow!(
-            "{}:{}: Malformed JSON in instance body: {} (at JSON line {}, col {})",
-            source_file,
-            line,
-            e,
-            e.line(),
-            e.column()
+            "{source_file}:{line}: Function body must contain a struct expression \
+             (e.g., `MyStruct {{ field: value }}`). Could not find a struct expression."
         )
     })?;
 
-    if !json_val.is_object() {
-        bail!(
-            "{}:{}: Instance JSON body must be a JSON object {{...}}, got {}. \
-             Arrays, strings, numbers, booleans, and null are not valid instance bodies.",
-            source_file,
-            line,
-            json_type_name(&json_val)
-        );
+    let json_value = struct_expr_to_json(struct_expr).map_err(|e| {
+        anyhow::anyhow!("{source_file}:{line}: Failed to convert struct expression to JSON: {e}")
+    })?;
+
+    // The JSON should be an object
+    if !json_value.is_object() {
+        bail!("{source_file}:{line}: Struct expression did not produce a JSON object");
     }
 
-    if json_val.get("id").is_some() {
-        bail!(
-            "{source_file}:{line}: Instance JSON body must not contain an \"id\" field. \
-             The id is automatically injected from the `id` attribute. \
-             Remove the \"id\" field from the JSON body."
-        );
-    }
-
-    Ok(())
+    serde_json::to_string(&json_value).map_err(|e| {
+        anyhow::anyhow!("{source_file}:{line}: Failed to serialize struct expression to JSON: {e}")
+    })
 }
 
-/// Build the regex matching `#[gts_well_known_instance(...)] const NAME: &str = <literal>;`
+/// Extract the struct expression from a parsed block.
+///
+/// Looks for a `syn::ExprStruct` as the trailing expression of the block.
+fn extract_struct_expr_from_block(block: &syn::Block) -> Option<&syn::ExprStruct> {
+    // Check the trailing expression first (block without semicolon on last line)
+    if let Some(syn::Stmt::Expr(expr, None)) = block.stmts.last() {
+        return find_struct_expr(expr);
+    }
+    None
+}
+
+/// Recursively find a struct expression, unwrapping parentheses and other wrappers.
+fn find_struct_expr(expr: &syn::Expr) -> Option<&syn::ExprStruct> {
+    match expr {
+        syn::Expr::Struct(s) => Some(s),
+        syn::Expr::Paren(p) => find_struct_expr(&p.expr),
+        syn::Expr::Group(g) => find_struct_expr(&g.expr),
+        _ => None,
+    }
+}
+
+/// Build the regex matching `#[gts_well_known_instance(...)] fn name() -> Type { ... }`
 ///
 /// Capture groups:
 /// 1. Attribute body (everything inside the outer parentheses)
-/// 2. The string literal token (raw or regular)
+/// 2. The function body content (everything inside the outermost `{ }`, extracted
+///    by `extract_fn_body_at` after the regex provides the match start position)
+///
+/// Note: Because function bodies can contain nested braces, the regex only matches
+/// up to the opening `{`. The body is then extracted by brace-depth counting.
 fn build_annotation_regex() -> Result<Regex> {
     let pattern = concat!(
         // (1) Macro attribute body
@@ -134,13 +172,89 @@ fn build_annotation_regex() -> Result<Regex> {
         r"\s*",
         // Optional visibility: pub / pub(crate) / pub(super) / pub(in path)
         r"(?:pub\s*(?:\([^)]*\)\s*)?)?",
-        // const NAME: &str = (optional 'static lifetime)
-        r"const\s+\w+\s*:\s*&\s*(?:'static\s+)?str\s*=\s*",
-        // (2) String literal: raw r"..." / r#"..."# / r##"..."## (0+ hashes) or regular "..."
-        "(r#*\"[\\s\\S]*?\"#*|\"(?:[^\"\\\\]|\\\\.)*\")",
-        r"\s*;"
+        // fn name() -> ReturnType (with optional generics in return type)
+        r"fn\s+\w+\s*\(\s*\)\s*->\s*[^{]+",
     );
     Ok(Regex::new(pattern)?)
+}
+
+/// Extract the function body starting from the opening `{` at or after `start_pos`.
+///
+/// Uses brace-depth counting to correctly handle nested braces.
+/// Returns the content between the outermost braces (exclusive).
+fn extract_fn_body_at(content: &str, start_pos: usize) -> Option<(usize, &str)> {
+    let bytes = content.as_bytes();
+    let len = bytes.len();
+
+    // Find the opening brace
+    let mut i = start_pos;
+    while i < len && bytes[i] != b'{' {
+        i += 1;
+    }
+    if i >= len {
+        return None;
+    }
+
+    let body_start = i + 1; // after the opening {
+    let mut depth = 1;
+    i += 1;
+
+    while i < len && depth > 0 {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => depth -= 1,
+            b'/' if i + 1 < len && bytes[i + 1] == b'/' => {
+                // Skip line comments
+                while i < len && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            b'/' if i + 1 < len && bytes[i + 1] == b'*' => {
+                // Skip block comments
+                i += 2;
+                while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                if i + 1 < len {
+                    i += 2;
+                }
+                continue;
+            }
+            b'"' => {
+                // Skip string literals
+                i += 1;
+                while i < len {
+                    if bytes[i] == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if bytes[i] == b'"' {
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+            b'r' if i + 1 < len && (bytes[i + 1] == b'"' || bytes[i + 1] == b'#') => {
+                // Skip raw string literals
+                if let Some(after) = try_skip_raw_string(bytes, i) {
+                    i = after;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    if depth == 0 {
+        let body_end = i - 1; // before the closing }
+        Some((i, &content[body_start..body_end]))
+    } else {
+        None
+    }
 }
 
 /// Token-aware scan: finds `#[gts_well_known_instance` or
@@ -290,45 +404,17 @@ fn try_skip_raw_string(bytes: &[u8], start: usize) -> Option<usize> {
 ///
 /// NOTE: uses `(?s)` (dotall) flag so the attr body may span multiple lines.
 fn check_unsupported_forms(content: &str, source_file: &str, line_offsets: &[usize]) -> Result<()> {
-    // static instead of const
-    let static_re = Regex::new(
-        r"(?s)#\[(?:gts_macros::)?gts_well_known_instance\(.*?\)\]\s*(?:#\[[^\]]*\]\s*)*(?:pub\s*(?:\([^)]*\)\s*)?)?static\s",
+    // Old const &str form (including static)
+    let const_re = Regex::new(
+        r"(?s)#\[(?:gts_macros::)?gts_well_known_instance\(.*?\)\]\s*(?:#\[[^\]]*\]\s*)*(?:pub\s*(?:\([^)]*\)\s*)?)?(?:const|static)\s",
     )?;
-    if let Some(m) = static_re.find(content) {
+    if let Some(m) = const_re.find(content) {
         let line = byte_offset_to_line(m.start(), line_offsets);
         bail!(
-            "{source_file}:{line}: `#[gts_well_known_instance]` cannot be applied to `static` items. \
-             Use `const NAME: &str = ...` instead."
+            "{source_file}:{line}: `#[gts_well_known_instance]` no longer supports `const` or `static` items. \
+             Use a function returning a typed struct instead:\n\
+             \n  fn get_instance_name_v1() -> SchemaType {{\n      SchemaType {{ id: GtsInstanceId::ID, ... }}\n  }}"
         );
-    }
-
-    // concat!() as value
-    let concat_re = Regex::new(
-        r"(?s)#\[(?:gts_macros::)?gts_well_known_instance\(.*?\)\]\s*(?:#\[[^\]]*\]\s*)*(?:pub\s*(?:\([^)]*\)\s*)?)?const\s+\w+\s*:\s*&\s*(?:'static\s+)?str\s*=\s*concat\s*!",
-    )?;
-    if let Some(m) = concat_re.find(content) {
-        let line = byte_offset_to_line(m.start(), line_offsets);
-        bail!(
-            "{source_file}:{line}: `concat!()` is not supported as the const value for \
-             `#[gts_well_known_instance]`. Use a raw string literal `r#\"...\"#` instead."
-        );
-    }
-
-    // const with wrong type (not &str) — checked last as it's broader
-    // Note: we use a positive match for the non-&str case to avoid lookahead
-    let wrong_type_re = Regex::new(
-        r"(?s)#\[(?:gts_macros::)?gts_well_known_instance\(.*?\)\]\s*(?:#\[[^\]]*\]\s*)*(?:pub\s*(?:\([^)]*\)\s*)?)?const\s+\w+\s*:\s*&\s*(?:'static\s+)?([A-Za-z][A-Za-z0-9_]*)\b",
-    )?;
-    if let Some(cap) = wrong_type_re.captures(content) {
-        let ty = cap.get(1).map_or("", |m| m.as_str());
-        if ty != "str" {
-            let start = cap.get(0).map_or(0, |m| m.start());
-            let line = byte_offset_to_line(start, line_offsets);
-            bail!(
-                "{source_file}:{line}: `#[gts_well_known_instance]` requires `const NAME: &str`. \
-             The annotated const must have type `&str`."
-            );
-        }
     }
 
     Ok(())
@@ -431,31 +517,23 @@ fn find_needle_line(content: &str, line_offsets: &[usize]) -> usize {
     pos.map_or(1, |p| byte_offset_to_line(p, line_offsets))
 }
 
-fn json_type_name(val: &serde_json::Value) -> &'static str {
-    match val {
-        serde_json::Value::Null => "null",
-        serde_json::Value::Bool(_) => "boolean",
-        serde_json::Value::Number(_) => "number",
-        serde_json::Value::String(_) => "string",
-        serde_json::Value::Array(_) => "array",
-        serde_json::Value::Object(_) => "object",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn src(body: &str) -> String {
+    /// Build a source string with a fn-based instance annotation.
+    fn src(fn_body: &str) -> String {
         format!(
             concat!(
                 "#[gts_well_known_instance(\n",
                 "    dir_path = \"instances\",\n",
                 "    id = \"gts.x.core.events.topic.v1~x.commerce._.orders.v1.0\"\n",
                 ")]\n",
-                "const FOO: &str = {};\n"
+                "fn get_instance_orders_v1() -> MyStruct {{\n",
+                "    {}\n",
+                "}}\n"
             ),
-            body
+            fn_body
         )
     }
 
@@ -481,8 +559,6 @@ mod tests {
 
     #[test]
     fn test_preflight_negative_bare_use_statement() {
-        // `use gts_macros::gts_well_known_instance;` must NOT be a positive —
-        // it lacks the required `#[` attribute-open prefix.
         assert!(!preflight_scan(
             "use gts_macros::gts_well_known_instance;\nconst X: u32 = 1;\n"
         ));
@@ -490,7 +566,6 @@ mod tests {
 
     #[test]
     fn test_preflight_positive_after_static_lifetime() {
-        // `'static` before the annotation must NOT suppress it (false-negative fix).
         let src = concat!(
             "fn foo(x: &'static str) -> u32 { 0 }\n",
             "#[gts_well_known_instance(x)]\n"
@@ -500,7 +575,6 @@ mod tests {
 
     #[test]
     fn test_preflight_positive_after_named_lifetime() {
-        // `'a` lifetime before the annotation must NOT suppress it.
         let src = concat!(
             "fn bar<'a>(x: &'a str) -> &'a str { x }\n",
             "#[gts_well_known_instance(x)]\n"
@@ -510,8 +584,6 @@ mod tests {
 
     #[test]
     fn test_preflight_positive_char_literal_hash() {
-        // A char literal containing '#' must not be the needle itself.
-        // But the real annotation after it must still be found.
         let src = concat!(
             "fn check(c: char) -> bool { c == '#' }\n",
             "#[gts_well_known_instance(x)]\n"
@@ -520,8 +592,8 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_regular_string() {
-        let content = src(r#""{\"name\": \"orders\"}""#);
+    fn test_extract_simple_struct() {
+        let content = src("MyStruct { name: String::from(\"orders\") }");
         let result = extract_instances_from_source(&content, Path::new("t.rs")).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(
@@ -530,34 +602,29 @@ mod tests {
         );
         assert_eq!(result[0].attrs.schema_id, "gts.x.core.events.topic.v1~");
         assert_eq!(result[0].attrs.instance_segment, "x.commerce._.orders.v1.0");
+        // JSON body should contain "name"
+        let json: serde_json::Value = serde_json::from_str(&result[0].json_body).unwrap();
+        assert_eq!(json["name"], "orders");
     }
 
     #[test]
     fn test_no_annotation_returns_empty() {
-        let content = "const FOO: &str = \"hello\";";
+        let content = "fn foo() -> u32 { 42 }";
         let result = extract_instances_from_source(content, Path::new("t.rs")).unwrap();
         assert!(result.is_empty());
     }
 
     #[test]
-    fn test_rejects_id_in_body() {
-        let content = src(r#""{\"id\": \"bad\", \"name\": \"x\"}""#);
-        let err = extract_instances_from_source(&content, Path::new("t.rs")).unwrap_err();
-        assert!(err.to_string().contains("\"id\" field"));
-    }
-
-    #[test]
-    fn test_rejects_non_object_json() {
-        let content = src("\"[1, 2, 3]\"");
-        let err = extract_instances_from_source(&content, Path::new("t.rs")).unwrap_err();
-        assert!(err.to_string().contains("JSON object"));
-    }
-
-    #[test]
-    fn test_rejects_malformed_json() {
-        let content = src(r#""{not valid json}""#);
-        let err = extract_instances_from_source(&content, Path::new("t.rs")).unwrap_err();
-        assert!(err.to_string().contains("Malformed JSON"));
+    fn test_rejects_const_form() {
+        let content = concat!(
+            "#[gts_well_known_instance(\n",
+            "    dir_path = \"instances\",\n",
+            "    id = \"gts.x.foo.v1~x.bar.v1.0\"\n",
+            ")]\n",
+            "const FOO: &str = \"{}\";\n"
+        );
+        let err = extract_instances_from_source(content, Path::new("t.rs")).unwrap_err();
+        assert!(err.to_string().contains("no longer supports"));
     }
 
     #[test]
@@ -570,20 +637,7 @@ mod tests {
             "static FOO: &str = \"{}\";\n"
         );
         let err = extract_instances_from_source(content, Path::new("t.rs")).unwrap_err();
-        assert!(err.to_string().contains("static"));
-    }
-
-    #[test]
-    fn test_rejects_concat_macro() {
-        let content = concat!(
-            "#[gts_well_known_instance(\n",
-            "    dir_path = \"instances\",\n",
-            "    id = \"gts.x.foo.v1~x.bar.v1.0\"\n",
-            ")]\n",
-            "const FOO: &str = concat!(\"{\", \"}\");\n"
-        );
-        let err = extract_instances_from_source(content, Path::new("t.rs")).unwrap_err();
-        assert!(err.to_string().contains("concat!()"));
+        assert!(err.to_string().contains("no longer supports"));
     }
 
     #[test]
@@ -593,12 +647,16 @@ mod tests {
             "    dir_path = \"instances\",\n",
             "    id = \"gts.x.core.events.topic.v1~x.commerce._.orders.v1.0\"\n",
             ")]\n",
-            "const A: &str = \"{\\\"name\\\": \\\"orders\\\"}\";\n",
+            "fn get_instance_orders_v1() -> MyStruct {\n",
+            "    MyStruct { name: String::from(\"orders\") }\n",
+            "}\n",
             "#[gts_well_known_instance(\n",
             "    dir_path = \"instances\",\n",
             "    id = \"gts.x.core.events.topic.v1~x.commerce._.payments.v1.0\"\n",
             ")]\n",
-            "const B: &str = \"{\\\"name\\\": \\\"payments\\\"}\";\n"
+            "fn get_instance_payments_v1() -> MyStruct {\n",
+            "    MyStruct { name: String::from(\"payments\") }\n",
+            "}\n"
         );
         let result = extract_instances_from_source(content, Path::new("t.rs")).unwrap();
         assert_eq!(result.len(), 2);
@@ -611,27 +669,59 @@ mod tests {
             "    dir_path = \"instances\",\n",
             "    id = \"gts.x.core.events.topic.v1~x.commerce._.orders.v1.0\"\n",
             ")]\n",
-            "pub const FOO: &str = \"{\\\"name\\\": \\\"orders\\\"}\";\n"
+            "pub fn get_instance_orders_v1() -> MyStruct {\n",
+            "    MyStruct { name: String::from(\"orders\") }\n",
+            "}\n"
         );
         let result = extract_instances_from_source(content, Path::new("t.rs")).unwrap();
         assert_eq!(result.len(), 1);
     }
 
     #[test]
-    fn test_line_number_reported() {
-        let content = concat!(
-            "// line 1\n",
-            "// line 2\n",
-            "#[gts_well_known_instance(\n", // line 3
-            "    dir_path = \"instances\",\n",
-            "    id = \"gts.x.foo.v1~x.bar.v1.0\"\n",
-            ")]\n",
-            "const FOO: &str = \"{\\\"id\\\": \\\"bad\\\"}\";\n"
+    fn test_gts_instance_id_sentinel_skipped() {
+        let content = src("MyStruct { id: GtsInstanceId::ID, name: String::from(\"test\") }");
+        let result = extract_instances_from_source(&content, Path::new("t.rs")).unwrap();
+        assert_eq!(result.len(), 1);
+        let json: serde_json::Value = serde_json::from_str(&result[0].json_body).unwrap();
+        assert!(
+            json.get("id").is_none(),
+            "GtsInstanceId::ID should be skipped"
         );
-        let err = extract_instances_from_source(content, Path::new("events.rs")).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("events.rs"));
-        // line 3 is where the annotation starts
-        assert!(msg.contains(":3:"), "Expected line 3 in: {msg}");
+        assert_eq!(json["name"], "test");
+    }
+
+    #[test]
+    fn test_unit_placeholder_skipped() {
+        let content = src("MyStruct { name: String::from(\"test\"), properties: () }");
+        let result = extract_instances_from_source(&content, Path::new("t.rs")).unwrap();
+        assert_eq!(result.len(), 1);
+        let json: serde_json::Value = serde_json::from_str(&result[0].json_body).unwrap();
+        assert_eq!(
+            json["properties"],
+            serde_json::json!({}),
+            "() should produce empty object"
+        );
+    }
+
+    #[test]
+    fn test_nested_struct() {
+        let content = src("Outer { inner: Inner { value: 99 }, name: String::from(\"test\") }");
+        let result = extract_instances_from_source(&content, Path::new("t.rs")).unwrap();
+        assert_eq!(result.len(), 1);
+        let json: serde_json::Value = serde_json::from_str(&result[0].json_body).unwrap();
+        assert_eq!(json["inner"]["value"], 99);
+        assert_eq!(json["name"], "test");
+    }
+
+    #[test]
+    fn test_vec_macro_in_struct() {
+        let content = src("MyStruct { tags: vec![String::from(\"a\"), String::from(\"b\")] }");
+        let result = extract_instances_from_source(&content, Path::new("t.rs")).unwrap();
+        assert_eq!(result.len(), 1);
+        let json: serde_json::Value = serde_json::from_str(&result[0].json_body).unwrap();
+        let tags = json["tags"].as_array().unwrap();
+        assert_eq!(tags.len(), 2);
+        assert_eq!(tags[0], "a");
+        assert_eq!(tags[1], "b");
     }
 }

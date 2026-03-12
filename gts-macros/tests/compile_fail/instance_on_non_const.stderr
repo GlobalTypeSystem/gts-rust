@@ -1,4 +1,4 @@
-error: gts_well_known_instance: Only `const` items are supported. Usage: `const NAME: &str = r#"{ ... }"#;`
+error: gts_well_known_instance: Only `fn` items are supported. Usage: `fn get_instance_name_v1() -> SchemaType<()> { SchemaType { ... } }`
  --> tests/compile_fail/instance_on_non_const.rs:5:1
   |
 5 | / #[gts_well_known_instance(

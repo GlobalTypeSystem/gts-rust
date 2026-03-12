@@ -425,45 +425,47 @@ The CLI automatically maps Rust types to JSON Schema types:
 
 ## `#[gts_well_known_instance]` — Well-Known Instance Declaration
 
-The `#[gts_well_known_instance]` attribute macro declares a **well-known GTS instance** as a `const` JSON string literal. It provides:
+The `#[gts_well_known_instance]` attribute macro declares a **well-known GTS instance** as a typed `fn` returning a struct expression. It provides:
 
-1. **Compile-time validation** of the `id` (full instance ID) format.
-2. **CLI extraction** — the `gts generate-from-rust --mode instances` command scans for these annotations, validates the JSON payload, injects the `"id"` field, and writes the instance file.
+1. **Compile-time validation** of the `id` format, function naming convention, version consistency, and return type schema ID matching (via `GtsSchema::SCHEMA_ID` const assertion).
+2. **CLI extraction** — the `gts generate-from-rust --mode instances` command scans for these annotations, extracts the struct body, converts it to JSON, injects the `"id"` field, and writes the instance file.
 
-The macro passes the annotated `const` through **unchanged** at compile time. It is purely metadata for the CLI extraction step.
+The macro passes the annotated `fn` through with `#[allow(dead_code)]` at compile time and emits a const assertion to verify the return type's schema ID matches the `id` attribute.
 
-### Usage
+### Complete Example
+
+Given a GTS schema struct `BaseModkitPluginV1<T>` (derived via `#[gts_schema]`), declare a well-known instance:
 
 ```rust
-#[gts_macros::gts_well_known_instance(
+// src/gts/instances/default_plugin.rs
+use gts::GtsInstanceId;
+use gts_macros::gts_well_known_instance;
+
+use crate::gts::BaseModkitPluginV1;
+
+#[gts_well_known_instance(
     dir_path = "instances",
-    id = "gts.x.core.events.topic.v1~x.commerce._.orders.v1.0"
+    id = "gts.x.core.modkit.plugin.v1~x.core.modkit.default_plugin.v1.0"
 )]
-pub const ORDERS_TOPIC: &str = r#"{
-    "name": "orders",
-    "description": "Order lifecycle events topic",
-    "retention": "P90D",
-    "partitions": 16
-}"#;
+pub fn get_instance_default_plugin_v1() -> BaseModkitPluginV1<()> {
+    BaseModkitPluginV1 {
+        id: GtsInstanceId::ID,   // sentinel — skipped in JSON, CLI injects the real id
+        vendor: String::from("hypernetix"),
+        priority: 100,
+        properties: (),          // () → empty JSON object {} (generic placeholder)
+    }
+}
 ```
+
+**Key points:**
+- **`GtsInstanceId::ID`** — sentinel value for the `id` field; the CLI skips it during JSON conversion and injects the real `id` from the attribute.
+- **`()`** — produces an empty JSON object `{}`, useful when the struct has a generic type parameter (e.g., `T` in `BaseModkitPluginV1<T>`) that isn't needed for this instance.
+- **Function name** — must follow `get_instance_<name>_v<N>` where `<N>` matches the schema version (`v1` in this case).
+- **Return type** — must implement `GtsSchema` with a `SCHEMA_ID` matching the schema portion of the `id` attribute. This is verified at compile time.
 
 ### Quick Start Guide
 
-**Step 1 — Declare the instance in a Rust source file:**
-
-```rust
-// src/gts/mod.rs
-#[gts_macros::gts_well_known_instance(
-    dir_path = "instances",
-    id = "gts.x.core.events.topic.v1~x.commerce._.orders.v1.0"
-)]
-pub const ORDERS_TOPIC: &str = r#"{
-    "name": "orders",
-    "description": "Order lifecycle events topic",
-    "retention": "P90D",
-    "partitions": 16
-}"#;
-```
+**Step 1 — Declare the instance in a Rust source file** (as shown above).
 
 **Step 2 — Run the CLI to generate the `.instance.json` file:**
 
@@ -471,18 +473,27 @@ pub const ORDERS_TOPIC: &str = r#"{
 gts generate-from-rust --source src/ --mode instances
 ```
 
-This produces `instances/gts.x.core.events.topic.v1~x.commerce._.orders.v1.0.instance.json` with the `"id"` field injected automatically.
+This produces `instances/gts.x.core.modkit.plugin.v1~x.core.modkit.default_plugin.v1.0.instance.json`:
+
+```json
+{
+  "id": "gts.x.core.modkit.plugin.v1~x.core.modkit.default_plugin.v1.0",
+  "priority": 100,
+  "properties": {},
+  "vendor": "hypernetix"
+}
+```
+
+Note: the `"id"` field is injected automatically, `GtsInstanceId::ID` is omitted, and `()` becomes `{}`.
 
 **Step 3 — Use the instance:**
 
 ```rust
-// Reference the const directly (it's just a &str containing JSON)
-let topic: serde_json::Value = serde_json::from_str(ORDERS_TOPIC)?;
+// Call the function to get the typed struct
+let plugin = get_instance_default_plugin_v1();
 
-// The full instance ID is the `id` attribute value
-let instance_id = "gts.x.core.events.topic.v1~x.commerce._.orders.v1.0";
-
-// Register or look up via the types-registry
+// Or load the generated JSON at runtime
+let instance_id = "gts.x.core.modkit.plugin.v1~x.core.modkit.default_plugin.v1.0";
 let entity = registry.get(instance_id).await?;
 ```
 
@@ -540,13 +551,16 @@ gts generate-from-rust --source src/ --output out/ --mode instances
 
 ### Rules and restrictions
 
-- The annotated item **must be a `const`** (not `static`) of type `&str`.
-- The const value **must be a string literal** — raw strings (`r#"..."#`) or regular strings (`"..."`). `concat!()` and other macro invocations are not supported.
-- The JSON body **must be a JSON object** (`{ ... }`). Arrays, scalars, and `null` are not valid.
-- The JSON body **must not contain an `"id"` field** — the CLI injects it automatically from the `id` attribute.
+- The annotated item **must be a `fn`** returning a typed struct — `const` and `static` items are not supported.
+- The function **must take no arguments** and have an explicit return type.
+- The function name **must follow the convention** `get_instance_<name>_v<N>` where `<N>` matches the schema version in the `id`.
+- The function body **must return a struct expression** — the CLI extracts fields and converts them to JSON.
+- The struct **must not contain an `id` field** — the CLI injects it automatically from the `id` attribute. Use `GtsInstanceId::ID` as a sentinel if the struct type requires an `id` field; it will be skipped during JSON conversion.
+- Unit value `()` in a field produces an empty JSON object `{}` (useful for generic type parameter placeholders).
 - Files in `compile_fail/` directories and files with a `// gts:ignore` directive are skipped.
 - Items behind `#[cfg(...)]` gates (e.g., `#[cfg(test)]`) are still extracted — extraction is lexical, not conditional.
-- **Schema conformance is validated at CLI time, not compile time** — the macro validates `id` format only. The CLI (`gts generate-from-rust`) validates instance JSON bodies against their parent schemas when schema files are present on disk (e.g. after `--mode all` or a prior `--mode schemas` run). If the schema file is not found, validation is skipped with a warning.
+- **Compile-time validation** covers: `id` format, function naming convention, version consistency, and return type schema ID matching (via `GtsSchema::SCHEMA_ID` const assertion).
+- **Schema conformance is validated at CLI time** — the CLI (`gts generate-from-rust`) validates instance JSON bodies against their parent schemas when schema files are present on disk (e.g. after `--mode all` or a prior `--mode schemas` run). If the schema file is not found, validation is skipped with a warning.
 
 ### Compile-time validation errors
 
@@ -556,9 +570,12 @@ gts generate-from-rust --source src/ --output out/ --mode instances
 | Missing `dir_path` | `Missing required attribute: dir_path` |
 | `id` without `~` | `id must contain '~' separating schema from instance segment` |
 | `id` ending with `~` | `id must not end with '~' (that is a schema/type ID)` |
-| Applied to a `static` item | `Only \`const\` items are supported` |
-| Applied to a `const` with type other than `&str` | `The annotated const must have type \`&str\`` |
-| Const value is `concat!()` or other macro | `The const value must be a string literal` |
+| Applied to a non-`fn` item (`const`, `static`, etc.) | `Only \`fn\` items are supported` |
+| Function takes arguments | `must take no arguments` |
+| Missing return type | `must have an explicit return type` |
+| Function name doesn't match convention | `must start with 'get_instance_'` |
+| Version in fn name doesn't match schema version | `version mismatch` |
+| Return type `SCHEMA_ID` doesn't match `id` | `Schema ID mismatch` |
 
 ---
 

@@ -188,5 +188,10 @@ glob = "0.3"
 # CLI and terminal output
 colored = "3.0"
 
+# Rust syntax parsing (used by gts-cli for struct expression extraction)
+syn = { version = "2.0", features = ["full", "extra-traits"] }
+quote = "1.0"
+proc-macro2 = "1.0"
+
 # Format parsing
 serde-saphyr = "0.0.10"
