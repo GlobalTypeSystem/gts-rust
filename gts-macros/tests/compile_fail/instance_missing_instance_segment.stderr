@@ -1,0 +1,5 @@
+error: gts_well_known_instance: Unknown attribute. Expected: dir_path, id
+ --> tests/compile_fail/instance_missing_instance_segment.rs:7:5
+  |
+7 |     instance_segment = "x.commerce._.orders.v1.0"
+  |     ^^^^^^^^^^^^^^^^

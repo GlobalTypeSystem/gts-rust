@@ -580,6 +580,29 @@ impl schemars::JsonSchema for GtsInstanceId {
 }
 
 impl GtsInstanceId {
+    /// Sentinel value for use in `#[gts_well_known_instance]` function bodies.
+    ///
+    /// The CLI replaces this with the real instance ID (from the `id` attribute)
+    /// when generating the output JSON file. This const exists solely to satisfy
+    /// the Rust type system — its value is never written to disk.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// #[gts_well_known_instance(
+    ///     dir_path = "instances",
+    ///     id = "gts.x.core.events.topic.v1~x.commerce._.orders.v1.0"
+    /// )]
+    /// fn get_instance_orders_v1() -> BaseEventTopicV1<()> {
+    ///     BaseEventTopicV1 {
+    ///         id: GtsInstanceId::ID,
+    ///         name: String::from("orders"),
+    ///         properties: (),
+    ///     }
+    /// }
+    /// ```
+    pub const ID: Self = Self(GtsEntityId(String::new()));
+
     /// Returns the JSON Schema representation of `GtsInstanceId` as a `serde_json::Value`.
     ///
     /// This is the canonical schema definition used by both the schemars `JsonSchema` impl

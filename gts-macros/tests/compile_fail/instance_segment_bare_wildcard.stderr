@@ -1,0 +1,5 @@
+error: gts_well_known_instance: Invalid instance segment '*': Too few tokens (got 1, min 5). Expected format: vendor.package.namespace.type.vMAJOR[.MINOR]
+ --> tests/compile_fail/instance_segment_bare_wildcard.rs:7:10
+  |
+7 |     id = "gts.x.core.events.topic.v1~*"
+  |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

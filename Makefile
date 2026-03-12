@@ -1,6 +1,6 @@
 CI := 1
 
-.PHONY: help build dev-fmt dev-clippy all check fmt clippy test deny security update-spec e2e generate-schemas
+.PHONY: help build dev-fmt dev-clippy all check fmt clippy test deny security update-spec e2e generate-schemas coverage
 
 # Default target - show help
 .DEFAULT_GOAL := help
