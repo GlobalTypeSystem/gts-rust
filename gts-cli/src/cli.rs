@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use gts::GtsOps;
 use std::io::Write;
 
+use crate::gen_instances::generate_instances_from_rust;
 use crate::gen_schemas::generate_schemas_from_rust;
 use crate::server::GtsHttpServer;
 
@@ -119,19 +120,34 @@ pub enum Commands {
         #[arg(long, default_value = "8000")]
         port: u16,
     },
-    /// Generate GTS schemas from Rust source code with `#[struct_to_gts_schema]` annotations
+    /// Generate GTS artifacts from Rust source code with `#[struct_to_gts_schema]` /
+    /// `#[gts_well_known_instance]` annotations
     GenerateFromRust {
-        /// Source directory or file to scan for annotated structs
+        /// Source directory or file to scan for annotated items
         #[arg(long)]
         source: String,
-        /// Output directory for generated schemas (optional: uses paths from macro if not specified)
+        /// Output directory for generated files (optional: uses paths from macro if not specified)
         #[arg(long)]
         output: Option<String>,
         /// Exclude patterns (can be specified multiple times). Supports glob patterns.
         /// Example: --exclude "tests/*" --exclude "examples/*"
         #[arg(long, action = clap::ArgAction::Append)]
         exclude: Vec<String>,
+        /// What to generate: schemas (default), instances, or all
+        #[arg(long, default_value = "schemas")]
+        mode: GenerateMode,
     },
+}
+
+/// Controls what `generate-from-rust` generates.
+#[derive(clap::ValueEnum, Clone, Debug, PartialEq, Eq)]
+pub enum GenerateMode {
+    /// Generate JSON schemas from `#[struct_to_gts_schema]` annotations (default)
+    Schemas,
+    /// Generate well-known instance JSON files from `#[gts_well_known_instance]` annotations
+    Instances,
+    /// Generate both schemas and instances
+    All,
 }
 /// Run the CLI application
 ///
@@ -259,9 +275,19 @@ async fn run_command(cli: Cli) -> Result<()> {
             source,
             output,
             exclude,
-        } => {
-            generate_schemas_from_rust(&source, output.as_deref(), &exclude, cli.verbose)?;
-        }
+            mode,
+        } => match mode {
+            GenerateMode::Schemas => {
+                generate_schemas_from_rust(&source, output.as_deref(), &exclude, cli.verbose)?;
+            }
+            GenerateMode::Instances => {
+                generate_instances_from_rust(&source, output.as_deref(), &exclude, cli.verbose)?;
+            }
+            GenerateMode::All => {
+                generate_schemas_from_rust(&source, output.as_deref(), &exclude, cli.verbose)?;
+                generate_instances_from_rust(&source, output.as_deref(), &exclude, cli.verbose)?;
+            }
+        },
     }
 
     Ok(())
@@ -357,10 +383,12 @@ mod tests {
                 source,
                 output,
                 exclude,
+                mode,
             } => {
                 assert_eq!(source, "/src/path");
                 assert_eq!(output, Some("/out/path".to_owned()));
                 assert_eq!(exclude, vec!["tests/*", "examples/*"]);
+                assert_eq!(mode, GenerateMode::Schemas);
             }
             _ => panic!("Expected GenerateFromRust command"),
         }
@@ -639,10 +667,12 @@ mod tests {
                 source,
                 output,
                 exclude,
+                mode,
             } => {
                 assert_eq!(source, "/src/path");
                 assert_eq!(output, None);
                 assert!(exclude.is_empty());
+                assert_eq!(mode, GenerateMode::Schemas);
             }
             _ => panic!("Expected GenerateFromRust command"),
         }

@@ -11,6 +11,8 @@
 )]
 
 mod cli;
+mod gen_common;
+mod gen_instances;
 mod gen_schemas;
 mod logging;
 mod server;

@@ -21,6 +21,7 @@ path = "src/main.rs"
 
 [dependencies]
 gts.workspace = true
+gts-id.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
@@ -32,6 +33,10 @@ tracing-subscriber.workspace = true
 chrono.workspace = true
 regex.workspace = true
 walkdir.workspace = true
+jsonschema.workspace = true
+syn.workspace = true
+quote.workspace = true
+proc-macro2.workspace = true
 
 [dev-dependencies]
 tempfile = "3.8"

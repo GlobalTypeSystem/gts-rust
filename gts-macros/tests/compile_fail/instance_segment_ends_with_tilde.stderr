@@ -1,0 +1,5 @@
+error: gts_well_known_instance: id must not end with '~' (that is a schema/type ID, not an instance ID), got 'gts.x.core.events.topic.v1~'
+ --> tests/compile_fail/instance_segment_ends_with_tilde.rs:7:10
+  |
+7 |     id = "gts.x.core.events.topic.v1~"
+  |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

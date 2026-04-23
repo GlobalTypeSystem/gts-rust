@@ -1,0 +1,5 @@
+error: gts_well_known_instance: id must contain '~' separating schema from instance segment, got 'gts.x.core.events.topic.v1.x.commerce._.orders.v1.0'
+ --> tests/compile_fail/instance_schema_id_no_tilde.rs:7:10
+  |
+7 |     id = "gts.x.core.events.topic.v1.x.commerce._.orders.v1.0"
+  |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
