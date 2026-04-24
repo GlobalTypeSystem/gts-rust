@@ -1,0 +1,5 @@
+error: GtsSchema: unknown attribute 'nonexistent'. Expected: dir_path, schema_id, description, or extends
+  --> tests/v2_compile_fail/unknown_gts_attr.rs:10:5
+   |
+10 |     nonexistent = "value"
+   |     ^^^^^^^^^^^

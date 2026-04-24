@@ -1,0 +1,5 @@
+error: GtsSchema: duplicate #[gts(instance_id)]. Only one instance_id per struct is allowed.
+  --> tests/v2_compile_fail/duplicate_instance_id.rs:16:5
+   |
+16 |     #[gts(instance_id)]
+   |     ^

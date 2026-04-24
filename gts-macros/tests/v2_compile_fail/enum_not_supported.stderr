@@ -1,0 +1,5 @@
+error: GtsSchema: enums are not supported. Use a named struct instead.
+  --> tests/v2_compile_fail/enum_not_supported.rs:11:10
+   |
+11 | pub enum StatusV1 {
+   |          ^^^^^^^^

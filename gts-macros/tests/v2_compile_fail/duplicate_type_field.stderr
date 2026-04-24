@@ -1,0 +1,5 @@
+error: GtsSchema: duplicate #[gts(type_field)]. Only one type_field per struct is allowed.
+  --> tests/v2_compile_fail/duplicate_type_field.rs:15:5
+   |
+15 |     #[gts(type_field)]
+   |     ^

@@ -1,0 +1,43 @@
+error[E0119]: conflicting implementations of trait `GtsSerialize` for type `AuditEventV1`
+  --> tests/v2_compile_fail/nested_direct_serialize_cfg_attr.rs:21:29
+   |
+21 | #[derive(Debug, JsonSchema, GtsSchema)]
+   |                             ^^^^^^^^^
+   |
+   = note: conflicting implementation in crate `gts`:
+           - impl<T> GtsSerialize for T
+             where T: _::_serde::Serialize;
+   = note: this error originates in the derive macro `GtsSchema` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0119]: conflicting implementations of trait `GtsDeserialize<'_>` for type `AuditEventV1`
+  --> tests/v2_compile_fail/nested_direct_serialize_cfg_attr.rs:21:29
+   |
+21 | #[derive(Debug, JsonSchema, GtsSchema)]
+   |                             ^^^^^^^^^
+   |
+   = note: conflicting implementation in crate `gts`:
+           - impl<'de, T> GtsDeserialize<'de> for T
+             where T: _::_serde::Deserialize<'de>;
+   = note: this error originates in the derive macro `GtsSchema` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0119]: conflicting implementations of trait `GtsNoDirectSerialize` for type `AuditEventV1`
+  --> tests/v2_compile_fail/nested_direct_serialize_cfg_attr.rs:21:29
+   |
+21 | #[derive(Debug, JsonSchema, GtsSchema)]
+   |                             ^^^^^^^^^
+   |
+   = note: conflicting implementation in crate `gts`:
+           - impl<T> GtsNoDirectSerialize for T
+             where T: _::_serde::Serialize;
+   = note: this error originates in the derive macro `GtsSchema` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0119]: conflicting implementations of trait `GtsNoDirectDeserialize` for type `AuditEventV1`
+  --> tests/v2_compile_fail/nested_direct_serialize_cfg_attr.rs:21:29
+   |
+21 | #[derive(Debug, JsonSchema, GtsSchema)]
+   |                             ^^^^^^^^^
+   |
+   = note: conflicting implementation in crate `gts`:
+           - impl<T> GtsNoDirectDeserialize for T
+             where for<'de> T: _::_serde::Deserialize<'de>;
+   = note: this error originates in the derive macro `GtsSchema` (in Nightly builds, run with -Z macro-backtrace for more info)

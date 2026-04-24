@@ -1,0 +1,5 @@
+error: GtsSchema: 'extends' is specified but schema_id 'gts.x.app.entities.child.v1~' has only 1 segment. A derived type must have at least 2 segments. Either remove 'extends' or add a parent segment to schema_id.
+  --> tests/v2_compile_fail/extends_single_segment.rs:14:12
+   |
+14 | pub struct ChildV1 {
+   |            ^^^^^^^

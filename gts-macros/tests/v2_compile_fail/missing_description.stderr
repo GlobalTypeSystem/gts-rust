@@ -1,0 +1,5 @@
+error: GtsSchema: missing required attribute 'description' in #[gts(...)]
+ --> tests/v2_compile_fail/missing_description.rs:7:12
+  |
+7 | pub struct UserV1 {
+  |            ^^^^^^

@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: GtsSchema: parent struct 'BaseEventV1' schema ID must match parent segment 'gts.x.wrong.parent.type.v1~' from schema_id
+  --> tests/v2_compile_fail/extends_parent_mismatch.rs:24:29
+   |
+24 | #[derive(Debug, JsonSchema, GtsSchema)]
+   |                             ^^^^^^^^^ evaluation of `_::_` failed here

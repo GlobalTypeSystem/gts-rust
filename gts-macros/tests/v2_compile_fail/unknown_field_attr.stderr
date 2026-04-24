@@ -1,0 +1,5 @@
+error: GtsSchema: unknown field attribute 'nonexistent'. Expected: type_field, instance_id, or skip
+  --> tests/v2_compile_fail/unknown_field_attr.rs:12:11
+   |
+12 |     #[gts(nonexistent)]
+   |           ^^^^^^^^^^^

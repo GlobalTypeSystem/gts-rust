@@ -1,6 +1,13 @@
 // Proc macros run at compile time, so panics become compile errors
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+mod gts_attrs;
+mod gts_codegen;
+mod gts_field_attrs;
+mod gts_schema_derive;
+mod gts_serde;
+mod gts_validation;
+
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{
@@ -9,7 +16,9 @@ use syn::{
     parse_macro_input,
 };
 
-// Field name constants to avoid duplication
+// Legacy: used only by #[struct_to_gts_schema]'s name-based identity detection.
+// #[derive(GtsSchema)] does not consult these — it identifies the type/id field
+// via explicit #[gts(type_field)] / #[gts(instance_id)] annotations instead.
 const ID_FIELD_NAMES: &[&str] = &["$id", "id", "gts_id", "gtsId"];
 const TYPE_FIELD_NAMES: &[&str] = &["type", "r#type", "gts_type", "gtsType", "schema"];
 const SERDE_TYPE_RENAMES: &[&str] = &["type", "gts_type", "gtsType", "schema"];
@@ -132,7 +141,7 @@ fn extract_schema_version(schema_id: &str) -> Option<Version> {
 
 /// Extract the parent schema ID from a `schema_id` (removes the last segment)
 /// e.g., `gts.x.core.events.type.v1~x.core.audit.event.v1~` -> `gts.x.core.events.type.v1~`
-fn extract_parent_schema_id(schema_id: &str) -> Option<String> {
+pub(crate) fn extract_parent_schema_id(schema_id: &str) -> Option<String> {
     let trimmed = schema_id.trim_end_matches('~');
     trimmed
         .rfind('~')
@@ -186,26 +195,27 @@ fn is_type_named(ty: &syn::Type, name: &str) -> bool {
     }
 }
 
-/// Extract serde rename value from field attributes
-fn get_serde_rename(field: &syn::Field) -> Option<String> {
+/// Extract the value of `#[serde(rename = "...")]` from a field's attributes.
+///
+/// Parses each `#[serde(...)]` attribute structurally so `rename` is found regardless of
+/// its position in the argument list (e.g. `#[serde(rename = "foo", default)]`).
+pub(crate) fn get_serde_rename(field: &syn::Field) -> Option<String> {
     for attr in &field.attrs {
-        // Parse the serde attribute using a simpler approach
-        if attr.path().is_ident("serde")
-            && let Ok(meta) = attr.meta.require_list()
-        {
-            let tokens = meta.tokens.to_string();
-
-            // Look for rename = "value" pattern in the token string
-            if let Some(rename_start) = tokens.find("rename") {
-                let rename_part = &tokens[rename_start..];
-                if let Some(eq_pos) = rename_part.find('=') {
-                    let value_part = &rename_part[eq_pos + 1..].trim();
-                    // Extract the string value between quotes
-                    if value_part.starts_with('"') && value_part.ends_with('"') {
-                        let rename_value = &value_part[1..value_part.len() - 1];
-                        return Some(rename_value.to_owned());
-                    }
-                }
+        if !attr.path().is_ident("serde") {
+            continue;
+        }
+        let Ok(metas) = attr.parse_args_with(
+            syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+        ) else {
+            continue;
+        };
+        for meta in &metas {
+            if let syn::Meta::NameValue(nv) = meta
+                && nv.path.is_ident("rename")
+                && let syn::Expr::Lit(el) = &nv.value
+                && let syn::Lit::Str(s) = &el.lit
+            {
+                return Some(s.value());
             }
         }
     }
@@ -590,24 +600,47 @@ fn add_gts_serde_attrs(input: &mut syn::DeriveInput, base: &BaseAttr) {
     }
 }
 
-/// Build a custom where clause with additional trait bounds on generic params
-fn build_where_clause(
+/// Emit a `where` clause composed of the existing predicates plus any additional ones.
+///
+/// Concatenating a raw `#[existing]` token stream with a new predicate is unsafe because
+/// a `syn::WhereClause` without a trailing comma serializes back without one, producing
+/// invalid Rust like `where P: Clone P: Bound`. Instead, copy the existing predicates into
+/// a fresh `Punctuated`, append the new ones, and re-emit — which always inserts the
+/// correct separators.
+pub(crate) fn extend_where_clause(
+    existing: Option<&syn::WhereClause>,
+    new_predicates: impl IntoIterator<Item = syn::WherePredicate>,
+) -> proc_macro2::TokenStream {
+    let mut preds: syn::punctuated::Punctuated<syn::WherePredicate, syn::Token![,]> =
+        syn::punctuated::Punctuated::new();
+    if let Some(wc) = existing {
+        for p in &wc.predicates {
+            preds.push(p.clone());
+        }
+    }
+    for p in new_predicates {
+        preds.push(p);
+    }
+    if preds.is_empty() {
+        quote! {}
+    } else {
+        quote! { where #preds }
+    }
+}
+
+/// Build a custom where clause with additional trait bounds on the first generic type param.
+pub(crate) fn build_where_clause(
     generics: &syn::Generics,
     where_clause: Option<&syn::WhereClause>,
     bounds: &str,
 ) -> proc_macro2::TokenStream {
-    if let Some(generic_param) = generics.type_params().next() {
-        let generic_ident = &generic_param.ident;
-        let bounds_tokens: proc_macro2::TokenStream =
-            bounds.parse().expect("Failed to parse bounds");
-        if let Some(existing) = where_clause {
-            quote! { #existing #generic_ident: #bounds_tokens, }
-        } else {
-            quote! { where #generic_ident: #bounds_tokens }
-        }
-    } else {
-        quote! { #where_clause }
-    }
+    let Some(generic_param) = generics.type_params().next() else {
+        return quote! { #where_clause };
+    };
+    let generic_ident = &generic_param.ident;
+    let bounds_tokens: proc_macro2::TokenStream = bounds.parse().expect("Failed to parse bounds");
+    let predicate: syn::WherePredicate = syn::parse_quote!(#generic_ident: #bounds_tokens);
+    extend_where_clause(where_clause, std::iter::once(predicate))
 }
 
 /// Represents the `base` attribute value for struct inheritance
@@ -1839,4 +1872,46 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     };
 
     TokenStream::from(expanded)
+}
+
+/// Derive macro for GTS schema generation.
+///
+/// This is the new, composable alternative to `#[struct_to_gts_schema]`.
+/// It uses `#[gts(...)]` attributes at both the struct and field level.
+///
+/// # Struct-level attributes
+///
+/// ```rust,ignore
+/// #[derive(GtsSchema)]
+/// #[gts(
+///     dir_path = "schemas",
+///     schema_id = "gts.x.core.events.type.v1~",
+///     description = "Base event type",
+///     // extends = ParentStruct,      // optional: for derived types
+/// )]
+/// pub struct BaseEventV1<P: GtsSchema> { ... }
+/// ```
+///
+/// # Field-level attributes
+///
+/// ```rust,ignore
+/// #[gts(type_field)]    // marks GtsSchemaId field as the GTS type discriminator
+/// #[gts(instance_id)]   // marks GtsInstanceId field as the GTS instance ID
+/// #[gts(skip)]          // excludes field from generated JSON Schema
+/// ```
+///
+/// Root structs (no `extends`) must declare exactly one of `#[gts(type_field)]` or
+/// `#[gts(instance_id)]` — they are mutually exclusive, and the annotation guarantees
+/// GTS type is always deducible from any instance. Derived structs (`extends = Parent`)
+/// must declare neither: the root's chained identifier already carries the GTS type.
+///
+/// # Requirements
+///
+/// All GTS structs must also derive `schemars::JsonSchema`. The `GtsSchema` derive macro
+/// uses `schemars::schema_for!(Self)` internally to generate JSON Schema properties, so
+/// `JsonSchema` must be derived by the user on each struct.
+#[proc_macro_derive(GtsSchema, attributes(gts))]
+pub fn derive_gts_schema(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    TokenStream::from(gts_schema_derive::derive_gts_schema(&input))
 }

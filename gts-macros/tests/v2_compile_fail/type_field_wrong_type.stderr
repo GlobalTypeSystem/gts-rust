@@ -1,0 +1,5 @@
+error: GtsSchema: #[gts(type_field)] must be on a field of type GtsSchemaId. The type field identifies the GTS schema type (ending with ~).
+  --> tests/v2_compile_fail/type_field_wrong_type.rs:13:21
+   |
+13 |     pub event_type: String,
+   |                     ^^^^^^

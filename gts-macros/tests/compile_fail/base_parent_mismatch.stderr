@@ -4,7 +4,7 @@ error: struct_to_gts_schema: Base structs must have either an ID field (one of: 
 15 | pub struct BaseEventV1<P> {
    |            ^^^^^^^^^^^
 
-error[E0412]: cannot find type `BaseEventV1` in this scope
+error[E0425]: cannot find type `BaseEventV1` in this scope
   --> tests/compile_fail/base_parent_mismatch.rs:25:12
    |
 25 |     base = BaseEventV1,
