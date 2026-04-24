@@ -1,0 +1,5 @@
+error: GtsSchema: missing required attribute 'dir_path' in #[gts(...)]
+ --> tests/v2_compile_fail/missing_dir_path.rs:7:12
+  |
+7 | pub struct UserV1 {
+  |            ^^^^^^

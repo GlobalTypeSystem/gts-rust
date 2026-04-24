@@ -1,0 +1,5 @@
+error: GtsSchema: schema_id 'gts.x.core.events.type.v1~x.core.audit.event.v1~' has 2 segments but no 'extends' is specified. A root type must have exactly 1 segment. Either add 'extends = ParentStruct' or remove extra segments from schema_id.
+  --> tests/v2_compile_fail/extends_none_multi_segment.rs:15:12
+   |
+15 | pub struct AuditV1 {
+   |            ^^^^^^^

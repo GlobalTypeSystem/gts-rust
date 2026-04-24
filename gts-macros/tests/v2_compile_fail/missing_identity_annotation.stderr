@@ -1,0 +1,5 @@
+error: GtsSchema: root structs must declare exactly one of #[gts(type_field)] or #[gts(instance_id)]. The identity field guarantees GTS type is always deducible from any instance - required for Type Registry lookups, RPC/MCP payload dispatch, and Event consumers. Annotate the schema-id field with #[gts(type_field)] (for anonymous instances) or #[gts(instance_id)] (for well-known instances).
+  --> tests/v2_compile_fail/missing_identity_annotation.rs:12:12
+   |
+12 | pub struct EventV1 {
+   |            ^^^^^^^

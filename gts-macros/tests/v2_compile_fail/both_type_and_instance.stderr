@@ -1,0 +1,5 @@
+error: GtsSchema: #[gts(type_field)] and #[gts(instance_id)] are mutually exclusive. A struct's instances are either well-known (instance_id) or anonymous (type_field), not both.
+  --> tests/v2_compile_fail/both_type_and_instance.rs:16:5
+   |
+16 |     #[gts(instance_id)]
+   |     ^

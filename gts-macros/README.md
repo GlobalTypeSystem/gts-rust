@@ -1,891 +1,207 @@
 # GTS Macros
 
-Procedural macros for GTS (Global Type System) schema generation from Rust structs.
+Procedural macros binding Rust structs to the [Global Type System](https://github.com/GlobalTypeSystem/gts-spec).
 
-## Overview
+The primary API is the `#[derive(GtsSchema)]` derive macro with `#[gts(...)]` helper attributes. It:
 
-The `#[struct_to_gts_schema]` attribute macro serves **three purposes**:
+1. **Validates** GTS identifiers, inheritance chains, and identity-field placement at compile time
+2. **Generates** JSON Schema conforming to the GTS specification (v0.8)
+3. **Exposes** a runtime API consumed by the Type Registry, REST/RPC/MCP APIs, and Event streams
+4. **Generates a safe-by-construction `new(...)` constructor** that eliminates the most common identity-field errors
 
-1. **Compile-Time Validation** - Catches configuration errors before runtime
-2. **Schema Generation** - Enables CLI-based JSON Schema file generation
-3. **Runtime API** - Provides schema access, instance ID generation, and schema composition capabilities at runtime
+> **Legacy macro notice.** The older `#[struct_to_gts_schema(...)]` attribute macro is still shipped and fully functional. New code should use `#[derive(GtsSchema)]`. For mechanical conversion steps and schema-output parity, see the [migration guide](../docs/002-struct-to-gts-schema-migration.md). The design rationale is documented in [ADR-001](../docs/001-gts-schema-derive-macro-adr.md).
+
+---
+
+## Table of contents
+
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Struct-level `#[gts(...)]` attributes](#struct-level-gts-attributes)
+- [Field-level `#[gts(...)]` attributes](#field-level-gts-attributes)
+- [Identity fields](#identity-fields-type_field-vs-instance_id)
+- [Generated `new(...)` constructor](#generated-new-constructor)
+- [Inheritance](#inheritance)
+- [Serialization](#serialization)
+- [Runtime API](#runtime-api)
+- [Schema generation (CLI)](#schema-generation-cli)
+- [Rust → JSON Schema type mapping](#rust--json-schema-type-mapping)
+- [Compile-time validation](#compile-time-validation)
+- [Legacy `#[struct_to_gts_schema]`](#legacy-struct_to_gts_schema)
+
+---
 
 ## Installation
 
-Add to your `Cargo.toml`:
-
 ```toml
 [dependencies]
+gts = { path = "path/to/gts-rust/gts" }
 gts-macros = { path = "path/to/gts-rust/gts-macros" }
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+schemars = { version = "1.2", features = ["uuid1"] }
 ```
 
-## Quick Start
-
-```rust
-use gts_macros::struct_to_gts_schema;
-use uuid::Uuid;
-use gts::gts::{GtsInstanceId, GtsSchemaId};
-
-// Base event type (root of the hierarchy)
-// Note: Base structs get Serialize/Deserialize/JsonSchema automatically.
-#[derive(Debug)]
-#[struct_to_gts_schema(
-    dir_path = "schemas",
-    base = true,
-    schema_id = "gts.x.core.events.type.v1~",
-    description = "Base event type with common fields",
-    properties = "id,tenant_id,payload"
-)]
-pub struct BaseEventV1<P> {
-    pub id: Uuid,
-    pub r#type: GtsSchemaId,
-    pub tenant_id: Uuid,
-    pub payload: P,
-}
-
-// Audit event that inherits from BaseEventV1
-#[derive(Debug)]
-#[struct_to_gts_schema(
-    dir_path = "schemas",
-    base = BaseEventV1,
-    schema_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~",
-    description = "Audit event with user context",
-    properties = "user_id,action"
-)]
-pub struct AuditEventV1 {
-    pub user_id: Uuid,
-    pub action: String,
-}
-
-// Runtime usage:
-fn example() {
-    // Access schema IDs
-    let base_id = BaseEventV1::<()>::gts_schema_id();
-    let audit_id = AuditEventV1::gts_schema_id();
-
-    // Get schemas as JSON
-    let base_schema = BaseEventV1::<()>::gts_schema_with_refs_as_string_pretty();
-    let audit_schema = AuditEventV1::gts_schema_with_refs_as_string_pretty();
-
-    // Generate instance IDs
-    let event_id = AuditEventV1::gts_make_instance_id("evt-12345.v1");
-    assert_eq!(event_id.as_ref(), "gts.x.core.events.type.v1~x.core.audit.event.v1~evt-12345.v1");
-}
-```
+`schemars::JsonSchema` must be derived on every GTS struct — `#[derive(GtsSchema)]` uses `schemars::schema_for!(Self)` internally to generate the properties object.
 
 ---
 
-## Purpose 1: Compile-Time Validation
-
-The macro validates your annotations at compile time, catching errors early.
-
-### Automatic Derives
-
-The macro automatically adds these derives to your struct:
-- **Base structs** (`base = true`): `serde::Serialize`, `serde::Deserialize`, `schemars::JsonSchema`
-- **Nested structs** (`base = ParentStruct`): `schemars::JsonSchema` only  
-  (direct Serialize/Deserialize is intentionally blocked)
-
-**Do NOT add Serialize/Deserialize manually for nested structs** - direct serialization is prohibited.  
-You can add other derives like `Debug`, `Clone`, etc.
+## Quick start
 
 ```rust
-// ✅ Correct - only add Debug, Clone, etc.
-#[derive(Debug, Clone)]
-#[struct_to_gts_schema(...)]
-pub struct MyStructV1 { ... }
-
-// ❌ Wrong - will cause duplicate implementation errors
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[struct_to_gts_schema(...)]
-pub struct MyStructV1 { ... }
-```
-
-### What Gets Validated
-
-| Check | Description |
-|-------|-------------|
-| **Required parameters** | All of `dir_path`, `base`, `schema_id`, `description`, `properties` must be present |
-| **Base consistency** | `base = true` requires single-segment schema_id; `base = Parent` requires multi-segment |
-| **Parent schema match** | When `base = Parent`, Parent's SCHEMA_ID must match the parent segment in schema_id |
-| **Property existence** | Every property in the list must exist as a field in the struct |
-| **Struct type** | Only structs with named fields are supported (no tuple structs) |
-| **Generic type constraints** | Generic type parameters must implement `GtsSchema` (only `()` or other GTS structs allowed) |
-| **Base struct field validation** | Base structs (`base = true`) must have either ID fields OR GTS Type fields, but not both (see below) |
-
-### Compile Error Examples
-
-**Missing property:**
-```rust
-#[struct_to_gts_schema(
-    dir_path = "schemas",
-    base = true,
-    schema_id = "gts.x.core.events.type.v1~",
-    description = "Base event",
-    properties = "id,nonexistent"  // ❌ Error!
-)]
-pub struct BaseEventV1<P> {
-    pub id: Uuid,
-    pub r#type: GtsSchemaId,
-    pub payload: P,
-}
-```
-```
-error: struct_to_gts_schema: Property 'nonexistent' not found in struct.
-       Available fields: ["id", "payload"]
-```
-
-**Base mismatch (base = true with multi-segment schema_id):**
-```rust
-#[struct_to_gts_schema(
-    dir_path = "schemas",
-    base = true,  // ❌ Error! base = true requires single-segment
-    schema_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~",
-    description = "Audit event",
-    properties = "user_id"
-)]
-pub struct AuditEventV1 { /* ... */ }
-```
-```
-error: struct_to_gts_schema: base = true requires single-segment schema_id,
-       but found 2 segments
-```
-
-**Parent schema ID mismatch:**
-```rust
-#[struct_to_gts_schema(
-    dir_path = "schemas",
-    base = WrongParent,  // ❌ Error! Parent's SCHEMA_ID doesn't match
-    schema_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~",
-    description = "Audit event",
-    properties = "user_id"
-)]
-pub struct AuditEventV1 { /* ... */ }
-```
-```
-error: struct_to_gts_schema: Base struct 'WrongParent' schema ID must match
-       parent segment 'gts.x.core.events.type.v1~' from schema_id
-```
-
-**Tuple struct:**
-```rust
-#[struct_to_gts_schema(/* ... */)]
-pub struct Data(String);  // ❌ Tuple struct not supported
-```
-```
-error: struct_to_gts_schema: Only structs with named fields are supported
-```
-
-**Non-GTS struct as generic argument:**
-```rust
-// Regular struct without struct_to_gts_schema
-pub struct MyStruct { pub some_id: String }
-
-// Using it as generic argument fails
-let event: BaseEventV1<MyStruct> = BaseEventV1 { /* ... */ };  // ❌ Error!
-```
-```
-error[E0277]: the trait bound `MyStruct: GtsSchema` is not satisfied
-  --> src/main.rs:10:17
-   |
-10 |     let event: BaseEventV1<MyStruct> = BaseEventV1 { ... };
-   |                ^^^^^^^^^^^^^^^^^^^^^ the trait `GtsSchema` is not implemented for `MyStruct`
-```
-
-**Base struct field validation - ID fields:**
-```rust
-use gts::gts::GtsInstanceId;
-
-#[struct_to_gts_schema(
-    dir_path = "schemas",
-    base = true,
-    schema_id = "gts.x.core.events.topic.v1~",
-    description = "Base event with ID field",
-    properties = "id,name"
-)]
-pub struct BaseEventTopicV1<P> {
-    pub id: GtsInstanceId,  // ✅ Valid ID field
-    pub name: String,
-    pub payload: P,
-}
-```
-
-**Base struct field validation - GTS Type fields:**
-```rust
-use gts::gts::GtsSchemaId;
-
-#[struct_to_gts_schema(
-    dir_path = "schemas",
-    base = true,
-    schema_id = "gts.x.core.events.type.v1~",
-    description = "Base event with type field",
-    properties = "r#type,name"
-)]
-pub struct BaseEventV1<P> {
-    pub id: Uuid,             // Event UUID
-    pub r#type: GtsSchemaId,  // Event Type - ✅ Valid GTS Type field
-    pub name: String,
-    pub payload: P,
-}
-```
-
-**Invalid base struct - both ID and GTS Type fields:**
-```rust
-#[struct_to_gts_schema(
-    dir_path = "schemas",
-    base = true,
-    schema_id = "gts.x.core.events.topic.v1~",
-    description = "Invalid base with both ID and type",
-    properties = "id,r#type,name"  // ❌ Error! Both ID and GTS Type fields
-)]
-pub struct BaseEventV1<P> {
-    pub id: GtsInstanceId,     // Event topic ID field
-    pub r#type: GtsSchemaId,   // Event type (schema) ID field - ❌ Cannot have both!
-```
-
-**Invalid base struct - wrong GTS Type field type:**
-```rust
-#[struct_to_gts_schema(
-    dir_path = "schemas",
-    base = true,
-    schema_id = "gts.x.core.events.type.v1~",
-    description = "Base event with wrong type field",
-    properties = "r#type,name"
-)]
-pub struct BaseEventV1<P> {
-    pub id: Uuid,        // Event UUID
-    pub r#type: String,  // Event type (schema) - ❌ Should be GtsSchemaId
-    pub name: String,
-    pub payload: P,
-}
-```
-```
-error: struct_to_gts_schema: Base structs with GTS Type fields must have at least one GTS Type field (type, gts_type, gtsType, or schema) of type GtsSchemaId
-```
-
-### Base Struct Field Validation Rules
-
-Base structs (`base = true`) must follow **exactly one** of these patterns:
-
-#### Option 1: ID Fields
-- **Supported field names**: `$id`, `id`, `gts_id`, `gtsId`
-- **Required type**: `GtsInstanceId` (or `gts::GtsInstanceId`)
-- **Use case**: Instance-based identification
-
-#### Option 2: GTS Type Fields
-- **Supported field names**: `type`, `r#type`, `gts_type`, `gtsType`, `schema`
-- **Supported serde renames**: Fields with `#[serde(rename = "type")]`, `#[serde(rename = "gts_type")]`, `#[serde(rename = "gtsType")]`, or `#[serde(rename = "schema")]`
-- **Required type**: `GtsSchemaId` (or `gts::GtsSchemaId`)
-- **Use case**: Schema-based identification
-
-**Serde rename example:**
-```rust
-#[struct_to_gts_schema(
-    dir_path = "schemas",
-    base = true,
-    schema_id = "gts.x.core.events.type.v1~",
-    description = "Base event with serde(rename = \"type\")",
-    properties = "event_type,id,tenant_id,sequence_id,payload"
-)]
-pub struct BaseEventV1<P> {
-    #[serde(rename = "type")]
-    pub event_type: GtsSchemaId,  // ✅ Valid - renamed to "type"
-    pub id: Uuid,
-    pub tenant_id: Uuid,
-    pub sequence_id: u64,
-    pub payload: P,
-}
-```
-
-**Important**: Base structs cannot have both ID fields AND GTS Type fields. They must choose one approach.
-
----
-
-## Purpose 2: Schema Generation
-
-Generate JSON Schema files using the GTS CLI tool.
-
-### Generate Schemas
-
-```bash
-# Using paths from macro (relative to source files)
-gts generate-from-rust --source src/
-
-# Override output directory
-gts generate-from-rust --source src/ --output schemas/
-
-# Exclude specific directories (can be used multiple times)
-gts generate-from-rust --source . --exclude "tests/*" --exclude "examples/*"
-
-# Using cargo
-cargo run --bin gts -- generate-from-rust --source src/
-```
-
-### Excluding Files
-
-The CLI provides multiple ways to exclude files from scanning:
-
-**1. `--exclude` option** (supports glob patterns):
-```bash
-gts generate-from-rust --source . --exclude "tests/*" --exclude "benches/*"
-```
-
-**2. Auto-ignored directories**: The following directories are automatically skipped:
-- `compile_fail/` - trybuild compile-fail tests
-
-**3. `// gts:ignore` directive**: Add this comment at the top of any `.rs` file:
-```rust
-// gts:ignore
-//! This file will be skipped by the CLI
-
-use gts_macros::struct_to_gts_schema;
-// ...
-```
-
-### What the CLI Does
-
-1. Scans source files for `#[struct_to_gts_schema]` annotations
-2. Extracts metadata (schema_id, description, properties)
-3. Maps Rust types to JSON Schema types
-4. Generates valid JSON Schema files at the specified `dir_path/<schema_id>.schema.json`
-
-### Generated Schema Examples
-
-**Base event type** (`schemas/gts.x.core.events.type.v1~.schema.json`):
-
-```json
-{
-  "$id": "gts://gts.x.core.events.type.v1~",
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "BaseEventV1",
-  "type": "object",
-  "description": "Base event type with common fields",
-  "properties": {
-    "id": { "type": "string", "format": "uuid" },
-    "tenant_id": { "type": "string", "format": "uuid" },
-    "payload": { "type": "object" }
-  },
-  "required": ["id", "tenant_id", "payload"]
-}
-```
-
-**Inherited audit event** (`schemas/gts.x.core.events.type.v1~x.core.audit.event.v1~.schema.json`):
-
-```json
-{
-  "$id": "gts://gts.x.core.events.type.v1~x.core.audit.event.v1~",
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "AuditEventV1",
-  "type": "object",
-  "description": "Audit event with user context",
-  "allOf": [
-    { "$ref": "gts://gts.x.core.events.type.v1~" },
-    {
-      "properties": {
-        "payload": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "user_id": { "type": "string", "format": "uuid" },
-            "action": { "type": "string" }
-          },
-          "required": ["user_id", "action"]
-        }
-      }
-    }
-  ]
-}
-```
-
-### Type Mapping
-
-The CLI automatically maps Rust types to JSON Schema types:
-
-| Rust Type | JSON Schema Type | Format | Required |
-|-----------|------------------|--------|----------|
-| `String`, `&str` | `string` | - | Yes |
-| `i8`-`i128`, `u8`-`u128` | `integer` | - | Yes |
-| `f32`, `f64` | `number` | - | Yes |
-| `bool` | `boolean` | - | Yes |
-| `Vec<T>` | `array` | - | Yes |
-| `Option<T>` | Same as `T` | - | **No** |
-| `Uuid` | `string` | `uuid` | Yes |
-| `DateTime`, `NaiveDateTime` | `string` | `date-time` | Yes |
-| `NaiveDate` | `string` | `date` | Yes |
-| `HashMap<K,V>`, `BTreeMap<K,V>` | `object` | - | Yes |
-| `GtsInstanceId` | `string` | `gts-instance-id` | Yes |
-| `GtsSchemaId` | `string` | `gts-schema-id` | Yes |
-
-**Notes**:
-- `Option<T>` fields are not marked as `required` in the generated schema
-- Generic type parameters (e.g., `P` in `BaseEventV1<P>`) are mapped to `{"type": "object"}` placeholders
-
----
-
-## Purpose 3: Runtime API
-
-The macro generates associated constants, methods, and implements the `GtsSchema` trait for runtime use.
-
-### Getting Schema IDs
-
-**Get the struct's GTS schema ID:**
-
-```rust
-// Using gts_schema_id() - returns &'static GtsSchemaId
-let schema_id: &gts::gts::GtsSchemaId = AuditEventV1::gts_schema_id();
-println!("Schema ID: {}", schema_id.as_ref());
-// Output: gts.x.core.events.type.v1~x.core.audit.event.v1~
-
-// For generic structs, use () as type parameter
-let base_id = BaseEventV1::<()>::gts_schema_id();
-println!("Base schema ID: {}", base_id.as_ref());
-// Output: gts.x.core.events.type.v1~
-```
-
-**Get the parent (base) schema ID:**
-
-```rust
-// Using gts_base_schema_id() - returns Option<&'static GtsSchemaId>
-let parent_id: Option<&gts::gts::GtsSchemaId> = AuditEventV1::gts_base_schema_id();
-match parent_id {
-    Some(id) => println!("Parent schema ID: {}", id.as_ref()),
-    // Output: gts.x.core.events.type.v1~
-    None => println!("This is a base struct (no parent)"),
-}
-
-// Base structs return None
-assert!(BaseEventV1::<()>::gts_base_schema_id().is_none());
-
-// Child structs return Some(&GtsSchemaId)
-assert_eq!(
-    AuditEventV1::gts_base_schema_id().map(|id| id.as_ref()),
-    Some("gts.x.core.events.type.v1~")
-);
-```
-
-### Getting Schemas
-
-**Get the struct's JSON schema with references:**
-
-```rust
-use gts::GtsSchema;
-
-// Using gts_schema_with_refs() - returns serde_json::Value
-let schema_value = AuditEventV1::gts_schema_with_refs();
-println!("Schema $id: {}", schema_value["$id"]);
-// Output: gts://gts.x.core.events.type.v1~x.core.audit.event.v1~
-
-// Using gts_schema_with_refs_as_string() - returns compact JSON String
-let schema_json = AuditEventV1::gts_schema_with_refs_as_string();
-println!("Schema JSON: {}", schema_json);
-
-// Using gts_schema_with_refs_as_string_pretty() - returns pretty-printed JSON String
-let schema_pretty = AuditEventV1::gts_schema_with_refs_as_string_pretty();
-println!("Pretty schema:\n{}", schema_pretty);
-
-// For generic structs, the type parameter doesn't affect the schema
-// Both generate identical schemas:
-let schema1 = BaseEventV1::<()>::gts_schema_with_refs();
-let schema2 = BaseEventV1::<AuditEventV1>::gts_schema_with_refs();
-assert_eq!(schema1, schema2);  // OK. Identical schemas
-```
-
-**Schema structure:**
-
-- **Base structs** (single-segment schema_id): Direct properties, no `allOf`
-  ```json
-  {
-    "$id": "gts://gts.x.core.events.type.v1~",
-    "type": "object",
-    "additionalProperties": false,
-    "properties": { /* ... */ }
-  }
-  ```
-
-- **Child structs** (multi-segment schema_id): Uses `allOf` with `$ref` to parent
-  ```json
-  {
-    "$id": "gts://gts.x.core.events.type.v1~x.core.audit.event.v1~",
-    "type": "object",
-    "allOf": [
-      { "$ref": "gts://gts.x.core.events.type.v1~" },
-      { "properties": { /* child-specific properties */ } }
-    ]
-  }
-  ```
-
-### Serialization & Deserialization
-
-**Important**: Nested payload structs (like `AuditPayloadV1`, `PlaceOrderDataV1`) should never be serialized/deserialized alone. Always serialize/deserialize the complete event hierarchy starting from the base event.
-
-**Serialize complete event instances to JSON:**
-
-```rust
-use serde::{Serialize, Deserialize};
-use uuid::Uuid;
-
-// Create a complete event with nested payloads
-// BaseEventV1 -> AuditPayloadV1 -> PlaceOrderDataV1
-let event = BaseEventV1 {
-    event_type: PlaceOrderDataV1::gts_schema_id().clone(),
-    id: Uuid::new_v4(),
-    tenant_id: Uuid::new_v4(),
-    sequence_id: 42,
-    payload: AuditPayloadV1 {
-        user_agent: "Mozilla/5.0".to_string(),
-        user_id: Uuid::new_v4(),
-        ip_address: "192.168.1.1".to_string(),
-        data: PlaceOrderDataV1 {
-            order_id: Uuid::new_v4(),
-            product_id: Uuid::new_v4(),
-        },
-    },
-};
-
-// Using GTS instance methods (recommended):
-// gts_instance_json() - returns serde_json::Value
-let json_value = event.gts_instance_json();
-println!("Value: {:?}", json_value);
-
-// gts_instance_json_as_string() - returns compact JSON String
-let json_string = event.gts_instance_json_as_string();
-println!("JSON: {}", json_string);
-
-// gts_instance_json_as_string_pretty() - returns pretty-printed JSON String
-let json_pretty = event.gts_instance_json_as_string_pretty();
-println!("Pretty JSON:\n{}", json_pretty);
-
-// You can also use serde_json directly:
-let json_string = serde_json::to_string(&event).unwrap();
-let json_pretty = serde_json::to_string_pretty(&event).unwrap();
-let json_value = serde_json::to_value(&event).unwrap();
-```
-
-**Deserialize JSON to complete event instances:**
-
-```rust
-// Deserialize from JSON string
-let json_str = r#"{
-    "type": "gts.x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~",
-    "id": "550e8400-e29b-41d4-a716-446655440000",
-    "tenant_id": "660e8400-e29b-41d4-a716-446655440000",
-    "sequence_id": 42,
-    "payload": {
-        "user_agent": "Mozilla/5.0",
-        "user_id": "770e8400-e29b-41d4-a716-446655440000",
-        "ip_address": "192.168.1.1",
-        "data": {
-            "order_id": "880e8400-e29b-41d4-a716-446655440000",
-            "product_id": "990e8400-e29b-41d4-a716-446655440000"
-        }
-    }
-}"#;
-
-let event: BaseEventV1<AuditPayloadV1<PlaceOrderDataV1>> =
-    serde_json::from_str(json_str).unwrap();
-println!("Deserialized: {:?}", event);
-
-// Deserialize from serde_json::Value
-let json_value = serde_json::json!({
-    "type": "gts.x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~",
-    "id": "550e8400-e29b-41d4-a716-446655440000",
-    "tenant_id": "660e8400-e29b-41d4-a716-446655440000",
-    "sequence_id": 42,
-    "payload": {
-        "user_agent": "Mozilla/5.0",
-        "user_id": "770e8400-e29b-41d4-a716-446655440000",
-        "ip_address": "192.168.1.1",
-        "data": {
-            "order_id": "880e8400-e29b-41d4-a716-446655440000",
-            "product_id": "990e8400-e29b-41d4-a716-446655440000"
-        }
-    }
-});
-
-let event: BaseEventV1<AuditPayloadV1<PlaceOrderDataV1>> =
-    serde_json::from_value(json_value).unwrap();
-println!("Deserialized: {:?}", event);
-
-// Deserialize from reader (file, network stream, etc.)
-use std::fs::File;
-let file = File::open("event.json").unwrap();
-let event: BaseEventV1<AuditPayloadV1<PlaceOrderDataV1>> =
-    serde_json::from_reader(file).unwrap();
-```
-
-**Working with different payload types:**
-
-```rust
-// You can use different payload combinations with the same base event
-type OrderEvent = BaseEventV1<AuditPayloadV1<PlaceOrderDataV1>>;
-type SimpleEvent = BaseEventV1<()>;
-
-// Create and serialize different event types
-let order_event: OrderEvent = BaseEventV1 {
-    event_type: PlaceOrderDataV1::gts_schema_id().clone(),
-    id: Uuid::new_v4(),
-    tenant_id: Uuid::new_v4(),
-    sequence_id: 1,
-    payload: AuditPayloadV1 {
-        user_agent: "Mozilla/5.0".to_string(),
-        user_id: Uuid::new_v4(),
-        ip_address: "192.168.1.1".to_string(),
-        data: PlaceOrderDataV1 {
-            order_id: Uuid::new_v4(),
-            product_id: Uuid::new_v4(),
-        },
-    },
-};
-
-let json = serde_json::to_string_pretty(&order_event).unwrap();
-println!("Order event JSON:\n{}", json);
-
-// Deserialize back to the correct type
-let deserialized: OrderEvent = serde_json::from_str(&json).unwrap();
-```
-
-### Generating Instance IDs
-
-Generate instance IDs by appending a segment to the schema ID:
-
-```rust
-// Generate event instance ID
-let topic_id = AuditEventTopicV1::gts_make_instance_id("x.core.audit.topic.v1");
-assert_eq!(
-    topic_id.as_ref(),
-    "gts.x.core.events.topic.v1~x.core.audit.topic.v1"
-);
-
-// Generate base event instance ID
-let base_id = BaseEventTopicV1::<()>::gts_make_instance_id("a.b.c.topic.v1");
-assert_eq!(base_id.as_ref(), "gts.x.core.events.topic.v1~a.b.c.topic.v1");
-
-// Convert to String when needed
-let id_string: String = topic_id.clone().into();
-
-// Use as map key (implements Hash, Eq, Clone)
-use std::collections::HashMap;
-let mut events: HashMap<gts::GtsInstanceId, String> = HashMap::new();
-events.insert(event_id, "processed".to_owned());
-
-// Serialize/deserialize instance IDs
-let id_json = serde_json::to_string(&event_id).unwrap();
-let id_back: gts::GtsInstanceId = serde_json::from_str(&id_json).unwrap();
-```
-
-### Schema Composition & Inheritance (`GtsSchema` Trait)
-
-The macro automatically implements the `GtsSchema` trait, enabling runtime schema composition for nested generic types:
-
-```rust
-use gts::GtsSchema;
-
-// Get composed schema for nested type
-let schema = BaseEventV1::<AuditPayloadV1<PlaceOrderDataV1>>::gts_schema_with_refs_allof();
-
-// The schema will have proper nesting:
-// - payload field contains AuditPayloadV1's schema
-// - payload.data field contains PlaceOrderDataV1's schema
-// - All with additionalProperties: false for type safety
-```
-
-**Generic Field Type Safety**: Generic fields (fields that accept nested types) automatically have `additionalProperties: false` set. This ensures:
-- ✅ Only properly nested inherited structs can be used as values
-- ✅ No arbitrary extra properties can be added to generic fields
-- ✅ Type safety is enforced at the JSON Schema level
-
-### Complete Runtime API Reference
-
-| API | Type | Description |
-|-----|------|-------------|
-| `gts_schema_id()` | `&'static GtsSchemaId` | Get the struct's GTS schema ID |
-| `gts_base_schema_id()` | `Option<&'static GtsSchemaId>` | Get parent schema ID (None for base structs) |
-| `gts_schema_with_refs()` | `serde_json::Value` | Get schema as JSON value with `$ref` |
-| `gts_schema_with_refs_as_string()` | `String` | Get schema as compact JSON string |
-| `gts_schema_with_refs_as_string_pretty()` | `String` | Get schema as pretty-printed JSON string |
-| `gts_instance_json(&self)` | `serde_json::Value` | Serialize instance to JSON value |
-| `gts_instance_json_as_string(&self)` | `String` | Serialize instance to compact JSON string |
-| `gts_instance_json_as_string_pretty(&self)` | `String` | Serialize instance to pretty-printed JSON string |
-| `gts_make_instance_id(segment)` | `GtsInstanceId` | Generate instance ID by appending segment |
-
----
-
-## Macro Parameters
-
-All parameters are **required** (5 total):
-
-| Parameter | Description | Example |
-|-----------|-------------|---------|
-| `dir_path` | Output directory for generated schema | `"schemas"` |
-| `base` | Inheritance declaration (see below) | `true` or `ParentStruct` |
-| `schema_id` | GTS identifier | `"gts.x.app.entities.user.v1~"` |
-| `description` | Human-readable description | `"User entity"` |
-| `properties` | Comma-separated field list | `"id,email,name"` |
-
-### The `base` Attribute
-
-The `base` attribute explicitly declares the struct's position in the inheritance hierarchy:
-
-| Value | Meaning | Schema ID Requirement |
-|-------|---------|----------------------|
-| `base = true` | This is a root/base type (no parent) | Single-segment (e.g., `gts.x.core.events.type.v1~`) |
-| `base = ParentStruct` | This inherits from `ParentStruct` | Multi-segment (e.g., `gts.x.core.events.type.v1~x.core.audit.event.v1~`) |
-
-**Compile-time validation**: The macro validates that:
-- `base = true` requires a single-segment `schema_id`
-- `base = ParentStruct` requires a multi-segment `schema_id` where the parent segment matches `ParentStruct`'s `SCHEMA_ID`
-
-### GTS ID Format
-
-```
-gts.<vendor>.<package>.<namespace>.<type>.v<MAJOR>[.<MINOR>]~
-```
-
-Examples:
-- `gts.x.core.iam.user.v1~` - IAM user schema
-- `gts.x.commerce.orders.order.v1.0~` - Order schema with minor version
-
----
-
-## Complete Example
-
-### Define Event Type Hierarchy
-
-```rust
-// src/events.rs
-use gts_macros::struct_to_gts_schema;
+use gts::{GtsSchema, GtsSchemaId, GtsInstanceId};
+use gts_macros::GtsSchema;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-// Base event type - the root of all events
-#[derive(Debug, Serialize, Deserialize)]
-#[struct_to_gts_schema(
+/// A root event type (anonymous instance: carries its GTS type via `type_field`).
+/// Generic-root — the macro emits its own `Serialize`/`Deserialize`; do not derive them.
+#[derive(Debug, Clone, JsonSchema, GtsSchema)]
+#[gts(
     dir_path = "schemas",
-    base = true,
     schema_id = "gts.x.core.events.type.v1~",
-    description = "Base event type with common fields",
-    properties = "id,tenant_id,timestamp,payload"
+    description = "Base event type",
 )]
-pub struct BaseEventV1<P> {
-    pub id: Uuid,
-    pub r#type: GtsSchemaId,
-    pub tenant_id: Uuid,
-    pub timestamp: String,
-    pub payload: P,
-}
-
-// Audit event - extends BaseEventV1 with user context
-#[derive(Debug, Serialize, Deserialize)]
-#[struct_to_gts_schema(
-    dir_path = "schemas",
-    base = BaseEventV1,
-    schema_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~",
-    description = "Audit event with user tracking",
-    properties = "user_id,ip_address,action"
-)]
-pub struct AuditEventV1<D> {
-    pub user_id: Uuid,
-    pub ip_address: String,
-    pub action: D,
-}
-
-// Order placed event - extends AuditEventV1 for order actions
-#[derive(Debug, Serialize, Deserialize)]
-#[struct_to_gts_schema(
-    dir_path = "schemas",
-    base = AuditEventV1,
-    schema_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~x.shop.orders.placed.v1~",
-    description = "Order placement event",
-    properties = "order_id,total"
-)]
-pub struct OrderPlacedV1 {
-    pub order_id: Uuid,
-    pub total: f64,
-}
-```
-
-### Generate Schemas
-
-```bash
-gts generate-from-rust --source src/
-# Output:
-#   Generated schema: gts.x.core.events.type.v1~ @ schemas/...
-#   Generated schema: gts.x.core.events.type.v1~x.core.audit.event.v1~ @ schemas/...
-#   Generated schema: gts.x.core.events.type.v1~x.core.audit.event.v1~x.shop.orders.placed.v1~ @ schemas/...
-```
-
-### Use at Runtime
-
-```rust
-fn main() {
-    // Access schemas at any level
-    println!("Base event schema: {}", BaseEventV1::<()>::gts_schema_with_refs_as_string_pretty());
-    println!("Audit event schema: {}", AuditEventV1::<()>::gts_schema_with_refs_as_string_pretty());
-    println!("Order placed schema: {}", OrderPlacedV1::gts_schema_with_refs_as_string_pretty());
-
-    // Generate instance IDs
-    let event_id = OrderPlacedV1::gts_make_instance_id("evt-12345.v1");
-    println!("Event ID: {}", event_id);
-    // Output: gts.x.core.events.type.v1~x.core.audit.event.v1~x.shop.orders.placed.v1~evt-12345.v1
-
-    // Use as HashMap key
-    use std::collections::HashMap;
-    let mut events: HashMap<gts::GtsInstanceId, String> = HashMap::new();
-    events.insert(event_id, "processed".to_owned());
-}
-```
-
----
-
-## Schema Inheritance & Compile-Time Guarantees
-
-The macro supports **explicit inheritance declaration** through the `base` attribute and provides **compile-time validation** to ensure parent-child relationships are correct.
-
-### Inheritance Example
-
-See `tests/inheritance_tests.rs` for a complete working example:
-
-```rust
-// Base event type (base = true, single-segment schema_id)
-#[struct_to_gts_schema(
-    dir_path = "schemas",
-    base = true,
-    schema_id = "gts.x.core.events.type.v1~",
-    description = "Base event type definition",
-    properties = "event_type,id,tenant_id,sequence_id,payload"
-)]
-pub struct BaseEventV1<P> {
+pub struct BaseEventV1<P: GtsSchema> {
+    #[gts(type_field)]
     #[serde(rename = "type")]
     pub event_type: GtsSchemaId,
     pub id: Uuid,
     pub tenant_id: Uuid,
-    pub sequence_id: u64,
     pub payload: P,
 }
 
-// Extends BaseEventV1 (base = ParentStruct, multi-segment schema_id)
-#[struct_to_gts_schema(
+/// A well-known topic (carries its identity via `instance_id`).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, GtsSchema)]
+#[gts(
     dir_path = "schemas",
-    base = BaseEventV1,
+    schema_id = "gts.x.core.events.topic.v1~",
+    description = "Event topic definition",
+)]
+pub struct EventTopicV1 {
+    #[gts(instance_id)]
+    pub id: GtsInstanceId,
+    pub name: String,
+}
+
+// The macro generates `new(...)` on both — the identity field in
+// `BaseEventV1` is auto-populated from the generic parameter's SCHEMA_ID;
+// the `instance_id` in `EventTopicV1` is passed by the caller.
+fn example() {
+    // `P = ()` terminates the inheritance chain. For a real event, `P` would
+    // be another type that derives `GtsSchema` (see the Inheritance section).
+    let event = BaseEventV1::<()>::new(Uuid::new_v4(), Uuid::new_v4(), ());
+    // `event.event_type` was populated from `<() as GtsSchema>::SCHEMA_ID`.
+
+    let topic = EventTopicV1::new(
+        GtsInstanceId::new("gts.x.core.events.topic.v1~", "x.orders.placed.v1"),
+        "orders".to_string(),
+    );
+    assert_eq!(topic.id.as_ref(), "gts.x.core.events.topic.v1~x.orders.placed.v1");
+}
+```
+
+The unfamiliar shapes — `#[gts(type_field)]`, `#[gts(instance_id)]`, the generated `new(...)` — are explained in the sections below.
+
+---
+
+## Struct-level `#[gts(...)]` attributes
+
+| Attribute | Cardinality | Description |
+|---|---|---|
+| `schema_id = "..."` | required | GTS schema identifier. Maps to `$id` in the generated JSON Schema. Validated against the identifier rules in [Spec §2.1, §2.3, §8.1](https://github.com/GlobalTypeSystem/gts-spec) and version-matched against the struct name suffix (e.g. `V1` / `v1~`). |
+| `description = "..."` | required | Human-readable schema description. Emitted into the JSON Schema, including at runtime via `gts_schema_with_refs()`. |
+| `dir_path = "..."` | required | Output directory for CLI schema generation (relative to the crate root). Stored as the `GTS_SCHEMA_FILE_PATH` associated constant. |
+| `extends = Parent` | optional | Declares the parent type for a derived schema. Validated against the parent segment in `schema_id`. |
+| `extends = None` | optional | Equivalent to omitting `extends` entirely — an explicit root marker for grep/IDE discoverability. |
+
+Attributes may appear in any order. Any unknown key is rejected at compile time.
+
+---
+
+## Field-level `#[gts(...)]` attributes
+
+| Attribute | Cardinality | Description |
+|---|---|---|
+| `#[gts(type_field)]` | 0 or 1 per root struct; mutually exclusive with `instance_id`; forbidden on derived structs | Marks the GTS type discriminator. Must be on a `GtsSchemaId` field. Generates `"x-gts-ref": "/$id"` on the property and makes the field auto-populated by `new(...)`. |
+| `#[gts(instance_id)]` | 0 or 1 per root struct; mutually exclusive with `type_field`; forbidden on derived structs | Marks the GTS instance identifier for a well-known instance. Must be on a `GtsInstanceId` field. Generates `"x-gts-ref": "/$id"` on the property. The value is passed by the caller of `new(...)`. |
+| `#[gts(skip)]` | any number | Excludes the field from the generated JSON Schema properties. Serde behavior is unaffected — use `#[serde(skip)]` to also skip serialization. |
+
+Every **root** struct (no `extends`) must declare exactly one of `type_field` / `instance_id`. **Derived** structs (`extends = Parent`) must declare neither — the root's chained identifier already carries the GTS type.
+
+---
+
+## Identity fields: `type_field` vs `instance_id`
+
+The two identity annotations correspond to the two GTS instance patterns in [Spec §3.7](https://github.com/GlobalTypeSystem/gts-spec#37-well-known-and-anonymous-instances):
+
+- **`#[gts(type_field)]` — anonymous instance.** The outermost JSON object carries a `type` field whose value is the full chained schema identifier (e.g. `gts.x.core.events.type.v1~x.commerce.orders.placed.v1~`). Alongside, there is typically a separate `id: Uuid` field for the event's unique instance id. Used by the events pattern.
+- **`#[gts(instance_id)]` — well-known instance.** The object itself is uniquely identified by a GTS instance id (e.g. `gts.x.core.events.topic.v1~x.orders.placed.v1`). Used for topics, registries, and similar long-lived entities that the Type Registry looks up directly.
+
+Both emit `"x-gts-ref": "/$id"` on the identified property, matching the spec's self-reference convention. Non-identity `GtsSchemaId` fields retain the generic `"x-gts-ref": "gts.*"`.
+
+---
+
+## Generated `new(...)` constructor
+
+Every non-empty `#[derive(GtsSchema)]` struct gets a `pub fn new(...) -> Self` that takes each field in struct-definition order, **except** the `#[gts(type_field)]` field (which is auto-populated).
+
+- Generic root with `type_field`: the identity is set from `<P as GtsSchema>::SCHEMA_ID`, so `BaseEventV1<OrderPayloadV1>::new(...)` carries the child's chained identifier without the caller ever naming it.
+- Non-generic root with `type_field`: the identity is set from `Self::gts_schema_id().clone()` (a LazyLock-cached accessor).
+- Root with `instance_id`: the `GtsInstanceId` is a regular constructor parameter — the macro does not synthesize the instance segment.
+- Derived struct: has no identity field, so `new(...)` simply takes every field in order.
+
+`#[gts(skip)]` and `#[serde(skip)]` are schema/serde concerns respectively and do not affect the constructor: every field is still part of the struct's data model and appears in the signature.
+
+```rust
+let order = OrderV1_0::new(Uuid::new_v4(), Uuid::new_v4(), 3, 29.99);
+// order.gts_type was set to OrderV1_0::gts_schema_id() — never hand-assigned.
+```
+
+If you need a different name (e.g. you want your own `new`), rename your constructor — the generated `new` is inherent and any duplicate will surface as rustc's standard duplicate-definition error.
+
+---
+
+## Inheritance
+
+Derived types declare `extends = Parent`. The parent must be generic; its generic field becomes the nesting slot for the child.
+
+```rust
+/// Level 1: root (generic).
+#[derive(Debug, JsonSchema, GtsSchema)]
+#[gts(
+    dir_path = "schemas",
+    schema_id = "gts.x.core.events.type.v1~",
+    description = "Base event type",
+)]
+pub struct BaseEventV1<P: GtsSchema> {
+    #[gts(type_field)]
+    #[serde(rename = "type")]
+    pub event_type: GtsSchemaId,
+    pub id: Uuid,
+    pub payload: P,
+}
+
+/// Level 2: derived, generic.
+#[derive(Debug, JsonSchema, GtsSchema)]
+#[gts(
+    dir_path = "schemas",
     schema_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~",
     description = "Audit event with user context",
-    properties = "user_agent,user_id,ip_address,data"
+    extends = BaseEventV1,
 )]
-pub struct AuditPayloadV1<D> {
+pub struct AuditPayloadV1<D: GtsSchema> {
     pub user_agent: String,
-    pub user_id: Uuid,
-    pub ip_address: String,
     pub data: D,
 }
 
-// Extends AuditPayloadV1 (3-level inheritance chain)
-#[struct_to_gts_schema(
+/// Level 3: derived, non-generic (leaf).
+#[derive(Debug, JsonSchema, GtsSchema)]
+#[gts(
     dir_path = "schemas",
-    base = AuditPayloadV1,
     schema_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~",
     description = "Order placement audit event",
-    properties = "order_id,product_id"
+    extends = AuditPayloadV1,
 )]
 pub struct PlaceOrderDataV1 {
     pub order_id: Uuid,
@@ -893,134 +209,156 @@ pub struct PlaceOrderDataV1 {
 }
 ```
 
-### Generated Schemas
+Compile-time checks:
 
-**Single-segment schema** (no inheritance):
-```json
-{
-  "$id": "gts://gts.x.core.events.type.v1~",
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "BaseEventV1",
-  "type": "object",
-  "description": "Base event type definition",
-  "properties": { /* direct properties */ },
-  "required": [ /* required fields */ ]
-}
-```
+- `extends` absent (or `= None`): `schema_id` must have exactly one segment.
+- `extends = Parent`: `schema_id` must have 2+ segments; the parent segment must match `Parent::SCHEMA_ID`; the parent struct must have exactly one generic parameter.
 
-**Multi-segment schema** (with inheritance):
+The generated schema for a derived type uses `allOf` + `$ref` to compose with the parent:
+
 ```json
 {
   "$id": "gts://gts.x.core.events.type.v1~x.core.audit.event.v1~",
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "AuditPayloadV1",
-  "type": "object",
-  "description": "Audit event with user context",
   "allOf": [
     { "$ref": "gts://gts.x.core.events.type.v1~" },
-    {
-      "properties": {
-        "payload": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": { /* child-specific properties */ },
-          "required": [ /* child-specific required fields */ ]
-        }
-      }
-    }
+    { "type": "object", "properties": { /* child-specific */ } }
   ]
 }
 ```
 
-**Important**: Generic fields (fields that accept nested types) automatically have `additionalProperties: false` set. This ensures that only properly nested inherited structs can be used, preventing arbitrary extra properties from being added to generic fields.
+---
 
-### Compile-Time Guarantees
+## Serialization
 
-The macro validates your configuration at compile time, preventing runtime errors:
+The derive's serde handling depends on the struct's shape:
 
-| ✅ Guaranteed | ❌ Prevented |
-|--------------|-------------|
-| **All required attributes exist** | Missing `dir_path`, `base`, `schema_id`, `description`, or `properties` |
-| **Base attribute consistency** | `base = true` with multi-segment schema_id, or `base = Parent` with single-segment |
-| **Parent schema ID match** | `base = Parent` where Parent's SCHEMA_ID doesn't match the parent segment |
-| **Properties exist in struct** | Referencing non-existent fields in `properties` list |
-| **Valid struct types** | Tuple structs, unit structs, enums |
-| **Single generic parameter** | Multiple type generics (prevents inheritance ambiguity) |
-| **Valid GTS ID format** | Malformed schema identifiers |
-| **Memory efficiency** | No unnecessary allocations in generated constants |
-| **Strict generic field validation** | Generic fields have `additionalProperties: false` to ensure only nested inherited structs are allowed |
-| **GTS-only generic arguments** | Using non-GTS structs as generic type parameters (see below) |
-
-### Generic Type Parameter Constraints
-
-The macro automatically adds a `GtsSchema` trait bound to all generic type parameters. This ensures that only valid GTS types can be used as generic arguments:
+- **Generic roots** (e.g. `BaseEventV1<P: GtsSchema>`) — the macro emits its own `Serialize` / `Deserialize` impls so nested payloads route through the `GtsSerialize` / `GtsDeserialize` bridge. Do **not** add `#[derive(Serialize, Deserialize)]`; the impls would conflict (`E0119`).
+- **Non-generic roots** (e.g. `EventTopicV1`) — the user must `#[derive(Serialize, Deserialize)]`. The generated `gts_instance_json()` calls `serde_json::to_value(self)`, which requires `Self: Serialize`. Forgetting the derive produces a clear, localized error at the struct definition.
+- **Derived structs** (`extends = Parent`) — **cannot** derive `Serialize` / `Deserialize`. Their JSON would be incomplete (missing the base envelope), so the macro blocks direct serde via the `GtsNoDirectSerialize` / `GtsNoDirectDeserialize` marker traits. The macro instead emits `GtsSerialize` / `GtsDeserialize` impls that bridge through the base struct's generic field. Testing and debugging nested payloads always happens through the root.
 
 ```rust
-// ✅ Allowed: () is a valid GTS type (terminates the chain)
-let event: BaseEventV1<()> = BaseEventV1 { /* ... */ };
+// Construct a 3-level instance through the chain.
+let event: BaseEventV1<AuditPayloadV1<PlaceOrderDataV1>> = BaseEventV1::new(
+    Uuid::new_v4(),
+    AuditPayloadV1::new(
+        "Mozilla/5.0".to_string(),
+        PlaceOrderDataV1::new(Uuid::new_v4(), Uuid::new_v4()),
+    ),
+);
 
-// ✅ Allowed: AuditPayloadV1 has struct_to_gts_schema applied
-let event: BaseEventV1<AuditPayloadV1<()>> = BaseEventV1 { /* ... */ };
-
-// ❌ Compile error: MyStruct does not implement GtsSchema
-pub struct MyStruct { pub some_id: String }
-let event: BaseEventV1<MyStruct> = BaseEventV1 { /* ... */ };
-// error: the trait bound `MyStruct: GtsSchema` is not satisfied
-```
-
-This prevents accidental use of arbitrary structs that haven't been properly annotated with `struct_to_gts_schema`, ensuring type safety across the entire GTS inheritance chain.
-
-### Generic Fields and `additionalProperties`
-
-When a struct has a generic type parameter (e.g., `BaseEventV1<P>` with field `payload: P`), the generated schema sets `additionalProperties: false` on that field's schema. This ensures:
-
-- ✅ Only properly nested inherited structs can be used as values
-- ✅ No arbitrary extra properties can be added to generic fields
-- ✅ Type safety is enforced at the JSON Schema level
-
-Example:
-```json
-{
-  "properties": {
-    "payload": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": { /* nested schema */ }
-    }
-  }
-}
-```
-
-### Schema Generation Methods
-
-The macro generates methods for runtime schema access:
-
-- **`gts_schema_with_refs()`**: Returns `serde_json::Value` with `$ref` in `allOf`
-- **`gts_schema_with_refs_as_string()`**: Returns compact JSON string
-- **`gts_schema_with_refs_as_string_pretty()`**: Returns pretty-printed JSON string
-
-```rust
-// Get schema as JSON value
-let schema_value = AuditEventV1::<()>::gts_schema_with_refs();
-
-// Get schema as string (compact or pretty)
-let schema_compact = AuditEventV1::<()>::gts_schema_with_refs_as_string();
-let schema_pretty = AuditEventV1::<()>::gts_schema_with_refs_as_string_pretty();
-
-// Schema IDs use LazyLock for efficient one-time initialization
-let schema_id = AuditEventV1::gts_schema_id();
-let parent_id = AuditEventV1::gts_base_schema_id();
+let json = serde_json::to_string_pretty(&event).unwrap();
+let back: BaseEventV1<AuditPayloadV1<PlaceOrderDataV1>> =
+    serde_json::from_str(&json).unwrap();
 ```
 
 ---
 
-## Security Features
+## Runtime API
 
-The CLI includes security checks:
+Every `#[derive(GtsSchema)]` struct gets:
 
-1. **Path traversal prevention** - Cannot write files outside the source repository
-2. **File extension enforcement** - Both macro and CLI validate `.json` extension
-3. **Canonicalization** - Resolves symbolic links to prevent escapes
+| Method / constant | Kind | Description |
+|---|---|---|
+| `gts_schema_id()` | inherent fn | `&'static GtsSchemaId` for `Self`. LazyLock-cached. |
+| `gts_base_schema_id()` | inherent fn | `Option<&'static GtsSchemaId>` — parent's id for derived structs, `None` for roots. |
+| `gts_make_instance_id(segment)` | inherent fn | `GtsInstanceId` by appending `segment` to the schema id. |
+| `gts_schema_with_refs_as_string()` | inherent fn | Schema as a compact JSON string. |
+| `gts_schema_with_refs_as_string_pretty()` | inherent fn | Schema as a pretty-printed JSON string. |
+| `gts_instance_json(&self)` | inherent fn | `serde_json::Value`; requires `Self: Serialize`. |
+| `gts_instance_json_as_string(&self)` | inherent fn | Compact JSON string; requires `Self: Serialize`. |
+| `gts_instance_json_as_string_pretty(&self)` | inherent fn | Pretty JSON string; requires `Self: Serialize`. |
+| `new(...)` | inherent fn | See [Generated `new(...)` constructor](#generated-new-constructor). |
+| `SCHEMA_ID` | trait const | `&'static str`. The identifier as a plain string. |
+| `GENERIC_FIELD` | trait const | `Option<&'static str>` — the serialized name of the generic field, if any. |
+| `GTS_SCHEMA_FILE_PATH` | inherent const | `<dir_path>/<schema_id>.schema.json`, used by the CLI. |
+| `GTS_SCHEMA_DESCRIPTION` | inherent const | Copy of the `description` attribute. |
+| `GTS_SCHEMA_PROPERTIES` | inherent const | Comma-separated list of serialized property names (excludes `#[gts(skip)]` and `#[serde(skip)]`). |
+| `BASE_SCHEMA_ID` | inherent const | `Option<&'static str>` — parent's identifier as a plain string. |
+
+The `GtsSchema` trait itself (in `gts/src/schema.rs`) is also implemented; its methods `gts_schema_with_refs()` and `gts_schema_with_refs_allof()` return the composed `serde_json::Value`.
+
+---
+
+## Schema generation (CLI)
+
+Generate JSON Schema files to disk using `gts-cli`:
+
+```bash
+# Walk source files, find every #[derive(GtsSchema)] / #[struct_to_gts_schema], write schemas.
+gts generate-from-rust --source src/
+
+# Override output directory.
+gts generate-from-rust --source src/ --output schemas/
+
+# Exclude specific directories (glob patterns, can repeat).
+gts generate-from-rust --source . --exclude "tests/*" --exclude "examples/*"
+```
+
+Files can opt out with a top-of-file directive:
+
+```rust
+// gts:ignore
+//! This file will be skipped by the CLI.
+```
+
+The CLI scans for the macro invocations, extracts `schema_id`, `description`, and the field list, maps Rust types to JSON Schema (see [Rust → JSON Schema type mapping](#rust--json-schema-type-mapping)), and writes the result to `<dir_path>/<schema_id>.schema.json`.
+
+---
+
+## Rust → JSON Schema type mapping
+
+| Rust type | JSON Schema type | Format | Required by default |
+|---|---|---|---|
+| `String`, `&str` | `string` | — | yes |
+| `i8`..`i128`, `u8`..`u128` | `integer` | — | yes |
+| `f32`, `f64` | `number` | — | yes |
+| `bool` | `boolean` | — | yes |
+| `Vec<T>` | `array` | — | yes |
+| `Option<T>` | same as `T` | — | **no** |
+| `Uuid` | `string` | `uuid` | yes |
+| `DateTime`, `NaiveDateTime` | `string` | `date-time` | yes |
+| `NaiveDate` | `string` | `date` | yes |
+| `HashMap<K,V>`, `BTreeMap<K,V>` | `object` | — | yes |
+| `GtsInstanceId` | `string` | `gts-instance-id` | yes |
+| `GtsSchemaId` | `string` | `gts-schema-id` | yes |
+
+Notes:
+
+- `Option<T>` fields are absent from the `required` array.
+- Generic fields (`payload: P`) are placeholders in the root schema; inheritance composition fills them in for derived types.
+
+---
+
+## Compile-time validation
+
+The macro catches the following at compile time:
+
+- **Attribute shape.** `dir_path`, `schema_id`, and `description` are required. Unknown keys in `#[gts(...)]` or `#[gts(...)]`-on-field are rejected.
+- **GTS identifier format.** `schema_id` is run through `gts_id::validate_gts_id` ([Spec §2.1, §2.3, §8.1](https://github.com/GlobalTypeSystem/gts-spec)).
+- **Version consistency.** The struct name's version suffix (`V1`, `V2_0`, …) must match the schema-id's version token (`v1~`, `v2.0~`, …).
+- **Segment count.** No `extends` (or `extends = None`) → exactly one segment. `extends = Parent` → two or more segments.
+- **Parent match.** When `extends = Parent`, the parent segment in `schema_id` must equal `Parent::SCHEMA_ID`. Parent must have exactly one generic parameter.
+- **Struct shape.** Only named-field structs and unit structs are accepted. Tuple structs, enums, and unions are rejected.
+- **Generics.** At most one type parameter per struct (single-chain inheritance).
+- **Identity fields.** Exactly one of `#[gts(type_field)]` / `#[gts(instance_id)]` on every root struct. Neither on any derived struct. Duplicates on the same struct are rejected. Field type must match (`GtsSchemaId` / `GtsInstanceId`).
+- **Direct serde on nested structs.** A derived struct that also derives `Serialize` or `Deserialize` gets a trait-conflict error from the `GtsNoDirectSerialize` / `GtsNoDirectDeserialize` marker traits.
+
+The full set of compile-fail fixtures lives in `tests/v2_compile_fail/`.
+
+---
+
+## Legacy `#[struct_to_gts_schema]`
+
+The attribute-macro form `#[struct_to_gts_schema(...)]` predates the derive and remains fully functional. It is not yet marked `#[deprecated]` — deprecation and eventual removal are a separate, downstream-coordinated effort.
+
+New code should use `#[derive(GtsSchema)]`. To port existing code, follow the [migration guide](../docs/002-struct-to-gts-schema-migration.md):
+
+- `base = true` → no `extends`
+- `base = Parent` → `extends = Parent`
+- `properties = "a,b,c"` → drop; fields are auto-derived, use `#[gts(skip)]` to exclude
+- identity field (previously required to be named `id` / `type` / `gts_type` / …) → annotate with `#[gts(type_field)]` or `#[gts(instance_id)]`; the field name is now free
+
+Schema output is structurally identical between the two macros with one spec-correctness improvement: identity fields emit `"x-gts-ref": "/$id"` instead of the generic `"gts.*"`. The parity suite in `tests/v2_parity_tests.rs` exercises this equivalence directly.
 
 ---
 
@@ -1028,7 +366,9 @@ The CLI includes security checks:
 
 Apache-2.0
 
-## See Also
+## See also
 
-- [GTS Specification](https://github.com/globaltypesystem/gts-spec)
-- [GTS CLI Documentation](../gts-cli/README.md)
+- [ADR-001 — Derive macro design](../docs/001-gts-schema-derive-macro-adr.md)
+- [Migration guide](../docs/002-struct-to-gts-schema-migration.md)
+- [GTS Specification](https://github.com/GlobalTypeSystem/gts-spec)
+- [GTS CLI](../gts-cli/README.md)

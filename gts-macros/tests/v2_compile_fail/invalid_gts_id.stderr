@@ -1,0 +1,5 @@
+error: GtsSchema: Invalid GTS schema ID: must start with 'gts.'
+  --> tests/v2_compile_fail/invalid_gts_id.rs:11:12
+   |
+11 | pub struct BadV1 {
+   |            ^^^^^

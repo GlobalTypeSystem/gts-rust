@@ -1,0 +1,5 @@
+error: GtsSchema: #[gts(type_field)] is only valid on root structs (no `extends`). Derived structs inherit their GTS type from the root's chained identifier; a redundant identity field on a nested struct produces an ambiguous serialized shape.
+  --> tests/v2_compile_fail/identity_on_derived_struct.rs:27:5
+   |
+27 |     #[gts(type_field)]
+   |     ^

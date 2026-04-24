@@ -1,0 +1,5 @@
+error: GtsSchema: at most one generic type parameter is allowed. GTS inheritance is single-chain, not multi-branch.
+  --> tests/v2_compile_fail/multiple_generics.rs:11:19
+   |
+11 | pub struct MultiV1<A, B> {
+   |                   ^^^^^^

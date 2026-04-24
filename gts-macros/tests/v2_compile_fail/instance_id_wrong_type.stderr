@@ -1,0 +1,5 @@
+error: GtsSchema: #[gts(instance_id)] must be on a field of type GtsInstanceId. The instance ID identifies a specific well-known GTS instance.
+  --> tests/v2_compile_fail/instance_id_wrong_type.rs:14:13
+   |
+14 |     pub id: Uuid,
+   |             ^^^^

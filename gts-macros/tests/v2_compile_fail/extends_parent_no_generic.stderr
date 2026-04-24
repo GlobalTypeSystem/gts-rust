@@ -1,0 +1,11 @@
+error[E0107]: struct takes 0 generic arguments but 1 generic argument was supplied
+  --> tests/v2_compile_fail/extends_parent_no_generic.rs:30:15
+   |
+30 |     extends = LeafTypeV1
+   |               ^^^^^^^^^^ expected 0 generic arguments
+   |
+note: struct defined here, with 0 generic parameters
+  --> tests/v2_compile_fail/extends_parent_no_generic.rs:18:12
+   |
+18 | pub struct LeafTypeV1 {
+   |            ^^^^^^^^^^
