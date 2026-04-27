@@ -936,6 +936,26 @@ Run with verbose output:
 cargo test -- --nocapture
 ```
 
+### End-to-end tests against gts-spec
+
+`make e2e` runs the conformance suite from the `.gts-spec/` submodule against
+a freshly built server. On first run, bootstrap the Python venv:
+
+```bash
+make e2e-venv PYTHON=python3.11   # 3.11 is safest — httprunner pins pydantic<2
+make e2e
+```
+
+**macOS:** raise the file-descriptor limit before running, otherwise the suite
+will fail mid-run with `EMFILE: Too many open files`. `httprunner` creates a
+`requests.Session` per test class and never closes it, so a keep-alive socket
+leaks per class until pytest exits. With ~250 test classes today, this blows
+past macOS's default 256 soft cap.
+
+```bash
+ulimit -n 4096
+```
+
 ## Development
 
 ### Build

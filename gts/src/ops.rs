@@ -320,6 +320,20 @@ impl GtsOps {
             };
         }
 
+        // Validate schema modifiers (x-gts-final, x-gts-abstract): types,
+        // mutual exclusion, and that they appear only at the schema top level.
+        if entity.is_schema
+            && let Err(e) = crate::schema_modifiers::validate_schema_modifiers(&entity.content)
+        {
+            return GtsAddEntityResult {
+                ok: false,
+                id: String::new(),
+                schema_id: None,
+                is_schema: true,
+                error: e,
+            };
+        }
+
         // Always validate schemas
         if entity.is_schema
             && let Err(e) = self.store.validate_schema(&entity_id)
@@ -336,21 +350,60 @@ impl GtsOps {
             };
         }
 
-        // If validation is requested, validate the instance as well
-        if validate
-            && !entity.is_schema
-            && let Err(e) = self.store.validate_instance(&entity_id)
-        {
-            return GtsAddEntityResult {
-                ok: false,
-                id: String::new(),
-                schema_id: None,
-                is_schema: false,
-                error: format!(
-                    "Instance validation failed: {e}\n{}",
-                    self.get_details(&entity)
-                ),
-            };
+        // If validation is requested, run full chain/traits validation for schemas
+        // and instance validation for instances.
+        if validate && entity.is_schema {
+            if let Err(e) = self.store.validate_schema_chain(&entity_id) {
+                return GtsAddEntityResult {
+                    ok: false,
+                    id: String::new(),
+                    schema_id: None,
+                    is_schema: true,
+                    error: format!(
+                        "Schema chain validation failed: {e}\n{}",
+                        self.get_details(&entity)
+                    ),
+                };
+            }
+            if let Err(e) = self.store.validate_schema_traits(&entity_id) {
+                return GtsAddEntityResult {
+                    ok: false,
+                    id: String::new(),
+                    schema_id: None,
+                    is_schema: true,
+                    error: format!(
+                        "Schema traits validation failed: {e}\n{}",
+                        self.get_details(&entity)
+                    ),
+                };
+            }
+        }
+
+        if validate && !entity.is_schema {
+            if let Err(e) = crate::schema_modifiers::validate_instance_modifiers(&entity.content) {
+                return GtsAddEntityResult {
+                    ok: false,
+                    id: String::new(),
+                    schema_id: None,
+                    is_schema: false,
+                    error: format!(
+                        "Instance validation failed: {e}\n{}",
+                        self.get_details(&entity)
+                    ),
+                };
+            }
+            if let Err(e) = self.store.validate_instance(&entity_id) {
+                return GtsAddEntityResult {
+                    ok: false,
+                    id: String::new(),
+                    schema_id: None,
+                    is_schema: false,
+                    error: format!(
+                        "Instance validation failed: {e}\n{}",
+                        self.get_details(&entity)
+                    ),
+                };
+            }
         }
 
         // println!("submitted: {}", self.get_content_pretty(&entity));
@@ -619,6 +672,19 @@ impl GtsOps {
 
     pub fn validate_entity(&mut self, gts_id: &str) -> GtsEntityValidationResult {
         if gts_id.ends_with('~') {
+            // Validate schema modifiers (x-gts-final, x-gts-abstract): types,
+            // mutual exclusion, and top-level placement.
+            if let Some(entity) = self.store.get(gts_id)
+                && let Err(e) = crate::schema_modifiers::validate_schema_modifiers(&entity.content)
+            {
+                return GtsEntityValidationResult {
+                    id: gts_id.to_owned(),
+                    ok: false,
+                    entity_type: "schema".to_owned(),
+                    error: e,
+                };
+            }
+
             let result = self.validate_schema(gts_id);
             if !result.ok {
                 return GtsEntityValidationResult {
@@ -649,6 +715,19 @@ impl GtsOps {
                 error: String::new(),
             }
         } else {
+            // Check that schema-only keywords do not appear in instance content.
+            if let Some(entity) = self.store.get(gts_id)
+                && let Err(e) =
+                    crate::schema_modifiers::validate_instance_modifiers(&entity.content)
+            {
+                return GtsEntityValidationResult {
+                    id: gts_id.to_owned(),
+                    ok: false,
+                    entity_type: "instance".to_owned(),
+                    error: e,
+                };
+            }
+
             let result = self.validate_instance(gts_id);
             GtsEntityValidationResult {
                 id: result.id,
@@ -3262,6 +3341,38 @@ mod tests {
         assert!(
             result.error.contains("Instance validation failed"),
             "Error should mention instance validation failure, got: {}",
+            result.error
+        );
+    }
+
+    #[test]
+    fn test_add_entity_validate_rejects_instance_with_schema_only_keyword() {
+        // Registration with validate=true MUST reject an instance whose body
+        // contains schema-only keywords (x-gts-final / x-gts-abstract).
+        let mut ops = GtsOps::new(None, None, 0);
+
+        let schema = json!({
+            "$id": "gts://gts.x.testkw.host.thing.v1~",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        });
+        assert!(ops.add_entity(&schema, false).ok);
+
+        let bad_instance = json!({
+            "id": "gts.x.testkw.host.thing.v1~x.testkw._.item.v1",
+            "name": "leak",
+            "x-gts-final": true,
+        });
+        let result = ops.add_entity(&bad_instance, true);
+        assert!(
+            !result.ok,
+            "instance with schema-only keyword must be rejected"
+        );
+        assert!(
+            result.error.contains("x-gts-final"),
+            "error should name the offending keyword, got: {}",
             result.error
         );
     }

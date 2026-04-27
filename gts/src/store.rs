@@ -756,6 +756,18 @@ impl GtsStore {
                     .join("")
             );
 
+            // Check x-gts-final: if the base type is final, derivation is not allowed.
+            if let Some(base_entity) = self.get(&base_id)
+                && base_entity
+                    .content
+                    .get(crate::schema_modifiers::X_GTS_FINAL)
+                    == Some(&Value::Bool(true))
+            {
+                return Err(StoreError::ValidationError(format!(
+                    "base type '{base_id}' is final and cannot be extended"
+                )));
+            }
+
             tracing::info!(
                 "OP#12: Validating schema chain pair: base={} derived={}",
                 base_id,
@@ -927,6 +939,17 @@ impl GtsStore {
             resolved_trait_schemas.push(resolved);
         }
 
+        // Check if the leaf schema is abstract — skip trait validation entirely.
+        // Abstract schemas are not leaf schemas, so trait resolution completeness is not enforced.
+        if let Some(leaf_entity) = self.get(gts_id)
+            && leaf_entity
+                .content
+                .get(crate::schema_modifiers::X_GTS_ABSTRACT)
+                == Some(&Value::Bool(true))
+        {
+            return Ok(());
+        }
+
         // Delegate to the schema_traits module
         let merged = serde_json::Value::Object(merged_traits);
         crate::schema_traits::validate_effective_traits(&resolved_trait_schemas, &merged, true)
@@ -1037,6 +1060,13 @@ impl GtsStore {
             .clone();
 
         let schema = self.get_schema_content(&schema_id)?;
+
+        // Check x-gts-abstract: abstract types cannot have direct instances.
+        if schema.get(crate::schema_modifiers::X_GTS_ABSTRACT) == Some(&Value::Bool(true)) {
+            return Err(StoreError::ValidationError(format!(
+                "type '{schema_id}' is abstract and cannot have direct instances"
+            )));
+        }
 
         tracing::info!(
             "Validating instance {} against schema {}",
