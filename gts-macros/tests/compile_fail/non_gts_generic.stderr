@@ -3,15 +3,3 @@ error: struct_to_gts_schema: Base structs must have either an ID field (one of: 
    |
 17 | pub struct BaseEventV1<P> {
    |            ^^^^^^^^^^^
-
-error[E0412]: cannot find type `BaseEventV1` in this scope
-  --> tests/compile_fail/non_gts_generic.rs:31:17
-   |
-31 |     let _event: BaseEventV1<MyStruct> = BaseEventV1 {
-   |                 ^^^^^^^^^^^ not found in this scope
-
-error[E0422]: cannot find struct, variant or union type `BaseEventV1` in this scope
-  --> tests/compile_fail/non_gts_generic.rs:31:41
-   |
-31 |     let _event: BaseEventV1<MyStruct> = BaseEventV1 {
-   |                                         ^^^^^^^^^^^ not found in this scope

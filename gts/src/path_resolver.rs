@@ -35,7 +35,7 @@ impl JsonPathResolver {
     fn split_raw_parts(norm: &str) -> Vec<String> {
         norm.split('.')
             .filter(|s| !s.is_empty())
-            .map(ToString::to_string)
+            .map(str::to_owned)
             .collect()
     }
 

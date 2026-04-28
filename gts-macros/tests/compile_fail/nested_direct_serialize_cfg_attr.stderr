@@ -32,7 +32,7 @@ error[E0119]: conflicting implementations of trait `GtsDeserialize<'_>` for type
              where T: _::_serde::Deserialize<'de>;
    = note: this error originates in the attribute macro `struct_to_gts_schema` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error[E0119]: conflicting implementations of trait `GtsNoDirectSerialize` for type `AuditEventV1`
+error[E0119]: conflicting implementations of trait `gts::GtsNoDirectSerialize` for type `AuditEventV1`
   --> tests/compile_fail/nested_direct_serialize_cfg_attr.rs:19:1
    |
 19 | / #[struct_to_gts_schema(
@@ -45,11 +45,11 @@ error[E0119]: conflicting implementations of trait `GtsNoDirectSerialize` for ty
    | |__^
    |
    = note: conflicting implementation in crate `gts`:
-           - impl<T> GtsNoDirectSerialize for T
+           - impl<T> gts::GtsNoDirectSerialize for T
              where T: _::_serde::Serialize;
    = note: this error originates in the attribute macro `struct_to_gts_schema` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error[E0119]: conflicting implementations of trait `GtsNoDirectDeserialize` for type `AuditEventV1`
+error[E0119]: conflicting implementations of trait `gts::GtsNoDirectDeserialize` for type `AuditEventV1`
   --> tests/compile_fail/nested_direct_serialize_cfg_attr.rs:19:1
    |
 19 | / #[struct_to_gts_schema(
@@ -62,6 +62,6 @@ error[E0119]: conflicting implementations of trait `GtsNoDirectDeserialize` for 
    | |__^
    |
    = note: conflicting implementation in crate `gts`:
-           - impl<T> GtsNoDirectDeserialize for T
+           - impl<T> gts::GtsNoDirectDeserialize for T
              where for<'de> T: _::_serde::Deserialize<'de>;
    = note: this error originates in the attribute macro `struct_to_gts_schema` (in Nightly builds, run with -Z macro-backtrace for more info)

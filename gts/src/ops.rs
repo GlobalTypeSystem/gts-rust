@@ -223,7 +223,7 @@ impl GtsOps {
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
-                    .filter_map(|v| v.as_str().map(ToString::to_string))
+                    .filter_map(|v| v.as_str().map(str::to_owned))
                     .collect()
             })
             .unwrap_or(default_cfg.entity_id_fields);
@@ -233,7 +233,7 @@ impl GtsOps {
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
-                    .filter_map(|v| v.as_str().map(ToString::to_string))
+                    .filter_map(|v| v.as_str().map(str::to_owned))
                     .collect()
             })
             .unwrap_or(default_cfg.schema_id_fields);

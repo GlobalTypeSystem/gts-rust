@@ -25,7 +25,6 @@ jobs:
     timeout-minutes: 30
     outputs:
       version: ${{ steps.check.outputs.version }}
-      rust-version: ${{ steps.check.outputs.rust-version }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -114,13 +113,7 @@ jobs:
           done
           [ $FAIL -eq 0 ] || exit 1
 
-          RUST_VER=$(awk -F'"' '/^[[:space:]]*rust-version[[:space:]]*=/{print $2; exit}' Cargo.toml)
-          if [ -z "${RUST_VER}" ]; then
-            echo "WARNING: rust-version not found in Cargo.toml, defaulting to 'stable'"
-            RUST_VER="stable"
-          fi
           echo "version=${EXPECTED}" >> "$GITHUB_OUTPUT"
-          echo "rust-version=${RUST_VER}" >> "$GITHUB_OUTPUT"
 
       - name: Install cargo-deny
         uses: taiki-e/install-action@385db9cc6bf65d19775b02084a4b698eaca9a4f2 # v2
@@ -185,10 +178,11 @@ jobs:
             exit 1
           fi
 
-      - uses: dtolnay/rust-toolchain@9bc92bc5598b4f3bec5d910d352094982cb0c3b9 # stable
-        with:
-          toolchain: ${{ needs.validate.outputs.rust-version }}
-          targets: ${{ matrix.target }}
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add ${{ matrix.target }}
+          rustup show
 
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
         with:
@@ -436,9 +430,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@9bc92bc5598b4f3bec5d910d352094982cb0c3b9 # stable
-        with:
-          toolchain: ${{ needs.validate.outputs.rust-version }}
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup show
 
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
 

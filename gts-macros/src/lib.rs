@@ -346,8 +346,7 @@ fn has_derive(input: &syn::DeriveInput, trait_name: &str) -> bool {
             && attr
                 .meta
                 .require_list()
-                .map(|meta| meta.tokens.to_string().contains(trait_name))
-                .unwrap_or(false)
+                .is_ok_and(|meta| meta.tokens.to_string().contains(trait_name))
     })
 }
 

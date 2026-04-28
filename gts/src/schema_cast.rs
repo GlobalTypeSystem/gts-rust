@@ -205,7 +205,7 @@ impl GtsEntityCastResult {
             .and_then(|r| r.as_array())
             .map(|arr| {
                 arr.iter()
-                    .filter_map(|v| v.as_str().map(ToString::to_string))
+                    .filter_map(|v| v.as_str().map(str::to_owned))
                     .collect()
             })
             .unwrap_or_default();
@@ -561,7 +561,7 @@ impl GtsEntityCastResult {
             .and_then(|r| r.as_array())
             .map(|arr| {
                 arr.iter()
-                    .filter_map(|v| v.as_str().map(ToString::to_string))
+                    .filter_map(|v| v.as_str().map(str::to_owned))
                     .collect()
             })
             .unwrap_or_default();
@@ -571,7 +571,7 @@ impl GtsEntityCastResult {
             .and_then(|r| r.as_array())
             .map(|arr| {
                 arr.iter()
-                    .filter_map(|v| v.as_str().map(ToString::to_string))
+                    .filter_map(|v| v.as_str().map(str::to_owned))
                     .collect()
             })
             .unwrap_or_default();
@@ -619,11 +619,11 @@ impl GtsEntityCastResult {
                 if let (Some(old_e), Some(new_e)) = (old_enum, new_enum) {
                     let old_enum_set: HashSet<String> = old_e
                         .iter()
-                        .filter_map(|v| v.as_str().map(ToString::to_string))
+                        .filter_map(|v| v.as_str().map(str::to_owned))
                         .collect();
                     let new_enum_set: HashSet<String> = new_e
                         .iter()
-                        .filter_map(|v| v.as_str().map(ToString::to_string))
+                        .filter_map(|v| v.as_str().map(str::to_owned))
                         .collect();
 
                     if check_backward {
