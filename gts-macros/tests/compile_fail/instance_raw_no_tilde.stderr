@@ -1,0 +1,5 @@
+error: instance id literal must contain at least one `~` (chained form: gts.<type>~<instance>)
+  --> tests/compile_fail/instance_raw_no_tilde.rs:11:15
+   |
+11 |         "id": "gts.acme.core.events.topic.v1",
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

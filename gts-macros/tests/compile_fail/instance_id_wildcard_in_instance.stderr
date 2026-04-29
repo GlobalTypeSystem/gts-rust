@@ -1,0 +1,5 @@
+error: Invalid GTS instance ID: segment #2: Invalid package token '*'. Must start with [a-z_] and contain only [a-z0-9_]
+  --> tests/compile_fail/instance_id_wildcard_in_instance.rs:25:13
+   |
+25 |         id: "gts.acme.core.test.perm.v1~vendor.*.test.x.v1",
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -339,14 +339,24 @@ fn validate_version_match(struct_ident: &syn::Ident, schema_id: &str) -> syn::Re
     }
 }
 
-/// Check if a derive attribute contains a specific trait name
+/// Check if the input has a bare `#[derive(...)]` listing `trait_name` exactly.
+///
+/// Compares each derive entry's last path segment ident against `trait_name`,
+/// so `#[derive(MyJsonSchema)]` does NOT match `JsonSchema` and
+/// `#[derive(SerializeIfPresent)]` does NOT match `Serialize`. Path prefixes
+/// are stripped (`serde::Serialize` matches `Serialize`). `cfg_attr`-wrapped
+/// derives are intentionally not consulted here — the callers (`add_missing_derives`)
+/// auto-add unconditional derives, and a conditional derive is treated as
+/// "not present" for the unconditional case.
 fn has_derive(input: &syn::DeriveInput, trait_name: &str) -> bool {
     input.attrs.iter().any(|attr| {
         attr.path().is_ident("derive")
             && attr
                 .meta
                 .require_list()
-                .is_ok_and(|meta| meta.tokens.to_string().contains(trait_name))
+                .ok()
+                .and_then(|meta| syn::parse2::<DeriveList>(meta.tokens.clone()).ok())
+                .is_some_and(|DeriveList(derives)| derive_list_contains(&derives, trait_name))
     })
 }
 
@@ -1838,4 +1848,162 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     };
 
     TokenStream::from(expanded)
+}
+
+// =====================================================================
+//             gts_instance! / gts_instance_raw!
+// =====================================================================
+//
+// Implementation lives in `instance.rs`. The `#[proc_macro]` entry
+// points must live at the crate root (Rust restriction), so they are
+// thin shims here that delegate into the module.
+
+mod instance;
+
+/// Typed GTS instance.
+///
+/// The macro takes a Rust struct literal and rewrites the GTS instance-id
+/// field's string-literal value into a `GtsInstanceId::new(prefix, segment)`
+/// call after compile-time validation. The id field is one of `id` /
+/// `gts_id` / `gtsId` — whichever your `#[struct_to_gts_schema]`-generated
+/// type uses; the macro picks the matching name automatically.
+///
+/// ## Expression form (default)
+///
+/// ```ignore
+/// let t: TopicV1 = gts_macros::gts_instance!(TopicV1 {
+///     id: "gts.acme.core.events.topic.v1~vendor.app.orders.created.v1",
+///     name: "orders".to_owned(),
+///     retention: "P30D".to_owned(),
+/// });
+/// ```
+///
+/// The literal is validated against `gts_id::validate_gts_id` and
+/// const-asserted to share its prefix with `<TopicV1 as GtsSchema>::SCHEMA_ID`.
+/// The id field's apparent string value is rewritten by the macro — at
+/// runtime `t.id` is a `GtsInstanceId`, not a `String`.
+///
+/// ## Chained generic carriers — turbofish drives the prefix-assert
+///
+/// For chained schemas, write the conforming type as a turbofish on the
+/// struct literal. The macro descends through angle args to the deepest
+/// non-generic path and uses that as the const-assert target — so the
+/// literal's prefix is matched against the full chain's schema id, not
+/// the bare carrier's:
+///
+/// ```ignore
+/// let v: BaseV1<LeafV1> = gts_macros::gts_instance!(BaseV1::<LeafV1> {
+///     id: "gts.acme.core.test.base.v1~acme.core.test.leaf.v1~vendor.app.example.v1",
+///     payload: LeafV1 { name: "ex".to_owned() },
+/// });
+/// ```
+///
+/// `BaseV1::<()> { ... }` keeps the carrier itself as the target (a
+/// base-level instance). Bare `BaseV1 { ... }` (no turbofish on a generic
+/// carrier) is rejected — Rust requires explicit generics in the trait
+/// position the macro emits, and the turbofish is the only signal the
+/// macro has for picking the conforming type.
+///
+/// ## `#[gts_static(NAME)]` — emit a `pub static LazyLock<T>` binding
+///
+/// In item position, the macro can additionally wrap the produced value
+/// in a lazily-initialised static binding so that other modules can
+/// reference it by name without going through JSON:
+///
+/// ```ignore
+/// gts_macros::gts_instance! {
+///     #[gts_static(ORDERS_TOPIC)]
+///     TopicV1 {
+///         id: "gts.acme.core.events.topic.v1~vendor.app.orders.created.v1",
+///         name: "orders".to_owned(),
+///         retention: "P30D".to_owned(),
+///     }
+/// }
+///
+/// // Elsewhere — typed access by name, no JSON round-trip:
+/// let t: &TopicV1 = &ORDERS_TOPIC;
+/// ```
+///
+/// `#[gts_static(NAME)]` is the only outer attribute the macro accepts;
+/// other attributes are rejected with a span-anchored error.
+///
+/// ## What you don't need `#[gts_static]` for
+///
+/// Adding an instance to a JSON-shaped runtime registry (e.g.
+/// `inventory::submit!`) doesn't need a static — pass the bare expression
+/// form into a closure:
+///
+/// ```ignore
+/// inventory::submit! {
+///     MyEntry {
+///         payload_fn: || ::serde_json::to_value(
+///             &gts_macros::gts_instance!(T { id: "gts....", /* ... */ })
+///         ).unwrap(),
+///     }
+/// }
+/// ```
+///
+/// Reach for `#[gts_static(NAME)]` when the *typed value itself* (not a
+/// JSON projection of it) needs to be addressable elsewhere in the
+/// program.
+///
+/// ## Errors
+///
+/// - Missing id field in the literal: `the struct literal must contain
+///   exactly one of: id, gts_id, gtsId`.
+/// - Two id fields (`id:` and `gts_id:` together): `ambiguous id field`.
+/// - Non-literal id value (`id: some_var`): `must be a string literal`.
+/// - Malformed id literal: full error from `gts_id::validate_gts_id`.
+/// - Schema-prefix mismatch: const-assert fails at build time.
+/// - `..rest` struct update syntax: not supported.
+///
+/// For raw-JSON payloads, see [`gts_instance_raw!`].
+#[proc_macro]
+pub fn gts_instance(input: TokenStream) -> TokenStream {
+    match instance::expand_gts_instance(input.into()) {
+        Ok(tokens) => tokens.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+/// Raw-JSON GTS instance, expression form. Use when the instance does
+/// not correspond to a Rust struct.
+///
+/// The macro takes a single JSON object literal where one top-level key
+/// is `"id"` carrying a string-literal value. The id is validated at
+/// proc-macro time (full GTS spec format + chained-form rules) and the
+/// resulting `serde_json::Value` always has the validated literal in its
+/// `"id"` slot — even if the original body is later edited to disagree.
+///
+/// ```ignore
+/// let v: serde_json::Value = gts_macros::gts_instance_raw!({
+///     "id": "gts.acme.core.events.topic.v1~vendor.app.events.audit.v1",
+///     "name": "audit",
+///     "description": "Audit log events",
+/// });
+/// ```
+///
+/// Other top-level keys, nested objects, and arrays pass through to
+/// `serde_json::json!` unchanged. The macro only inspects the top-level
+/// `"id"` key — nested `"id"` fields inside sub-objects are payload data,
+/// not the instance identifier.
+///
+/// ## Errors
+///
+/// - Missing top-level `"id"`: `missing top-level "id" key`.
+/// - Duplicate top-level `"id"`: pointed at both spans.
+/// - Non-literal `"id"` value: `"id" must be a string literal`.
+/// - Malformed id literal: full error from `gts_id::validate_gts_id`.
+/// - Body missing chained `~`: `instance id literal must contain at
+///   least one ~`.
+///
+/// The macro intentionally gives up compile-time field validation against
+/// any schema; payload validation is the responsibility of the caller's
+/// runtime registry.
+#[proc_macro]
+pub fn gts_instance_raw(input: TokenStream) -> TokenStream {
+    match instance::expand_gts_instance_raw(input.into()) {
+        Ok(tokens) => tokens.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
 }

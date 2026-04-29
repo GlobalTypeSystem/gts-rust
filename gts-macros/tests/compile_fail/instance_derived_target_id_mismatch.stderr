@@ -1,0 +1,11 @@
+error[E0080]: evaluation panicked: instance id literal must equal the type's GtsSchema::SCHEMA_ID followed by a single non-empty segment (no extra `~`); for chained schemas, write the full type as a turbofish on the struct literal (e.g. `BaseV1::<LeafV1>` rather than bare `BaseV1`) so the macro can derive the conforming schema
+  --> tests/compile_fail/instance_derived_target_id_mismatch.rs:45:30
+   |
+45 |       let _v: BaseV1<LeafV1> = gts_instance!(BaseV1::<LeafV1> {
+   |  ______________________________^
+46 | |         id: "gts.acme.core.test.base.v1~vendor.app.things.bare.v1",
+47 | |         payload: LeafV1 {
+48 | |             name: "ex".to_owned()
+49 | |         },
+50 | |     });
+   | |______^ evaluation of `main::_` failed here

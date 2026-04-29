@@ -1,0 +1,5 @@
+error: `"id"` must be a string literal containing the full GTS instance id (e.g. "gts.acme.core.events.topic.v1~vendor.app.x.v1")
+  --> tests/compile_fail/instance_raw_id_not_literal.rs:10:15
+   |
+10 |         "id": runtime_id,
+   |               ^^^^^^^^^^

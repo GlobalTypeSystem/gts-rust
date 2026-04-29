@@ -1,0 +1,5 @@
+error: unknown attribute on gts_instance! struct literal; expected `#[gts_static(...)]`
+  --> tests/compile_fail/instance_unknown_attribute.rs:23:9
+   |
+23 |         #[gts_unknown(foo)]
+   |         ^^^^^^^^^^^^^^^^^^^

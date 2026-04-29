@@ -1,0 +1,11 @@
+error: missing top-level `"id"` key in gts_instance_raw! body; the JSON object must contain `"id": "<full GTS instance id>"`
+  --> tests/compile_fail/instance_raw_missing_id.rs:8:13
+   |
+ 8 |       let _ = gts_instance_raw!({
+   |  _____________^
+ 9 | |         "name": "audit",
+10 | |         "description": "missing id",
+11 | |     });
+   | |______^
+   |
+   = note: this error originates in the macro `gts_instance_raw` (in Nightly builds, run with -Z macro-backtrace for more info)

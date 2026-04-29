@@ -1,0 +1,9 @@
+error[E0080]: evaluation panicked: instance id literal must equal the type's GtsSchema::SCHEMA_ID followed by a single non-empty segment (no extra `~`); for chained schemas, write the full type as a turbofish on the struct literal (e.g. `BaseV1::<LeafV1>` rather than bare `BaseV1`) so the macro can derive the conforming schema
+  --> tests/compile_fail/instance_id_too_deep.rs:30:13
+   |
+30 |       let _ = gts_instance!(PermV1 {
+   |  _____________^
+31 | |         id: "gts.acme.core.test.perm.v1~vendor.app.test.deeper.v1~vendor.app.test.leaf.v1",
+32 | |         action: "read".to_owned(),
+33 | |     });
+   | |______^ evaluation of `main::_` failed here

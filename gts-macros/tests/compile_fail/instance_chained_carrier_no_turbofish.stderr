@@ -1,0 +1,15 @@
+error[E0107]: missing generics for struct `BaseV1`
+  --> tests/compile_fail/instance_chained_carrier_no_turbofish.rs:39:9
+   |
+39 |         BaseV1 {
+   |         ^^^^^^ expected 1 generic argument
+   |
+note: struct defined here, with 1 generic parameter: `P`
+  --> tests/compile_fail/instance_chained_carrier_no_turbofish.rs:20:12
+   |
+20 | pub struct BaseV1<P> {
+   |            ^^^^^^ -
+help: add missing generic argument
+   |
+39 |         BaseV1<P> {
+   |               +++

@@ -1,0 +1,5 @@
+error: missing GTS instance-id field; the struct literal must contain exactly one of: $id, id, gts_id, gtsId
+  --> tests/compile_fail/instance_missing_id.rs:22:27
+   |
+22 |     let _ = gts_instance!(PermV1 {
+   |                           ^^^^^^
