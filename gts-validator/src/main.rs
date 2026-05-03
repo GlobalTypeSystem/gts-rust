@@ -28,9 +28,14 @@ struct Cli {
     #[arg(value_name = "PATH")]
     paths: Vec<PathBuf>,
 
-    /// Expected vendor for all GTS IDs (validates vendor matches)
-    #[arg(long)]
-    vendor: Option<String>,
+    /// Allowed vendor(s) for GTS IDs.
+    /// Accepts a single vendor, comma-separated list, or repeated flags.
+    /// Examples: --vendor cf   --vendor cf,example   --vendor cf --vendor example
+    ///
+    /// Note: Example vendors (acme, globex, example, demo, test, sample, tutorial)
+    /// are always tolerated by the underlying validator.
+    #[arg(long, action = clap::ArgAction::Append)]
+    vendor: Vec<String>,
 
     /// Exclude patterns (can be specified multiple times)
     #[arg(long, short = 'e', action = clap::ArgAction::Append)]
@@ -96,9 +101,17 @@ fn main() -> ExitCode {
     };
     validation_config.skip_tokens = cli.skip_tokens;
 
-    validation_config.vendor_policy = match cli.vendor {
-        Some(vendor) => VendorPolicy::MustMatch(vendor),
-        None => VendorPolicy::Any,
+    let vendors: Vec<String> = cli
+        .vendor
+        .iter()
+        .flat_map(|v| v.split(','))
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty())
+        .collect();
+    validation_config.vendor_policy = match vendors.len() {
+        0 => VendorPolicy::Any,
+        1 => VendorPolicy::MustMatch(vendors.into_iter().next().expect("checked len==1")),
+        _ => VendorPolicy::AllowList(vendors),
     };
 
     if cli.verbose {
@@ -109,8 +122,12 @@ fn main() -> ExitCode {
             .collect();
         eprintln!("Scanning paths: {}", path_list.join(", "));
 
-        if let VendorPolicy::MustMatch(ref vendor) = validation_config.vendor_policy {
-            eprintln!("Expected vendor: {vendor}");
+        match &validation_config.vendor_policy {
+            VendorPolicy::MustMatch(vendor) => eprintln!("Expected vendor: {vendor}"),
+            VendorPolicy::AllowList(vendors) => {
+                eprintln!("Allowed vendors: {}", vendors.join(", "));
+            }
+            _ => {}
         }
     }
 
