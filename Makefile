@@ -69,15 +69,16 @@ update-spec:
 
 # Create/refresh the Python venv used by the gts-spec e2e test suite
 e2e-venv: $(VENV_PY)
+	@echo "Installing gts-spec e2e test dependencies..."
+	@$(VENV_PY) -m pip install --quiet --upgrade pip setuptools wheel
+	@$(VENV_PY) -m pip install --quiet --no-deps 'httprunner>=4,<5'
+	@$(VENV_PY) -m pip install --quiet -r .gts-spec/tests/requirements.txt
 
 $(VENV_PY):
 	@if [ ! -x "$(VENV_PY)" ]; then \
 		echo "Creating venv at $(VENV_DIR) using $(PYTHON)..."; \
 		$(PYTHON) -m venv $(VENV_DIR); \
 	fi
-	@echo "Installing gts-spec e2e test dependencies..."
-	@$(VENV_PY) -m pip install --quiet --upgrade pip setuptools wheel
-	@$(VENV_PY) -m pip install --quiet -r .gts-spec/tests/requirements.txt
 
 # Run end-to-end tests against gts-spec.
 e2e: build e2e-venv
