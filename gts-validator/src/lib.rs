@@ -41,6 +41,14 @@ pub use report::ValidationReport;
 use strategy::ContentFormat;
 use strategy::fs::{ScanResult, content_format_for, find_files, read_file_bounded};
 
+fn format_allow_list_mismatch(allowed: &[String], found: &str) -> String {
+    format!(
+        "Vendor mismatch: expected one of '{}', found '{}'",
+        allowed.join(", "),
+        found
+    )
+}
+
 /// Validate GTS identifiers in files on disk.
 ///
 /// This is the primary public API.
@@ -224,17 +232,52 @@ fn apply_allow_list_filter(
 
     errors
         .into_iter()
-        .filter(|e| {
+        .filter_map(|mut e| {
             // Keep the error only if it is NOT a vendor-mismatch for an allowed vendor.
             // Vendor-mismatch errors contain "Vendor mismatch" in the message.
             // Extract the actual vendor from normalized_id (first segment before '.').
             if !e.error.contains("Vendor mismatch") {
-                return true; // non-vendor errors always kept
+                return Some(e); // non-vendor errors always kept
             }
             // normalized_id format: "gts.<vendor>.<rest>..."
             // The vendor is the second dot-separated segment (index 1).
             let id_vendor = e.normalized_id.split('.').nth(1).unwrap_or("");
-            !allowed.iter().any(|a| a == id_vendor)
+            if allowed.iter().any(|a| a == id_vendor) {
+                return None;
+            }
+            e.error = format_allow_list_mismatch(allowed, id_vendor);
+            Some(e)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_apply_allow_list_filter_rewrites_disallowed_vendor_message() {
+        let errors = vec![ValidationError {
+            file: PathBuf::from("docs/test.md"),
+            line: 1,
+            column: 1,
+            json_path: String::new(),
+            raw_value: "gts.w.core.org.department.v1~".to_owned(),
+            normalized_id: "gts.w.core.org.department.v1~".to_owned(),
+            error: "Vendor mismatch: expected '', found 'w'".to_owned(),
+            context: "gts.w.core.org.department.v1~".to_owned(),
+        }];
+
+        let filtered = apply_allow_list_filter(
+            errors,
+            &VendorPolicy::AllowList(vec!["x".to_owned(), "cf".to_owned()]),
+        );
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(
+            filtered[0].error,
+            "Vendor mismatch: expected one of 'x, cf', found 'w'"
+        );
+    }
 }
