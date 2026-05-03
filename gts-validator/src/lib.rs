@@ -242,6 +242,9 @@ fn apply_allow_list_filter(
             // normalized_id format: "gts.<vendor>.<rest>..."
             // The vendor is the second dot-separated segment (index 1).
             let id_vendor = e.normalized_id.split('.').nth(1).unwrap_or("");
+            if id_vendor == "*" {
+                return None;
+            }
             if allowed.iter().any(|a| a == id_vendor) {
                 return None;
             }
@@ -279,5 +282,31 @@ mod tests {
             filtered[0].error,
             "Vendor mismatch: expected one of 'x, cf', found 'w'"
         );
+    }
+
+    #[test]
+    fn test_apply_allow_list_filter_skips_wildcard_vendor_false_positive() {
+        let errors = vec![ValidationError {
+            file: PathBuf::from("docs/test.yaml"),
+            line: 0,
+            column: 0,
+            json_path: "$.x-gts-ref".to_owned(),
+            raw_value: "gts.*".to_owned(),
+            normalized_id: "gts.*".to_owned(),
+            error: "Vendor mismatch: expected '', found '*'".to_owned(),
+            context: "$.x-gts-ref".to_owned(),
+        }];
+
+        let filtered = apply_allow_list_filter(
+            errors,
+            &VendorPolicy::AllowList(vec![
+                "cf".to_owned(),
+                "vendor".to_owned(),
+                "example".to_owned(),
+                "fabrikam".to_owned(),
+            ]),
+        );
+
+        assert!(filtered.is_empty());
     }
 }
