@@ -89,7 +89,7 @@ e2e: build e2e-venv
 	./target/release/gts server --port $(PORT) & echo $$! > .server.pid; \
 	sleep 2; \
 	echo "Running e2e tests..."; \
-	PYTHONDONTWRITEBYTECODE=1 $(VENV_PY) -m pytest -p no:cacheprovider --log-file=e2e.log --gts-base-url http://127.0.0.1:$(PORT) ./.gts-spec/tests; \
+	PYTHONDONTWRITEBYTECODE=1 $(VENV_PY) -m pytest -p no:cacheprovider -W ignore::pytest.PytestReturnNotNoneWarning --log-file=e2e.log --gts-base-url http://127.0.0.1:$(PORT) ./.gts-spec/tests; \
 	echo "E2E tests completed successfully"
 
 # Run all quality checks
