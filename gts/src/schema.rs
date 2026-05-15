@@ -151,9 +151,32 @@ impl GtsSchema for () {
             "type": "object"
         })
     }
+}
 
-    fn gts_schema() -> Value {
-        Self::gts_schema_with_refs()
+/// Marker implementation for [`serde_json::Value`] — the same "I am a
+/// placeholder" protocol as `impl GtsSchema for ()`, except the carrier
+/// holds actual JSON data rather than being empty.
+///
+/// Use as the default generic parameter in `Base<P>` types whose payload
+/// is heterogeneous at runtime — e.g. a multi-provider catalog where the
+/// concrete leaf shape is selected by an `info.gts_type` field on the
+/// data, not by the Rust type parameter. Consumers narrow to a typed
+/// view (`Base<ConcreteLeaf>` or `Base<Intermediate<ConcreteLeaf>>`)
+/// by matching on the runtime `gts_type` and deserialising the JSON
+/// payload into the chosen target.
+///
+/// Like `impl GtsSchema for ()`, `SCHEMA_ID` is the empty sentinel that
+/// signals "no own identity — read the real id from data".
+impl GtsSchema for Value {
+    const SCHEMA_ID: &'static str = "";
+
+    fn gts_schema_with_refs() -> Value {
+        serde_json::json!({
+            "type": "object",
+            "description": "Opaque JSON payload; the concrete schema is \
+                            identified by the carrying type's runtime \
+                            discriminator field (typically `gts_type`)."
+        })
     }
 }
 

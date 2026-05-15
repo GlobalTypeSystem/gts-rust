@@ -7,6 +7,7 @@ pub mod schema;
 pub mod schema_cast;
 pub mod schema_compat;
 pub mod schema_modifiers;
+pub mod schema_narrow;
 pub mod schema_traits;
 pub mod store;
 pub mod x_gts_ref;
@@ -22,5 +23,6 @@ pub use schema::{
     GtsSerialize, GtsSerializeWrapper, deserialize_gts, serialize_gts, strip_schema_metadata,
 };
 pub use schema_cast::{GtsEntityCastResult, SchemaCastError};
+pub use schema_narrow::{NarrowError, try_narrow};
 pub use store::{GtsReader, GtsStore, GtsStoreQueryResult, StoreError};
 pub use x_gts_ref::{XGtsRefValidationError, XGtsRefValidator};
