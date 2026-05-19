@@ -26,6 +26,16 @@
 
 use serde_json::Value;
 
+/// JSON Schema annotation keyword that defines the *shape* of trait properties
+/// available to a GTS type and its descendants. Schema-only — MUST NOT appear
+/// in instances (see GTS spec § 9.7.1).
+pub const X_GTS_TRAITS_SCHEMA: &str = "x-gts-traits-schema";
+
+/// JSON Schema annotation keyword that supplies concrete *values* for trait
+/// properties declared via [`X_GTS_TRAITS_SCHEMA`]. Schema-only — MUST NOT
+/// appear in instances (see GTS spec § 9.7.1).
+pub const X_GTS_TRAITS: &str = "x-gts-traits";
+
 /// Maximum recursion depth for traversing `allOf` nesting.
 /// Prevents stack overflow on deeply nested or maliciously crafted schemas.
 const MAX_RECURSION_DEPTH: usize = 64;
@@ -83,11 +93,10 @@ pub fn validate_effective_traits(
 
     if resolved_trait_schemas.is_empty() {
         if has_trait_values {
-            return Err(vec![
-                "x-gts-traits values provided but no x-gts-traits-schema is defined in the \
+            return Err(vec![format!(
+                "{X_GTS_TRAITS} values provided but no {X_GTS_TRAITS_SCHEMA} is defined in the \
                  inheritance chain"
-                    .to_owned(),
-            ]);
+            )]);
         }
         return Ok(());
     }
@@ -96,10 +105,10 @@ pub fn validate_effective_traits(
     for (i, ts) in resolved_trait_schemas.iter().enumerate() {
         // x-gts-traits-schema must not contain x-gts-traits
         if let Some(obj) = ts.as_object()
-            && obj.contains_key("x-gts-traits")
+            && obj.contains_key(X_GTS_TRAITS)
         {
             return Err(vec![format!(
-                "x-gts-traits-schema[{i}] contains 'x-gts-traits' \u{2014} \
+                "{X_GTS_TRAITS_SCHEMA}[{i}] contains '{X_GTS_TRAITS}' \u{2014} \
                  trait values must not appear inside a trait schema definition"
             )]);
         }
@@ -138,7 +147,7 @@ fn collect_trait_schema_recursive(value: &Value, out: &mut Vec<Value>, depth: us
         return;
     };
 
-    if let Some(ts) = obj.get("x-gts-traits-schema") {
+    if let Some(ts) = obj.get(X_GTS_TRAITS_SCHEMA) {
         out.push(ts.clone());
     }
 
@@ -172,7 +181,7 @@ fn collect_traits_recursive(
         return;
     };
 
-    if let Some(Value::Object(traits)) = obj.get("x-gts-traits") {
+    if let Some(Value::Object(traits)) = obj.get(X_GTS_TRAITS) {
         for (k, v) in traits {
             merged.insert(k.clone(), v.clone());
         }
