@@ -4,13 +4,6 @@
   "additionalProperties": false,
   "description": "Base event type definition",
   "properties": {
-    "event_type": {
-      "description": "GTS schema identifier",
-      "format": "gts-schema-id",
-      "title": "GTS Schema ID",
-      "type": "string",
-      "x-gts-ref": "gts.*"
-    },
     "id": {
       "format": "uuid",
       "type": "string"
@@ -19,20 +12,28 @@
       "type": "object"
     },
     "sequence_id": {
+      "format": "uint64",
+      "minimum": 0,
       "type": "integer"
     },
     "tenant_id": {
       "format": "uuid",
       "type": "string"
+    },
+    "type": {
+      "description": "GTS schema identifier",
+      "format": "gts-schema-id",
+      "title": "GTS Schema ID",
+      "type": "string",
+      "x-gts-ref": "gts.*"
     }
   },
   "required": [
-    "event_type",
+    "type",
     "id",
-    "payload",
+    "tenant_id",
     "sequence_id",
-    "tenant_id"
+    "payload"
   ],
-  "title": "BaseEventV1",
   "type": "object"
 }
