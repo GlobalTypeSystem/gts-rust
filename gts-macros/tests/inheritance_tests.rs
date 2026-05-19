@@ -337,6 +337,64 @@ mod tests {
     }
 
     #[test]
+    fn test_generic_base_schema_has_no_dangling_defs_refs() {
+        // Regression for the generic-base branch of `gts_schema_with_refs_allof`:
+        // schemars emits `GtsSchemaId` / `GtsInstanceId` fields as
+        // `{"$ref": "#/$defs/..."}` with the definitions in its own `$defs`
+        // scope. The emitter drops schemars' wrapper but used to keep the
+        // `$ref`, leaving a dangling pointer that strict JSON Schema
+        // validators (ajv-cli, etc.) refuse to compile.
+        let schema = BaseEventV1::<()>::gts_schema_with_refs();
+
+        assert!(
+            schema.get("$defs").is_none(),
+            "emitted schema must not carry schemars' $defs wrapper:\n{}",
+            serde_json::to_string_pretty(&schema).unwrap()
+        );
+
+        let mut stack = vec![&schema];
+        while let Some(v) = stack.pop() {
+            match v {
+                serde_json::Value::Object(map) => {
+                    if let Some(serde_json::Value::String(s)) = map.get("$ref") {
+                        assert!(
+                            !s.starts_with("#/$defs/"),
+                            "dangling internal $ref left in emitted schema: {}\nfull schema:\n{}",
+                            s,
+                            serde_json::to_string_pretty(&schema).unwrap()
+                        );
+                    }
+                    for child in map.values() {
+                        stack.push(child);
+                    }
+                }
+                serde_json::Value::Array(arr) => {
+                    for child in arr {
+                        stack.push(child);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let type_prop = schema
+            .get("properties")
+            .and_then(|p| p.get("type"))
+            .expect("BaseEventV1 must have a `type` property (renamed from event_type)");
+        assert!(
+            type_prop.get("$ref").is_none(),
+            "`type` property still contains a $ref pointer:\n{}",
+            serde_json::to_string_pretty(type_prop).unwrap()
+        );
+        assert_eq!(
+            type_prop.get("format").and_then(|v| v.as_str()),
+            Some("gts-schema-id"),
+            "`type` property should be the inlined GtsSchemaId fragment, got:\n{}",
+            serde_json::to_string_pretty(type_prop).unwrap()
+        );
+    }
+
+    #[test]
     fn test_schema_inheritance() {
         // Only base type can access schema methods directly
         // Multi-segment schemas are blocked from direct access

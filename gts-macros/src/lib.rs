@@ -1199,6 +1199,24 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                     }
                 }
 
+                // Resolve internal $ref references to GtsInstanceId and GtsSchemaId.
+                // schemars emits them as `#/$defs/...` pointers into the per-type
+                // generator scope; once we drop the schemars wrapper they become
+                // dangling. Inline the canonical schema fragment instead so the
+                // generated document is self-contained (same fix as the
+                // non-generic branch below).
+                if let Some(props_obj) = properties.as_object_mut() {
+                    for (_key, value) in props_obj.iter_mut() {
+                        if let Some(ref_str) = value.get("$ref").and_then(|v| v.as_str()) {
+                            if ref_str == "#/$defs/GtsInstanceId" {
+                                *value = gts::GtsInstanceId::json_schema_value();
+                            } else if ref_str == "#/$defs/GtsSchemaId" {
+                                *value = gts::GtsSchemaId::json_schema_value();
+                            }
+                        }
+                    }
+                }
+
                 // If no parent (base type), return simple schema without allOf
                 // Base types have additionalProperties: false at root level
                 // Generic fields are just {"type": "object"} (will be extended by children)
