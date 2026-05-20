@@ -250,8 +250,10 @@ impl GtsEntity {
             {
                 // Per spec: type_id MUST be a GTS Type Identifier or null and no
                 // longer falls back to a JSON Schema dialect URL. Only retain
-                // $schema values that look like a GTS Type Identifier.
-                if schema_str.starts_with("gts.") {
+                // $schema values that parse as a GTS Type Identifier (chain
+                // ending in '~'); leave selected_schema_id_field set either
+                // way so callers can see we looked at $schema.
+                if schema_str.ends_with('~') && GtsID::is_valid(schema_str) {
                     self.schema_id = Some(schema_str.to_owned());
                 }
                 self.selected_schema_id_field = Some("$schema".to_owned());
@@ -287,7 +289,7 @@ impl GtsEntity {
                     let already_gts_type_id = self
                         .schema_id
                         .as_ref()
-                        .is_some_and(|s| s.starts_with("gts."));
+                        .is_some_and(|s| s.ends_with('~') && GtsID::is_valid(s));
                     if !already_gts_type_id {
                         self.schema_id = Some(parent_id);
                     }

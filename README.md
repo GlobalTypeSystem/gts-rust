@@ -953,7 +953,8 @@ server. Tests come from the published runner image
 [`.gts-spec-version`](.gts-spec-version) as an immutable
 `vMAJOR.MINOR.PATCH` — every commit reproduces the same test run, and
 rolling forward is a deliberate bump of that file. Requires a working
-Docker daemon — nothing else.
+Docker daemon plus the Rust/Cargo toolchain (the target builds the
+server binary before running the pinned test-runner image).
 
 ```bash
 make gts-spec-tests                     # full suite on default port 8000

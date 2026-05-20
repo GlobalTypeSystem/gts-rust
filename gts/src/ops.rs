@@ -291,7 +291,7 @@ impl GtsOps {
                 ok: false,
                 id: String::new(),
                 type_id: None,
-                is_type_schema: false,
+                is_type_schema: entity.is_schema,
                 error: if entity.is_schema {
                     format!(
                         "Unable to detect GTS ID in schema entity:\n{}",
@@ -312,7 +312,7 @@ impl GtsOps {
                 ok: false,
                 id: String::new(),
                 type_id: None,
-                is_type_schema: false,
+                is_type_schema: entity.is_schema,
                 error: format!(
                     "Unable to register entity: {e}\n{}",
                     self.get_details(&entity)
@@ -329,7 +329,7 @@ impl GtsOps {
                 ok: false,
                 id: String::new(),
                 type_id: None,
-                is_type_schema: true,
+                is_type_schema: entity.is_schema,
                 error: e,
             };
         }
@@ -342,7 +342,7 @@ impl GtsOps {
                 ok: false,
                 id: String::new(),
                 type_id: None,
-                is_type_schema: false,
+                is_type_schema: entity.is_schema,
                 error: format!(
                     "Schema validation failed: {e}\n{}",
                     self.get_details(&entity)
@@ -358,7 +358,7 @@ impl GtsOps {
                     ok: false,
                     id: String::new(),
                     type_id: None,
-                    is_type_schema: true,
+                    is_type_schema: entity.is_schema,
                     error: format!(
                         "Schema chain validation failed: {e}\n{}",
                         self.get_details(&entity)
@@ -370,7 +370,7 @@ impl GtsOps {
                     ok: false,
                     id: String::new(),
                     type_id: None,
-                    is_type_schema: true,
+                    is_type_schema: entity.is_schema,
                     error: format!(
                         "Schema traits validation failed: {e}\n{}",
                         self.get_details(&entity)
@@ -385,7 +385,7 @@ impl GtsOps {
                     ok: false,
                     id: String::new(),
                     type_id: None,
-                    is_type_schema: false,
+                    is_type_schema: entity.is_schema,
                     error: format!(
                         "Instance validation failed: {e}\n{}",
                         self.get_details(&entity)
@@ -397,7 +397,7 @@ impl GtsOps {
                     ok: false,
                     id: String::new(),
                     type_id: None,
-                    is_type_schema: false,
+                    is_type_schema: entity.is_schema,
                     error: format!(
                         "Instance validation failed: {e}\n{}",
                         self.get_details(&entity)

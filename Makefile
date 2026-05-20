@@ -183,7 +183,7 @@ gts-server:
 # .gts-spec-version before it turns into an opaque docker error.
 gts-spec-version-check:
 	@case "$(GTS_SPEC_VERSION)" in \
-		v[0-9]*) ;; \
+		v[0-9]*.[0-9]*|v[0-9]*.[0-9]*.[0-9]*) ;; \
 		"") echo "ERROR: spec version is empty — populate .gts-spec-version or pass GTS_SPEC_VERSION=..."; exit 1 ;; \
 		*) echo "ERROR: GTS_SPEC_VERSION='$(GTS_SPEC_VERSION)' — expected 'vMAJOR.MINOR' or 'vMAJOR.MINOR.PATCH'"; exit 1 ;; \
 	esac
