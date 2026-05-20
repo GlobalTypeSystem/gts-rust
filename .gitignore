@@ -9,4 +9,5 @@ logs
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 .idea/
 .vscode/
-e2e.log
+.server.pid
+.server.log

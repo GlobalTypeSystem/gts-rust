@@ -6,53 +6,49 @@ Guidance for Claude Code when working in this repository.
 
 `gts-rust` is the Rust reference implementation of [GTS](https://github.com/GlobalTypeSystem/gts-spec) — library (`gts/`), CLI and HTTP server (`gts-cli/`, binary name `gts`), plus supporting crates (`gts-id`, `gts-macros`, `gts-macros-cli`, `gts-validator`). The server answers the REST API exercised by the shared gts-spec conformance suite.
 
-`.gts-spec/` is the spec vendored as a git submodule; `tests/` inside it is the conformance suite. See `README.md` for API/CLI details and `make help` for all targets.
+The conformance suite is shipped as a Docker image — `ghcr.io/globaltypesystem/gts-spec-tests` — and the spec version this implementation targets is pinned in `.gts-spec-version` (the file's contents are used verbatim as the image tag, format `vMAJOR.MINOR.PATCH`). The pin is immutable on purpose: every commit reproduces the same test run, and rolling forward requires a deliberate bump.
 
 ## Running the gts-spec Test Suite
 
-The short form is `make e2e PORT=8001` (PORT defaults to 8000; override if busy — the target fails fast if the port is already in use). It bootstraps the venv, rebuilds, starts the server, runs pytest, and shuts everything down.
+The short form is `make gts-spec-tests PORT=8001` (PORT defaults to 8000; override if busy — the target fails fast if the port is already in use). It builds the release binary, pulls the runner image pinned in `.gts-spec-version`, starts the server (stdout/stderr captured to `.server.log` and dumped automatically on startup failure), runs pytest inside the container against `host.docker.internal:$PORT`, and shuts everything down. Requires a working Docker daemon.
 
-### Raise the file-descriptor limit (macOS)
-
-`httprunner` creates a `requests.Session` per test class and never closes it, so a keep-alive socket leaks per class until pytest exits. With ~250 test classes today, the suite blows past macOS's default 256 soft cap (`ulimit -n`) and fails mid-run with `EMFILE: Too many open files`. Raise the limit in your shell — once, for the whole session:
+### Useful overrides
 
 ```bash
-ulimit -n 4096
+# Single test file or pytest selector
+make gts-spec-tests TEST=test_op12_type_derivation_validation.py
+make gts-spec-tests TEST=test_op12_type_derivation_validation.py::TestCaseOp12_FinalBase_RejectDerived
+
+# Opt into the rolling minor tag (picks up new patches without a commit here)
+make gts-spec-tests GTS_SPEC_VERSION=v0.11
+
+# Try a different patch without touching .gts-spec-version
+make gts-spec-tests GTS_SPEC_VERSION=v0.11.0
+
+# Iterate on the tests themselves — mount a local checkout over /tests
+make gts-spec-tests GTS_SPEC_TESTS_DIR=../gts-spec/tests
 ```
 
-Persist it by adding the same line to `~/.zshrc` (or `~/.bashrc`). Required for both `make e2e` and any direct `pytest` invocation against the spec suite.
+### Iterating on a single test against a long-running server
 
-### Bootstrap the venv (first time only)
-
-Tests depend on `httprunner`. Installed into `.gts-spec/.venv/` (gitignored by the submodule).
+Skip the rebuild/restart cycle when working on one test:
 
 ```bash
-make e2e-venv                     # uses python3 by default
-make e2e-venv PYTHON=python3.11   # Python 3.11 is the safest (httprunner still pins pydantic<2)
+# Terminal 1 — start the server (debug build, fast incremental rebuilds)
+make gts-server PORT=8001
+
+# Terminal 2 — rerun targeted tests as you edit them
+make gts-spec-tests-run PORT=8001 TEST=test_op12_type_derivation_validation.py
+make gts-spec-tests-run PORT=8001 TEST=test_op12_type_derivation_validation.py::TestCaseOp12_FinalBase_RejectDerived
+
+# Iterating on the test suite itself? Mount a local checkout over /tests
+make gts-spec-tests-run PORT=8001 GTS_SPEC_TESTS_DIR=../gts-spec/tests TEST=...
 ```
 
-### Run pytest manually against a running server
-
-Useful when iterating on a single test without the full `make e2e` cycle.
-
-```bash
-cargo build --workspace --release
-./target/release/gts server --port 8001 &
-
-PYTEST=".gts-spec/.venv/bin/python -m pytest"
-
-# Whole suite
-$PYTEST .gts-spec/tests --gts-base-url http://127.0.0.1:8001
-
-# One file / one class
-$PYTEST .gts-spec/tests/test_refimpl_x_gts_final_abstract.py --gts-base-url http://127.0.0.1:8001
-$PYTEST .gts-spec/tests/test_op12_schema_vs_schema_validation.py::TestCaseOp12_FinalBase_RejectDerived --gts-base-url http://127.0.0.1:8001
-```
-
-`GTS_BASE_URL` env var works too. The server holds state in memory with no reset endpoint — restart between full-suite runs.
+The server holds state in memory with no reset endpoint — restart it between full-suite runs.
 
 ## Working in This Repo
 
-- `.gts-spec` is a submodule. Bump with `make update-spec`, then rerun `make e2e` to pick up new spec tests.
-- Handlers in `gts-cli/src/server.rs` stay thin — logic goes in `gts/` where it is unit-testable. New REST behavior usually already has coverage in `.gts-spec/tests/`; run the relevant file before and after to confirm.
-- `make check` is the full local gate: fmt + clippy + test + e2e.
+- `.gts-spec-version` is the canonical pin (`vMAJOR.MINOR.PATCH`). Bump it (commit + push) to roll the spec forward — both CI and `make gts-spec-tests` pick it up. Local cache survives across runs; `docker rmi $(GTS_SPEC_REF)` if you ever need to force a refetch.
+- Handlers in `gts-cli/src/server.rs` stay thin — logic goes in `gts/` where it is unit-testable. New REST behavior usually already has coverage in the gts-spec suite; run the relevant file (`make gts-spec-tests TEST=...`) before and after to confirm.
+- `make check` is the full local gate: fmt + clippy + test + gts-spec-tests.

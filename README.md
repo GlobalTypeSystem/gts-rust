@@ -104,6 +104,15 @@ gts = { path = "path/to/gts-rust/gts" }
 
 All CLI commands support `--path` to specify data directories and `--config` for custom configuration.
 
+The examples below pass `--path ../gts-spec/examples`, which points at the example
+schemas and instances shipped in the spec repo. Grab them with a sibling clone:
+
+```bash
+git clone --depth=1 https://github.com/GlobalTypeSystem/gts-spec.git ../gts-spec
+```
+
+Substitute any directory of your own data if you prefer.
+
 #### OP#1 - ID Validation
 
 Verify that a GTS identifier follows the correct syntax.
@@ -137,7 +146,7 @@ Extract GTS identifiers from JSON objects. This happens automatically when loadi
 
 ```bash
 # List all entities (extracts IDs from all JSON/YAML files)
-gts --path ./.gts-spec/examples list --limit 10
+gts --path ../gts-spec/examples list --limit 10
 ```
 
 #### OP#3 - ID Parsing
@@ -228,7 +237,7 @@ Validate object instances against their corresponding schemas.
 
 ```bash
 # Validate a single instance
-gts --path ./.gts-spec/examples validate-instance --gts-id "gts.x.core.events.event.v1.0"
+gts --path ../gts-spec/examples validate-instance --gts-id "gts.x.core.events.event.v1.0"
 
 # The system:
 # 1. Loads the instance by ID
@@ -250,7 +259,7 @@ Load all schemas and instances, resolve inter-dependencies, and detect broken re
 
 ```bash
 # Resolve relationships for an entity
-gts --path ./.gts-spec/examples resolve-relationships --gts-id "gts.x.core.events.event.v1.0"
+gts --path ../gts-spec/examples resolve-relationships --gts-id "gts.x.core.events.event.v1.0"
 
 # The system:
 # 1. Loads the entity
@@ -279,7 +288,7 @@ Verify that schemas with different MINOR versions are compatible.
 
 ```bash
 # Check compatibility between schema versions
-gts --path ./.gts-spec/examples compatibility \
+gts --path ../gts-spec/examples compatibility \
     --old-schema-id "gts.x.core.events.type.v1~x.commerce.orders.order_placed.v1.0~" \
     --new-schema-id "gts.x.core.events.type.v1~x.commerce.orders.order_placed.v1.1~"
 
@@ -315,7 +324,7 @@ Transform instances between compatible MINOR versions.
 
 ```bash
 # Cast instance from v1.0 to v1.1 schema (instance is identified by UUID)
-gts --path ./.gts-spec/examples cast \
+gts --path ../gts-spec/examples cast \
     --from-id "7a1d2f34-5678-49ab-9012-abcdef123456" \
     --to-schema-id "gts.x.core.events.type.v1~x.commerce.orders.order_placed.v1.1~"
 
@@ -357,16 +366,16 @@ Filter identifier collections using the GTS query language.
 
 ```bash
 # Query with wildcard pattern
-gts --path ./.gts-spec/examples query --expr "gts.x.core.events.*" --limit 50
+gts --path ../gts-spec/examples query --expr "gts.x.core.events.*" --limit 50
 
 # Query with attribute filter
-gts --path ./.gts-spec/examples query --expr "gts.x.core.events.*[status=active]" --limit 50
+gts --path ../gts-spec/examples query --expr "gts.x.core.events.*[status=active]" --limit 50
 
 # Query schemas only (ending with ~)
-gts --path ./.gts-spec/examples query --expr "gts.x.*.*.*.v1~" --limit 100
+gts --path ../gts-spec/examples query --expr "gts.x.*.*.*.v1~" --limit 100
 
 # Query specific namespace
-gts --path ./.gts-spec/examples query --expr "gts.vendor.package.namespace.*" --limit 20
+gts --path ../gts-spec/examples query --expr "gts.vendor.package.namespace.*" --limit 20
 ```
 
 **Output:**
@@ -388,16 +397,16 @@ Retrieve property values and metadata using the attribute selector (`@`).
 
 ```bash
 # Access top-level property
-gts --path ./.gts-spec/examples attr --gts-with-path "gts.x.core.events.event.v1.0@name"
+gts --path ../gts-spec/examples attr --gts-with-path "gts.x.core.events.event.v1.0@name"
 
 # Access nested property
-gts --path ./.gts-spec/examples attr --gts-with-path "gts.x.core.events.event.v1.0@metadata.timestamp"
+gts --path ../gts-spec/examples attr --gts-with-path "gts.x.core.events.event.v1.0@metadata.timestamp"
 
 # Access array element
-gts --path ./.gts-spec/examples attr --gts-with-path "gts.x.core.events.event.v1.0@tags[0]"
+gts --path ../gts-spec/examples attr --gts-with-path "gts.x.core.events.event.v1.0@tags[0]"
 
 # Access schema property
-gts --path ./.gts-spec/examples attr --gts-with-path "gts.x.core.events.event.v1~@properties.name.type"
+gts --path ../gts-spec/examples attr --gts-with-path "gts.x.core.events.event.v1~@properties.name.type"
 ```
 
 **Output:**
@@ -416,7 +425,7 @@ Validate that a derived (chained) schema is compatible with its base schema. The
 
 ```bash
 # Validate a chained schema against its base
-gts --path ./.gts-spec/examples validate-schema \
+gts --path ../gts-spec/examples validate-schema \
     --schema-id "gts.x.core.events.event.v1~vendor.app._.custom.v2~"
 
 # The system:
@@ -447,20 +456,20 @@ gts --path ./.gts-spec/examples validate-schema \
 
 **List Entities:**
 ```bash
-gts --path ./.gts-spec/examples list --limit 100
+gts --path ../gts-spec/examples list --limit 100
 ```
 
 **Start HTTP Server:**
 ```bash
 # Start server without HTTP logging (WARNING level only)
-gts --path ./.gts-spec/examples server --host 127.0.0.1 --port 8000
+gts --path ../gts-spec/examples server --host 127.0.0.1 --port 8000
 # CURL: curl http://127.0.0.1:8000/entities | jq .
 
 # Start server with HTTP request logging (-v or --verbose)
-gts -v --path ./.gts-spec/examples server --host 127.0.0.1 --port 8000
+gts -v --path ../gts-spec/examples server --host 127.0.0.1 --port 8000
 
 # Start server with detailed logging including request/response bodies (-vv)
-gts -vv --path ./.gts-spec/examples server --host 127.0.0.1 --port 8000
+gts -vv --path ../gts-spec/examples server --host 127.0.0.1 --port 8000
 ```
 
 Verbose logging format:
@@ -843,7 +852,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 Start the server:
 
 ```bash
-gts --path ./.gts-spec/examples server --host 127.0.0.1 --port 8000
+gts --path ../gts-spec/examples server --host 127.0.0.1 --port 8000
 # curl http://localhost:8000/entities | jq .
 ```
 
@@ -936,24 +945,45 @@ Run with verbose output:
 cargo test -- --nocapture
 ```
 
-### End-to-end tests against gts-spec
+### gts-spec conformance tests
 
-`make e2e` runs the conformance suite from the `.gts-spec/` submodule against
-a freshly built server. On first run, bootstrap the Python venv:
+`make gts-spec-tests` runs the gts-spec test suite against a freshly built
+server. Tests come from the published runner image
+`ghcr.io/globaltypesystem/gts-spec-tests`; the tag is pinned in
+[`.gts-spec-version`](.gts-spec-version) as an immutable
+`vMAJOR.MINOR.PATCH` — every commit reproduces the same test run, and
+rolling forward is a deliberate bump of that file. Requires a working
+Docker daemon — nothing else.
 
 ```bash
-make e2e-venv PYTHON=python3.11   # 3.11 is safest — httprunner pins pydantic<2
-make e2e
+make gts-spec-tests                     # full suite on default port 8000
+make gts-spec-tests PORT=8001           # different port
+make gts-spec-tests TEST=test_op1_id_validation.py   # single file / selector
 ```
 
-**macOS:** raise the file-descriptor limit before running, otherwise the suite
-will fail mid-run with `EMFILE: Too many open files`. `httprunner` creates a
-`requests.Session` per test class and never closes it, so a keep-alive socket
-leaks per class until pytest exits. With ~250 test classes today, this blows
-past macOS's default 256 soft cap.
+Opt into the rolling minor tag, try a different patch, or test a fork:
 
 ```bash
-ulimit -n 4096
+make gts-spec-tests GTS_SPEC_VERSION=v0.11      # rolling vMAJOR.MINOR
+make gts-spec-tests GTS_SPEC_VERSION=v0.11.0    # specific patch
+make gts-spec-tests GTS_SPEC_IMAGE=ghcr.io/your-fork/gts-spec-tests
+```
+
+Iterating on the test suite itself? Mount a local checkout over `/tests`:
+
+```bash
+make gts-spec-tests GTS_SPEC_TESTS_DIR=../gts-spec/tests
+```
+
+For tight test-edit loops, keep a long-running server in one terminal and
+re-run targeted tests in another:
+
+```bash
+# Terminal 1
+make gts-server PORT=8001
+
+# Terminal 2
+make gts-spec-tests-run PORT=8001 TEST=test_op12_type_derivation_validation.py
 ```
 
 ## Development
