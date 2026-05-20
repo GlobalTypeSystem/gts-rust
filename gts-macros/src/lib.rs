@@ -1102,12 +1102,33 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         "::gts::GtsSerialize + ::gts::GtsSchema",
     );
 
+    // Emit `outer_generic_path()` for derived types so the overlay can be
+    // wrapped at the right depth (full path from the document root, not just
+    // one parent level). Base types use the default empty path.
+    let outer_generic_path_method = match &args.base {
+        BaseAttr::Parent(parent_ident) => quote! {
+            fn outer_generic_path() -> Vec<&'static str> {
+                let mut path =
+                    <#parent_ident<()> as ::gts::GtsSchema>::outer_generic_path();
+                if let Some(field) =
+                    <#parent_ident<()> as ::gts::GtsSchema>::GENERIC_FIELD
+                {
+                    path.push(field);
+                }
+                path
+            }
+        },
+        BaseAttr::IsBase => quote! {},
+    };
+
     let gts_schema_impl = if has_generic {
         let generic_param = input.generics.type_params().next().unwrap();
         let generic_ident = &generic_param.ident;
         let generic_field_for_path = generic_field_name.as_deref().unwrap_or_default();
 
         quote! {
+            #outer_generic_path_method
+
             fn gts_schema() -> serde_json::Value {
                 Self::gts_schema_with_refs()
             }
@@ -1199,6 +1220,24 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                     }
                 }
 
+                // Resolve internal $ref references to GtsInstanceId and GtsSchemaId.
+                // schemars emits them as `#/$defs/...` pointers into the per-type
+                // generator scope; once we drop the schemars wrapper they become
+                // dangling. Inline the canonical schema fragment instead so the
+                // generated document is self-contained (same fix as the
+                // non-generic branch below).
+                if let Some(props_obj) = properties.as_object_mut() {
+                    for (_key, value) in props_obj.iter_mut() {
+                        if let Some(ref_str) = value.get("$ref").and_then(|v| v.as_str()) {
+                            if ref_str == "#/$defs/GtsInstanceId" {
+                                *value = gts::GtsInstanceId::json_schema_value();
+                            } else if ref_str == "#/$defs/GtsSchemaId" {
+                                *value = gts::GtsSchemaId::json_schema_value();
+                            }
+                        }
+                    }
+                }
+
                 // If no parent (base type), return simple schema without allOf
                 // Base types have additionalProperties: false at root level
                 // Generic fields are just {"type": "object"} (will be extended by children)
@@ -1206,6 +1245,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                     let mut schema = serde_json::json!({
                         "$id": format!("gts://{}", schema_id),
                         "$schema": "http://json-schema.org/draft-07/schema#",
+                        "description": #description,
                         "type": "object",
                         "additionalProperties": false,
                         "properties": properties
@@ -1216,24 +1256,31 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                     return schema;
                 }
 
-                // Build the nesting path from outer to inner generic fields
-                // For Outer<Middle<Inner>> where Outer has field "a" and Middle has field "b":
-                //   - innermost is Inner
-                //   - parent is derived from innermost's schema ID
-                //   - path ["a", "b"] wraps Inner's properties
-                let nesting_path = Self::collect_nesting_path();
-
-                // Get the generic field name for the innermost type (if it has one)
-                // This field should NOT have additionalProperties: false since it will be extended
-                let innermost_generic_field = <#generic_ident as ::gts::GtsSchema>::GENERIC_FIELD;
-
-                // Wrap properties in the nesting path
-                let nested_properties = Self::wrap_in_nesting_path(&nesting_path, properties, required.clone(), innermost_generic_field);
+                // Wrap our overlay properties at the FULL nesting path from
+                // the document root. For a chain `A -> B -> C -> D` this puts
+                // D's fields under
+                // `properties.A_genfield.properties.B_genfield.properties.C_genfield`,
+                // exactly where they sit in a composed instance. Wrapping
+                // only at the immediate parent's generic field would land
+                // deeply-nested fields at the wrong schema level and silently
+                // violate parent chains' `additionalProperties: false`
+                // invariants (gts-spec sec 3.1).
+                let owned_path = Self::outer_generic_path();
+                let path_refs: Vec<&str> = owned_path.iter().copied().collect();
+                let innermost_generic_field =
+                    <#generic_ident as ::gts::GtsSchema>::GENERIC_FIELD;
+                let nested_properties = Self::wrap_in_nesting_path(
+                    &path_refs,
+                    properties,
+                    required.clone(),
+                    innermost_generic_field,
+                );
 
                 // Child type - use allOf with $ref to parent
                 serde_json::json!({
                     "$id": format!("gts://{}", schema_id),
                     "$schema": "http://json-schema.org/draft-07/schema#",
+                    "description": #description,
                     "type": "object",
                     "additionalProperties": false,
                     "allOf": [
@@ -1247,23 +1294,9 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
             }
         }
     } else {
-        // For non-generic child types extending a generic base, we need to get the parent's
-        // generic field name at compile time to properly nest the child properties
-        let parent_generic_field_code = match &args.base {
-            BaseAttr::Parent(parent_ident) => {
-                quote! {
-                    // Get the parent's generic field name for nesting
-                    let parent_generic_field: Option<&'static str> = <#parent_ident<()> as ::gts::GtsSchema>::GENERIC_FIELD;
-                }
-            }
-            BaseAttr::IsBase => {
-                quote! {
-                    let parent_generic_field: Option<&'static str> = None;
-                }
-            }
-        };
-
         quote! {
+            #outer_generic_path_method
+
             fn gts_schema() -> serde_json::Value {
                 Self::gts_schema_with_refs()
             }
@@ -1317,6 +1350,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                     let mut schema = serde_json::json!({
                         "$id": format!("gts://{}", schema_id),
                         "$schema": "http://json-schema.org/draft-07/schema#",
+                        "description": #description,
                         "type": "object",
                         "additionalProperties": false,
                         "properties": properties
@@ -1327,19 +1361,18 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                     return schema;
                 }
 
-                // Get the parent's generic field name for nesting child properties
-                #parent_generic_field_code
-
-                // Child type - use allOf with $ref to parent
-                // Parent MUST have a generic field - this is enforced by compile-time assertion
-                let field_name = parent_generic_field
-                    .expect("Parent struct must have a generic field for derived types to extend");
-
-                // Wrap properties in the parent's generic field path
-                let nested_properties = Self::wrap_in_nesting_path(&[field_name], properties, required, None);
+                // Wrap properties in the FULL nesting path from the
+                // document root (not just the immediate parent's generic
+                // field). For chains deeper than 2 levels this puts the
+                // fields at the correct schema depth and keeps every parent
+                // chain's `additionalProperties: false` honoured.
+                let owned_path = Self::outer_generic_path();
+                let path_refs: Vec<&str> = owned_path.iter().copied().collect();
+                let nested_properties = Self::wrap_in_nesting_path(&path_refs, properties, required, None);
                 serde_json::json!({
                     "$id": format!("gts://{}", schema_id),
                     "$schema": "http://json-schema.org/draft-07/schema#",
+                    "description": #description,
                     "type": "object",
                     "additionalProperties": false,
                     "allOf": [

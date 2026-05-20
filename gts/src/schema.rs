@@ -79,6 +79,32 @@ pub trait GtsSchema {
         Vec::new()
     }
 
+    /// Path of generic-slot field names from the document root (the
+    /// outermost base type in the chain) down to where this type's own
+    /// properties live in a composed instance.
+    ///
+    /// For a base type (no parent): `[]`.
+    /// For each derived level: parent's path plus the parent's
+    /// `GENERIC_FIELD`. So for the chain
+    /// `BaseEventV1<P> -> AuditPayloadV1<D> -> PlaceOrderDataV1<E> -> PlaceOrderDataPayloadV1`:
+    ///
+    /// | Type | `outer_generic_path()` |
+    /// |---|---|
+    /// | `BaseEventV1` | `[]` |
+    /// | `AuditPayloadV1` | `["payload"]` |
+    /// | `PlaceOrderDataV1` | `["payload", "data"]` |
+    /// | `PlaceOrderDataPayloadV1` | `["payload", "data", "last"]` |
+    ///
+    /// Used by derived emitters to wrap their overlay properties at the
+    /// correct depth, so a derived schema's `allOf` overlay declares its
+    /// fields nested under the parent chain's generic slots rather than
+    /// at the top level (which would violate the base's
+    /// `additionalProperties: false` per gts-spec sec 3.1).
+    #[must_use]
+    fn outer_generic_path() -> Vec<&'static str> {
+        Vec::new()
+    }
+
     /// Wrap properties in a nested structure following the nesting path.
     /// For path `["payload", "data"]` and properties `{order_id, product_id, last}`,
     /// returns `{ "payload": { "type": "object", "properties": { "data": { "type": "object", "additionalProperties": false, "properties": {...}, "required": [...] } } } }`

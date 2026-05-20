@@ -1,7 +1,19 @@
 use serde_json::Value;
 
+use crate::schema_traits::{X_GTS_TRAITS, X_GTS_TRAITS_SCHEMA};
+
 pub const X_GTS_FINAL: &str = "x-gts-final";
 pub const X_GTS_ABSTRACT: &str = "x-gts-abstract";
+
+/// All `x-gts-*` keywords that are valid only on JSON Schema documents and
+/// MUST be rejected when found inside instance documents (GTS spec § 9.7.1,
+/// § 9.11.1).
+const SCHEMA_ONLY_KEYWORDS: &[&str] = &[
+    X_GTS_FINAL,
+    X_GTS_ABSTRACT,
+    X_GTS_TRAITS_SCHEMA,
+    X_GTS_TRAITS,
+];
 
 fn contains_key_recursive(value: &Value, key: &str) -> bool {
     match value {
@@ -60,21 +72,22 @@ pub fn validate_schema_modifiers(content: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// Check that schema-only keywords (`x-gts-final`, `x-gts-abstract`) do not appear anywhere
-/// in instance content.
+/// Check that schema-only keywords (`x-gts-final`, `x-gts-abstract`,
+/// `x-gts-traits-schema`, `x-gts-traits`) do not appear anywhere in instance
+/// content. Per GTS spec § 9.7.1 and § 9.11.1 these annotations are only
+/// valid on JSON Schema documents and implementations MUST reject instances
+/// that contain them.
 ///
 /// # Errors
-/// Returns error if any schema-only keyword is found in the content (top-level or nested).
+/// Returns an error naming the first schema-only keyword found in the content
+/// (top-level or nested).
 pub fn validate_instance_modifiers(content: &Value) -> Result<(), String> {
-    if contains_key_recursive(content, X_GTS_FINAL) {
-        return Err(format!(
-            "{X_GTS_FINAL} is a schema-only keyword and must not appear in instances"
-        ));
-    }
-    if contains_key_recursive(content, X_GTS_ABSTRACT) {
-        return Err(format!(
-            "{X_GTS_ABSTRACT} is a schema-only keyword and must not appear in instances"
-        ));
+    for keyword in SCHEMA_ONLY_KEYWORDS {
+        if contains_key_recursive(content, keyword) {
+            return Err(format!(
+                "{keyword} is a schema-only keyword and must not appear in instances"
+            ));
+        }
     }
     Ok(())
 }
@@ -268,6 +281,42 @@ mod tests {
         }));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("x-gts-abstract"));
+    }
+
+    #[test]
+    fn test_instance_has_traits_rejected() {
+        let result = validate_instance_modifiers(&json!({
+            "id": "test",
+            "x-gts-traits": {"retention": "P30D"},
+        }));
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("x-gts-traits"), "msg: {msg}");
+        assert!(msg.contains("schema-only"), "msg: {msg}");
+    }
+
+    #[test]
+    fn test_instance_has_traits_schema_rejected() {
+        let result = validate_instance_modifiers(&json!({
+            "id": "test",
+            "x-gts-traits-schema": {
+                "type": "object",
+                "properties": {"retention": {"type": "string"}},
+            },
+        }));
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("x-gts-traits-schema"), "msg: {msg}");
+    }
+
+    #[test]
+    fn test_instance_nested_traits_rejected() {
+        let result = validate_instance_modifiers(&json!({
+            "id": "test",
+            "metadata": {"x-gts-traits": {"foo": "bar"}},
+        }));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("x-gts-traits"));
     }
 
     // =========================================================================

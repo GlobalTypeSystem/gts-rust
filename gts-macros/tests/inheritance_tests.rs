@@ -337,6 +337,64 @@ mod tests {
     }
 
     #[test]
+    fn test_generic_base_schema_has_no_dangling_defs_refs() {
+        // Regression for the generic-base branch of `gts_schema_with_refs_allof`:
+        // schemars emits `GtsSchemaId` / `GtsInstanceId` fields as
+        // `{"$ref": "#/$defs/..."}` with the definitions in its own `$defs`
+        // scope. The emitter drops schemars' wrapper but used to keep the
+        // `$ref`, leaving a dangling pointer that strict JSON Schema
+        // validators (ajv-cli, etc.) refuse to compile.
+        let schema = BaseEventV1::<()>::gts_schema_with_refs();
+
+        assert!(
+            schema.get("$defs").is_none(),
+            "emitted schema must not carry schemars' $defs wrapper:\n{}",
+            serde_json::to_string_pretty(&schema).unwrap()
+        );
+
+        let mut stack = vec![&schema];
+        while let Some(v) = stack.pop() {
+            match v {
+                serde_json::Value::Object(map) => {
+                    if let Some(serde_json::Value::String(s)) = map.get("$ref") {
+                        assert!(
+                            !s.starts_with("#/$defs/"),
+                            "dangling internal $ref left in emitted schema: {}\nfull schema:\n{}",
+                            s,
+                            serde_json::to_string_pretty(&schema).unwrap()
+                        );
+                    }
+                    for child in map.values() {
+                        stack.push(child);
+                    }
+                }
+                serde_json::Value::Array(arr) => {
+                    for child in arr {
+                        stack.push(child);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let type_prop = schema
+            .get("properties")
+            .and_then(|p| p.get("type"))
+            .expect("BaseEventV1 must have a `type` property (renamed from event_type)");
+        assert!(
+            type_prop.get("$ref").is_none(),
+            "`type` property still contains a $ref pointer:\n{}",
+            serde_json::to_string_pretty(type_prop).unwrap()
+        );
+        assert_eq!(
+            type_prop.get("format").and_then(|v| v.as_str()),
+            Some("gts-schema-id"),
+            "`type` property should be the inlined GtsSchemaId fragment, got:\n{}",
+            serde_json::to_string_pretty(type_prop).unwrap()
+        );
+    }
+
+    #[test]
     fn test_schema_inheritance() {
         // Only base type can access schema methods directly
         // Multi-segment schemas are blocked from direct access
@@ -2474,9 +2532,12 @@ mod tests {
 
     #[test]
     fn test_audit_payload_v1_schema_field_path() {
-        // AuditPayloadV1<()> is a GENERIC type - its own properties are at root level in allOf[1]
-        // (not nested under parent's generic field)
-        // Only non-generic children nest under parent's generic field
+        // AuditPayloadV1<()> is a generic derived type extending BaseEventV1.
+        // Its overlay properties live nested under the parent's generic field
+        // (`payload`), exactly like a non-generic derived type would — this
+        // keeps the GTS inheritance contract symmetric (§ 3.1: a derived
+        // schema must not introduce new properties at an object level where
+        // the base declares `additionalProperties: false`).
         let schema = AuditPayloadV1::<()>::gts_schema_with_refs();
         println!(
             "AuditPayloadV1 schema:\n{}",
@@ -2493,23 +2554,47 @@ mod tests {
         let all_of = schema.get("allOf").expect("Should have allOf");
         assert_eq!(all_of[0]["$ref"], "gts://gts.x.core.events.type.v1~");
 
-        // Generic type's own properties are at root level of allOf[1], not nested
+        // Properties land under parent's generic field ("payload").
         let child_schema = &all_of[1];
         let props = child_schema
             .get("properties")
             .expect("Should have properties");
+        let payload = props.get("payload").expect("Should nest under payload");
+        let payload_props = payload
+            .get("properties")
+            .expect("payload should have properties");
 
-        // Properties should be at root level (not nested under "payload")
-        assert!(props.get("user_agent").is_some(), "Should have user_agent");
-        assert!(props.get("user_id").is_some(), "Should have user_id");
-        assert!(props.get("ip_address").is_some(), "Should have ip_address");
+        // AuditPayloadV1's fields are nested inside `payload`.
         assert!(
-            props.get("data").is_some(),
-            "Should have data (generic field placeholder)"
+            payload_props.get("user_agent").is_some(),
+            "payload.properties should have user_agent"
+        );
+        assert!(
+            payload_props.get("user_id").is_some(),
+            "payload.properties should have user_id"
+        );
+        assert!(
+            payload_props.get("ip_address").is_some(),
+            "payload.properties should have ip_address"
+        );
+        assert!(
+            payload_props.get("data").is_some(),
+            "payload.properties should have data (next-level generic placeholder)"
         );
 
-        // data should be a simple {"type": "object"} placeholder for the generic field
-        assert_eq!(props["data"]["type"], "object");
+        // The nested `payload` wrap is closed.
+        assert_eq!(
+            payload["additionalProperties"], false,
+            "Nested payload should have additionalProperties: false"
+        );
+
+        // `data` (AuditPayloadV1's own generic slot) stays open, so the next
+        // derived level (e.g. PlaceOrderDataV1) can extend it.
+        assert_eq!(payload_props["data"]["type"], "object");
+        assert!(
+            payload_props["data"].get("additionalProperties").is_none(),
+            "data placeholder must remain open for further derivation"
+        );
     }
 
     #[test]
@@ -2535,32 +2620,38 @@ mod tests {
             "gts://gts.x.core.events.type.v1~x.core.audit.event.v1~"
         );
 
-        // Non-generic child's properties should be nested under parent's generic field ("data")
+        // PlaceOrderDataV1's properties land at the FULL nesting path from
+        // the document root: payload -> data. The earlier single-level wrap
+        // (just "data") would have put `data` at the top of the overlay,
+        // violating BaseEventV1's `additionalProperties: false`. Now derived
+        // overlays declare fields exactly where they live in the composed
+        // instance.
         let child_schema = &all_of[1];
-        let props = child_schema
-            .get("properties")
-            .expect("Should have properties");
-
-        // Should have "data" field (parent's generic field)
-        let data_prop = props.get("data").expect("Should have data property");
+        let data_prop = &child_schema["properties"]["payload"]["properties"]["data"];
         let data_props = data_prop
             .get("properties")
-            .expect("data should have properties");
+            .expect("payload.properties.data should have properties");
 
-        // Verify PlaceOrderDataV1's properties are nested under "data"
         assert!(
             data_props.get("order_id").is_some(),
-            "data.properties should have order_id"
+            "payload.data.properties should have order_id"
         );
         assert!(
             data_props.get("product_id").is_some(),
-            "data.properties should have product_id"
+            "payload.data.properties should have product_id"
         );
 
-        // Verify additionalProperties: false on nested data
+        // The deepest wrap (where current type's own fields live) carries
+        // `additionalProperties: false`. Outer wraps (payload) are passthrough.
         assert_eq!(
             data_prop["additionalProperties"], false,
-            "Nested data should have additionalProperties: false"
+            "Innermost wrap (data) should have additionalProperties: false"
+        );
+        assert!(
+            child_schema["properties"]["payload"]
+                .get("additionalProperties")
+                .is_none(),
+            "Outer wrap (payload) is a passthrough; AP:false belongs to the parent chain's own overlay"
         );
     }
 
@@ -2650,12 +2741,12 @@ mod tests {
 
     #[test]
     fn test_all_nested_schemas_have_additional_properties_false() {
-        // Verify all nested schemas have additionalProperties: false at the correct level
-        // Note: Generic types (like AuditPayloadV1<()>) have properties at root level of allOf[1],
-        // only non-generic children nest under parent's generic field
+        // Every derived overlay (generic or not) wraps its own properties
+        // inside the parent's generic field and closes that wrap with
+        // `additionalProperties: false`. The next-level generic slot inside
+        // that wrap stays open (a placeholder for further derivation).
 
         // Non-generic child: SimplePayloadV1 (extends BaseEventV1)
-        // Properties nested under "payload" (parent's generic field)
         let simple_schema = SimplePayloadV1::gts_schema_with_refs();
         let simple_payload = &simple_schema["allOf"][1]["properties"]["payload"];
         assert_eq!(
@@ -2663,28 +2754,37 @@ mod tests {
             "SimplePayloadV1 nested payload should have additionalProperties: false"
         );
 
-        // Generic type: AuditPayloadV1<()> - properties at root level of allOf[1]
-        // The "data" field is a generic placeholder, not a nested child
-        // So we don't check for additionalProperties on root level (it's not there for generic types)
+        // Generic derived: AuditPayloadV1<()> (extends BaseEventV1)
+        // Same shape as the non-generic case above — nested under `payload`,
+        // closed, with `data` left as an open placeholder for the next level.
         let audit_schema = AuditPayloadV1::<()>::gts_schema_with_refs();
-        let audit_props = &audit_schema["allOf"][1]["properties"];
-        // Verify "data" is a simple placeholder (no additionalProperties)
+        let audit_payload = &audit_schema["allOf"][1]["properties"]["payload"];
         assert_eq!(
-            audit_props["data"]["type"], "object",
+            audit_payload["additionalProperties"], false,
+            "AuditPayloadV1 nested payload should have additionalProperties: false"
+        );
+        assert_eq!(
+            audit_payload["properties"]["data"]["type"], "object",
             "AuditPayloadV1 data field should be a simple object placeholder"
         );
+        assert!(
+            audit_payload["properties"]["data"]
+                .get("additionalProperties")
+                .is_none(),
+            "data placeholder must remain open for further derivation"
+        );
 
-        // Non-generic child: PlaceOrderDataV1 (extends AuditPayloadV1)
-        // Properties nested under "data" (parent's generic field)
+        // Non-generic child: PlaceOrderDataV1 (extends AuditPayloadV1).
+        // Full nesting path is payload -> data; AP:false sits on the
+        // innermost (data) wrap where this type's own fields live.
         let order_schema = PlaceOrderDataV1::gts_schema_with_refs();
-        let order_data = &order_schema["allOf"][1]["properties"]["data"];
+        let order_data = &order_schema["allOf"][1]["properties"]["payload"]["properties"]["data"];
         assert_eq!(
             order_data["additionalProperties"], false,
             "PlaceOrderDataV1 nested data should have additionalProperties: false"
         );
 
         // Unit struct: OrderTopicConfigV1 (extends TopicV1)
-        // Properties nested under "config" (parent's generic field)
         let topic_schema = OrderTopicConfigV1::gts_schema_with_refs();
         let topic_config = &topic_schema["allOf"][1]["properties"]["config"];
         assert_eq!(

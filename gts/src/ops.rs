@@ -3348,7 +3348,8 @@ mod tests {
     #[test]
     fn test_add_entity_validate_rejects_instance_with_schema_only_keyword() {
         // Registration with validate=true MUST reject an instance whose body
-        // contains schema-only keywords (x-gts-final / x-gts-abstract).
+        // contains schema-only keywords (x-gts-final / x-gts-abstract /
+        // x-gts-traits-schema / x-gts-traits).
         let mut ops = GtsOps::new(None, None, 0);
 
         let schema = json!({
@@ -3372,6 +3373,73 @@ mod tests {
         );
         assert!(
             result.error.contains("x-gts-final"),
+            "error should name the offending keyword, got: {}",
+            result.error
+        );
+    }
+
+    #[test]
+    fn test_add_entity_validate_rejects_instance_with_traits_keyword() {
+        // Per GTS spec § 9.7.1, x-gts-traits is a schema-only keyword and MUST
+        // be rejected when present in an instance body.
+        let mut ops = GtsOps::new(None, None, 0);
+
+        let schema = json!({
+            "$id": "gts://gts.x.testtrkw.host.thing.v1~",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        });
+        assert!(ops.add_entity(&schema, false).ok);
+
+        let bad_instance = json!({
+            "id": "gts.x.testtrkw.host.thing.v1~x.testtrkw._.item.v1",
+            "name": "leak",
+            "x-gts-traits": {"retention": "P30D"},
+        });
+        let result = ops.add_entity(&bad_instance, true);
+        assert!(
+            !result.ok,
+            "instance with x-gts-traits keyword must be rejected"
+        );
+        assert!(
+            result.error.contains("x-gts-traits"),
+            "error should name the offending keyword, got: {}",
+            result.error
+        );
+    }
+
+    #[test]
+    fn test_add_entity_validate_rejects_instance_with_traits_schema_keyword() {
+        // Per GTS spec § 9.7.1, x-gts-traits-schema is a schema-only keyword
+        // and MUST be rejected when present in an instance body.
+        let mut ops = GtsOps::new(None, None, 0);
+
+        let schema = json!({
+            "$id": "gts://gts.x.testtskw.host.thing.v1~",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        });
+        assert!(ops.add_entity(&schema, false).ok);
+
+        let bad_instance = json!({
+            "id": "gts.x.testtskw.host.thing.v1~x.testtskw._.item.v1",
+            "name": "leak",
+            "x-gts-traits-schema": {
+                "type": "object",
+                "properties": {"retention": {"type": "string"}},
+            },
+        });
+        let result = ops.add_entity(&bad_instance, true);
+        assert!(
+            !result.ok,
+            "instance with x-gts-traits-schema keyword must be rejected"
+        );
+        assert!(
+            result.error.contains("x-gts-traits-schema"),
             "error should name the offending keyword, got: {}",
             result.error
         );

@@ -154,33 +154,33 @@ fn dump_to_directory(dir: &Path) -> anyhow::Result<()> {
     std::fs::write(&instance_path, instance_json)?;
     println!("Saved instance: {}", instance_path.display());
 
-    // Save schemas using gts_schema_for! macro
-    // Schema 1: BaseEventV1 (base type)
+    // Save schemas using `gts_schema_for!` macro.
+    //
+    // Each `gts_schema_for!(T)` call returns T's *own* JSON Schema — the
+    // base emits a root schema with its properties; each derived level
+    // emits an `allOf`-overlay schema that $refs back to its parent.
+    //
+    // NOTE: per commit 77bdf46 ("type-parameter independent base schemas"),
+    // wrapping a generic carrier — e.g. `gts_schema_for!(BaseEventV1<chain>)` —
+    // does NOT produce the chain's leaf schema: it returns BaseEventV1's
+    // own schema regardless of the type parameter. Always call
+    // `gts_schema_for!` on the type whose schema you actually want;
+    // otherwise every file ends up with `$id = gts://...type.v1~` and
+    // imitates the base, breaking the file-name <-> document-id invariant.
     let schema1 = gts_schema_for!(test_structs::BaseEventV1<()>);
     save_schema(dir, &schema1, test_structs::BaseEventV1::<()>::SCHEMA_ID)?;
 
-    // Schema 2: BaseEventV1<AuditPayloadV1>
-    let schema2 = gts_schema_for!(test_structs::BaseEventV1<test_structs::AuditPayloadV1<()>>);
+    let schema2 = gts_schema_for!(test_structs::AuditPayloadV1<()>);
     save_schema(dir, &schema2, test_structs::AuditPayloadV1::<()>::SCHEMA_ID)?;
 
-    // Schema 3: BaseEventV1<AuditPayloadV1<PlaceOrderDataV1>>
-    let schema3 = gts_schema_for!(
-        test_structs::BaseEventV1<test_structs::AuditPayloadV1<test_structs::PlaceOrderDataV1<()>>>
-    );
+    let schema3 = gts_schema_for!(test_structs::PlaceOrderDataV1<()>);
     save_schema(
         dir,
         &schema3,
         test_structs::PlaceOrderDataV1::<()>::SCHEMA_ID,
     )?;
 
-    // Schema 4: BaseEventV1<AuditPayloadV1<PlaceOrderDataV1<PlaceOrderDataPayloadV1>>>
-    let schema4 = gts_schema_for!(
-        test_structs::BaseEventV1<
-            test_structs::AuditPayloadV1<
-                test_structs::PlaceOrderDataV1<test_structs::PlaceOrderDataPayloadV1>,
-            >,
-        >
-    );
+    let schema4 = gts_schema_for!(test_structs::PlaceOrderDataPayloadV1);
     save_schema(
         dir,
         &schema4,

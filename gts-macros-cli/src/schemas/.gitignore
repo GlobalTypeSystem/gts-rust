@@ -1,0 +1,6 @@
+# Track committed JSON Schema fixtures only; everything else in this
+# directory (sample-event JSON, `validate.sh`, future helpers) is a
+# regenerated artifact of `cargo run -p gts-macros-cli -- --dump`.
+*
+!.gitignore
+!*.schema.json

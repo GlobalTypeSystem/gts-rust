@@ -1,28 +1,44 @@
 {
   "$id": "gts://gts.x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~",
   "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
   "allOf": [
     {
       "$ref": "gts://gts.x.core.events.type.v1~x.core.audit.event.v1~"
     },
     {
       "properties": {
-        "order_id": {
-          "format": "uuid",
-          "type": "string"
-        },
-        "product_id": {
-          "format": "uuid",
-          "type": "string"
+        "payload": {
+          "properties": {
+            "data": {
+              "additionalProperties": false,
+              "properties": {
+                "last": {
+                  "type": "object"
+                },
+                "order_id": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "product_id": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "order_id",
+                "product_id",
+                "last"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
         }
       },
-      "required": [
-        "order_id",
-        "product_id"
-      ]
+      "type": "object"
     }
   ],
   "description": "Order placement audit event",
-  "title": "PlaceOrderDataV1 (extends AuditPayloadV1)",
   "type": "object"
 }
