@@ -671,24 +671,28 @@ impl PartialEq<String> for GtsInstanceId {
     }
 }
 
-/// A type-safe wrapper for GTS schema (type) identifiers.
+/// A type-safe wrapper for GTS type identifiers (formerly schema IDs).
 ///
-/// `GtsSchemaId` wraps a fully-formed GTS schema ID string (e.g.,
+/// `GtsTypeId` wraps a fully-formed GTS type ID string (e.g.,
 /// `gts.x.core.events.topic.v1~`). It can be used as a map key,
 /// compared for equality, hashed, and serialized/deserialized.
 ///
 /// # Example
 ///
 /// ```
-/// use gts::gts::GtsSchemaId;
+/// use gts::gts::GtsTypeId;
 ///
-/// let id = GtsSchemaId::new("gts.x.core.events.topic.v1~vendor.app.orders.v1.0~");
+/// let id = GtsTypeId::new("gts.x.core.events.topic.v1~vendor.app.orders.v1.0~");
 /// assert_eq!(id.as_ref(), "gts.x.core.events.topic.v1~vendor.app.orders.v1.0~");
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct GtsSchemaId(GtsEntityId);
+pub struct GtsTypeId(GtsEntityId);
 
-impl serde::Serialize for GtsSchemaId {
+/// Deprecated alias retained for v0.10 callers. New code should use [`GtsTypeId`].
+#[deprecated(since = "0.10.0", note = "renamed to `GtsTypeId`")]
+pub type GtsSchemaId = GtsTypeId;
+
+impl serde::Serialize for GtsTypeId {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -697,19 +701,19 @@ impl serde::Serialize for GtsSchemaId {
     }
 }
 
-impl<'de> serde::Deserialize<'de> for GtsSchemaId {
+impl<'de> serde::Deserialize<'de> for GtsTypeId {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        Ok(GtsSchemaId(GtsEntityId(s)))
+        Ok(GtsTypeId(GtsEntityId(s)))
     }
 }
 
-impl schemars::JsonSchema for GtsSchemaId {
+impl schemars::JsonSchema for GtsTypeId {
     fn schema_name() -> std::borrow::Cow<'static, str> {
-        std::borrow::Cow::Borrowed("GtsSchemaId")
+        std::borrow::Cow::Borrowed("GtsTypeId")
     }
 
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
@@ -739,72 +743,72 @@ impl schemars::JsonSchema for GtsSchemaId {
     }
 }
 
-impl GtsSchemaId {
-    /// Returns the JSON Schema representation of `GtsSchemaId` as a `serde_json::Value`.
+impl GtsTypeId {
+    /// Returns the JSON Schema representation of `GtsTypeId` as a `serde_json::Value`.
     ///
     /// This is the canonical schema definition used by both the schemars `JsonSchema` impl
     /// and the CLI schema generator, ensuring consistency.
     ///
     /// # Example
     /// ```
-    /// use gts::gts::GtsSchemaId;
+    /// use gts::gts::GtsTypeId;
     ///
-    /// let schema = GtsSchemaId::json_schema_value();
+    /// let schema = GtsTypeId::json_schema_value();
     /// assert_eq!(schema["type"], "string");
-    /// assert_eq!(schema["format"], "gts-schema-id");
+    /// assert_eq!(schema["format"], "gts-type-id");
     /// assert_eq!(schema["x-gts-ref"], "gts.*");
     /// ```
     #[must_use]
     pub fn json_schema_value() -> serde_json::Value {
         serde_json::json!({
             "type": "string",
-            "format": "gts-schema-id",
-            "title": "GTS Schema ID",
-            "description": "GTS schema identifier",
+            "format": "gts-type-id",
+            "title": "GTS Type ID",
+            "description": "GTS type identifier",
             "x-gts-ref": "gts.*"
         })
     }
 
-    /// Creates a new GTS schema ID from string.
+    /// Creates a new GTS type ID from string.
     ///
     /// # Arguments
     ///
-    /// * `schema_id` - The GTS schema ID (e.g., `gts.x.core.events.topic.v1~`)
+    /// * `type_id` - The GTS type ID (e.g., `gts.x.core.events.topic.v1~`)
     ///
     /// # Returns
     ///
-    /// A new `GtsSchemaId` containing the concatenated ID.
+    /// A new `GtsTypeId` containing the concatenated ID.
     #[must_use]
-    pub fn new(schema_id: &str) -> Self {
-        Self(GtsEntityId::new(schema_id))
+    pub fn new(type_id: &str) -> Self {
+        Self(GtsEntityId::new(type_id))
     }
 
-    /// Returns the underlying string representation of the schema ID.
+    /// Returns the underlying string representation of the type ID.
     #[must_use]
     pub fn into_string(self) -> String {
         self.0.into_string()
     }
 }
 
-impl fmt::Display for GtsSchemaId {
+impl fmt::Display for GtsTypeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-impl AsRef<str> for GtsSchemaId {
+impl AsRef<str> for GtsTypeId {
     fn as_ref(&self) -> &str {
         self.0.as_ref()
     }
 }
 
-impl From<GtsSchemaId> for String {
-    fn from(id: GtsSchemaId) -> Self {
+impl From<GtsTypeId> for String {
+    fn from(id: GtsTypeId) -> Self {
         id.0.into()
     }
 }
 
-impl std::ops::Deref for GtsSchemaId {
+impl std::ops::Deref for GtsTypeId {
     type Target = str;
 
     fn deref(&self) -> &Self::Target {
@@ -812,19 +816,19 @@ impl std::ops::Deref for GtsSchemaId {
     }
 }
 
-impl PartialEq<str> for GtsSchemaId {
+impl PartialEq<str> for GtsTypeId {
     fn eq(&self, other: &str) -> bool {
         self.0.as_ref() == other
     }
 }
 
-impl PartialEq<&str> for GtsSchemaId {
+impl PartialEq<&str> for GtsTypeId {
     fn eq(&self, other: &&str) -> bool {
         self.0.as_ref() == *other
     }
 }
 
-impl PartialEq<String> for GtsSchemaId {
+impl PartialEq<String> for GtsTypeId {
     fn eq(&self, other: &String) -> bool {
         self.0.as_ref() == other
     }

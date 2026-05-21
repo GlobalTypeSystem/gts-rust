@@ -77,23 +77,23 @@ fn extract_struct_version(struct_name: &str) -> Option<Version> {
     }
 }
 
-/// Extract version from `schema_id`'s last segment (e.g., `gts.x.core.events.type.v1~` -> v1)
-fn extract_schema_version(schema_id: &str) -> Option<Version> {
+/// Extract version from `type_id`'s last segment (e.g., `gts.x.core.events.type.v1~` -> v1)
+fn extract_type_id_version(type_id: &str) -> Option<Version> {
     // Get the last segment (after last '~' that's followed by content, or the whole string if no '~')
-    // schema_id format: "gts.vendor.package.namespace.type.vMAJOR~" or with inheritance
+    // type_id format: "gts.vendor.package.namespace.type.vMAJOR~" or with inheritance
     // "gts.x.core.events.type.v1~x.core.audit.event.v1~"
 
     // The version for this struct is in the LAST segment
-    let last_segment = if schema_id.ends_with('~') {
+    let last_segment = if type_id.ends_with('~') {
         // Trim the trailing ~ and find the last segment
-        let trimmed = schema_id.trim_end_matches('~');
+        let trimmed = type_id.trim_end_matches('~');
         if let Some(pos) = trimmed.rfind('~') {
             &trimmed[pos + 1..]
         } else {
             trimmed
         }
     } else {
-        schema_id
+        type_id
     };
 
     // Now find the version in this segment
@@ -130,20 +130,20 @@ fn extract_schema_version(schema_id: &str) -> Option<Version> {
     }
 }
 
-/// Extract the parent schema ID from a `schema_id` (removes the last segment)
+/// Extract the parent type ID from a `type_id` (removes the last segment)
 /// e.g., `gts.x.core.events.type.v1~x.core.audit.event.v1~` -> `gts.x.core.events.type.v1~`
-fn extract_parent_schema_id(schema_id: &str) -> Option<String> {
-    let trimmed = schema_id.trim_end_matches('~');
+fn extract_parent_type_id(type_id: &str) -> Option<String> {
+    let trimmed = type_id.trim_end_matches('~');
     trimmed
         .rfind('~')
         .map(|pos| format!("{}~", &trimmed[..pos]))
 }
 
-/// Count the number of segments in a `schema_id`
+/// Count the number of segments in a `type_id`
 /// e.g., `gts.x.core.events.type.v1~` -> 1
 /// e.g., `gts.x.core.events.type.v1~x.core.audit.event.v1~` -> 2
-fn count_schema_segments(schema_id: &str) -> usize {
-    schema_id.matches('~').count()
+fn count_type_id_segments(type_id: &str) -> usize {
+    type_id.matches('~').count()
 }
 
 /// Check if a type is `GtsInstanceId` (either directly or as a path)
@@ -151,9 +151,9 @@ fn is_type_gts_instance_id(ty: &syn::Type) -> bool {
     is_type_named(ty, "GtsInstanceId")
 }
 
-/// Check if a type is `GtsSchemaId` (either directly or as a path)
+/// Check if a type is `GtsTypeId` (or its deprecated alias `GtsSchemaId`).
 fn is_type_gts_schema_id(ty: &syn::Type) -> bool {
-    is_type_named(ty, "GtsSchemaId")
+    is_type_named(ty, "GtsTypeId") || is_type_named(ty, "GtsSchemaId")
 }
 
 /// Helper function to check if a type matches a given name (either directly or as `gts::Name`)
@@ -276,32 +276,32 @@ fn validate_field_types(
     if has_valid_id_field && has_valid_type_field {
         return Err(syn::Error::new_spanned(
             &input.ident,
-            "struct_to_gts_schema: Base structs must have either an ID field (one of: $id, id, gts_id, or gtsId) of type GtsInstanceId OR a GTS Type field (one of: type, gts_type, gtsType, or schema) of type GtsSchemaId, but not both. Found both valid ID and GTS Type fields.",
+            "struct_to_gts_schema: Base structs must have either an ID field (one of: $id, id, gts_id, or gtsId) of type GtsInstanceId OR a GTS Type field (one of: type, gts_type, gtsType, or schema) of type GtsTypeId, but not both. Found both valid ID and GTS Type fields.",
         ));
     }
 
     if !has_valid_id_field && !has_valid_type_field {
         return Err(syn::Error::new_spanned(
             &input.ident,
-            "struct_to_gts_schema: Base structs must have either an ID field (one of: $id, id, gts_id, or gtsId) of type GtsInstanceId OR a GTS Type field (one of: type, gts_type, gtsType, or schema) of type GtsSchemaId",
+            "struct_to_gts_schema: Base structs must have either an ID field (one of: $id, id, gts_id, or gtsId) of type GtsInstanceId OR a GTS Type field (one of: type, gts_type, gtsType, or schema) of type GtsTypeId",
         ));
     }
 
     Ok(())
 }
 
-/// Validate that the struct name version suffix matches the `schema_id` version
-fn validate_version_match(struct_ident: &syn::Ident, schema_id: &str) -> syn::Result<()> {
+/// Validate that the struct name version suffix matches the `type_id` version
+fn validate_version_match(struct_ident: &syn::Ident, type_id: &str) -> syn::Result<()> {
     let struct_name = struct_ident.to_string();
     let struct_version = extract_struct_version(&struct_name);
-    let schema_version = extract_schema_version(schema_id);
+    let type_id_version = extract_type_id_version(type_id);
 
-    match (struct_version, schema_version) {
+    match (struct_version, type_id_version) {
         (Some(sv), Some(schv)) if sv != schv => Err(syn::Error::new_spanned(
             struct_ident,
             format!(
-                "struct_to_gts_schema: Version mismatch between struct name and schema_id. \
-                 Struct '{struct_name}' has version suffix '{}' but schema_id '{schema_id}' \
+                "struct_to_gts_schema: Version mismatch between struct name and type_id. \
+                 Struct '{struct_name}' has version suffix '{}' but type_id '{type_id}' \
                  has version '{}'. The versions must match exactly \
                  (e.g., BaseEventV1 with v1~, or BaseEventV2_0 with v2.0~)",
                 sv.to_struct_suffix(),
@@ -312,7 +312,7 @@ fn validate_version_match(struct_ident: &syn::Ident, schema_id: &str) -> syn::Re
         (None, Some(schv)) => Err(syn::Error::new_spanned(
             struct_ident,
             format!(
-                "struct_to_gts_schema: schema_id '{schema_id}' has a version but struct '{struct_name}' \
+                "struct_to_gts_schema: type_id '{type_id}' has a version but struct '{struct_name}' \
                  does not have a version suffix. Add '{}' suffix to the struct name \
                  (e.g., '{struct_name}{}')",
                 schv.to_struct_suffix(),
@@ -323,7 +323,7 @@ fn validate_version_match(struct_ident: &syn::Ident, schema_id: &str) -> syn::Re
             struct_ident,
             format!(
                 "struct_to_gts_schema: Struct '{struct_name}' has version suffix '{}' but \
-                 cannot extract version from schema_id '{schema_id}'. \
+                 cannot extract version from type_id '{type_id}'. \
                  Expected format with version like 'gts.x.foo.v1~' or 'gts.x.foo.v1.0~'",
                 sv.to_struct_suffix()
             ),
@@ -331,8 +331,8 @@ fn validate_version_match(struct_ident: &syn::Ident, schema_id: &str) -> syn::Re
         (None, None) => Err(syn::Error::new_spanned(
             struct_ident,
             format!(
-                "struct_to_gts_schema: Both struct name and schema_id must have a version. \
-                 Struct '{struct_name}' has no version suffix (e.g., V1) and schema_id '{schema_id}' \
+                "struct_to_gts_schema: Both struct name and type_id must have a version. \
+                 Struct '{struct_name}' has no version suffix (e.g., V1) and type_id '{type_id}' \
                  has no version (e.g., v1~). Add version to both (e.g., '{struct_name}V1' with 'gts.x.foo.v1~')"
             ),
         )),
@@ -513,29 +513,29 @@ fn add_missing_derives(input: &mut syn::DeriveInput, base: &BaseAttr) {
     }
 }
 
-/// Validate that base attribute is consistent with `schema_id` segment count
+/// Validate that base attribute is consistent with `type_id` segment count
 fn validate_base_segments(
     input: &syn::DeriveInput,
     base: &BaseAttr,
-    schema_id: &str,
+    type_id: &str,
 ) -> Result<(), syn::Error> {
-    let segment_count = count_schema_segments(schema_id);
+    let segment_count = count_type_id_segments(type_id);
 
     match base {
         BaseAttr::IsBase if segment_count > 1 => Err(syn::Error::new_spanned(
             &input.ident,
             format!(
-                "struct_to_gts_schema: 'base = true' but schema_id '{schema_id}' has {segment_count} segments. \
+                "struct_to_gts_schema: 'base = true' but type_id '{type_id}' has {segment_count} segments. \
                  A base type must have exactly 1 segment (no parent). \
-                 Either use 'base = ParentStruct' or fix the schema_id."
+                 Either use 'base = ParentStruct' or fix the type_id."
             ),
         )),
         BaseAttr::Parent(_) if segment_count < 2 => Err(syn::Error::new_spanned(
             &input.ident,
             format!(
-                "struct_to_gts_schema: 'base' specifies a parent struct but schema_id '{schema_id}' \
+                "struct_to_gts_schema: 'base' specifies a parent struct but type_id '{type_id}' \
                  has only {segment_count} segment. A child type must have at least 2 segments. \
-                 Either use 'base = true' or add parent segment to schema_id."
+                 Either use 'base = true' or add parent segment to type_id."
             ),
         )),
         _ => Ok(()),
@@ -732,7 +732,7 @@ impl Parse for GtsSchemaArgs {
                 _ => {
                     return Err(syn::Error::new_spanned(
                         key,
-                        "Unknown attribute. Expected: dir_path, schema_id, description, properties, or base",
+                        "Unknown attribute. Expected: dir_path, type_id (or deprecated `schema_id`), description, properties, or base",
                     ));
                 }
             }
@@ -765,7 +765,7 @@ impl Parse for GtsSchemaArgs {
 /// ## 1. Compile-Time Validation & Guarantees
 ///
 /// The macro validates your annotations at compile time, catching errors early:
-/// - ✅ All required attributes exist (`dir_path`, `schema_id`, `description`, `properties`)
+/// - ✅ All required attributes exist (`dir_path`, `type_id`, `description`, `properties`)
 /// - ✅ Every property in `properties` exists as a field in the struct
 /// - ✅ Only structs with named fields are supported (no tuple/unit structs or enums)
 /// - ✅ Single generic parameter maximum (prevents inheritance ambiguity)
@@ -784,39 +784,43 @@ impl Parse for GtsSchemaArgs {
 /// gts generate-from-rust --source src/ --output schemas/
 /// ```
 ///
-/// This will generate JSON Schema files at the specified `dir_path` with names derived from `schema_id` for each annotated struct (e.g., `{dir_path}/{schema_id}.schema.json`).
+/// This will generate JSON Schema files at the specified `dir_path` with names derived from `type_id` for each annotated struct (e.g., `{dir_path}/{type_id}.schema.json`).
 ///
 /// ## 3. Runtime API
 ///
 /// The macro generates these associated methods and implements the `GtsSchema` trait:
 ///
-/// - `gts_schema_id() -> &'static GtsSchemaId` - Get the struct's GTS schema ID
-/// - `gts_base_schema_id() -> Option<&'static GtsSchemaId>` - Get parent schema ID (None for base structs)
+/// - `gts_type_id() -> &'static GtsTypeId` - Get the struct's GTS type ID
+/// - `gts_base_type_id() -> Option<&'static GtsTypeId>` - Get parent type ID (None for base structs)
 /// - `gts_schema_with_refs() -> serde_json::Value` - JSON Schema with `allOf` + `$ref` for inheritance
 /// - `gts_schema_with_refs_as_string() -> String` - Schema as compact JSON string
 /// - `gts_schema_with_refs_as_string_pretty() -> String` - Schema as pretty-printed JSON string
 /// - `gts_make_instance_id(segment: &str) -> gts::GtsInstanceId` - Generate an instance ID by appending
-///   a segment to the schema ID. The segment must be a valid GTS segment (e.g., "a.b.c.v1")
+///   a segment to the type ID. The segment must be a valid GTS segment (e.g., "a.b.c.v1")
 /// - `GtsSchema` trait implementation - Enables runtime schema composition for nested generic types
 ///   (e.g., `BaseEventV1<AuditPayloadV1<PlaceOrderDataV1>>`), with proper nesting and inheritance support.
 ///   Generic fields automatically have `additionalProperties: false` set to ensure type safety.
 ///
+/// `gts_schema_id()`, `gts_base_schema_id()` are also emitted as deprecated aliases of the
+/// `*_type_id()` accessors, for backward compatibility with code written against pre-v0.11 names.
+///
 /// # Arguments
 ///
 /// * `dir_path` - Directory where the schema file will be generated (relative to crate root)
-/// * `schema_id` - GTS identifier in format: `gts.vendor.package.namespace.type.vMAJOR~`
-///   - **Automatic inheritance**: If the `schema_id` contains multiple segments separated by `~`, inheritance is automatically detected
+/// * `type_id` - GTS identifier in format: `gts.vendor.package.namespace.type.vMAJOR~`
+///   - **Automatic inheritance**: If the `type_id` contains multiple segments separated by `~`, inheritance is automatically detected
 ///   - Example: `gts.x.core.events.type.v1~x.core.audit.event.v1~` inherits from `gts.x.core.events.type.v1~`
+///   - `schema_id = "..."` is also accepted as a deprecated alias.
 /// * `description` - Human-readable description of the schema
 /// * `properties` - Comma-separated list of struct fields to include in the schema
 /// * `base` - Explicit base/parent struct declaration (required):
-///   - `base = true`: Marks this struct as a base type (must have single-segment `schema_id`)
+///   - `base = true`: Marks this struct as a base type (must have single-segment `type_id`)
 ///   - `base = ParentStruct`: Parent struct name (macro automatically uses `ParentStruct<()>`)
 ///
 /// # Memory Efficiency
 ///
-/// Schema IDs use `LazyLock` for efficient one-time initialization with **zero allocation after first access**:
-/// - `gts_schema_id()` and `gts_base_schema_id()` return static references to `GtsSchemaId` instances
+/// Type IDs use `LazyLock` for efficient one-time initialization with **zero allocation after first access**:
+/// - `gts_type_id()` and `gts_base_type_id()` return static references to `GtsTypeId` instances
 /// - Schema generation methods create JSON on-demand using schemars and the `GtsSchema` trait
 ///
 /// # Example
@@ -838,7 +842,7 @@ impl Parse for GtsSchemaArgs {
 /// }
 ///
 /// // Runtime usage:
-/// let schema_id = User::gts_schema_id();
+/// let type_id = User::gts_type_id();
 /// let schema_json = User::gts_schema_with_refs_as_string_pretty();
 /// let instance_id = User::gts_make_instance_id("vendor.marketplace.orders.order_created.v1");
 /// assert_eq!(instance_id.as_ref(), "gts.x.core.events.topic.v1~vendor.marketplace.orders.order_created.v1");
@@ -981,12 +985,12 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     if let Err(err) = validate_base_segments(&input, &args.base, &args.type_id) {
         return err.to_compile_error().into();
     }
-    let expected_parent_schema_id = extract_parent_schema_id(&args.type_id);
+    let expected_parent_type_id = extract_parent_type_id(&args.type_id);
 
     // Build the schema output file path from dir_path + schema_id
     let struct_name = &input.ident;
     let dir_path = &args.dir_path;
-    let schema_id = &args.type_id;
+    let type_id = &args.type_id;
     let description = &args.description;
     let properties_str = &args.properties;
 
@@ -1007,7 +1011,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         quote! {}
     };
 
-    let schema_file_path = format!("{dir_path}/{schema_id}.schema.json");
+    let schema_file_path = format!("{dir_path}/{type_id}.schema.json");
 
     // Extract generics to properly handle generic structs
     // Use modified_input.generics which has the GtsSchema bounds added
@@ -1047,25 +1051,37 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         quote! { None }
     };
 
-    // Generate BASE_SCHEMA_ID constant (private) and compile-time assertion for base struct matching
-    let base_schema_id_const = if let Some(parent_id) = &expected_parent_schema_id {
+    // Generate BASE_TYPE_ID constant (private) and compile-time assertion for base struct matching
+    let base_schema_id_const = if let Some(parent_id) = &expected_parent_type_id {
         quote! {
-            /// Parent schema ID (extracted from schema_id segments). Use `gts_base_schema_id()` instead.
+            /// Parent type ID (extracted from `type_id` segments). Use `gts_base_type_id()` instead.
             #[doc(hidden)]
             #[allow(dead_code)]
-            const BASE_SCHEMA_ID: Option<&'static str> = Some(#parent_id);
+            const BASE_TYPE_ID: Option<&'static str> = Some(#parent_id);
+
+            /// Deprecated alias for `BASE_TYPE_ID`.
+            #[doc(hidden)]
+            #[allow(dead_code, non_upper_case_globals)]
+            #[deprecated(since = "0.10.0", note = "renamed to `BASE_TYPE_ID`")]
+            const BASE_SCHEMA_ID: Option<&'static str> = Self::BASE_TYPE_ID;
         }
     } else {
         quote! {
-            /// Parent schema ID (None for base types). Use `gts_base_schema_id()` instead.
+            /// Parent type ID (None for base types). Use `gts_base_type_id()` instead.
             #[doc(hidden)]
             #[allow(dead_code)]
-            const BASE_SCHEMA_ID: Option<&'static str> = None;
+            const BASE_TYPE_ID: Option<&'static str> = None;
+
+            /// Deprecated alias for `BASE_TYPE_ID`.
+            #[doc(hidden)]
+            #[allow(dead_code, non_upper_case_globals)]
+            #[deprecated(since = "0.10.0", note = "renamed to `BASE_TYPE_ID`")]
+            const BASE_SCHEMA_ID: Option<&'static str> = Self::BASE_TYPE_ID;
         }
     };
 
     // Generate the literal option value for use in static initializers (avoids Self::BASE_SCHEMA_ID)
-    let base_schema_id_option = if let Some(parent_id) = &expected_parent_schema_id {
+    let base_schema_id_option = if let Some(parent_id) = &expected_parent_type_id {
         quote! { Some(#parent_id) }
     } else {
         quote! { None::<&'static str> }
@@ -1074,33 +1090,33 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     // Generate compile-time assertion when base = ParentStruct
     let base_assertion = match &args.base {
         BaseAttr::Parent(parent_ident) => {
-            let parent_id = expected_parent_schema_id
+            let parent_id = expected_parent_type_id
                 .as_ref()
                 .expect("parent_id must exist when base is specified");
-            let schema_id_assertion_msg = format!(
-                "struct_to_gts_schema: Base struct '{parent_ident}' schema ID must match parent segment '{parent_id}' from schema_id"
+            let type_id_assertion_msg = format!(
+                "struct_to_gts_schema: Base struct '{parent_ident}' TYPE_ID must match parent segment '{parent_id}' from this struct's type_id"
             );
             let generic_field_assertion_msg = format!(
                 "struct_to_gts_schema: Base struct '{parent_ident}' must have exactly 1 generic field. \
                  Parent types must define a generic field (e.g., `pub payload: P`) that child types extend."
             );
             quote! {
-                // Compile-time assertion: verify parent struct's GTS_SCHEMA_ID matches expected parent segment
+                // Compile-time assertion: verify parent struct's TYPE_ID matches expected parent segment
                 // We use <ParentStruct<()> as GtsSchema> since all GTS structs must be generic
                 const _: () = {
                     // Use a const assertion to verify at compile time
-                    const PARENT_ID: &'static str = <#parent_ident<()> as ::gts::GtsSchema>::SCHEMA_ID;
+                    const PARENT_ID: &'static str = <#parent_ident<()> as ::gts::GtsSchema>::TYPE_ID;
                     const EXPECTED_ID: &'static str = #parent_id;
                     // Use a manual string comparison for const context
                     const _: () = {
                         // Manual string equality check for const context
                         if PARENT_ID.as_bytes().len() != EXPECTED_ID.as_bytes().len() {
-                            panic!(#schema_id_assertion_msg);
+                            panic!(#type_id_assertion_msg);
                         }
                         let mut i = 0;
                         while i < PARENT_ID.as_bytes().len() {
                             if PARENT_ID.as_bytes()[i] != EXPECTED_ID.as_bytes()[i] {
-                                panic!(#schema_id_assertion_msg);
+                                panic!(#type_id_assertion_msg);
                             }
                             i += 1;
                         }
@@ -1165,11 +1181,11 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 Self::gts_schema_with_refs()
             }
 
-            fn innermost_schema_id() -> &'static str {
-                // Recursively get the innermost type's schema ID
-                let inner_id = <#generic_ident as ::gts::GtsSchema>::innermost_schema_id();
+            fn innermost_type_id() -> &'static str {
+                // Recursively get the innermost type's type ID
+                let inner_id = <#generic_ident as ::gts::GtsSchema>::innermost_type_id();
                 if inner_id.is_empty() {
-                    Self::SCHEMA_ID
+                    Self::TYPE_ID
                 } else {
                     inner_id
                 }
@@ -1197,7 +1213,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 //   - Path is ["a", "b"]
 
                 let inner_path = <#generic_ident as ::gts::GtsSchema>::collect_nesting_path();
-                let inner_id = <#generic_ident as ::gts::GtsSchema>::SCHEMA_ID;
+                let inner_id = <#generic_ident as ::gts::GtsSchema>::TYPE_ID;
 
                 // If inner type is () (empty ID), don't include this type's field
                 // because this type IS the innermost type with properties
@@ -1216,15 +1232,15 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
             }
 
             fn gts_schema_with_refs_allof() -> serde_json::Value {
-                // Use THIS struct's schema ID for both $id and parent determination
+                // Use THIS struct's type ID for both $id and parent determination
                 // When a generic base struct is instantiated with a concrete type,
                 // it should still generate its own base schema, not the innermost type's schema
-                let schema_id = Self::SCHEMA_ID;
+                let type_id = Self::TYPE_ID;
 
-                // Get parent's ID by removing last segment from THIS struct's schema_id
+                // Get parent's ID by removing last segment from THIS struct's type_id
                 // e.g., "a~b~c~" -> "a~b~"
-                let parent_schema_id = if schema_id.contains('~') {
-                    let s = schema_id.trim_end_matches('~');
+                let parent_type_id = if type_id.contains('~') {
+                    let s = type_id.trim_end_matches('~');
                     if let Some(pos) = s.rfind('~') {
                         format!("{}~", &s[..pos])
                     } else {
@@ -1252,7 +1268,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                     }
                 }
 
-                // Resolve internal $ref references to GtsInstanceId and GtsSchemaId.
+                // Resolve internal $ref references to GtsInstanceId and GtsTypeId.
                 // schemars emits them as `#/$defs/...` pointers into the per-type
                 // generator scope; once we drop the schemars wrapper they become
                 // dangling. Inline the canonical schema fragment instead so the
@@ -1263,8 +1279,8 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                         if let Some(ref_str) = value.get("$ref").and_then(|v| v.as_str()) {
                             if ref_str == "#/$defs/GtsInstanceId" {
                                 *value = gts::GtsInstanceId::json_schema_value();
-                            } else if ref_str == "#/$defs/GtsSchemaId" {
-                                *value = gts::GtsSchemaId::json_schema_value();
+                            } else if ref_str == "#/$defs/GtsTypeId" || ref_str == "#/$defs/GtsSchemaId" {
+                                *value = gts::GtsTypeId::json_schema_value();
                             }
                         }
                     }
@@ -1273,9 +1289,9 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 // If no parent (base type), return simple schema without allOf
                 // Base types have additionalProperties: false at root level
                 // Generic fields are just {"type": "object"} (will be extended by children)
-                if parent_schema_id.is_empty() {
+                if parent_type_id.is_empty() {
                     let mut schema = serde_json::json!({
-                        "$id": format!("gts://{}", schema_id),
+                        "$id": format!("gts://{}", type_id),
                         "$schema": "http://json-schema.org/draft-07/schema#",
                         "description": #description,
                         "type": "object",
@@ -1310,13 +1326,13 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
 
                 // Child type - use allOf with $ref to parent
                 serde_json::json!({
-                    "$id": format!("gts://{}", schema_id),
+                    "$id": format!("gts://{}", type_id),
                     "$schema": "http://json-schema.org/draft-07/schema#",
                     "description": #description,
                     "type": "object",
                     "additionalProperties": false,
                     "allOf": [
-                        { "$ref": format!("gts://{}", parent_schema_id) },
+                        { "$ref": format!("gts://{}", parent_type_id) },
                         {
                             "type": "object",
                             "properties": nested_properties
@@ -1332,8 +1348,8 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
             fn gts_schema() -> serde_json::Value {
                 Self::gts_schema_with_refs()
             }
-            fn innermost_schema_id() -> &'static str {
-                Self::SCHEMA_ID
+            fn innermost_type_id() -> &'static str {
+                Self::TYPE_ID
             }
             fn innermost_schema() -> serde_json::Value {
                 // Return this type's schemars schema (RootSchema serializes at root level)
@@ -1341,11 +1357,11 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 serde_json::to_value(&root_schema).expect("schemars")
             }
             fn gts_schema_with_refs_allof() -> serde_json::Value {
-                let schema_id = Self::SCHEMA_ID;
+                let type_id = Self::TYPE_ID;
 
                 // Get parent's ID by removing last segment
-                let parent_schema_id = if schema_id.contains('~') {
-                    let s = schema_id.trim_end_matches('~');
+                let parent_type_id = if type_id.contains('~') {
+                    let s = type_id.trim_end_matches('~');
                     if let Some(pos) = s.rfind('~') {
                         format!("{}~", &s[..pos])
                     } else {
@@ -1361,7 +1377,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 let mut properties = schema_val.get("properties").cloned().unwrap_or_else(|| serde_json::json!({}));
                 let required = schema_val.get("required").cloned().unwrap_or_else(|| serde_json::json!([]));
 
-                // Resolve internal $ref references to GtsInstanceId and GtsSchemaId at compile time
+                // Resolve internal $ref references to GtsInstanceId and GtsTypeId at compile time
                 // This is needed for schemas validated directly (not through GtsStore)
                 // Runtime resolution in GtsStore::resolve_schema_refs provides additional coverage
                 if let Some(props_obj) = properties.as_object_mut() {
@@ -1369,8 +1385,8 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                         if let Some(ref_str) = value.get("$ref").and_then(|v| v.as_str()) {
                             if ref_str == "#/$defs/GtsInstanceId" {
                                 *value = gts::GtsInstanceId::json_schema_value();
-                            } else if ref_str == "#/$defs/GtsSchemaId" {
-                                *value = gts::GtsSchemaId::json_schema_value();
+                            } else if ref_str == "#/$defs/GtsTypeId" || ref_str == "#/$defs/GtsSchemaId" {
+                                *value = gts::GtsTypeId::json_schema_value();
                             }
                         }
                     }
@@ -1378,9 +1394,9 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
 
                 // If no parent (base type), return simple schema without allOf
                 // Non-generic base types have additionalProperties: false at root level
-                if parent_schema_id.is_empty() {
+                if parent_type_id.is_empty() {
                     let mut schema = serde_json::json!({
-                        "$id": format!("gts://{}", schema_id),
+                        "$id": format!("gts://{}", type_id),
                         "$schema": "http://json-schema.org/draft-07/schema#",
                         "description": #description,
                         "type": "object",
@@ -1402,13 +1418,13 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 let path_refs: Vec<&str> = owned_path.iter().copied().collect();
                 let nested_properties = Self::wrap_in_nesting_path(&path_refs, properties, required, None);
                 serde_json::json!({
-                    "$id": format!("gts://{}", schema_id),
+                    "$id": format!("gts://{}", type_id),
                     "$schema": "http://json-schema.org/draft-07/schema#",
                     "description": #description,
                     "type": "object",
                     "additionalProperties": false,
                     "allOf": [
-                        { "$ref": format!("gts://{}", parent_schema_id) },
+                        { "$ref": format!("gts://{}", parent_type_id) },
                         {
                             "type": "object",
                             "properties": nested_properties
@@ -1851,38 +1867,54 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
 
             #base_schema_id_const
 
-            /// Get the GTS schema identifier as a static reference.
+            /// Get the GTS type identifier as a static reference.
             #[allow(dead_code)]
             #[must_use]
-            pub fn gts_schema_id() -> &'static ::gts::gts::GtsSchemaId {
-                static GTS_SCHEMA_ID: std::sync::LazyLock<::gts::gts::GtsSchemaId> =
-                    std::sync::LazyLock::new(|| ::gts::gts::GtsSchemaId::new(#schema_id));
-                &GTS_SCHEMA_ID
+            pub fn gts_type_id() -> &'static ::gts::gts::GtsTypeId {
+                static GTS_TYPE_ID: std::sync::LazyLock<::gts::gts::GtsTypeId> =
+                    std::sync::LazyLock::new(|| ::gts::gts::GtsTypeId::new(#type_id));
+                &GTS_TYPE_ID
             }
 
-            /// Get the parent (base) schema identifier as a static reference.
+            /// Deprecated alias for [`Self::gts_type_id`].
+            #[allow(dead_code, deprecated)]
+            #[deprecated(since = "0.10.0", note = "renamed to `gts_type_id`")]
+            #[must_use]
+            pub fn gts_schema_id() -> &'static ::gts::gts::GtsTypeId {
+                Self::gts_type_id()
+            }
+
+            /// Get the parent (base) type identifier as a static reference.
             /// Returns `None` for base structs (those with `base = true`).
             #[allow(dead_code)]
             #[must_use]
-            pub fn gts_base_schema_id() -> Option<&'static ::gts::gts::GtsSchemaId> {
-                static BASE_SCHEMA_ID: std::sync::LazyLock<Option<::gts::gts::GtsSchemaId>> =
+            pub fn gts_base_type_id() -> Option<&'static ::gts::gts::GtsTypeId> {
+                static BASE_TYPE_ID: std::sync::LazyLock<Option<::gts::gts::GtsTypeId>> =
                     std::sync::LazyLock::new(|| {
-                        #base_schema_id_option.map(::gts::gts::GtsSchemaId::new)
+                        #base_schema_id_option.map(::gts::gts::GtsTypeId::new)
                     });
-                BASE_SCHEMA_ID.as_ref()
+                BASE_TYPE_ID.as_ref()
             }
 
-            /// Generate a GTS instance ID by appending a segment to the schema ID.
+            /// Deprecated alias for [`Self::gts_base_type_id`].
+            #[allow(dead_code, deprecated)]
+            #[deprecated(since = "0.10.0", note = "renamed to `gts_base_type_id`")]
+            #[must_use]
+            pub fn gts_base_schema_id() -> Option<&'static ::gts::gts::GtsTypeId> {
+                Self::gts_base_type_id()
+            }
+
+            /// Generate a GTS instance ID by appending a segment to the type ID.
             #[allow(dead_code)]
             #[must_use]
             pub fn gts_make_instance_id(segment: &str) -> ::gts::GtsInstanceId {
-                ::gts::GtsInstanceId::new(#schema_id, segment)
+                ::gts::GtsInstanceId::new(#type_id, segment)
             }
         }
 
         // Implement GtsSchema trait for runtime schema composition
         impl #impl_generics ::gts::GtsSchema for #struct_name #ty_generics #gts_schema_where_clause {
-            const SCHEMA_ID: &'static str = #schema_id;
+            const TYPE_ID: &'static str = #type_id;
             const GENERIC_FIELD: Option<&'static str> = #generic_field_option;
 
             fn gts_schema_with_refs() -> serde_json::Value {
@@ -1947,7 +1979,7 @@ mod instance;
 /// ```
 ///
 /// The literal is validated against `gts_id::validate_gts_id` and
-/// const-asserted to share its prefix with `<TopicV1 as GtsSchema>::SCHEMA_ID`.
+/// const-asserted to share its prefix with `<TopicV1 as GtsSchema>::TYPE_ID`.
 /// The id field's apparent string value is rewritten by the macro — at
 /// runtime `t.id` is a `GtsInstanceId`, not a `String`.
 ///

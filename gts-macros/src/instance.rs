@@ -7,13 +7,13 @@
 //! parses the literal, validates its shape per GTS spec §2.2 / §3.7,
 //! splits it into prefix + segment, and rewrites the field's value to a
 //! `GtsInstanceId::new(prefix, segment)` call. The prefix half is then
-//! const-asserted against `<S as GtsSchema>::SCHEMA_ID` so a literal that
+//! const-asserted against `<S as GtsSchema>::TYPE_ID` so a literal that
 //! claims to belong to a different schema fails the build.
 //!
 //! For chained schemas the const-assert target is derived from the struct
 //! literal's turbofish: the macro descends through angle-bracketed type
 //! args, picking the deepest non-generic path as the conforming type. So
-//! `BaseV1::<LeafV1> { ... }` targets `<LeafV1 as GtsSchema>::SCHEMA_ID`
+//! `BaseV1::<LeafV1> { ... }` targets `<LeafV1 as GtsSchema>::TYPE_ID`
 //! (the full chain), and `BaseV1::<MiddleV1<LeafV1>> { ... }` likewise
 //! targets `LeafV1`. `BaseV1::<()> { ... }` keeps the carrier itself as
 //! the target (base-level instance). For chained schemas the turbofish is
@@ -107,7 +107,7 @@ fn path_for_type_position(path: &Path) -> Path {
 /// - `BaseV1::<LeafV1>`             → `LeafV1`
 /// - `BaseV1::<MiddleV1<LeafV1>>`   → `LeafV1`
 /// - `BaseV1::<()>`                 → `BaseV1::<()>` (carrier kept; `()`
-///   has empty `SCHEMA_ID`, so const-assert must hit the carrier)
+///   has empty `TYPE_ID`, so const-assert must hit the carrier)
 ///
 /// The deepest type is expected to carry `struct_to_gts_schema` (i.e.
 /// implement `GtsSchema`); if it doesn't, the emitted `<X as GtsSchema>`
@@ -326,9 +326,9 @@ fn build_typed_instance_block(args: &TypedInstanceArgs) -> syn::Result<TokenStre
                 assert!(
                     __gts_validate_id_prefix(
                         #instance_id_lit,
-                        <#schema_path as ::gts::GtsSchema>::SCHEMA_ID,
+                        <#schema_path as ::gts::GtsSchema>::TYPE_ID,
                     ),
-                    "instance id literal must equal the type's GtsSchema::SCHEMA_ID followed by a single non-empty segment (no extra `~`); for chained schemas, write the full type as a turbofish on the struct literal (e.g. `BaseV1::<LeafV1>` rather than bare `BaseV1`) so the macro can derive the conforming schema"
+                    "instance id literal must equal the type's GtsSchema::TYPE_ID followed by a single non-empty segment (no extra `~`); for chained schemas, write the full type as a turbofish on the struct literal (e.g. `BaseV1::<LeafV1>` rather than bare `BaseV1`) so the macro can derive the conforming schema"
                 );
             };
             #struct_expr
@@ -535,7 +535,7 @@ mod tests {
     fn descent_keeps_carrier_when_last_is_unit_type() {
         // `BaseV1<()>` — the descent stops on `()` (a `Type::Tuple`,
         // not `Type::Path`) and the carrier with explicit args is
-        // kept. This is the base-instance case: `()::SCHEMA_ID = ""`,
+        // kept. This is the base-instance case: `()::TYPE_ID = ""`,
         // so falling back to the carrier hits the right target.
         let path = parse_path(quote!(BaseV1<()>));
         let target = derive_schema_target_from_path(&path);

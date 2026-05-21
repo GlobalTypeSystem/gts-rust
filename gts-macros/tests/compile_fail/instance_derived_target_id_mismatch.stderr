@@ -1,4 +1,4 @@
-error[E0080]: evaluation panicked: instance id literal must equal the type's GtsSchema::SCHEMA_ID followed by a single non-empty segment (no extra `~`); for chained schemas, write the full type as a turbofish on the struct literal (e.g. `BaseV1::<LeafV1>` rather than bare `BaseV1`) so the macro can derive the conforming schema
+error[E0080]: evaluation panicked: instance id literal must equal the type's GtsSchema::TYPE_ID followed by a single non-empty segment (no extra `~`); for chained schemas, write the full type as a turbofish on the struct literal (e.g. `BaseV1::<LeafV1>` rather than bare `BaseV1`) so the macro can derive the conforming schema
   --> tests/compile_fail/instance_derived_target_id_mismatch.rs:45:30
    |
 45 |       let _v: BaseV1<LeafV1> = gts_instance!(BaseV1::<LeafV1> {

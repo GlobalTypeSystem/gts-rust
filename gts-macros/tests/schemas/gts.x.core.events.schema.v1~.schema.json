@@ -17,9 +17,9 @@
       "type": "string"
     },
     "schema": {
-      "description": "GTS schema identifier",
-      "format": "gts-schema-id",
-      "title": "GTS Schema ID",
+      "description": "GTS type identifier",
+      "format": "gts-type-id",
+      "title": "GTS Type ID",
       "type": "string",
       "x-gts-ref": "gts.*"
     }

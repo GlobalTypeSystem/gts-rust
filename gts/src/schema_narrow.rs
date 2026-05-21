@@ -1,7 +1,7 @@
 //! Typed narrowing — go from a runtime-typed payload (commonly
 //! `serde_json::Value`) to a typed GTS view `Q: GtsSchema`, validating
 //! the runtime schema-id discriminator against the target's
-//! `<Q as GtsSchema>::innermost_schema_id()` and deserialising the
+//! `<Q as GtsSchema>::innermost_type_id()` and deserialising the
 //! payload into `Q` via [`crate::GtsDeserializeWrapper`].
 //!
 //! The complementary "shape" to [`crate::schema_cast`]:
@@ -42,7 +42,7 @@ use crate::schema::{GtsDeserialize, GtsDeserializeWrapper, GtsSchema};
 ///
 /// - [`NarrowError::SchemaId`] — the runtime discriminator (e.g. an
 ///   `info.gts_type` / `event_type` field on an envelope) does not match
-///   the target type's `<Q as GtsSchema>::innermost_schema_id()`. The
+///   the target type's `<Q as GtsSchema>::innermost_type_id()`. The
 ///   data is for a different leaf than the caller asked for.
 /// - [`NarrowError::Deserialize`] — the schema id matched, but the JSON
 ///   payload failed to deserialize into `Q`'s shape. Indicates malformed
@@ -52,7 +52,7 @@ pub enum NarrowError {
     /// Discriminator field mismatch.
     #[error("gts schema id mismatch: expected `{expected}`, got `{actual}`")]
     SchemaId {
-        /// `<Q as GtsSchema>::innermost_schema_id()` — what [`try_narrow`]
+        /// `<Q as GtsSchema>::innermost_type_id()` — what [`try_narrow`]
         /// expected to find on the data.
         expected: String,
         /// What the data actually carried.
@@ -65,7 +65,7 @@ pub enum NarrowError {
 }
 
 /// Narrow a JSON payload into a typed GTS view `Q`, after validating
-/// `actual_schema_id` against `<Q as GtsSchema>::innermost_schema_id()`.
+/// `actual_schema_id` against `<Q as GtsSchema>::innermost_type_id()`.
 ///
 /// `actual_schema_id` is the runtime discriminator (a string field on
 /// the envelope, e.g. `gts_type` / `event_type`) the consumer reads off
@@ -80,7 +80,7 @@ pub enum NarrowError {
 /// (e.g. `AlphaLeafV1`) or a composed view through one or more
 /// intermediates (e.g. `Intermediate<BetaLeafV1>`). Internally:
 ///
-/// - `<Q as GtsSchema>::innermost_schema_id()` is used to compute the
+/// - `<Q as GtsSchema>::innermost_type_id()` is used to compute the
 ///   expected id (walks the chain so composed views resolve to the leaf
 ///   id, exact match is enforced).
 /// - The payload is deserialized via [`GtsDeserializeWrapper<Q>`] so
@@ -108,7 +108,7 @@ where
     Q: GtsSchema,
     for<'de> Q: GtsDeserialize<'de>,
 {
-    let expected = <Q as GtsSchema>::innermost_schema_id();
+    let expected = <Q as GtsSchema>::innermost_type_id();
     if actual_schema_id != expected {
         return Err(NarrowError::SchemaId {
             expected: expected.to_owned(),

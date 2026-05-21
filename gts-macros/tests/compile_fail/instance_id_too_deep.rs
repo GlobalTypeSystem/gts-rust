@@ -1,6 +1,6 @@
 //! Test: typed `gts_instance!` rejects an `id:` literal whose segment
 //! contains additional `~` separators (i.e. the literal denotes a deeper
-//! schema chain than the type's `SCHEMA_ID`). For chained schemas the
+//! schema chain than the type's `TYPE_ID`). For chained schemas the
 //! caller must use a generic carrier with the conforming type as a
 //! turbofish parameter (`BaseV1::<LeafV1> { ... }`); a non-generic
 //! carrier like `PermV1` cannot legitimately produce a deeper id.
@@ -24,7 +24,7 @@ pub struct PermV1 {
 }
 
 fn main() {
-    // Prefix matches SCHEMA_ID, but the literal continues with another
+    // Prefix matches TYPE_ID, but the literal continues with another
     // `~`-separated segment, implying a deeper schema. The const-assert
     // rejects (no turbofish path is available — `PermV1` is non-generic).
     let _ = gts_instance!(PermV1 {

@@ -11,7 +11,7 @@ use gts_macros::struct_to_gts_schema;
 )]
 #[derive(Debug)]
 pub struct TopicV1WrongGtsType<P> {
-    pub r#type: String, // This should be GtsSchemaId, not String
+    pub r#type: String, // This should be GtsTypeId, not String
     pub name: String,
     pub description: Option<String>,
     pub config: P,

@@ -6,7 +6,7 @@
 //! default `P = Value` lets callers transport mixed-provider envelopes
 //! through type-erased layers (lists, channels, RPC boundaries). When a
 //! caller wants typed access, they match `gts_type` against
-//! `<TargetLeaf>::innermost_schema_id()` and re-deserialise the JSON
+//! `<TargetLeaf>::innermost_type_id()` and re-deserialise the JSON
 //! payload into the chosen typed shape — either a direct leaf
 //! (`AlphaLeafV1`, `GammaLeafV1`) or a composed view through an
 //! intermediate (`IntermediateV1<BetaLeafV1>` — the 3-level case).
@@ -20,7 +20,7 @@
     clippy::uninlined_format_args
 )]
 
-use gts::gts::GtsSchemaId;
+use gts::gts::GtsTypeId;
 use gts::{GtsSchema, NarrowError, try_narrow};
 use gts_macros::struct_to_gts_schema;
 
@@ -42,7 +42,7 @@ use gts_macros::struct_to_gts_schema;
 )]
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnvelopeV1<P> {
-    pub gts_type: GtsSchemaId,
+    pub gts_type: GtsTypeId,
     pub payload: P,
 }
 
@@ -122,10 +122,10 @@ mod schema_id_contract {
 
     #[test]
     fn unit_and_value_are_both_empty_id_placeholders() {
-        assert_eq!(<() as GtsSchema>::SCHEMA_ID, "");
-        assert_eq!(<serde_json::Value as GtsSchema>::SCHEMA_ID, "");
-        assert_eq!(<() as GtsSchema>::innermost_schema_id(), "");
-        assert_eq!(<serde_json::Value as GtsSchema>::innermost_schema_id(), "");
+        assert_eq!(<() as GtsSchema>::TYPE_ID, "");
+        assert_eq!(<serde_json::Value as GtsSchema>::TYPE_ID, "");
+        assert_eq!(<() as GtsSchema>::innermost_type_id(), "");
+        assert_eq!(<serde_json::Value as GtsSchema>::innermost_type_id(), "");
     }
 
     #[test]
@@ -134,16 +134,16 @@ mod schema_id_contract {
         // type's innermost id falls back to the envelope's own literal
         // — i.e. nothing further is known about the leaf at type level.
         assert_eq!(
-            <EnvelopeV1<serde_json::Value> as GtsSchema>::SCHEMA_ID,
+            <EnvelopeV1<serde_json::Value> as GtsSchema>::TYPE_ID,
             "gts.x.test.value_dispatch.envelope.v1~"
         );
         assert_eq!(
-            <EnvelopeV1<serde_json::Value> as GtsSchema>::innermost_schema_id(),
+            <EnvelopeV1<serde_json::Value> as GtsSchema>::innermost_type_id(),
             "gts.x.test.value_dispatch.envelope.v1~",
             "Value-tail innermost is the envelope's own literal"
         );
         assert_eq!(
-            <EnvelopeV1<()> as GtsSchema>::innermost_schema_id(),
+            <EnvelopeV1<()> as GtsSchema>::innermost_type_id(),
             "gts.x.test.value_dispatch.envelope.v1~",
             "(): same protocol -- empty tail collapses to the envelope's literal"
         );
@@ -151,67 +151,61 @@ mod schema_id_contract {
 
     #[test]
     fn direct_leaves_carry_their_two_segment_chain_via_innermost() {
-        assert_eq!(<AlphaLeafV1 as GtsSchema>::SCHEMA_ID, ALPHA_CHAIN);
-        assert_eq!(
-            <AlphaLeafV1 as GtsSchema>::innermost_schema_id(),
-            ALPHA_CHAIN
-        );
-        assert_eq!(<GammaLeafV1 as GtsSchema>::SCHEMA_ID, GAMMA_CHAIN);
-        assert_eq!(
-            <GammaLeafV1 as GtsSchema>::innermost_schema_id(),
-            GAMMA_CHAIN
-        );
+        assert_eq!(<AlphaLeafV1 as GtsSchema>::TYPE_ID, ALPHA_CHAIN);
+        assert_eq!(<AlphaLeafV1 as GtsSchema>::innermost_type_id(), ALPHA_CHAIN);
+        assert_eq!(<GammaLeafV1 as GtsSchema>::TYPE_ID, GAMMA_CHAIN);
+        assert_eq!(<GammaLeafV1 as GtsSchema>::innermost_type_id(), GAMMA_CHAIN);
 
-        // Composed views: EnvelopeV1<AlphaLeafV1>::SCHEMA_ID is the
+        // Composed views: EnvelopeV1<AlphaLeafV1>::TYPE_ID is the
         // envelope's literal (does not know about its generic), but
         // innermost walks the chain and returns AlphaLeafV1's id.
         assert_eq!(
-            <EnvelopeV1<AlphaLeafV1> as GtsSchema>::SCHEMA_ID,
+            <EnvelopeV1<AlphaLeafV1> as GtsSchema>::TYPE_ID,
             "gts.x.test.value_dispatch.envelope.v1~"
         );
         assert_eq!(
-            <EnvelopeV1<AlphaLeafV1> as GtsSchema>::innermost_schema_id(),
+            <EnvelopeV1<AlphaLeafV1> as GtsSchema>::innermost_type_id(),
             ALPHA_CHAIN
         );
     }
 
     #[test]
     fn three_level_chain_resolves_to_leaf_via_innermost() {
-        assert_eq!(<BetaLeafV1 as GtsSchema>::SCHEMA_ID, BETA_CHAIN);
-        assert_eq!(<BetaLeafV1 as GtsSchema>::innermost_schema_id(), BETA_CHAIN);
+        assert_eq!(<BetaLeafV1 as GtsSchema>::TYPE_ID, BETA_CHAIN);
+        assert_eq!(<BetaLeafV1 as GtsSchema>::innermost_type_id(), BETA_CHAIN);
 
-        // IntermediateV1 is the 2-level node; its `SCHEMA_ID` is its own
+        // IntermediateV1 is the 2-level node; its `TYPE_ID` is its own
         // 2-segment id regardless of what fills the `extension` slot.
         assert_eq!(
-            <IntermediateV1<()> as GtsSchema>::SCHEMA_ID,
+            <IntermediateV1<()> as GtsSchema>::TYPE_ID,
             INTERMEDIATE_CHAIN
         );
         assert_eq!(
-            <IntermediateV1<serde_json::Value> as GtsSchema>::SCHEMA_ID,
+            <IntermediateV1<serde_json::Value> as GtsSchema>::TYPE_ID,
             INTERMEDIATE_CHAIN
         );
 
         // Walking innermost through IntermediateV1<BetaLeafV1> gives the
         // 3-segment chain (the leaf).
         assert_eq!(
-            <IntermediateV1<BetaLeafV1> as GtsSchema>::innermost_schema_id(),
+            <IntermediateV1<BetaLeafV1> as GtsSchema>::innermost_type_id(),
             BETA_CHAIN
         );
         assert_eq!(
-            <EnvelopeV1<IntermediateV1<BetaLeafV1>> as GtsSchema>::innermost_schema_id(),
+            <EnvelopeV1<IntermediateV1<BetaLeafV1>> as GtsSchema>::innermost_type_id(),
             BETA_CHAIN
         );
 
         // Whereas IntermediateV1<()> "loses" the leaf — its innermost is
         // the intermediate's own id. This documents that narrowing to
-        // "intermediate-only" via innermost_schema_id is intentionally
+        // "intermediate-only" via innermost_type_id is intentionally
         // distinct from narrowing to a leaf.
         assert_eq!(
-            <IntermediateV1<()> as GtsSchema>::innermost_schema_id(),
+            <IntermediateV1<()> as GtsSchema>::innermost_type_id(),
             INTERMEDIATE_CHAIN
         );
         assert_eq!(
-            <EnvelopeV1<IntermediateV1<()>> as GtsSchema>::innermost_schema_id(),
+            <EnvelopeV1<IntermediateV1<()>> as GtsSchema>::innermost_type_id(),
             INTERMEDIATE_CHAIN
         );
     }
@@ -260,7 +254,7 @@ mod deserialisation {
         // are effectively identity wrappers — the payload survives
         // any nesting without mangling.
         let envelope = EnvelopeV1::<serde_json::Value> {
-            gts_type: GtsSchemaId::new("gts.x.test.value_dispatch.envelope.v1~x.test.unknown.v1~"),
+            gts_type: GtsTypeId::new("gts.x.test.value_dispatch.envelope.v1~x.test.unknown.v1~"),
             payload: serde_json::json!({
                 "anything": ["the", "future", 42, null, { "nested": true }]
             }),
@@ -303,7 +297,7 @@ mod dispatch {
     /// Take a runtime-typed `EnvelopeV1<Value>` and produce a `Decoded`
     /// variant by looking up the leaf type from `gts_type`. This is the
     /// canonical dispatcher: matches `gts_type` against each known
-    /// target's `innermost_schema_id()`, narrows the payload only for the
+    /// target's `innermost_type_id()`, narrows the payload only for the
     /// chosen branch, and re-wraps it as a fully-typed envelope so the
     /// caller never has to reach into raw JSON for `gts_type` again.
     fn decode(envelope: EnvelopeV1<serde_json::Value>) -> Decoded {
@@ -313,14 +307,14 @@ mod dispatch {
         let EnvelopeV1 { gts_type, payload } = envelope;
         let actual = gts_type.as_ref().to_owned();
         match actual.as_str() {
-            id if id == <AlphaLeafV1 as GtsSchema>::innermost_schema_id() => {
+            id if id == <AlphaLeafV1 as GtsSchema>::innermost_type_id() => {
                 let typed: AlphaLeafV1 = try_narrow(id, payload).expect("alpha payload");
                 Decoded::Alpha(EnvelopeV1 {
                     gts_type,
                     payload: typed,
                 })
             }
-            id if id == <GammaLeafV1 as GtsSchema>::innermost_schema_id() => {
+            id if id == <GammaLeafV1 as GtsSchema>::innermost_type_id() => {
                 let typed: GammaLeafV1 = try_narrow(id, payload).expect("gamma payload");
                 Decoded::Gamma(EnvelopeV1 {
                     gts_type,
@@ -328,7 +322,7 @@ mod dispatch {
                 })
             }
             id if id
-                == <EnvelopeV1<IntermediateV1<BetaLeafV1>> as GtsSchema>::innermost_schema_id() =>
+                == <EnvelopeV1<IntermediateV1<BetaLeafV1>> as GtsSchema>::innermost_type_id() =>
             {
                 let typed: IntermediateV1<BetaLeafV1> =
                     try_narrow(id, payload).expect("intermediate payload");
@@ -391,7 +385,7 @@ mod dispatch {
         assert_eq!(
             decoded[0],
             Decoded::Alpha(EnvelopeV1 {
-                gts_type: GtsSchemaId::new(ALPHA_CHAIN),
+                gts_type: GtsTypeId::new(ALPHA_CHAIN),
                 payload: AlphaLeafV1 {
                     alpha_data: "first".into()
                 },
@@ -400,7 +394,7 @@ mod dispatch {
         assert_eq!(
             decoded[1],
             Decoded::Gamma(EnvelopeV1 {
-                gts_type: GtsSchemaId::new(GAMMA_CHAIN),
+                gts_type: GtsTypeId::new(GAMMA_CHAIN),
                 payload: GammaLeafV1 {
                     gamma_count: 7,
                     gamma_flag: true,
@@ -410,7 +404,7 @@ mod dispatch {
         assert_eq!(
             decoded[2],
             Decoded::BetaUnderIntermediate(EnvelopeV1 {
-                gts_type: GtsSchemaId::new(BETA_CHAIN),
+                gts_type: GtsTypeId::new(BETA_CHAIN),
                 payload: IntermediateV1 {
                     common_label: "shared".into(),
                     extension: BetaLeafV1 { beta_value: 99 },
@@ -518,7 +512,7 @@ mod narrow_helper {
 
     #[test]
     fn try_narrow_into_placeholder_value_is_always_allowed() {
-        // `Value`'s innermost_schema_id() is "" (placeholder protocol);
+        // `Value`'s innermost_type_id() is "" (placeholder protocol);
         // so passing any chain string is a SchemaId mismatch UNLESS the
         // caller explicitly passes "" - which is the protocol-correct
         // way to say "I don't care about narrowing, just pull the JSON".
@@ -541,7 +535,7 @@ mod narrow_helper {
         // takes the FULL envelope JSON and produces a fully-typed
         // `EnvelopeV1<IntermediateV1<BetaLeafV1>>` in a single call.
         //
-        // `<EnvelopeV1<IntermediateV1<BetaLeafV1>> as GtsSchema>::innermost_schema_id()`
+        // `<EnvelopeV1<IntermediateV1<BetaLeafV1>> as GtsSchema>::innermost_type_id()`
         // walks the chain through both generics — Envelope -> Intermediate
         // -> Beta — and lands on `BETA_CHAIN`. The runtime discriminator
         // we read off `gts_type` is also `BETA_CHAIN`, so the schema-id

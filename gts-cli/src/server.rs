@@ -181,7 +181,7 @@ struct ValidateInstanceRequest {
 }
 
 #[derive(Deserialize, serde::Serialize)]
-struct ValidateSchemaRequest {
+struct ValidateTypeSchemaRequest {
     type_id: String,
 }
 
@@ -340,7 +340,7 @@ async fn validate_instance(
 
 async fn validate_schema(
     State(state): State<AppState>,
-    Json(body): Json<ValidateSchemaRequest>,
+    Json(body): Json<ValidateTypeSchemaRequest>,
 ) -> impl IntoResponse {
     let mut ops = match lock_ops(&state.ops) {
         Ok(guard) => guard,

@@ -7,7 +7,7 @@
 //! - `#[gts_static(NAME)]`: emits `pub static NAME: LazyLock<T>` over
 //!   the rewritten struct.
 //! - Auto-derivation of the const-assert target for chained generic
-//!   carriers — `BaseV1::<LeafV1> { ... }` targets `LeafV1`'s `SCHEMA_ID`.
+//!   carriers — `BaseV1::<LeafV1> { ... }` targets `LeafV1`'s `TYPE_ID`.
 //! - Alternative id field names (`gts_id`, `gtsId`) — picked from the
 //!   struct literal automatically, no extra modifier needed.
 //! - Raw expression form: id auto-injection into JSON.
@@ -75,9 +75,9 @@ pub struct LeafV1 {
 // L1OuterV1) -> `L3LeafV1` (derives from L2MidV1). Used to verify that the
 // auto-derivation walks through nested generics and picks the *deepest*
 // non-generic type, not any intermediate one. With a wrong choice the
-// const-assert would either reject the literal (target's SCHEMA_ID is
+// const-assert would either reject the literal (target's TYPE_ID is
 // not a prefix of the full-chain id) or accept under a stale prefix —
-// the only target whose SCHEMA_ID is exactly the full-chain prefix is
+// the only target whose TYPE_ID is exactly the full-chain prefix is
 // `L3LeafV1`.
 
 #[struct_to_gts_schema(
@@ -157,7 +157,7 @@ fn typed_form_serialises_with_id_field() {
 fn typed_form_chained_derives_target_from_turbofish() {
     // `BaseV1::<LeafV1>` carries `LeafV1` as the deepest type arg, so the
     // const-assert target is derived as `LeafV1` and the literal must
-    // match `<LeafV1 as GtsSchema>::SCHEMA_ID` (the full chain prefix).
+    // match `<LeafV1 as GtsSchema>::TYPE_ID` (the full chain prefix).
     let v: BaseV1<LeafV1> = gts_instance!(BaseV1::<LeafV1> {
         id: "gts.acme.core.test.base.v1~acme.core.test.leaf.v1~vendor.app.things.example.v1",
         payload: LeafV1 {
@@ -175,9 +175,9 @@ fn typed_form_chained_derives_target_from_turbofish() {
 fn typed_form_three_level_chain_picks_deepest_generic() {
     // `L1OuterV1::<L2MidV1<L3LeafV1>>` — the macro must descend through the
     // intermediate generic carrier `L2MidV1<L3LeafV1>` and land on `L3LeafV1`,
-    // whose `SCHEMA_ID` matches the full-chain prefix. Targeting `L1OuterV1`
+    // whose `TYPE_ID` matches the full-chain prefix. Targeting `L1OuterV1`
     // would reject (extra `~` in suffix); targeting `L2MidV1<L3LeafV1>` would
-    // also reject (its `SCHEMA_ID` is the L1~L2~ prefix, leaving the L3
+    // also reject (its `TYPE_ID` is the L1~L2~ prefix, leaving the L3
     // segment in the suffix and tripping the no-tilde-in-segment check).
     let v: L1OuterV1<L2MidV1<L3LeafV1>> = gts_instance!(L1OuterV1::<L2MidV1<L3LeafV1>> {
         id: "gts.acme.core.test.l1.v1~acme.core.test.l2.v1~acme.core.test.l3.v1~vendor.app.things.deep.v1",
@@ -198,7 +198,7 @@ fn typed_form_three_level_chain_picks_deepest_generic() {
 #[test]
 fn typed_form_unit_param_keeps_carrier_as_target() {
     // `BaseV1::<()>` denotes a base-level instance — the descent stops on
-    // `()` (no `SCHEMA_ID`) and the carrier is kept as the target.
+    // `()` (no `TYPE_ID`) and the carrier is kept as the target.
     let v: BaseV1<()> = gts_instance!(BaseV1::<()> {
         id: "gts.acme.core.test.base.v1~vendor.app.things.bare.v1",
         payload: (),

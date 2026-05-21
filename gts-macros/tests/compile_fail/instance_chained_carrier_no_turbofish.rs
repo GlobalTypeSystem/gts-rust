@@ -1,7 +1,7 @@
 //! Test: typed `gts_instance!` rejects a struct literal that omits the
 //! turbofish on a generic carrier (`BaseV1 { ... }` instead of
 //! `BaseV1::<LeafV1> { ... }`). The macro emits
-//! `<BaseV1 as GtsSchema>::SCHEMA_ID`, which fails because `BaseV1` is
+//! `<BaseV1 as GtsSchema>::TYPE_ID`, which fails because `BaseV1` is
 //! generic and Rust requires explicit generics in trait position. The
 //! turbofish is the macro's only signal for deriving the conforming
 //! schema in chained carriers, so it is mandatory.

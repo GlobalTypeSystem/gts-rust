@@ -274,8 +274,8 @@ impl GtsStore {
                         "#/$defs/GtsInstanceId" => {
                             return crate::GtsInstanceId::json_schema_value();
                         }
-                        "#/$defs/GtsSchemaId" => {
-                            return crate::GtsSchemaId::json_schema_value();
+                        "#/$defs/GtsTypeId" | "#/$defs/GtsSchemaId" => {
+                            return crate::GtsTypeId::json_schema_value();
                         }
                         s if s.starts_with("#/") => {
                             // Other internal references - keep as-is
@@ -341,7 +341,7 @@ impl GtsStore {
                         }
 
                         // Remove $id and $schema from resolved content to avoid URL resolution issues
-                        // Note: $defs for GtsInstanceId/GtsSchemaId are inlined during resolution (see match above)
+                        // Note: $defs for GtsInstanceId/GtsTypeId are inlined during resolution (see match above)
                         if let Value::Object(ref mut resolved_map) = resolved {
                             resolved_map.remove("$id");
                             resolved_map.remove("$schema");
@@ -1075,7 +1075,7 @@ impl GtsStore {
         );
 
         // Resolve internal #/ references (like #/$defs/GtsInstanceId) by inlining them
-        // This handles the compile-time inlining of GtsInstanceId and GtsSchemaId
+        // This handles the compile-time inlining of GtsInstanceId and GtsTypeId
         let schema_with_internal_refs_resolved = self.resolve_schema_refs(&schema);
 
         // Remove x-gts-ref fields before jsonschema validation.

@@ -1,4 +1,4 @@
-error: struct_to_gts_schema: schema_id 'gts.x.core.events.type.v1~' has a version but struct 'BaseEvent' does not have a version suffix. Add 'V1' suffix to the struct name (e.g., 'BaseEventV1')
+error: struct_to_gts_schema: type_id 'gts.x.core.events.type.v1~' has a version but struct 'BaseEvent' does not have a version suffix. Add 'V1' suffix to the struct name (e.g., 'BaseEventV1')
   --> tests/compile_fail/version_missing_in_struct.rs:14:12
    |
 14 | pub struct BaseEvent {

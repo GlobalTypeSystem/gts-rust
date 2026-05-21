@@ -22,8 +22,16 @@ use serde_json::Value;
 /// // which in turn has data field containing PlaceOrderDataV1's schema
 /// ```
 pub trait GtsSchema {
-    /// The GTS schema ID for this type.
-    const SCHEMA_ID: &'static str;
+    /// The GTS type ID for this type (formerly `SCHEMA_ID`).
+    const TYPE_ID: &'static str;
+
+    /// Deprecated alias for [`Self::TYPE_ID`].
+    ///
+    /// Defaults to `Self::TYPE_ID` so existing implementations that only set
+    /// `TYPE_ID` keep working. Reading `T::SCHEMA_ID` from downstream code
+    /// raises a deprecation warning pointing at the new name.
+    #[deprecated(since = "0.10.0", note = "use `TYPE_ID` instead")]
+    const SCHEMA_ID: &'static str = Self::TYPE_ID;
 
     /// The name of the field that contains the generic type parameter, if any.
     /// For example, `BaseEventV1<P>` has `payload` as the generic field.
@@ -58,11 +66,18 @@ pub trait GtsSchema {
         Self::gts_schema_with_refs()
     }
 
-    /// Get the innermost schema ID in a nested generic chain.
+    /// Get the innermost type ID in a nested generic chain.
     /// For `BaseEventV1<AuditPayloadV1<PlaceOrderDataV1>>`, returns `PlaceOrderDataV1`'s ID.
     #[must_use]
+    fn innermost_type_id() -> &'static str {
+        Self::TYPE_ID
+    }
+
+    /// Deprecated alias for [`Self::innermost_type_id`].
+    #[deprecated(since = "0.10.0", note = "renamed to `innermost_type_id`")]
+    #[must_use]
     fn innermost_schema_id() -> &'static str {
-        Self::SCHEMA_ID
+        Self::innermost_type_id()
     }
 
     /// Get the innermost (leaf) type's raw schema.
@@ -170,7 +185,7 @@ pub trait GtsSchema {
 
 /// Marker implementation for () to allow `BaseEventV1<()>` etc.
 impl GtsSchema for () {
-    const SCHEMA_ID: &'static str = "";
+    const TYPE_ID: &'static str = "";
 
     fn gts_schema_with_refs() -> Value {
         serde_json::json!({
@@ -191,10 +206,10 @@ impl GtsSchema for () {
 /// by matching on the runtime `gts_type` and deserialising the JSON
 /// payload into the chosen target.
 ///
-/// Like `impl GtsSchema for ()`, `SCHEMA_ID` is the empty sentinel that
+/// Like `impl GtsSchema for ()`, `TYPE_ID` is the empty sentinel that
 /// signals "no own identity — read the real id from data".
 impl GtsSchema for Value {
-    const SCHEMA_ID: &'static str = "";
+    const TYPE_ID: &'static str = "";
 
     fn gts_schema_with_refs() -> Value {
         serde_json::json!({
@@ -389,26 +404,26 @@ pub fn strip_schema_metadata(schema: &Value) -> Value {
 /// Build a GTS schema with allOf structure referencing base type.
 ///
 /// # Arguments
-/// * `innermost_schema_id` - The $id for the generated schema (innermost type)
-/// * `base_schema_id` - The $ref target (base/outermost type)
+/// * `innermost_type_id` - The $id for the generated schema (innermost type)
+/// * `base_type_id` - The $ref target (base/outermost type)
 /// * `title` - Schema title
 /// * `own_properties` - Properties specific to this composed type
 /// * `required` - Required fields
 #[must_use]
 pub fn build_gts_allof_schema(
-    innermost_schema_id: &str,
-    base_schema_id: &str,
+    innermost_type_id: &str,
+    base_type_id: &str,
     title: &str,
     own_properties: &Value,
     required: &[&str],
 ) -> Value {
     serde_json::json!({
-        "$id": format!("gts://{}", innermost_schema_id),
+        "$id": format!("gts://{}", innermost_type_id),
         "$schema": "http://json-schema.org/draft-07/schema#",
         "title": title,
         "type": "object",
         "allOf": [
-            { "$ref": format!("gts://{}", base_schema_id) },
+            { "$ref": format!("gts://{}", base_type_id) },
             {
                 "type": "object",
                 "properties": own_properties,
@@ -429,7 +444,7 @@ mod tests {
         // Test all unit type properties in one test
         let schema = <()>::gts_schema();
         assert_eq!(schema, json!({"type": "object"}));
-        assert_eq!(<()>::SCHEMA_ID, "");
+        assert_eq!(<()>::TYPE_ID, "");
         assert_eq!(<()>::GENERIC_FIELD, None);
     }
 

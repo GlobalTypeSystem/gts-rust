@@ -1,9 +1,9 @@
 //! Test: typed `gts_instance!` rejects a chained generic carrier whose
-//! turbofish-derived target's `SCHEMA_ID` is not the direct parent of
+//! turbofish-derived target's `TYPE_ID` is not the direct parent of
 //! the `id:` literal. Here the carrier is `BaseV1::<LeafV1>`, so the
 //! macro derives `LeafV1` as the const-assert target — but the literal
-//! is a base-level id (only one segment past `BaseV1::SCHEMA_ID`), not
-//! a leaf-level id. `<LeafV1 as GtsSchema>::SCHEMA_ID` is therefore not
+//! is a base-level id (only one segment past `BaseV1::TYPE_ID`), not
+//! a leaf-level id. `<LeafV1 as GtsSchema>::TYPE_ID` is therefore not
 //! a prefix of the literal, and the const-assert rejects.
 //! Fixture is built via `#[struct_to_gts_schema]` to match the canonical
 //! usage pattern.
@@ -39,8 +39,8 @@ pub struct LeafV1 {
 fn main() {
     // Turbofish carrier `BaseV1::<LeafV1>` makes the macro derive the
     // const-assert target as `LeafV1`. The literal below is a base-level
-    // instance id (single segment past `BaseV1::SCHEMA_ID`), so the
-    // derived target's `SCHEMA_ID` is not a direct parent of the
+    // instance id (single segment past `BaseV1::TYPE_ID`), so the
+    // derived target's `TYPE_ID` is not a direct parent of the
     // literal — the const-assert prefix check rejects.
     let _v: BaseV1<LeafV1> = gts_instance!(BaseV1::<LeafV1> {
         id: "gts.acme.core.test.base.v1~vendor.app.things.bare.v1",

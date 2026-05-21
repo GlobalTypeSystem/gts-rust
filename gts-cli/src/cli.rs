@@ -57,10 +57,10 @@ pub enum Commands {
         #[arg(long)]
         gts_id: String,
     },
-    /// Validate a schema against its base schema (OP#12 schema-vs-schema)
-    ValidateSchema {
+    /// Validate a type schema against its base type schema (OP#12 schema-vs-schema)
+    ValidateTypeSchema {
         #[arg(long)]
-        schema_id: String,
+        type_id: String,
     },
     /// Validate an entity (instance or schema) by GTS ID
     ValidateEntity {
@@ -217,8 +217,8 @@ async fn run_command(cli: Cli) -> Result<()> {
             let result = ops.validate_instance(&gts_id);
             print_result(&result)?;
         }
-        Commands::ValidateSchema { schema_id } => {
-            let result = ops.validate_schema(&schema_id);
+        Commands::ValidateTypeSchema { type_id } => {
+            let result = ops.validate_schema(&type_id);
             print_result(&result)?;
         }
         Commands::ValidateEntity { gts_id } => {

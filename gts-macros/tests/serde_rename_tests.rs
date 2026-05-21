@@ -9,7 +9,7 @@
     clippy::bool_assert_comparison
 )]
 
-use gts::gts::GtsSchemaId;
+use gts::gts::GtsTypeId;
 use gts_macros::struct_to_gts_schema;
 use uuid::Uuid;
 
@@ -27,7 +27,7 @@ Serde rename tests - event_type field with serde(rename = "type")
 #[derive(Debug)]
 pub struct BaseEventV1SerdeRenameV1<P> {
     #[serde(rename = "type")]
-    pub event_type: GtsSchemaId, // This should be recognized as a valid GTS Type field
+    pub event_type: GtsTypeId, // This should be recognized as a valid GTS Type field
     pub id: Uuid,
     pub tenant_id: Uuid,
     pub sequence_id: u64,
@@ -44,7 +44,7 @@ pub struct BaseEventV1SerdeRenameV1<P> {
 #[derive(Debug)]
 pub struct BaseEventV1GtsTypeRenameV1<P> {
     #[serde(rename = "gts_type")]
-    pub event_type: GtsSchemaId, // This should be recognized as a valid GTS Type field
+    pub event_type: GtsTypeId, // This should be recognized as a valid GTS Type field
     pub id: Uuid,
     pub tenant_id: Uuid,
     pub sequence_id: u64,
@@ -61,7 +61,7 @@ pub struct BaseEventV1GtsTypeRenameV1<P> {
 #[derive(Debug)]
 pub struct BaseEventV1SchemaRenameV1<P> {
     #[serde(rename = "schema")]
-    pub event_type: GtsSchemaId, // This should be recognized as a valid GTS Type field
+    pub event_type: GtsTypeId, // This should be recognized as a valid GTS Type field
     pub id: Uuid,
     pub tenant_id: Uuid,
     pub sequence_id: u64,
@@ -80,7 +80,7 @@ mod tests {
     fn test_serde_rename_type_compiles() {
         // This should compile because event_type is renamed to "type" and has correct type
         let event = BaseEventV1SerdeRenameV1::<()> {
-            event_type: GtsSchemaId::new("gts.x.core.events.type.v1~"),
+            event_type: GtsTypeId::new("gts.x.core.events.type.v1~"),
             id: Uuid::new_v4(),
             tenant_id: Uuid::new_v4(),
             sequence_id: 12345,
@@ -94,7 +94,7 @@ mod tests {
     fn test_serde_rename_gts_type_compiles() {
         // This should compile because event_type is renamed to "gts_type" and has correct type
         let event = BaseEventV1GtsTypeRenameV1::<()> {
-            event_type: GtsSchemaId::new("gts.x.core.events.gts_type.v1~"),
+            event_type: GtsTypeId::new("gts.x.core.events.gts_type.v1~"),
             id: Uuid::new_v4(),
             tenant_id: Uuid::new_v4(),
             sequence_id: 12345,
@@ -111,7 +111,7 @@ mod tests {
     fn test_serde_rename_schema_compiles() {
         // This should compile because event_type is renamed to "schema" and has correct type
         let event = BaseEventV1SchemaRenameV1::<()> {
-            event_type: GtsSchemaId::new("gts.x.core.events.schema.v1~"),
+            event_type: GtsTypeId::new("gts.x.core.events.schema.v1~"),
             id: Uuid::new_v4(),
             tenant_id: Uuid::new_v4(),
             sequence_id: 12345,
@@ -125,19 +125,19 @@ mod tests {
     fn test_serde_rename_schema_constants() {
         // Verify that schema constants are generated correctly
         assert_eq!(
-            BaseEventV1SerdeRenameV1::<()>::gts_schema_id()
+            BaseEventV1SerdeRenameV1::<()>::gts_type_id()
                 .clone()
                 .into_string(),
             "gts.x.core.events.type.v1~"
         );
         assert_eq!(
-            BaseEventV1GtsTypeRenameV1::<()>::gts_schema_id()
+            BaseEventV1GtsTypeRenameV1::<()>::gts_type_id()
                 .clone()
                 .into_string(),
             "gts.x.core.events.gts_type.v1~"
         );
         assert_eq!(
-            BaseEventV1SchemaRenameV1::<()>::gts_schema_id()
+            BaseEventV1SchemaRenameV1::<()>::gts_type_id()
                 .clone()
                 .into_string(),
             "gts.x.core.events.schema.v1~"
@@ -148,7 +148,7 @@ mod tests {
     fn test_serde_rename_serialization() {
         // Test that serialization works correctly with serde rename
         let event = BaseEventV1SerdeRenameV1::<()> {
-            event_type: GtsSchemaId::new("gts.x.core.events.type.v1~"),
+            event_type: GtsTypeId::new("gts.x.core.events.type.v1~"),
             id: Uuid::new_v4(),
             tenant_id: Uuid::new_v4(),
             sequence_id: 12345,
@@ -168,7 +168,7 @@ mod tests {
     fn test_serde_rename_gts_type_serialization() {
         // Test that serialization works correctly with serde rename to gts_type
         let event = BaseEventV1GtsTypeRenameV1::<()> {
-            event_type: GtsSchemaId::new("gts.x.core.events.gts_type.v1~"),
+            event_type: GtsTypeId::new("gts.x.core.events.gts_type.v1~"),
             id: Uuid::new_v4(),
             tenant_id: Uuid::new_v4(),
             sequence_id: 12345,
@@ -188,7 +188,7 @@ mod tests {
     fn test_serde_rename_schema_serialization() {
         // Test that serialization works correctly with serde rename to schema
         let event = BaseEventV1SchemaRenameV1::<()> {
-            event_type: GtsSchemaId::new("gts.x.core.events.schema.v1~"),
+            event_type: GtsTypeId::new("gts.x.core.events.schema.v1~"),
             id: Uuid::new_v4(),
             tenant_id: Uuid::new_v4(),
             sequence_id: 12345,
