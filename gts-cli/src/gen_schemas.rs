@@ -221,7 +221,8 @@ fn has_ignore_directive(content: &str) -> bool {
 fn parse_macro_attrs(attr_body: &str) -> Option<MacroAttrs> {
     // Patterns for extracting individual attributes
     let dir_path_re = Regex::new(r#"dir_path\s*=\s*"([^"]+)""#).ok()?;
-    let schema_id_re = Regex::new(r#"schema_id\s*=\s*"([^"]+)""#).ok()?;
+    let type_id_re = Regex::new(r#"\btype_id\s*=\s*"([^"]+)""#).ok()?;
+    let schema_id_re = Regex::new(r#"\bschema_id\s*=\s*"([^"]+)""#).ok()?;
     let description_re = Regex::new(r#"description\s*=\s*"([^"]+)""#).ok()?;
     let properties_re = Regex::new(r#"properties\s*=\s*"([^"]+)""#).ok()?;
     let base_true_re = Regex::new(r"\bbase\s*=\s*true\b").ok()?;
@@ -229,11 +230,15 @@ fn parse_macro_attrs(attr_body: &str) -> Option<MacroAttrs> {
 
     // Extract required fields
     let dir_path = dir_path_re.captures(attr_body)?.get(1)?.as_str().to_owned();
-    let schema_id = schema_id_re
-        .captures(attr_body)?
-        .get(1)?
-        .as_str()
-        .to_owned();
+    // Accept canonical `type_id` first, fall back to deprecated `schema_id` alias.
+    let schema_id = type_id_re
+        .captures(attr_body)
+        .and_then(|c| c.get(1).map(|m| m.as_str().to_owned()))
+        .or_else(|| {
+            schema_id_re
+                .captures(attr_body)
+                .and_then(|c| c.get(1).map(|m| m.as_str().to_owned()))
+        })?;
 
     // Extract optional fields
     let description = description_re

@@ -3,7 +3,7 @@ error: unexpected end of input, Missing required attribute: dir_path
    |
  5 | / #[struct_to_gts_schema(
  6 | |     base = true,
- 7 | |     schema_id = "gts.x.app.entities.user.v1~",
+ 7 | |     type_id = "gts.x.app.entities.user.v1~",
  8 | |     description = "User entity",
  9 | |     properties = "id"
 10 | | )]

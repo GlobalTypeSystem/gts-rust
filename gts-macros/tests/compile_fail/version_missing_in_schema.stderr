@@ -1,8 +1,8 @@
 error: struct_to_gts_schema: Segment #1: Too few tokens (got 4, min 5). Expected format: gts.vendor.package.namespace.type.vMAJOR[.MINOR]
-  --> tests/compile_fail/version_missing_in_schema.rs:10:17
+  --> tests/compile_fail/version_missing_in_schema.rs:10:15
    |
-10 |     schema_id = "gts.x.core.events.type~",
-   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+10 |     type_id = "gts.x.core.events.type~",
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^
 
 warning: unused import: `gts::GtsInstanceId`
  --> tests/compile_fail/version_missing_in_schema.rs:4:5

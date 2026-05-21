@@ -631,16 +631,20 @@ enum BaseAttr {
 /// Arguments for the `struct_to_gts_schema` macro
 struct GtsSchemaArgs {
     dir_path: String,
-    schema_id: String,
+    type_id: String,
     description: String,
     properties: String,
     base: BaseAttr,
+    /// True if the user wrote `schema_id = ...` (deprecated) instead of `type_id = ...`.
+    /// Drives a compile-time deprecation warning emitted by the macro.
+    schema_id_alias_used: bool,
 }
 
 impl Parse for GtsSchemaArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut dir_path: Option<String> = None;
-        let mut schema_id: Option<String> = None;
+        let mut type_id: Option<String> = None;
+        let mut schema_id_alias_used = false;
         let mut description: Option<String> = None;
         let mut properties: Option<String> = None;
         let mut base: Option<BaseAttr> = None;
@@ -654,7 +658,14 @@ impl Parse for GtsSchemaArgs {
                     let value: LitStr = input.parse()?;
                     dir_path = Some(value.value());
                 }
-                "schema_id" => {
+                key_str @ ("type_id" | "schema_id") => {
+                    if type_id.is_some() {
+                        return Err(syn::Error::new_spanned(
+                            key,
+                            "struct_to_gts_schema: specify either `type_id` or (deprecated) \
+                             `schema_id`, not both",
+                        ));
+                    }
                     let value: LitStr = input.parse()?;
                     let id = value.value();
                     // Schema-specific check: must end with ~
@@ -662,7 +673,7 @@ impl Parse for GtsSchemaArgs {
                         return Err(syn::Error::new_spanned(
                             value,
                             format!(
-                                "struct_to_gts_schema: Invalid GTS schema ID: must end with '~' (type marker), got '{id}'"
+                                "struct_to_gts_schema: Invalid GTS type ID: must end with '~' (type marker), got '{id}'"
                             ),
                         ));
                     }
@@ -670,7 +681,7 @@ impl Parse for GtsSchemaArgs {
                     if let Err(e) = gts_id::validate_gts_id(&id, false) {
                         let msg = match &e {
                             gts_id::GtsIdError::Id { cause, .. } => {
-                                format!("Invalid GTS schema ID: {cause}")
+                                format!("Invalid GTS type ID: {cause}")
                             }
                             gts_id::GtsIdError::Segment { num, cause, .. } => {
                                 format!("Segment #{num}: {cause}")
@@ -681,7 +692,10 @@ impl Parse for GtsSchemaArgs {
                             format!("struct_to_gts_schema: {msg}"),
                         ));
                     }
-                    schema_id = Some(id);
+                    type_id = Some(id);
+                    if key_str == "schema_id" {
+                        schema_id_alias_used = true;
+                    }
                 }
                 "description" => {
                     let value: LitStr = input.parse()?;
@@ -731,14 +745,15 @@ impl Parse for GtsSchemaArgs {
         Ok(GtsSchemaArgs {
             dir_path: dir_path
                 .ok_or_else(|| input.error("Missing required attribute: dir_path"))?,
-            schema_id: schema_id
-                .ok_or_else(|| input.error("Missing required attribute: schema_id"))?,
+            type_id: type_id
+                .ok_or_else(|| input.error("Missing required attribute: type_id"))?,
             description: description
                 .ok_or_else(|| input.error("Missing required attribute: description"))?,
             properties: properties
                 .ok_or_else(|| input.error("Missing required attribute: properties"))?,
             base: base
                 .ok_or_else(|| input.error("Missing required attribute: base (use 'base = true' for base types or 'base = ParentStruct' for child types)"))?,
+            schema_id_alias_used,
         })
     }
 }
@@ -811,7 +826,7 @@ impl Parse for GtsSchemaArgs {
 ///
 /// #[struct_to_gts_schema(
 ///     dir_path = "schemas",
-///     schema_id = "gts.x.core.events.topic.v1~",
+///     type_id = "gts.x.core.events.topic.v1~",
 ///     description = "Event broker topics",
 ///     properties = "id,persisted,retention_days,name"
 /// )]
@@ -927,7 +942,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     }
 
     // Validate version match between struct name suffix and schema_id
-    if let Err(err) = validate_version_match(&input.ident, &args.schema_id) {
+    if let Err(err) = validate_version_match(&input.ident, &args.type_id) {
         return err.to_compile_error().into();
     }
 
@@ -963,17 +978,34 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     add_gts_serde_attrs(&mut modified_input, &args.base);
 
     // Validate base attribute consistency with schema_id segments
-    if let Err(err) = validate_base_segments(&input, &args.base, &args.schema_id) {
+    if let Err(err) = validate_base_segments(&input, &args.base, &args.type_id) {
         return err.to_compile_error().into();
     }
-    let expected_parent_schema_id = extract_parent_schema_id(&args.schema_id);
+    let expected_parent_schema_id = extract_parent_schema_id(&args.type_id);
 
     // Build the schema output file path from dir_path + schema_id
     let struct_name = &input.ident;
     let dir_path = &args.dir_path;
-    let schema_id = &args.schema_id;
+    let schema_id = &args.type_id;
     let description = &args.description;
     let properties_str = &args.properties;
+
+    // If the user wrote the deprecated `schema_id = "..."` form, emit a
+    // compile-time deprecation warning at the macro call site.
+    let deprecation_warning = if args.schema_id_alias_used {
+        quote! {
+            const _: () = {
+                #[deprecated(
+                    note = "`schema_id` macro attribute is deprecated; rename it to `type_id`"
+                )]
+                #[allow(non_upper_case_globals)]
+                const SCHEMA_ID_MACRO_ATTRIBUTE_IS_DEPRECATED: () = ();
+                SCHEMA_ID_MACRO_ATTRIBUTE_IS_DEPRECATED
+            };
+        }
+    } else {
+        quote! {}
+    };
 
     let schema_file_path = format!("{dir_path}/{schema_id}.schema.json");
 
@@ -1786,6 +1818,9 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     };
 
     let expanded = quote! {
+        // Compile-time deprecation warning when `schema_id` alias was used
+        #deprecation_warning
+
         #modified_input
 
         // Compile-time assertion for base struct matching (if specified)

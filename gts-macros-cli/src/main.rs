@@ -18,7 +18,7 @@ mod test_structs {
     #[struct_to_gts_schema(
         dir_path = "schemas",
         base = true,
-        schema_id = "gts.x.core.events.type.v1~",
+        type_id = "gts.x.core.events.type.v1~",
         description = "Base event type definition",
         properties = "event_type,id,tenant_id,sequence_id,payload"
     )]
@@ -35,7 +35,7 @@ mod test_structs {
     #[struct_to_gts_schema(
         dir_path = "schemas",
         base = BaseEventV1,
-        schema_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~",
+        type_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~",
         description = "Audit event with user context",
         properties = "user_agent,user_id,ip_address,data"
     )]
@@ -50,7 +50,7 @@ mod test_structs {
     #[struct_to_gts_schema(
         dir_path = "schemas",
         base = AuditPayloadV1,
-        schema_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~",
+        type_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~",
         description = "Order placement audit event",
         properties = "order_id,product_id"
     )]
@@ -64,7 +64,7 @@ mod test_structs {
     #[struct_to_gts_schema(
         dir_path = "schemas",
         base = PlaceOrderDataV1,
-        schema_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~x.marketplace.order_purchase.payload.v1~",
+        type_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~x.marketplace.order_purchase.payload.v1~",
         description = "Order placement audit event",
         properties = "order_id"
     )]

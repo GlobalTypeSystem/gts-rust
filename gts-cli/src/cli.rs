@@ -75,16 +75,16 @@ pub enum Commands {
     /// Check compatibility between two schemas
     Compatibility {
         #[arg(long)]
-        old_schema_id: String,
+        old_type_id: String,
         #[arg(long)]
-        new_schema_id: String,
+        new_type_id: String,
     },
     /// Cast an instance or schema to a target schema
     Cast {
         #[arg(long)]
         from_id: String,
         #[arg(long)]
-        to_schema_id: String,
+        to_type_id: String,
     },
     /// Query entities using an expression
     Query {
@@ -230,17 +230,17 @@ async fn run_command(cli: Cli) -> Result<()> {
             print_result(&result)?;
         }
         Commands::Compatibility {
-            old_schema_id,
-            new_schema_id,
+            old_type_id,
+            new_type_id,
         } => {
-            let result = ops.compatibility(&old_schema_id, &new_schema_id);
+            let result = ops.compatibility(&old_type_id, &new_type_id);
             print_result(&result)?;
         }
         Commands::Cast {
             from_id,
-            to_schema_id,
+            to_type_id,
         } => {
-            let result = ops.cast(&from_id, &to_schema_id);
+            let result = ops.cast(&from_id, &to_type_id);
             print_result(&result)?;
         }
         Commands::Query { expr, limit } => {
@@ -488,20 +488,20 @@ mod tests {
         let args = vec![
             "gts",
             "compatibility",
-            "--old-schema-id",
+            "--old-type-id",
             "test:schema:v1",
-            "--new-schema-id",
+            "--new-type-id",
             "test:schema:v2",
         ];
         let cli = Cli::try_parse_from(args).unwrap();
 
         match cli.command {
             Commands::Compatibility {
-                old_schema_id,
-                new_schema_id,
+                old_type_id,
+                new_type_id,
             } => {
-                assert_eq!(old_schema_id, "test:schema:v1");
-                assert_eq!(new_schema_id, "test:schema:v2");
+                assert_eq!(old_type_id, "test:schema:v1");
+                assert_eq!(new_type_id, "test:schema:v2");
             }
             _ => panic!("Expected Compatibility command"),
         }
@@ -514,7 +514,7 @@ mod tests {
             "cast",
             "--from-id",
             "test:schema:instance:v1",
-            "--to-schema-id",
+            "--to-type-id",
             "test:schema:v2",
         ];
         let cli = Cli::try_parse_from(args).unwrap();
@@ -522,10 +522,10 @@ mod tests {
         match cli.command {
             Commands::Cast {
                 from_id,
-                to_schema_id,
+                to_type_id,
             } => {
                 assert_eq!(from_id, "test:schema:instance:v1");
-                assert_eq!(to_schema_id, "test:schema:v2");
+                assert_eq!(to_type_id, "test:schema:v2");
             }
             _ => panic!("Expected Cast command"),
         }

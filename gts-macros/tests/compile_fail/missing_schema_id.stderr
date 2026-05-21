@@ -1,4 +1,4 @@
-error: unexpected end of input, Missing required attribute: schema_id
+error: unexpected end of input, Missing required attribute: type_id
   --> tests/compile_fail/missing_schema_id.rs:5:1
    |
  5 | / #[struct_to_gts_schema(

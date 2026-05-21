@@ -7,7 +7,7 @@ use gts_macros::struct_to_gts_schema;
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.core.events.type.v1~",
+    type_id = "gts.x.core.events.type.v1~",
     description = "Base event type",
     properties = "id,payload"
 )]
@@ -23,7 +23,7 @@ pub struct BaseEventV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = BaseEventV1,
-    schema_id = "gts.x.wrong.parent.type.v1~x.core.audit.event.v1~",
+    type_id = "gts.x.wrong.parent.type.v1~x.core.audit.event.v1~",
     description = "This should fail",
     properties = "user_id"
 )]

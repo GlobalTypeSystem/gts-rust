@@ -1,0 +1,5 @@
+error: struct_to_gts_schema: specify either `type_id` or (deprecated) `schema_id`, not both
+ --> tests/compile_fail/both_type_id_and_schema_id.rs:9:5
+  |
+9 |     schema_id = "gts.x.test.alias.foo.v1~",
+  |     ^^^^^^^^^

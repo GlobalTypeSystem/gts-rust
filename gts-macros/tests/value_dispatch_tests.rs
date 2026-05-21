@@ -36,7 +36,7 @@ use gts_macros::struct_to_gts_schema;
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.test.value_dispatch.envelope.v1~",
+    type_id = "gts.x.test.value_dispatch.envelope.v1~",
     description = "EnvelopeV1 carrying an opaque (default) or typed payload",
     properties = "gts_type,payload"
 )]
@@ -51,7 +51,7 @@ pub struct EnvelopeV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = EnvelopeV1,
-    schema_id = "gts.x.test.value_dispatch.envelope.v1~x.test.value_dispatch.alpha.v1~",
+    type_id = "gts.x.test.value_dispatch.envelope.v1~x.test.value_dispatch.alpha.v1~",
     description = "Alpha leaf — directly under EnvelopeV1",
     properties = "alpha_data"
 )]
@@ -65,7 +65,7 @@ pub struct AlphaLeafV1 {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = EnvelopeV1,
-    schema_id = "gts.x.test.value_dispatch.envelope.v1~x.test.value_dispatch.gamma.v1~",
+    type_id = "gts.x.test.value_dispatch.envelope.v1~x.test.value_dispatch.gamma.v1~",
     description = "Gamma leaf — directly under EnvelopeV1, different shape from Alpha",
     properties = "gamma_count,gamma_flag"
 )]
@@ -80,7 +80,7 @@ pub struct GammaLeafV1 {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = EnvelopeV1,
-    schema_id = "gts.x.test.value_dispatch.envelope.v1~x.test.value_dispatch.intermediate.v1~",
+    type_id = "gts.x.test.value_dispatch.envelope.v1~x.test.value_dispatch.intermediate.v1~",
     description = "IntermediateV1 node — common fields plus a generic `extension` for level-3 leaves",
     properties = "common_label,extension"
 )]
@@ -95,7 +95,7 @@ pub struct IntermediateV1<Q = ()> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = IntermediateV1,
-    schema_id = "gts.x.test.value_dispatch.envelope.v1~x.test.value_dispatch.intermediate.v1~x.test.value_dispatch.beta.v1~",
+    type_id = "gts.x.test.value_dispatch.envelope.v1~x.test.value_dispatch.intermediate.v1~x.test.value_dispatch.beta.v1~",
     description = "Beta leaf — under IntermediateV1, 3 segments deep",
     properties = "beta_value"
 )]

@@ -6,7 +6,7 @@ use gts::gts::{GtsInstanceId, GtsSchemaId};
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.core.events.topic.v1~",
+    type_id = "gts.x.core.events.topic.v1~",
     description = "Base topic type definition with both ID and GTS Type - should fail",
     properties = "id,r#type,name,description"
 )]

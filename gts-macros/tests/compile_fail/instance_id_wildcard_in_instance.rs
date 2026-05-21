@@ -10,7 +10,7 @@ use gts_macros::{gts_instance, struct_to_gts_schema};
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.acme.core.test.perm.v1~",
+    type_id = "gts.acme.core.test.perm.v1~",
     description = "Test permission type for compile_fail/instance_id_wildcard_in_instance",
     properties = "id,action"
 )]

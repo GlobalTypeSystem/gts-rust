@@ -1,5 +1,5 @@
 error: struct_to_gts_schema: Segment #2: Too many name tokens before version (got 5, expected 4). Expected format: vendor.package.namespace.type.vMAJOR[.MINOR]
-  --> tests/compile_fail/invalid_gts_id_too_many_tokens.rs:25:17
+  --> tests/compile_fail/invalid_gts_id_too_many_tokens.rs:25:15
    |
-25 |     schema_id = "gts.x.core.modkit.plugin.v1~x.core.license_enforcer.integration.plugin.v1~",
-   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+25 |     type_id = "gts.x.core.modkit.plugin.v1~x.core.license_enforcer.integration.plugin.v1~",
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

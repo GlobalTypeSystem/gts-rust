@@ -743,22 +743,18 @@ impl GtsOps {
         GtsSchemaGraphResult { graph }
     }
 
-    pub fn compatibility(
-        &mut self,
-        old_schema_id: &str,
-        new_schema_id: &str,
-    ) -> GtsEntityCastResult {
-        self.store.is_minor_compatible(old_schema_id, new_schema_id)
+    pub fn compatibility(&mut self, old_type_id: &str, new_type_id: &str) -> GtsEntityCastResult {
+        self.store.is_minor_compatible(old_type_id, new_type_id)
     }
 
-    pub fn cast(&mut self, from_id: &str, to_schema_id: &str) -> GtsEntityCastResult {
-        match self.store.cast(from_id, to_schema_id) {
+    pub fn cast(&mut self, from_id: &str, to_type_id: &str) -> GtsEntityCastResult {
+        match self.store.cast(from_id, to_type_id) {
             Ok(result) => result,
             Err(e) => GtsEntityCastResult {
                 from_id: from_id.to_owned(),
-                to_id: to_schema_id.to_owned(),
+                to_id: to_type_id.to_owned(),
                 old: from_id.to_owned(),
-                new: to_schema_id.to_owned(),
+                new: to_type_id.to_owned(),
                 direction: "unknown".to_owned(),
                 added_properties: Vec::new(),
                 removed_properties: Vec::new(),

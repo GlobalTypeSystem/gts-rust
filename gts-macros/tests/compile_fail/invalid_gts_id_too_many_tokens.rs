@@ -10,7 +10,7 @@ use gts_macros::struct_to_gts_schema;
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.core.modkit.plugin.v1~",
+    type_id = "gts.x.core.modkit.plugin.v1~",
     description = "Base modkit plugin",
     properties = "id"
 )]
@@ -22,7 +22,7 @@ pub struct BaseModkitPluginV1 {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = BaseModkitPluginV1,
-    schema_id = "gts.x.core.modkit.plugin.v1~x.core.license_enforcer.integration.plugin.v1~",
+    type_id = "gts.x.core.modkit.plugin.v1~x.core.license_enforcer.integration.plugin.v1~",
     description = "License Enforcer platform integration plugin specification",
     properties = ""
 )]

@@ -107,8 +107,8 @@ async fn test_run_compatibility_command() -> Result<()> {
         config: None,
         path: None,
         command: Commands::Compatibility {
-            old_schema_id: "test:schema:v1".to_owned(),
-            new_schema_id: "test:schema:v2".to_owned(),
+            old_type_id: "test:schema:v1".to_owned(),
+            new_type_id: "test:schema:v2".to_owned(),
         },
     };
 
@@ -124,7 +124,7 @@ async fn test_run_cast_command() -> Result<()> {
         path: None,
         command: Commands::Cast {
             from_id: "test:instance:v1".to_owned(),
-            to_schema_id: "test:schema:v2".to_owned(),
+            to_type_id: "test:schema:v2".to_owned(),
         },
     };
 

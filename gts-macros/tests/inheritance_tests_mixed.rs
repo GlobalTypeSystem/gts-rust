@@ -20,7 +20,7 @@ Mixed validation tests - invalid ID fields but valid GTS Type fields
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.core.events.topic.v1~",
+    type_id = "gts.x.core.events.topic.v1~",
     description = "Base topic type with invalid ID field but valid GTS Type field",
     properties = "id,r#type,name,description"
 )]
@@ -36,7 +36,7 @@ pub struct TopicV1MixedValidationV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.core.events.type.v1~",
+    type_id = "gts.x.core.events.type.v1~",
     description = "Base event type with invalid ID field but valid GTS Type field",
     properties = "id,gts_type,name,description"
 )]
@@ -52,7 +52,7 @@ pub struct BaseEventV1MixedV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.core.events.schema.v1~",
+    type_id = "gts.x.core.events.schema.v1~",
     description = "Base schema type with invalid ID fields but valid GTS Type field",
     properties = "gts_id,schema,name,description"
 )]

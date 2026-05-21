@@ -6,7 +6,7 @@ use gts_macros::struct_to_gts_schema;
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.core.events.type.v2.2~",
+    type_id = "gts.x.core.events.type.v2.2~",
     description = "Base event type",
     properties = "id"
 )]

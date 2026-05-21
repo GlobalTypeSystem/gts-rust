@@ -30,7 +30,7 @@ use gts_macros::{gts_instance, gts_instance_raw, struct_to_gts_schema};
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.acme.core.events.topic.v1~",
+    type_id = "gts.acme.core.events.topic.v1~",
     description = "Test topic type used to exercise gts_instance!",
     properties = "id,name,retention"
 )]
@@ -49,7 +49,7 @@ pub struct TopicV1 {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.acme.core.test.base.v1~",
+    type_id = "gts.acme.core.test.base.v1~",
     description = "Generic base type for chained-instance turbofish tests",
     properties = "id,payload"
 )]
@@ -62,7 +62,7 @@ pub struct BaseV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = BaseV1,
-    schema_id = "gts.acme.core.test.base.v1~acme.core.test.leaf.v1~",
+    type_id = "gts.acme.core.test.base.v1~acme.core.test.leaf.v1~",
     description = "Derived leaf for chained-instance turbofish tests",
     properties = "name"
 )]
@@ -83,7 +83,7 @@ pub struct LeafV1 {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.acme.core.test.l1.v1~",
+    type_id = "gts.acme.core.test.l1.v1~",
     description = "Level-1 base for three-level chained-instance tests",
     properties = "id,payload"
 )]
@@ -96,7 +96,7 @@ pub struct L1OuterV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = L1OuterV1,
-    schema_id = "gts.acme.core.test.l1.v1~acme.core.test.l2.v1~",
+    type_id = "gts.acme.core.test.l1.v1~acme.core.test.l2.v1~",
     description = "Level-2 mid for three-level chained-instance tests",
     properties = "data"
 )]
@@ -108,7 +108,7 @@ pub struct L2MidV1<D> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = L2MidV1,
-    schema_id = "gts.acme.core.test.l1.v1~acme.core.test.l2.v1~acme.core.test.l3.v1~",
+    type_id = "gts.acme.core.test.l1.v1~acme.core.test.l2.v1~acme.core.test.l3.v1~",
     description = "Level-3 leaf for three-level chained-instance tests",
     properties = "value"
 )]
@@ -322,7 +322,7 @@ fn raw_form_supports_nested_objects_and_arrays() {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.acme.core.events.legacy_topic.v1~",
+    type_id = "gts.acme.core.events.legacy_topic.v1~",
     description = "Legacy-style base struct using gts_id instead of id",
     properties = "gts_id,name"
 )]
@@ -354,7 +354,7 @@ fn typed_form_picks_up_gts_id_field_automatically() {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.acme.core.events.legacy_topic_camel.v1~",
+    type_id = "gts.acme.core.events.legacy_topic_camel.v1~",
     description = "Legacy-style base struct using the gtsId camelCase alias",
     properties = "gtsId,name"
 )]

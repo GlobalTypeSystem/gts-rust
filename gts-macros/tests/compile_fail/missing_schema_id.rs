@@ -1,4 +1,4 @@
-//! Test: Missing required attribute schema_id
+//! Test: Missing required attribute type_id (formerly schema_id)
 
 use gts_macros::struct_to_gts_schema;
 

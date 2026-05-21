@@ -5,7 +5,7 @@ use gts_macros::struct_to_gts_schema;
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.app.entities.user.v1~",
+    type_id = "gts.x.app.entities.user.v1~",
     properties = "id"
 )]
 pub struct User {

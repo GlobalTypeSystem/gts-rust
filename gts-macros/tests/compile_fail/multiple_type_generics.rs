@@ -5,7 +5,7 @@ use gts_macros::struct_to_gts_schema;
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.app.entities.base_event.v1~",
+    type_id = "gts.x.app.entities.base_event.v1~",
     description = "Base event with two payload types (invalid)",
     properties = "payload1,payload2"
 )]

@@ -17,7 +17,7 @@ use gts_macros::struct_to_gts_schema;
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.core.events.topic.v1~",
+    type_id = "gts.x.core.events.topic.v1~",
     description = "Event Topic (Stream) definition",
     properties = "id,name,description,retention,ordering"
 )]
@@ -41,7 +41,7 @@ pub struct EventTopicV1 {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.test.entities.product.v1~",
+    type_id = "gts.x.test.entities.product.v1~",
     description = "Product entity with pricing information",
     properties = "id,name,price,description,in_stock"
 )]
@@ -1082,7 +1082,7 @@ fn test_runtime_schema_inline_resolution_single_segment() {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.test.versioned.minor.v1.0~",
+    type_id = "gts.x.test.versioned.minor.v1.0~",
     description = "Test struct with minor version",
     properties = "id,value"
 )]
@@ -1095,7 +1095,7 @@ pub struct MinorVersionV1_0 {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.test.versioned.complex.v2.5~",
+    type_id = "gts.x.test.versioned.complex.v2.5~",
     description = "Test struct with complex minor version",
     properties = "id,data"
 )]
@@ -1153,7 +1153,7 @@ fn test_version_extraction_underscore_format() {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.test.single.segment.v1~",
+    type_id = "gts.x.test.single.segment.v1~",
     description = "Base struct with single segment",
     properties = "id,name"
 )]

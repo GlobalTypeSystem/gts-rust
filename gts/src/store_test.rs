@@ -1970,7 +1970,7 @@ fn test_gts_store_cast_from_schema_entity() {
 }
 
 #[test]
-fn test_gts_store_build_schema_graph_with_schema_id() {
+fn test_gts_store_build_schema_graph_with_type_id() {
     let mut store = GtsStore::new(None);
 
     // Register schema
@@ -1987,7 +1987,7 @@ fn test_gts_store_build_schema_graph_with_schema_id() {
         .register_schema("gts.vendor.package.namespace.type.v1.0~", &schema)
         .expect("test");
 
-    // Register instance with schema_id
+    // Register instance with type_id
     let cfg = GtsConfig::default();
     let content = json!({
         "id": "gts.vendor.package.namespace.instance.v1.0",
@@ -2011,9 +2011,9 @@ fn test_gts_store_build_schema_graph_with_schema_id() {
     let graph = store.build_schema_graph("gts.vendor.package.namespace.instance.v1.0");
     assert!(graph.is_object());
 
-    // Check that schema_id is included in the graph
+    // Check that type_id is included in the graph
     let graph_obj = graph.as_object().expect("test");
-    assert!(graph_obj.contains_key("schema_id") || graph_obj.contains_key("errors"));
+    assert!(graph_obj.contains_key("type_id") || graph_obj.contains_key("errors"));
 }
 
 #[test]
@@ -4014,11 +4014,11 @@ fn test_store_register_schema_validates_type_id() {
     let mut store = GtsStore::new(None);
 
     // Valid schema ID ending with ~
-    let schema_id = "gts.test.package.namespace.minimal.v1~";
+    let type_id = "gts.test.package.namespace.minimal.v1~";
     let result = store.register_schema(
-        schema_id,
+        type_id,
         &json!({
-            "$id": format!("gts://{schema_id}"),
+            "$id": format!("gts://{type_id}"),
             "type": "object"
         }),
     );
@@ -4072,17 +4072,17 @@ fn test_store_error_variants() {
 #[test]
 fn test_store_get_schema_content_returns_copy() {
     let mut store = GtsStore::new(None);
-    let schema_id = "gts.test.package.namespace.copy.v1~";
+    let type_id = "gts.test.package.namespace.copy.v1~";
     let schema = json!({
-        "$id": format!("gts://{schema_id}"),
+        "$id": format!("gts://{type_id}"),
         "type": "object",
         "properties": {"field": {"type": "string"}}
     });
 
-    store.register_schema(schema_id, &schema).unwrap();
+    store.register_schema(type_id, &schema).unwrap();
 
-    let content1 = store.get_schema_content(schema_id).unwrap();
-    let content2 = store.get_schema_content(schema_id).unwrap();
+    let content1 = store.get_schema_content(type_id).unwrap();
+    let content2 = store.get_schema_content(type_id).unwrap();
 
     // Both should be equal
     assert_eq!(content1, content2);

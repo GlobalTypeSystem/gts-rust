@@ -4,7 +4,7 @@ error[E0119]: conflicting implementations of trait `GtsSerialize` for type `Audi
 19 | / #[struct_to_gts_schema(
 20 | |     dir_path = "schemas",
 21 | |     base = BaseEventV1,
-22 | |     schema_id = "gts.x.core.events.base.v1~x.app.audit.event.v1~",
+22 | |     type_id = "gts.x.core.events.base.v1~x.app.audit.event.v1~",
 23 | |     description = "Audit event with user context",
 24 | |     properties = "user_id"
 25 | | )]
@@ -21,7 +21,7 @@ error[E0119]: conflicting implementations of trait `GtsDeserialize<'_>` for type
 19 | / #[struct_to_gts_schema(
 20 | |     dir_path = "schemas",
 21 | |     base = BaseEventV1,
-22 | |     schema_id = "gts.x.core.events.base.v1~x.app.audit.event.v1~",
+22 | |     type_id = "gts.x.core.events.base.v1~x.app.audit.event.v1~",
 23 | |     description = "Audit event with user context",
 24 | |     properties = "user_id"
 25 | | )]
@@ -38,7 +38,7 @@ error[E0119]: conflicting implementations of trait `gts::GtsNoDirectSerialize` f
 19 | / #[struct_to_gts_schema(
 20 | |     dir_path = "schemas",
 21 | |     base = BaseEventV1,
-22 | |     schema_id = "gts.x.core.events.base.v1~x.app.audit.event.v1~",
+22 | |     type_id = "gts.x.core.events.base.v1~x.app.audit.event.v1~",
 23 | |     description = "Audit event with user context",
 24 | |     properties = "user_id"
 25 | | )]
@@ -55,7 +55,7 @@ error[E0119]: conflicting implementations of trait `gts::GtsNoDirectDeserialize`
 19 | / #[struct_to_gts_schema(
 20 | |     dir_path = "schemas",
 21 | |     base = BaseEventV1,
-22 | |     schema_id = "gts.x.core.events.base.v1~x.app.audit.event.v1~",
+22 | |     type_id = "gts.x.core.events.base.v1~x.app.audit.event.v1~",
 23 | |     description = "Audit event with user context",
 24 | |     properties = "user_id"
 25 | | )]

@@ -5,7 +5,7 @@ error[E0107]: struct takes 0 generic arguments but 1 generic argument was suppli
    |  ____________^^^^^^^^^^-
    | |            |
    | |            expected 0 generic arguments
-24 | |     schema_id = "gts.x.app.entities.leaf.v1~x.app.entities.child.v1~",
+24 | |     type_id = "gts.x.app.entities.leaf.v1~x.app.entities.child.v1~",
 25 | |     description = "Child trying to extend leaf type (invalid)",
 26 | |     properties = "extra_field"
 27 | | )]

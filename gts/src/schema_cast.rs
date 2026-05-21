@@ -50,7 +50,7 @@ impl GtsEntityCastResult {
     /// Returns `SchemaCastError` if the cast fails.
     pub fn cast(
         from_instance_id: &str,
-        to_schema_id: &str,
+        to_type_id: &str,
         from_instance_content: &Value,
         from_schema_content: &Value,
         to_schema_content: &Value,
@@ -60,7 +60,7 @@ impl GtsEntityCastResult {
         let target_schema = Self::flatten_schema(to_schema_content);
 
         // Determine direction by IDs
-        let direction = Self::infer_direction(from_instance_id, to_schema_id);
+        let direction = Self::infer_direction(from_instance_id, to_type_id);
 
         // Both directions use the same schema order for compatibility checks
         let (old_schema, new_schema) = (from_schema_content, to_schema_content);
@@ -82,9 +82,9 @@ impl GtsEntityCastResult {
                 Err(e) => {
                     return Ok(GtsEntityCastResult {
                         from_id: from_instance_id.to_owned(),
-                        to_id: to_schema_id.to_owned(),
+                        to_id: to_type_id.to_owned(),
                         old: from_instance_id.to_owned(),
-                        new: to_schema_id.to_owned(),
+                        new: to_type_id.to_owned(),
                         direction,
                         added_properties: Vec::new(),
                         removed_properties: Vec::new(),
@@ -117,9 +117,9 @@ impl GtsEntityCastResult {
 
         Ok(GtsEntityCastResult {
             from_id: from_instance_id.to_owned(),
-            to_id: to_schema_id.to_owned(),
+            to_id: to_type_id.to_owned(),
             old: from_instance_id.to_owned(),
-            new: to_schema_id.to_owned(),
+            new: to_type_id.to_owned(),
             direction,
             added_properties: added_sorted,
             removed_properties: removed_sorted,
@@ -1171,7 +1171,7 @@ mod tests {
         });
 
         // To schema has default for optional 'region' and const for 'typeRef' to a newer ID
-        let to_schema_id = "gts.vendor.pkg.ns.type.v1.1";
+        let to_type_id = "gts.vendor.pkg.ns.type.v1.1";
         let to_schema = json!({
             "type": "object",
             "properties": {
@@ -1183,7 +1183,7 @@ mod tests {
 
         let cast = GtsEntityCastResult::cast(
             from_instance_id,
-            to_schema_id,
+            to_type_id,
             &from_instance,
             &from_schema,
             &to_schema,
@@ -1219,7 +1219,7 @@ mod tests {
             "properties": {"name": {"type": "string"}}
         });
 
-        let to_schema_id = "gts.vendor.pkg.ns.type.v1.1";
+        let to_type_id = "gts.vendor.pkg.ns.type.v1.1";
         let to_schema = json!({
             "type": "object",
             "additionalProperties": false,
@@ -1228,7 +1228,7 @@ mod tests {
 
         let cast = GtsEntityCastResult::cast(
             from_instance_id,
-            to_schema_id,
+            to_type_id,
             &from_instance,
             &from_schema,
             &to_schema,

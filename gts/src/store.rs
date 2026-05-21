@@ -1147,7 +1147,7 @@ impl GtsStore {
     pub fn cast(
         &mut self,
         from_id: &str,
-        target_schema_id: &str,
+        target_type_id: &str,
     ) -> Result<GtsEntityCastResult, StoreError> {
         let from_entity = self
             .get(from_id)
@@ -1159,12 +1159,12 @@ impl GtsStore {
         }
 
         let to_schema = self
-            .get(target_schema_id)
-            .ok_or_else(|| StoreError::ObjectNotFound(target_schema_id.to_owned()))?
+            .get(target_type_id)
+            .ok_or_else(|| StoreError::ObjectNotFound(target_type_id.to_owned()))?
             .clone();
 
         // Get the source schema
-        let (from_schema, _from_schema_id) = if from_entity.is_schema {
+        let (from_schema, _from_type_id) = if from_entity.is_schema {
             let id = from_entity
                 .gts_id
                 .as_ref()
@@ -1195,18 +1195,18 @@ impl GtsStore {
 
     pub fn is_minor_compatible(
         &mut self,
-        old_schema_id: &str,
-        new_schema_id: &str,
+        old_type_id: &str,
+        new_type_id: &str,
     ) -> GtsEntityCastResult {
-        let old_entity = self.get(old_schema_id).cloned();
-        let new_entity = self.get(new_schema_id).cloned();
+        let old_entity = self.get(old_type_id).cloned();
+        let new_entity = self.get(new_type_id).cloned();
 
         let (Some(old_ent), Some(new_ent)) = (old_entity, new_entity) else {
             return GtsEntityCastResult {
-                from_id: old_schema_id.to_owned(),
-                to_id: new_schema_id.to_owned(),
-                old: old_schema_id.to_owned(),
-                new: new_schema_id.to_owned(),
+                from_id: old_type_id.to_owned(),
+                to_id: new_type_id.to_owned(),
+                old: old_type_id.to_owned(),
+                new: new_type_id.to_owned(),
                 direction: "unknown".to_owned(),
                 added_properties: Vec::new(),
                 removed_properties: Vec::new(),
@@ -1232,13 +1232,13 @@ impl GtsStore {
             GtsEntityCastResult::check_forward_compatibility(old_schema, new_schema);
 
         // Determine direction
-        let direction = GtsEntityCastResult::infer_direction(old_schema_id, new_schema_id);
+        let direction = GtsEntityCastResult::infer_direction(old_type_id, new_type_id);
 
         GtsEntityCastResult {
-            from_id: old_schema_id.to_owned(),
-            to_id: new_schema_id.to_owned(),
-            old: old_schema_id.to_owned(),
-            new: new_schema_id.to_owned(),
+            from_id: old_type_id.to_owned(),
+            to_id: new_type_id.to_owned(),
+            old: old_type_id.to_owned(),
+            new: new_type_id.to_owned(),
             direction,
             added_properties: Vec::new(),
             removed_properties: Vec::new(),
@@ -1305,7 +1305,7 @@ impl GtsStore {
                 {
                     let type_id_clone = type_id.clone();
                     ret.insert(
-                        "schema_id".to_owned(),
+                        "type_id".to_owned(),
                         self.gts2node(&type_id_clone, seen_gts_ids),
                     );
                 }

@@ -4,7 +4,7 @@ error: unexpected end of input, Missing required attribute: description
  5 | / #[struct_to_gts_schema(
  6 | |     dir_path = "schemas",
  7 | |     base = true,
- 8 | |     schema_id = "gts.x.app.entities.user.v1~",
+ 8 | |     type_id = "gts.x.app.entities.user.v1~",
  9 | |     properties = "id"
 10 | | )]
    | |__^

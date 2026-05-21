@@ -19,7 +19,7 @@ Chained inheritance
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.core.events.type.v1~",
+    type_id = "gts.x.core.events.type.v1~",
     description = "Base event type definition",
     properties = "event_type,id,tenant_id,sequence_id,payload"
 )]
@@ -36,7 +36,7 @@ pub struct BaseEventV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = BaseEventV1,
-    schema_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~",
+    type_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~",
     description = "Audit event with user context",
     properties = "user_agent,user_id,ip_address,data"
 )]
@@ -51,7 +51,7 @@ pub struct AuditPayloadV1<D> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = AuditPayloadV1,
-    schema_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~",
+    type_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~",
     description = "Order placement audit event",
     properties = "order_id,product_id"
 )]
@@ -68,7 +68,7 @@ pub struct PlaceOrderDataV1 {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = BaseEventV1,
-    schema_id = "gts.x.core.events.type.v1~x.core.simple.event.v1~",
+    type_id = "gts.x.core.events.type.v1~x.core.simple.event.v1~",
     description = "Simple event payload with just a message",
     properties = "message,severity"
 )]
@@ -85,7 +85,7 @@ Base struct ID field validation tests
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.core.events.topic.v1~",
+    type_id = "gts.x.core.events.topic.v1~",
     description = "Base topic type definition with id field",
     properties = "id,name,description"
 )]
@@ -100,7 +100,7 @@ pub struct TopicV1WithIdV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.core.events.topic.v1~",
+    type_id = "gts.x.core.events.topic.v1~",
     description = "Base topic type definition with gts_id field",
     properties = "gts_id,name,description"
 )]
@@ -115,7 +115,7 @@ pub struct TopicV1WithGtsIdV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.core.events.topic.v1~",
+    type_id = "gts.x.core.events.topic.v1~",
     description = "Base topic type definition with gtsId field",
     properties = "gts_id,name,description"
 )]
@@ -130,7 +130,7 @@ pub struct TopicV1WithGtsIdCamelV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.core.events.topic.v1~",
+    type_id = "gts.x.core.events.topic.v1~",
     description = "Base topic type definition with gts_type field",
     properties = "gts_type,name,description"
 )]
@@ -145,7 +145,7 @@ pub struct TopicV1WithGtsTypeV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.core.events.topic.v1~",
+    type_id = "gts.x.core.events.topic.v1~",
     description = "Base topic type definition with gtsType field",
     properties = "gts_type,name,description"
 )]
@@ -164,7 +164,7 @@ Chained inheritance w/o new attributes
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.core.events.topic.v1~",
+    type_id = "gts.x.core.events.topic.v1~",
     description = "Base topic type definition",
     properties = "name,description"
 )]
@@ -179,7 +179,7 @@ pub struct TopicV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = TopicV1,
-    schema_id = "gts.x.core.events.topic.v1~x.commerce.orders.topic.v1~",
+    type_id = "gts.x.core.events.topic.v1~x.commerce.orders.topic.v1~",
     description = "Order topic configuration",
     properties = ""
 )]
@@ -194,7 +194,7 @@ Test serde rename on generic field - the serialized name should be used
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.core.events.container.v1~",
+    type_id = "gts.x.core.events.container.v1~",
     description = "Container with renamed generic field",
     properties = "id,name,rust_field_name"
 )]
@@ -209,7 +209,7 @@ pub struct ContainerV1<T> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = ContainerV1,
-    schema_id = "gts.x.core.events.container.v1~x.app.entities.content.v1~",
+    type_id = "gts.x.core.events.container.v1~x.app.entities.content.v1~",
     description = "Content extending container",
     properties = "content_value"
 )]
