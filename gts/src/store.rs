@@ -1053,25 +1053,25 @@ impl GtsStore {
             .ok_or_else(|| StoreError::ObjectNotFound(instance_id.to_owned()))?
             .clone();
 
-        let schema_id = obj
-            .schema_id
+        let type_id = obj
+            .type_id
             .as_ref()
             .ok_or_else(|| StoreError::SchemaForInstanceNotFound(lookup_id.clone()))?
             .clone();
 
-        let schema = self.get_schema_content(&schema_id)?;
+        let schema = self.get_schema_content(&type_id)?;
 
         // Check x-gts-abstract: abstract types cannot have direct instances.
         if schema.get(crate::schema_modifiers::X_GTS_ABSTRACT) == Some(&Value::Bool(true)) {
             return Err(StoreError::ValidationError(format!(
-                "type '{schema_id}' is abstract and cannot have direct instances"
+                "type '{type_id}' is abstract and cannot have direct instances"
             )));
         }
 
         tracing::info!(
             "Validating instance {} against schema {}",
             instance_id,
-            schema_id
+            type_id
         );
 
         // Resolve internal #/ references (like #/$defs/GtsInstanceId) by inlining them
@@ -1173,15 +1173,15 @@ impl GtsStore {
                 .clone();
             (from_entity.clone(), id)
         } else {
-            let schema_id = from_entity
-                .schema_id
+            let type_id = from_entity
+                .type_id
                 .as_ref()
                 .ok_or_else(|| StoreError::SchemaForInstanceNotFound(from_id.to_owned()))?;
             let schema = self
-                .get(schema_id)
-                .ok_or_else(|| StoreError::ObjectNotFound(schema_id.clone()))?
+                .get(type_id)
+                .ok_or_else(|| StoreError::ObjectNotFound(type_id.clone()))?
                 .clone();
-            (schema, schema_id.clone())
+            (schema, type_id.clone())
         };
 
         // Create a resolver to handle $ref in schemas
@@ -1299,14 +1299,14 @@ impl GtsStore {
                 ret.insert("refs".to_owned(), Value::Object(refs));
             }
 
-            if let Some(ref schema_id) = entity.schema_id {
-                if !schema_id.starts_with("http://json-schema.org")
-                    && !schema_id.starts_with("https://json-schema.org")
+            if let Some(ref type_id) = entity.type_id {
+                if !type_id.starts_with("http://json-schema.org")
+                    && !type_id.starts_with("https://json-schema.org")
                 {
-                    let schema_id_clone = schema_id.clone();
+                    let type_id_clone = type_id.clone();
                     ret.insert(
                         "schema_id".to_owned(),
-                        self.gts2node(&schema_id_clone, seen_gts_ids),
+                        self.gts2node(&type_id_clone, seen_gts_ids),
                     );
                 }
             } else {

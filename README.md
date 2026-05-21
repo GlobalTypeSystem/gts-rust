@@ -528,7 +528,7 @@ let config = GtsConfig {
         "gtsId".to_string(),
         "id".to_string(),
     ],
-    schema_id_fields: vec![
+    type_id_fields: vec![
         "$schema".to_string(),
         "type".to_string(),
     ],
@@ -873,10 +873,10 @@ curl -X POST http://localhost:8000/entities \
   -H "Content-Type: application/json" \
   -d '{"gtsId": "gts.x.core.events.event.v1.0", "data": "..."}'
 
-# Validate schema (OP#12 - schema-vs-schema chain validation)
-curl -X POST http://localhost:8000/validate-schema \
+# Validate type schema (OP#12 - schema-vs-schema chain validation)
+curl -X POST http://localhost:8000/validate-type-schema \
   -H "Content-Type: application/json" \
-  -d '{"schema_id": "gts.x.core.events.event.v1~vendor.app._.custom.v2~"}'
+  -d '{"type_id": "gts.x.core.events.event.v1~vendor.app._.custom.v2~"}'
 ```
 
 ## Configuration
@@ -896,7 +896,7 @@ Create a `gts.config.json` file to customize entity ID field detection:
     "gts_iid",
     "id"
   ],
-  "schema_id_fields": [
+  "type_id_fields": [
     "$schema",
     "gtsTid",
     "gtsType",

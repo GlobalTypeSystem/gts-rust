@@ -228,19 +228,19 @@ impl GtsOps {
             })
             .unwrap_or(default_cfg.entity_id_fields);
 
-        let schema_id_fields = data
-            .get("schema_id_fields")
+        let type_id_fields = data
+            .get("type_id_fields")
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
                     .filter_map(|v| v.as_str().map(str::to_owned))
                     .collect()
             })
-            .unwrap_or(default_cfg.schema_id_fields);
+            .unwrap_or(default_cfg.type_id_fields);
 
         GtsConfig {
             entity_id_fields,
-            schema_id_fields,
+            type_id_fields,
         }
     }
 
@@ -257,8 +257,8 @@ impl GtsOps {
                 .unwrap_or_else(|_| "<invalid JSON>".to_owned());
 
         // Add schema information if available
-        if let Some(schema_id) = &entity.schema_id {
-            match self.store.get(schema_id) {
+        if let Some(type_id) = &entity.type_id {
+            match self.store.get(type_id) {
                 Some(schema_entity) => {
                     let schema_content = serde_json::to_string_pretty(&schema_entity.content)
                         .unwrap_or_else(|_| "<invalid schema JSON>".to_owned());
@@ -411,7 +411,7 @@ impl GtsOps {
         GtsAddEntityResult {
             ok: true,
             id: entity_id,
-            type_id: entity.schema_id,
+            type_id: entity.type_id,
             is_type_schema: entity.is_schema,
             error: String::new(),
         }
@@ -812,9 +812,9 @@ impl GtsOps {
 
         GtsExtractIdResult {
             id: entity.effective_id().unwrap_or_default(),
-            type_id: entity.schema_id,
+            type_id: entity.type_id,
             selected_entity_field: entity.selected_entity_field,
-            selected_type_id_field: entity.selected_schema_id_field,
+            selected_type_id_field: entity.selected_type_id_field,
             is_type_schema: entity.is_schema,
         }
     }
@@ -827,7 +827,7 @@ impl GtsOps {
                     .gts_id
                     .as_ref()
                     .map_or_else(|| gts_id.to_owned(), |g| g.id.clone()),
-                type_id: entity.schema_id.clone(),
+                type_id: entity.type_id.clone(),
                 is_type_schema: entity.is_schema,
                 content: Some(entity.content.clone()),
                 error: String::new(),
@@ -853,7 +853,7 @@ impl GtsOps {
             .take(limit)
             .map(|(entity_id, entity)| GtsEntityInfo {
                 id: entity_id.clone(),
-                type_id: entity.schema_id.clone(),
+                type_id: entity.type_id.clone(),
                 is_type_schema: entity.is_schema,
             })
             .collect();
@@ -1108,10 +1108,10 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_id_triggers_calc_json_schema_id() {
+    fn test_extract_id_triggers_calc_json_type_id() {
         let ops = GtsOps::new(None, None, 0);
 
-        // Test with entity that has a schema ID
+        // Test with entity that has a type ID
         let content = json!({
             "id": "gts.vendor.package.namespace.type.v1.0~instance.v1.0",
             "type": "gts.vendor.package.namespace.type.v1.0~",
@@ -1120,7 +1120,7 @@ mod tests {
 
         let result = ops.extract_id(&content);
 
-        // calc_json_schema_id should be triggered and extract schema_id from type field
+        // calc_json_type_id should be triggered and extract type_id from type field
         assert_eq!(
             result.type_id,
             Some("gts.vendor.package.namespace.type.v1.0~".to_owned())
@@ -1130,10 +1130,10 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_id_well_known_instance_schema_id_from_chain() {
+    fn test_extract_id_well_known_instance_type_id_from_chain() {
         let ops = GtsOps::new(None, None, 0);
 
-        // Test with well-known instance where schema_id is extracted from the chained id
+        // Test with well-known instance where type_id is extracted from the chained id
         let content = json!({
             "id": "gts.x.test2.events.type.v1~abc.app._.custom_event.v1.2"
         });
@@ -1145,7 +1145,7 @@ mod tests {
             result.id,
             "gts.x.test2.events.type.v1~abc.app._.custom_event.v1.2"
         );
-        // The schema_id should be extracted from the chain (everything up to and including last ~)
+        // The type_id should be extracted from the chain (everything up to and including last ~)
         assert_eq!(
             result.type_id,
             Some("gts.x.test2.events.type.v1~".to_owned())
@@ -1154,17 +1154,17 @@ mod tests {
         assert!(!result.is_type_schema);
         // The entity field should be "id"
         assert_eq!(result.selected_entity_field, Some("id".to_owned()));
-        // The schema_id was extracted from the id field, so selected_schema_id_field should also be "id"
+        // The type_id was extracted from the id field, so selected_type_id_field should also be "id"
         assert_eq!(result.selected_type_id_field, Some("id".to_owned()));
     }
 
     #[test]
-    fn test_extract_id_single_segment_schema_id_as_instance() {
+    fn test_extract_id_single_segment_type_id_as_instance() {
         let ops = GtsOps::new(None, None, 0);
 
-        // Test with a single-segment GTS ID ending with ~ (looks like a schema ID)
+        // Test with a single-segment GTS ID ending with ~ (looks like a type ID)
         // but used as an instance id field. This is unusual but valid.
-        // The schema_id should be None because we can't determine the parent schema.
+        // The type_id should be None because we can't determine the parent type.
         let content = json!({
             "id": "gts.v123.p456.n789.t000.v999.888~"
         });
@@ -1175,11 +1175,11 @@ mod tests {
         assert_eq!(result.id, "gts.v123.p456.n789.t000.v999.888~");
         // No $schema field, so it's not a schema
         assert!(!result.is_type_schema);
-        // schema_id should be None - we can't determine the parent schema for a single-segment ID
+        // type_id should be None - we can't determine the parent type for a single-segment ID
         assert_eq!(result.type_id, None);
         // The entity field should be "id"
         assert_eq!(result.selected_entity_field, Some("id".to_owned()));
-        // No schema_id was extracted, so selected_schema_id_field should be None
+        // No type_id was extracted, so selected_type_id_field should be None
         assert_eq!(result.selected_type_id_field, None);
     }
 
@@ -3079,7 +3079,7 @@ mod tests {
         assert_eq!(
             result.selected_type_id_field,
             Some("id".to_owned()),
-            "selected_schema_id_field should be set when schema_id is derived from id"
+            "selected_type_id_field should be set when type_id is derived from id"
         );
     }
 
@@ -3213,13 +3213,13 @@ mod tests {
             json!(["customId", "uuid", "id"]),
         );
         data.insert(
-            "schema_id_fields".to_owned(),
+            "type_id_fields".to_owned(),
             json!(["$schema", "$id", "schemaId"]),
         );
 
         let config = GtsOps::create_config_from_data(&data);
         assert_eq!(config.entity_id_fields, vec!["customId", "uuid", "id"]);
-        assert_eq!(config.schema_id_fields, vec!["$schema", "$id", "schemaId"]);
+        assert_eq!(config.type_id_fields, vec!["$schema", "$id", "schemaId"]);
     }
 
     #[test]
@@ -3230,7 +3230,7 @@ mod tests {
         // Should use default config values
         let default_cfg = GtsConfig::default();
         assert_eq!(config.entity_id_fields, default_cfg.entity_id_fields);
-        assert_eq!(config.schema_id_fields, default_cfg.schema_id_fields);
+        assert_eq!(config.type_id_fields, default_cfg.type_id_fields);
     }
 
     #[test]
@@ -3238,14 +3238,14 @@ mod tests {
         let mut data = HashMap::new();
         // Non-array value should be ignored
         data.insert("entity_id_fields".to_owned(), json!("not-an-array"));
-        data.insert("schema_id_fields".to_owned(), json!(123));
+        data.insert("type_id_fields".to_owned(), json!(123));
 
         let config = GtsOps::create_config_from_data(&data);
 
         // Should fall back to default values
         let default_cfg = GtsConfig::default();
         assert_eq!(config.entity_id_fields, default_cfg.entity_id_fields);
-        assert_eq!(config.schema_id_fields, default_cfg.schema_id_fields);
+        assert_eq!(config.type_id_fields, default_cfg.type_id_fields);
     }
 
     #[test]
