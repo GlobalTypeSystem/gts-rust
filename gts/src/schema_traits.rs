@@ -6,23 +6,32 @@
 //! **Algorithm:**
 //! 1. Walk the chain from leftmost (base) to rightmost (leaf) segment.
 //! 2. For each schema in the chain, collect:
-//!    - `x-gts-traits-schema` objects → compose via `allOf` into the *effective trait schema*.
-//!    - `x-gts-traits` objects → shallow-merge (rightmost wins) into the *effective traits object*.
-//! 3. Apply defaults from the effective trait schema to fill unresolved trait properties.
-//! 4. Validate the effective traits object against the effective trait schema.
+//!    - `x-gts-traits-schema` subschemas (object | `true` | `false`) → compose
+//!      via `allOf` into the *effective trait schema*.
+//!    - `x-gts-traits` objects → merge per RFC 7396 JSON Merge Patch into the
+//!      *effective traits object*.
+//! 3. Apply defaults from the effective trait schema to fill unresolved trait
+//!    properties (materialization step).
+//! 4. Validate the effective traits object against the effective trait schema
+//!    (completeness check runs only when the type is non-abstract — see
+//!    `store.rs::validate_schema_traits`).
 //!
-//! **Override semantics:** When the same trait property appears at multiple
-//! levels in the chain, the *rightmost* (most-derived) value wins.  The
-//! override is unconditional — it replaces the previous value regardless of
-//! type.  However, the *final* merged value is validated against the
-//! *composed* effective trait schema (all `allOf` sub-schemas apply), so an
-//! override that violates a constraint introduced at any level will fail.
+//! **Override semantics (RFC 7396 JSON Merge Patch):**
+//! - Scalars: descendant value wins (last-wins).
+//! - Objects: deep-merge recursively (keys not restated by the descendant are
+//!   preserved from the ancestor).
+//! - Arrays: replace wholesale (no element-wise merge).
+//! - `null` at any depth deletes the key, after which `apply_defaults` may
+//!   re-substitute a default.
+//! - Locking publisher-controlled values is done via JSON Schema `const` in
+//!   `x-gts-traits-schema`; the registry carries no GTS-specific immutability
+//!   rule.
 //!
 //! **Empty trait schemas:** If a schema in the chain declares
-//! `x-gts-traits-schema: {}`, it contributes an unconstrained sub-schema.
-//! When composed via `allOf`, an empty sub-schema does not restrict the
-//! validated object.  This means any trait values are accepted as long as
-//! other sub-schemas in the composition don't reject them.
+//! `x-gts-traits-schema: {}` or `true`, it contributes an unconstrained
+//! sub-schema. `false` contributes a sub-schema that rejects all values; a
+//! type whose effective schema is `false` and which carries no traits passes
+//! (nothing is validated), but any non-empty trait value fails.
 
 use serde_json::Value;
 
@@ -101,29 +110,74 @@ pub fn validate_effective_traits(
         return Ok(());
     }
 
-    // Validate trait schema integrity
+    // Each x-gts-traits-schema is a JSON Schema subschema. Accepted forms are
+    // an object subschema, `true`, or `false`. Validate JSON Schema integrity
+    // only for object-form subschemas; the boolean forms have well-defined
+    // JSON Schema semantics (true = accept anything, false = reject anything)
+    // and need no further checks here.
+    //
+    // Note on x-gts-* keys inside an object subschema: any GTS type may be
+    // referenced from another host's `x-gts-traits-schema` via `$ref`, in
+    // which case the inlined body of the referenced type will contain its own
+    // `x-gts-traits-schema` / `x-gts-traits` keys as ordinary JSON members.
+    // To a standard JSON Schema validator these are unknown keywords (Draft-07
+    // and later treat unknown keys as annotations and ignore them for
+    // validation), so they are inert here. This module deliberately does not
+    // reject their presence — doing so would prevent the legitimate authoring
+    // pattern where an existing GTS type is reused as a trait-schema source.
     for (i, ts) in resolved_trait_schemas.iter().enumerate() {
-        // x-gts-traits-schema must not contain x-gts-traits
-        if let Some(obj) = ts.as_object()
-            && obj.contains_key(X_GTS_TRAITS)
-        {
-            return Err(vec![format!(
-                "{X_GTS_TRAITS_SCHEMA}[{i}] contains '{X_GTS_TRAITS}' \u{2014} \
-                 trait values must not appear inside a trait schema definition"
-            )]);
-        }
-
-        // Each trait schema must be compilable as a valid JSON Schema
-        if let Err(e) = jsonschema::validator_for(ts) {
-            return Err(vec![format!(
-                "x-gts-traits-schema[{i}] is not a valid JSON Schema: {e}"
-            )]);
+        match ts {
+            Value::Bool(_) => {}
+            Value::Object(_) => {
+                if let Err(e) = jsonschema::validator_for(ts) {
+                    return Err(vec![format!(
+                        "x-gts-traits-schema[{i}] is not a valid JSON Schema: {e}"
+                    )]);
+                }
+            }
+            _ => {
+                return Err(vec![format!(
+                    "x-gts-traits-schema[{i}] must be an object subschema or a boolean; got {ts}"
+                )]);
+            }
         }
     }
 
     let effective_trait_schema = build_effective_trait_schema(resolved_trait_schemas);
+
+    // If any subschema in the chain is the boolean `false`, the effective
+    // schema is unsatisfiable. A type that carries no traits at all is still
+    // valid (`false` prohibits traits, not the existence of typed descendants).
+    // A type carrying any traits fails.
+    if effective_schema_is_false(&effective_trait_schema) {
+        if has_trait_values {
+            return Err(vec![format!(
+                "{X_GTS_TRAITS_SCHEMA} resolves to `false` in the chain — \
+                 {X_GTS_TRAITS} values are prohibited"
+            )]);
+        }
+        return Ok(());
+    }
+
     let effective_traits = apply_defaults(&effective_trait_schema, merged_traits);
     validate_traits_against_schema(&effective_trait_schema, &effective_traits, check_unresolved)
+}
+
+/// Returns true when at least one subschema along the chain is the JSON
+/// boolean `false`. Under JSON Schema `allOf` semantics, `false` makes the
+/// composed schema unsatisfiable; treat it as the "traits prohibited" signal.
+fn effective_schema_is_false(schema: &Value) -> bool {
+    match schema {
+        Value::Bool(false) => true,
+        Value::Object(obj) => {
+            if let Some(Value::Array(items)) = obj.get("allOf") {
+                items.iter().any(effective_schema_is_false)
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -159,7 +213,16 @@ fn collect_trait_schema_recursive(value: &Value, out: &mut Vec<Value>, depth: us
     }
 }
 
-/// Recursively search a schema value for `x-gts-traits` entries and merge.
+/// Recursively search a schema value for `x-gts-traits` entries and union
+/// them into a single per-level trait patch.
+///
+/// `null` values are preserved verbatim — they carry RFC 7396 "delete this
+/// key" semantics and must reach the cross-level merge step (in
+/// `store::validate_schema_traits`) intact. Within a single level, multiple
+/// `x-gts-traits` blocks (e.g. one inline + ones nested in `allOf` overlays)
+/// are unioned with later-occurring entries winning per key. The cross-level
+/// step then applies these per-level patches in chain order via RFC 7396.
+///
 /// Recursion is bounded by [`MAX_RECURSION_DEPTH`] to prevent stack overflow.
 pub(crate) fn collect_traits_from_value(
     value: &Value,
@@ -190,6 +253,45 @@ fn collect_traits_recursive(
     if let Some(Value::Array(all_of)) = obj.get("allOf") {
         for item in all_of {
             collect_traits_recursive(item, merged, depth + 1);
+        }
+    }
+}
+
+/// Merge `patch` into `target` per RFC 7396 JSON Merge Patch.
+///
+/// Semantics:
+/// - Scalar / array values replace the existing value wholesale.
+/// - Objects merge recursively (keys not restated by `patch` are preserved).
+/// - `null` values **delete** the corresponding key from `target`; if the
+///   target had no such key the null is a no-op (the key remains absent so
+///   `apply_defaults` can later substitute a `default` from the trait schema).
+///
+/// This is the trait-merge primitive used to compose `x-gts-traits` along the
+/// `$id` chain (root → leaf).
+pub(crate) fn merge_rfc7396_into(
+    target: &mut serde_json::Map<String, Value>,
+    patch: &serde_json::Map<String, Value>,
+) {
+    for (k, v) in patch {
+        match v {
+            Value::Null => {
+                target.remove(k);
+            }
+            Value::Object(patch_obj) => {
+                if let Some(Value::Object(existing)) = target.get_mut(k) {
+                    merge_rfc7396_into(existing, patch_obj);
+                } else {
+                    // Either target lacks the key or holds a non-object —
+                    // RFC 7396: a new object value replaces wholesale, but
+                    // inner `null`s in the patch still mean "no such key".
+                    let mut fresh = serde_json::Map::new();
+                    merge_rfc7396_into(&mut fresh, patch_obj);
+                    target.insert(k.clone(), Value::Object(fresh));
+                }
+            }
+            other => {
+                target.insert(k.clone(), other.clone());
+            }
         }
     }
 }
@@ -970,26 +1072,39 @@ mod tests {
     }
 
     #[test]
-    fn test_meta_traits_rejected() {
-        // x-gts-traits-schema contains x-gts-traits — should be rejected
+    fn test_x_gts_keys_inside_trait_schema_are_tolerated() {
+        // A trait-schema may contain GTS-extension keys as ordinary members —
+        // this happens when an existing GTS type (which carries its own
+        // `x-gts-traits-schema` / `x-gts-traits`) is reused as a trait-schema
+        // source via $ref. Standard JSON Schema treats unknown keywords as
+        // annotations, so these keys are inert at validation time and must
+        // not cause registration to fail.
+        //
+        // To isolate this property from the unrelated completeness check, the
+        // trait-schema below declares only optional properties and the chain
+        // supplies a matching x-gts-traits value.
         let chain = vec![(
             "base~".to_owned(),
             json!({
                 "type": "object",
                 "x-gts-traits-schema": {
                     "type": "object",
-                    "x-gts-traits": {"sneaky": "value"},
+                    // GTS-extension keys nested here mimic a $ref'd GTS type
+                    // body — they are unknown keywords to JSON Schema and
+                    // must be ignored.
+                    "x-gts-traits-schema": {"type": "object"},
+                    "x-gts-traits": {"foo": "bar"},
                     "properties": {
                         "retention": {"type": "string"}
                     }
-                }
+                },
+                "x-gts-traits": {"retention": "P30D"}
             }),
         )];
-        let err = validate_traits_chain(&chain).unwrap_err();
         assert!(
-            err.iter()
-                .any(|e| e.contains("x-gts-traits") && e.contains("trait schema")),
-            "should reject x-gts-traits inside x-gts-traits-schema: {err:?}"
+            validate_traits_chain(&chain).is_ok(),
+            "x-gts-traits / x-gts-traits-schema nested inside a trait-schema body \
+             should be tolerated as unknown JSON Schema keywords"
         );
     }
 
@@ -1195,6 +1310,140 @@ mod tests {
             err.iter()
                 .any(|e| e.contains("not a valid JSON Schema") || e.contains("failed to compile")),
             "should report invalid JSON Schema early: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_chain_default_leaf_wins_over_ancestor() {
+        // Three-level chain — base, mid, leaf — each redeclares the same trait
+        // property's `default` to a different value. No x-gts-traits is supplied
+        // anywhere in the chain. Materialization must pick the LEAF-most default,
+        // because (a) defaults are JSON Schema annotations that don't participate
+        // in narrowing and (b) `collect_all_properties` dedup keeps the last
+        // occurrence along the root→leaf-ordered `allOf`.
+        let base_ts = json!({
+            "type": "object",
+            "properties": {
+                "retention": {"type": "string", "default": "P30D"}
+            }
+        });
+        let mid_ts = json!({
+            "type": "object",
+            "properties": {
+                "retention": {"type": "string", "default": "P90D"}
+            }
+        });
+        let leaf_ts = json!({
+            "type": "object",
+            "properties": {
+                "retention": {"type": "string", "default": "P365D"}
+            }
+        });
+
+        let effective = build_effective_trait_schema(&[base_ts, mid_ts, leaf_ts]);
+        let materialized = apply_defaults(&effective, &Value::Object(serde_json::Map::new()));
+
+        let retention = materialized
+            .as_object()
+            .and_then(|m| m.get("retention"))
+            .and_then(Value::as_str)
+            .expect("retention should be present after materialization");
+        assert_eq!(
+            retention, "P365D",
+            "leaf-most default must win; got {retention}"
+        );
+    }
+
+    #[test]
+    fn test_chain_default_explicit_value_wins_over_defaults() {
+        // Same 3-level chain as above, but mid supplies an explicit value via
+        // x-gts-traits. After RFC 7396 chain merge, retention is set; the
+        // materialization step must NOT clobber it with the leaf's default.
+        let base_ts = json!({
+            "type": "object",
+            "properties": {
+                "retention": {"type": "string", "default": "P30D"}
+            }
+        });
+        let mid_ts = json!({
+            "type": "object",
+            "properties": {
+                "retention": {"type": "string", "default": "P90D"}
+            }
+        });
+        let leaf_ts = json!({
+            "type": "object",
+            "properties": {
+                "retention": {"type": "string", "default": "P365D"}
+            }
+        });
+
+        let effective = build_effective_trait_schema(&[base_ts, mid_ts, leaf_ts]);
+        let mut merged = serde_json::Map::new();
+        merged.insert(
+            "retention".to_owned(),
+            Value::String("P42D".to_owned()),
+        );
+        let materialized = apply_defaults(&effective, &Value::Object(merged));
+
+        let retention = materialized
+            .as_object()
+            .and_then(|m| m.get("retention"))
+            .and_then(Value::as_str)
+            .expect("retention should be present after materialization");
+        assert_eq!(
+            retention, "P42D",
+            "explicit chain-merged value must override all defaults; got {retention}"
+        );
+    }
+
+    #[test]
+    fn test_chain_default_null_delete_restores_leaf_default() {
+        // Chain where ancestor sets the value and descendant deletes it via
+        // RFC 7396 null. After the cross-level merge the key is absent;
+        // materialization should fill it from the leaf-most default declaration.
+        // This is the "null reverts to the schema default" path documented for
+        // the merge strategy.
+        let base_ts = json!({
+            "type": "object",
+            "properties": {
+                "retention": {"type": "string", "default": "P30D"}
+            }
+        });
+        let leaf_ts = json!({
+            "type": "object",
+            "properties": {
+                "retention": {"type": "string", "default": "P365D"}
+            }
+        });
+
+        // Simulate chain merge: base sets retention=P7D, leaf deletes via null
+        // → merged is empty.
+        let mut merged = serde_json::Map::new();
+        merge_rfc7396_into(
+            &mut merged,
+            json!({"retention": "P7D"}).as_object().unwrap(),
+        );
+        merge_rfc7396_into(
+            &mut merged,
+            json!({"retention": null}).as_object().unwrap(),
+        );
+        assert!(
+            !merged.contains_key("retention"),
+            "null patch should remove the key from merged"
+        );
+
+        let effective = build_effective_trait_schema(&[base_ts, leaf_ts]);
+        let materialized = apply_defaults(&effective, &Value::Object(merged));
+
+        let retention = materialized
+            .as_object()
+            .and_then(|m| m.get("retention"))
+            .and_then(Value::as_str)
+            .expect("retention should be restored from the leaf default");
+        assert_eq!(
+            retention, "P365D",
+            "after null delete, materialization must use the leaf-most default; got {retention}"
         );
     }
 }
