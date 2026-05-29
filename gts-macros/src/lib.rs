@@ -1324,13 +1324,24 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                     innermost_generic_field,
                 );
 
-                // Child type - use allOf with $ref to parent
+                // Child type - use allOf with $ref to parent.
+                //
+                // No top-level `additionalProperties: false` is emitted here.
+                // In JSON Schema, `additionalProperties` only sees properties
+                // declared in the SAME schema layer; properties pulled in
+                // via `$ref` or another `allOf` branch are invisible to it.
+                // A derived schema written as `{additionalProperties: false,
+                // allOf: [$ref_to_parent, {properties: {...}}]}` therefore
+                // rejects every instance, because the top-level layer has no
+                // local `properties` to "see" the parent's fields. The
+                // tightness invariant the macro maintains is carried by the
+                // parent's `additionalProperties: false`, which the validator
+                // applies via the resolved $ref inside `allOf[0]`.
                 serde_json::json!({
                     "$id": format!("gts://{}", type_id),
                     "$schema": "http://json-schema.org/draft-07/schema#",
                     "description": #description,
                     "type": "object",
-                    "additionalProperties": false,
                     "allOf": [
                         { "$ref": format!("gts://{}", parent_type_id) },
                         {
@@ -1417,12 +1428,13 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 let owned_path = Self::outer_generic_path();
                 let path_refs: Vec<&str> = owned_path.iter().copied().collect();
                 let nested_properties = Self::wrap_in_nesting_path(&path_refs, properties, required, None);
+                // No top-level `additionalProperties: false` here either -
+                // see the matching comment in `gts_schema_for!` above.
                 serde_json::json!({
                     "$id": format!("gts://{}", type_id),
                     "$schema": "http://json-schema.org/draft-07/schema#",
                     "description": #description,
                     "type": "object",
-                    "additionalProperties": false,
                     "allOf": [
                         { "$ref": format!("gts://{}", parent_type_id) },
                         {

@@ -241,14 +241,17 @@ impl GtsStore {
     /// Like [`resolve_schema_refs`] but returns an error if a circular `$ref`
     /// is detected during resolution.
     ///
-    /// Uses strict cycle detection: once a `$ref` target is visited it stays
-    /// in the seen-set for the entire resolution pass, so both true circular
-    /// references **and** duplicate `$ref`s (e.g. the same URI twice in
-    /// `allOf`) are flagged.
+    /// Uses DFS-path cycle detection: a `$ref` target is held in the seen-set
+    /// only while its resolution is in progress on the current DFS stack and
+    /// removed once that subtree finishes. Re-entry into an in-progress
+    /// target is a true cycle. Multiple independent occurrences of the same
+    /// `$ref` (e.g. duplicate refs in `allOf`) are NOT flagged — redundant
+    /// manual aggregation across an `$id` chain is allowed.
     pub(crate) fn resolve_schema_refs_checked(&self, schema: &Value) -> Result<Value, String> {
         let mut visited = std::collections::HashSet::new();
         let mut cycle_found = false;
-        let resolved = self.resolve_schema_refs_inner(schema, &mut visited, &mut cycle_found, true);
+        let resolved =
+            self.resolve_schema_refs_inner(schema, &mut visited, &mut cycle_found, false);
         if cycle_found {
             Err("circular $ref detected".to_owned())
         } else {
@@ -837,11 +840,17 @@ impl GtsStore {
         // Collect raw trait schemas and trait values from every schema in the chain.
         // We use *raw* content because resolve_schema_refs flattens allOf and only
         // keeps `properties`/`required`, dropping extension keys like x-gts-*.
+        //
+        // x-gts-traits-schema declarations along the $id chain are composed via
+        // allOf into a single effective trait-schema (handled in
+        // schema_traits::build_effective_trait_schema). x-gts-traits values along
+        // the chain are merged per RFC 7396 JSON Merge Patch (descendant last-wins
+        // for scalars/arrays, recursive merge for objects, `null` deletes the
+        // key). The publisher locks a value via standard JSON Schema `const` in
+        // x-gts-traits-schema; the registry carries no GTS-specific immutability
+        // rule.
         let mut trait_schemas: Vec<serde_json::Value> = Vec::new();
         let mut merged_traits = serde_json::Map::new();
-        let mut locked_traits = std::collections::HashSet::<String>::new();
-        // Track defaults set by ancestor trait schemas to detect redefinition.
-        let mut known_defaults = std::collections::HashMap::<String, serde_json::Value>::new();
 
         for i in 0..segments.len() {
             let schema_id = format!(
@@ -859,73 +868,18 @@ impl GtsStore {
                 ))
             })?;
 
-            // Collect x-gts-traits-schema from the raw content.
-            // Track which properties this level's trait schema introduces so we
-            // know which trait values are allowed to be overridden.
-            let prev_schema_count = trait_schemas.len();
+            // Collect x-gts-traits-schema from the raw content (object | true | false).
             crate::schema_traits::collect_trait_schema_from_value(&content, &mut trait_schemas);
-            let mut level_schema_props = std::collections::HashSet::new();
-            for ts in &trait_schemas[prev_schema_count..] {
-                if let Some(obj) = ts.as_object()
-                    && let Some(serde_json::Value::Object(props)) = obj.get("properties")
-                {
-                    for (prop_name, prop_schema) in props {
-                        level_schema_props.insert(prop_name.clone());
-                        // Detect default override: if an ancestor already set a
-                        // default for this property, a descendant cannot change it.
-                        if let Some(prop_obj) = prop_schema.as_object()
-                            && let Some(new_default) = prop_obj.get("default")
-                        {
-                            if let Some(old_default) = known_defaults.get(prop_name) {
-                                if old_default != new_default {
-                                    return Err(StoreError::ValidationError(format!(
-                                        "Schema '{gts_id}' trait validation failed: \
-                                                 trait schema default for '{prop_name}' in \
-                                                 '{schema_id}' overrides default set by ancestor"
-                                    )));
-                                }
-                            } else {
-                                known_defaults.insert(prop_name.clone(), new_default.clone());
-                            }
-                        }
-                    }
-                }
-            }
 
-            // Collect x-gts-traits from the raw content.
-            // Trait values are immutable once set — UNLESS the level that set
-            // the value also introduced a new x-gts-traits-schema for that
-            // property (a "narrowing").  Values set alongside a schema narrowing
-            // are overridable; values set without one are locked.
+            // Collect x-gts-traits from the raw content, then RFC 7396-merge
+            // them into the accumulated merged_traits.
             let mut level_traits = serde_json::Map::new();
             crate::schema_traits::collect_traits_from_value(&content, &mut level_traits);
             tracing::debug!(
-                "validate_schema_traits [{schema_id}]: level_schema_props={:?}, level_traits={:?}, locked={:?}",
-                level_schema_props,
+                "validate_schema_traits [{schema_id}]: level_traits={:?}",
                 level_traits.keys().collect::<Vec<_>>(),
-                locked_traits
             );
-            for (k, v) in &level_traits {
-                if let Some(existing) = merged_traits.get(k)
-                    && existing != v
-                    && locked_traits.contains(k.as_str())
-                {
-                    return Err(StoreError::ValidationError(format!(
-                        "Schema '{gts_id}' trait validation failed: \
-                         trait '{k}' in '{schema_id}' overrides value set by ancestor"
-                    )));
-                }
-            }
-            // Mark trait values as locked or unlocked based on whether this
-            // level also introduced a trait schema covering the property.
-            for k in level_traits.keys() {
-                if level_schema_props.contains(k) {
-                    locked_traits.remove(k.as_str());
-                } else {
-                    locked_traits.insert(k.clone());
-                }
-            }
-            merged_traits.extend(level_traits);
+            crate::schema_traits::merge_rfc7396_into(&mut merged_traits, &level_traits);
         }
 
         // Resolve $ref inside each collected trait schema so that external

@@ -334,6 +334,21 @@ impl GtsOps {
             };
         }
 
+        // Validate trait keyword placement (x-gts-traits, x-gts-traits-schema):
+        // these are type-level keywords and MUST appear only at the schema top
+        // level — nesting them inside a subschema is rejected (GTS spec §9.7.1/§9.11).
+        if entity.is_schema
+            && let Err(e) = crate::schema_modifiers::validate_trait_placement(&entity.content)
+        {
+            return GtsAddEntityResult {
+                ok: false,
+                id: String::new(),
+                type_id: None,
+                is_type_schema: entity.is_schema,
+                error: e,
+            };
+        }
+
         // Always validate schemas
         if entity.is_schema
             && let Err(e) = self.store.validate_schema(&entity_id)
@@ -676,6 +691,19 @@ impl GtsOps {
             // mutual exclusion, and top-level placement.
             if let Some(entity) = self.store.get(gts_id)
                 && let Err(e) = crate::schema_modifiers::validate_schema_modifiers(&entity.content)
+            {
+                return GtsEntityValidationResult {
+                    id: gts_id.to_owned(),
+                    ok: false,
+                    entity_type: "schema".to_owned(),
+                    error: e,
+                };
+            }
+
+            // Validate trait keyword placement (x-gts-traits,
+            // x-gts-traits-schema) — top-level only (GTS spec §9.7.1/§9.11).
+            if let Some(entity) = self.store.get(gts_id)
+                && let Err(e) = crate::schema_modifiers::validate_trait_placement(&entity.content)
             {
                 return GtsEntityValidationResult {
                     id: gts_id.to_owned(),

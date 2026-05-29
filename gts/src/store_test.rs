@@ -3528,10 +3528,21 @@ fn test_op12_derived_loosens_additional_properties_to_true() {
 }
 
 #[test]
-fn test_op12_derived_omits_additional_properties() {
+fn test_op12_derived_omits_additional_properties_inherits_closedness() {
+    // Per JSON Schema, `additionalProperties` at a level with no own
+    // `properties` collapses into "deny every key at this level". The
+    // emitter therefore *cannot* re-declare `additionalProperties: false`
+    // on derived schemas composed as `allOf: [{$ref: base}, overlay]`
+    // without breaking strict downstream validators (ajv-cli, etc.).
+    //
+    // Omitting `additionalProperties` at derived's own root is therefore
+    // **not** loosening: the base's closedness still applies to the same
+    // instance through the `$ref` half of `allOf` composition. OP#12 must
+    // accept this shape — anything stricter is an artificial constraint
+    // imposed by literal structural comparison, not by JSON Schema
+    // semantics. See `docs/bugs/op12-derived-additional-properties.md`.
     let mut store = GtsStore::new(None);
 
-    // Base schema with additionalProperties: false
     let base = json!({
         "$id": "gts://gts.x.test.addl.closed2.v1~",
         "$schema": "http://json-schema.org/draft-07/schema#",
@@ -3545,7 +3556,6 @@ fn test_op12_derived_omits_additional_properties() {
         .register_schema("gts.x.test.addl.closed2.v1~", &base)
         .expect("register base");
 
-    // Derived schema that omits additionalProperties (defaults to true, loosening)
     let derived = json!({
         "$id": "gts://gts.x.test.addl.closed2.v1~x.test._.omit.v1~",
         "$schema": "http://json-schema.org/draft-07/schema#",
@@ -3553,7 +3563,8 @@ fn test_op12_derived_omits_additional_properties() {
         "allOf": [
             {"$ref": "gts://gts.x.test.addl.closed2.v1~"}
         ]
-        // additionalProperties omitted
+        // additionalProperties intentionally omitted — closedness flows
+        // through the $ref above.
     });
     store
         .register_schema("gts.x.test.addl.closed2.v1~x.test._.omit.v1~", &derived)
@@ -3561,8 +3572,10 @@ fn test_op12_derived_omits_additional_properties() {
 
     let result = store.validate_schema_chain("gts.x.test.addl.closed2.v1~x.test._.omit.v1~");
     assert!(
-        result.is_err(),
-        "Omitting additionalProperties when base has false should fail"
+        result.is_ok(),
+        "Omitting additionalProperties when base has false is *not* \
+         loosening — closedness is inherited via $ref/allOf composition. \
+         Got: {result:?}"
     );
 }
 
@@ -4247,10 +4260,13 @@ fn test_op13_circular_ref_does_not_hang() {
 }
 
 #[test]
-fn test_resolve_schema_refs_checked_detects_duplicate_ref_in_allof() {
+fn test_resolve_schema_refs_checked_allows_duplicate_ref_in_allof() {
+    // Redundant manual aggregation (the same $ref appearing more than once
+    // in an allOf composition along the chain) is allowed.
+    // resolve_schema_refs_checked uses DFS-path cycle detection, so
+    // independent duplicate $refs are not flagged as cycles.
     let mut store = GtsStore::new(None);
 
-    // Register a standalone trait schema
     let trait_schema = json!({
         "$id": "gts://gts.x.test.dup.trait.v1~",
         "$schema": "http://json-schema.org/draft-07/schema#",
@@ -4263,7 +4279,6 @@ fn test_resolve_schema_refs_checked_detects_duplicate_ref_in_allof() {
         .register_schema("gts.x.test.dup.trait.v1~", &trait_schema)
         .expect("register trait schema");
 
-    // A trait schema value with duplicate $ref in allOf
     let trait_schema_value = json!({
         "type": "object",
         "allOf": [
@@ -4272,23 +4287,25 @@ fn test_resolve_schema_refs_checked_detects_duplicate_ref_in_allof() {
         ]
     });
 
-    // The checked version should detect the duplicate as a cycle
     let result = store.resolve_schema_refs_checked(&trait_schema_value);
     assert!(
-        result.is_err(),
-        "resolve_schema_refs_checked should detect duplicate $ref in allOf, got: {result:?}",
+        result.is_ok(),
+        "resolve_schema_refs_checked should allow duplicate $ref in allOf, got: {result:?}",
     );
 
-    // The non-checked version should resolve fine (no error)
     let resolved = store.resolve_schema_refs(&trait_schema_value);
     assert!(resolved.is_object(), "resolve_schema_refs should succeed");
 }
 
 #[test]
-fn test_op13_change_default_in_mid_fails() {
+fn test_op13_redeclared_default_in_mid_allowed() {
+    // With chain aggregation via allOf and RFC 7396 merge for trait values
+    // (no GTS-specific immutability), a descendant may redeclare a property's
+    // `default`. It simply doesn't take effect for a property already defined
+    // upstream — the aggregated allOf retains both declarations and the first
+    // matching default wins per JSON Schema.
     let mut store = GtsStore::new(None);
 
-    // Base: retention default=P30D
     let base = json!({
         "$id": "gts://gts.x.test13.chdfl.event.v1~",
         "$schema": "http://json-schema.org/draft-07/schema#",
@@ -4311,7 +4328,6 @@ fn test_op13_change_default_in_mid_fails() {
         .register_schema("gts.x.test13.chdfl.event.v1~", &base)
         .expect("register base");
 
-    // Mid: changes retention default to P90D — should fail
     let mid = json!({
         "$id": "gts://gts.x.test13.chdfl.event.v1~x.test13._.chdfl_mid.v1~",
         "$schema": "http://json-schema.org/draft-07/schema#",
@@ -4342,7 +4358,7 @@ fn test_op13_change_default_in_mid_fails() {
     let result =
         store.validate_schema_traits("gts.x.test13.chdfl.event.v1~x.test13._.chdfl_mid.v1~");
     assert!(
-        result.is_err(),
-        "Changing default in mid-level should fail, got: {result:?}"
+        result.is_ok(),
+        "Redeclared default in descendant should be allowed, got: {result:?}"
     );
 }
