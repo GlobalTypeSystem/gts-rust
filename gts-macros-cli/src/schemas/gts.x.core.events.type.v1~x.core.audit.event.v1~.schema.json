@@ -1,7 +1,6 @@
 {
   "$id": "gts://gts.x.core.events.type.v1~x.core.audit.event.v1~",
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "additionalProperties": false,
   "allOf": [
     {
       "$ref": "gts://gts.x.core.events.type.v1~"

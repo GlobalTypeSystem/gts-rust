@@ -115,11 +115,28 @@ pub(crate) fn validate_schema_compatibility(
         }
     }
 
-    // Check if derived loosens additionalProperties constraint
+    // Check if derived loosens additionalProperties constraint.
+    //
+    // Derived "loosens" only when it *explicitly* declares a permissive
+    // `additionalProperties` at its own root. Omitting the keyword is
+    // **not** loosening when derived is composed as
+    // `allOf: [{$ref: closed_base}, overlay]`: per JSON Schema draft-07
+    // (§ 6.5.6), `additionalProperties` only inspects sibling
+    // `properties` at the same level — but the base's
+    // `additionalProperties: false` still applies to the same instance
+    // via `$ref`/`allOf` composition, so the contract is inherited.
+    //
+    // The per-property loop above already catches the only structurally
+    // dangerous case (derived adds a new top-level property that base
+    // forbids), so collapsing the root-level "absent ≠ false" check
+    // to "explicit permissive declarations" is safe.
     if base_disallows_additional {
-        let derived_allows_additional =
-            !matches!(derived.additional_properties, Some(Value::Bool(false)));
-        if derived_allows_additional {
+        let derived_explicitly_allows = match &derived.additional_properties {
+            Some(Value::Bool(false)) => false,
+            Some(_) => true,
+            None => false,
+        };
+        if derived_explicitly_allows {
             errors.push(format!(
                 "derived schema '{derived_id}' loosens additionalProperties from false in base '{base_id}'"
             ));
@@ -704,6 +721,56 @@ mod tests {
         }));
         let errs = validate_schema_compatibility(&base, &derived, "b", "d");
         assert!(!errs.is_empty());
+    }
+
+    #[test]
+    fn test_additional_properties_inherited_via_allof_not_loosening() {
+        // Derived omits `additionalProperties` at its own root but its
+        // properties set is identical to base's (typical shape produced
+        // by the macro emitter after the allOf+$ref refactor — the
+        // derived overlay nests its new fields under base's generic
+        // slot, leaving the top-level property set unchanged).
+        //
+        // Per JSON Schema draft-07 allOf composition, the base's
+        // `additionalProperties: false` is inherited via $ref, so this
+        // shape is **not** loosening and OP#12 must not flag it.
+        let base = extract_effective_schema(&json!({
+            "type": "object",
+            "properties": {"a": {"type": "string"}},
+            "additionalProperties": false
+        }));
+        let derived = extract_effective_schema(&json!({
+            "type": "object",
+            "properties": {"a": {"type": "string"}}
+        }));
+        let errs = validate_schema_compatibility(&base, &derived, "b", "d");
+        assert!(
+            errs.is_empty(),
+            "Derived inheriting closedness via $ref should not be flagged: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn test_additional_properties_explicit_true_still_loosens() {
+        // Explicit `additionalProperties: true` at derived root *is*
+        // loosening even with allOf+$ref to a closed base, because the
+        // derived author actively asserts a permissive root.
+        let base = extract_effective_schema(&json!({
+            "type": "object",
+            "properties": {"a": {"type": "string"}},
+            "additionalProperties": false
+        }));
+        let derived = extract_effective_schema(&json!({
+            "type": "object",
+            "properties": {"a": {"type": "string"}},
+            "additionalProperties": true
+        }));
+        let errs = validate_schema_compatibility(&base, &derived, "b", "d");
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("loosens additionalProperties")),
+            "Explicit additionalProperties: true must still flag as loosening: {errs:?}"
+        );
     }
 
     #[test]

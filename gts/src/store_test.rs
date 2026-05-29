@@ -3528,10 +3528,21 @@ fn test_op12_derived_loosens_additional_properties_to_true() {
 }
 
 #[test]
-fn test_op12_derived_omits_additional_properties() {
+fn test_op12_derived_omits_additional_properties_inherits_closedness() {
+    // Per draft-07 § 6.5.6, `additionalProperties` at a level with no own
+    // `properties` collapses into "deny every key at this level". The
+    // emitter therefore *cannot* re-declare `additionalProperties: false`
+    // on derived schemas composed as `allOf: [{$ref: base}, overlay]`
+    // without breaking strict downstream validators (ajv-cli, etc.).
+    //
+    // Omitting `additionalProperties` at derived's own root is therefore
+    // **not** loosening: the base's closedness still applies to the same
+    // instance through the `$ref` half of `allOf` composition. OP#12 must
+    // accept this shape — anything stricter is an artificial constraint
+    // imposed by literal structural comparison, not by JSON Schema
+    // semantics. See `docs/bugs/op12-derived-additional-properties.md`.
     let mut store = GtsStore::new(None);
 
-    // Base schema with additionalProperties: false
     let base = json!({
         "$id": "gts://gts.x.test.addl.closed2.v1~",
         "$schema": "http://json-schema.org/draft-07/schema#",
@@ -3545,7 +3556,6 @@ fn test_op12_derived_omits_additional_properties() {
         .register_schema("gts.x.test.addl.closed2.v1~", &base)
         .expect("register base");
 
-    // Derived schema that omits additionalProperties (defaults to true, loosening)
     let derived = json!({
         "$id": "gts://gts.x.test.addl.closed2.v1~x.test._.omit.v1~",
         "$schema": "http://json-schema.org/draft-07/schema#",
@@ -3553,7 +3563,8 @@ fn test_op12_derived_omits_additional_properties() {
         "allOf": [
             {"$ref": "gts://gts.x.test.addl.closed2.v1~"}
         ]
-        // additionalProperties omitted
+        // additionalProperties intentionally omitted — closedness flows
+        // through the $ref above.
     });
     store
         .register_schema("gts.x.test.addl.closed2.v1~x.test._.omit.v1~", &derived)
@@ -3561,8 +3572,10 @@ fn test_op12_derived_omits_additional_properties() {
 
     let result = store.validate_schema_chain("gts.x.test.addl.closed2.v1~x.test._.omit.v1~");
     assert!(
-        result.is_err(),
-        "Omitting additionalProperties when base has false should fail"
+        result.is_ok(),
+        "Omitting additionalProperties when base has false is *not* \
+         loosening — closedness is inherited via $ref/allOf composition. \
+         Got: {result:?}"
     );
 }
 
