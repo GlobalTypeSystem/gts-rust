@@ -1327,11 +1327,11 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 // Child type - use allOf with $ref to parent.
                 //
                 // No top-level `additionalProperties: false` is emitted here.
-                // Under Draft-07, `additionalProperties` only sees properties
+                // In JSON Schema, `additionalProperties` only sees properties
                 // declared in the SAME schema layer; properties pulled in
                 // via `$ref` or another `allOf` branch are invisible to it.
                 // A derived schema written as `{additionalProperties: false,
-                // allOf: [$ref_to_parent, {properties: {…}}]}` therefore
+                // allOf: [$ref_to_parent, {properties: {...}}]}` therefore
                 // rejects every instance, because the top-level layer has no
                 // local `properties` to "see" the parent's fields. The
                 // tightness invariant the macro maintains is carried by the
@@ -1428,7 +1428,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 let owned_path = Self::outer_generic_path();
                 let path_refs: Vec<&str> = owned_path.iter().copied().collect();
                 let nested_properties = Self::wrap_in_nesting_path(&path_refs, properties, required, None);
-                // No top-level `additionalProperties: false` here either —
+                // No top-level `additionalProperties: false` here either -
                 // see the matching comment in `gts_schema_for!` above.
                 serde_json::json!({
                     "$id": format!("gts://{}", type_id),

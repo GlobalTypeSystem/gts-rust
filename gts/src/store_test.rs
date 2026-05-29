@@ -3529,7 +3529,7 @@ fn test_op12_derived_loosens_additional_properties_to_true() {
 
 #[test]
 fn test_op12_derived_omits_additional_properties_inherits_closedness() {
-    // Per draft-07 § 6.5.6, `additionalProperties` at a level with no own
+    // Per JSON Schema, `additionalProperties` at a level with no own
     // `properties` collapses into "deny every key at this level". The
     // emitter therefore *cannot* re-declare `additionalProperties: false`
     // on derived schemas composed as `allOf: [{$ref: base}, overlay]`

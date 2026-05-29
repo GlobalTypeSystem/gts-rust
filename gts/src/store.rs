@@ -250,7 +250,8 @@ impl GtsStore {
     pub(crate) fn resolve_schema_refs_checked(&self, schema: &Value) -> Result<Value, String> {
         let mut visited = std::collections::HashSet::new();
         let mut cycle_found = false;
-        let resolved = self.resolve_schema_refs_inner(schema, &mut visited, &mut cycle_found, false);
+        let resolved =
+            self.resolve_schema_refs_inner(schema, &mut visited, &mut cycle_found, false);
         if cycle_found {
             Err("circular $ref detected".to_owned())
         } else {

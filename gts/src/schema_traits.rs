@@ -121,8 +121,8 @@ pub fn validate_effective_traits(
     // referenced from another host's `x-gts-traits-schema` via `$ref`, in
     // which case the inlined body of the referenced type will contain its own
     // `x-gts-traits-schema` / `x-gts-traits` keys as ordinary JSON members.
-    // To a standard JSON Schema validator these are unknown keywords (Draft-07
-    // and later treat unknown keys as annotations and ignore them for
+    // To a standard JSON Schema validator these are unknown keywords (JSON
+    // Schema treats unknown keys as annotations and ignores them for
     // validation), so they are inert here. This module deliberately does not
     // reject their presence — doing so would prevent the legitimate authoring
     // pattern where an existing GTS type is reused as a trait-schema source.
@@ -1468,10 +1468,7 @@ mod tests {
 
         let effective = build_effective_trait_schema(&[base_ts, mid_ts, leaf_ts]);
         let mut merged = serde_json::Map::new();
-        merged.insert(
-            "retention".to_owned(),
-            Value::String("P42D".to_owned()),
-        );
+        merged.insert("retention".to_owned(), Value::String("P42D".to_owned()));
         let materialized = apply_defaults(&effective, &Value::Object(merged));
 
         let retention = materialized
@@ -1512,10 +1509,7 @@ mod tests {
             &mut merged,
             json!({"retention": "P7D"}).as_object().unwrap(),
         );
-        merge_rfc7396_into(
-            &mut merged,
-            json!({"retention": null}).as_object().unwrap(),
-        );
+        merge_rfc7396_into(&mut merged, json!({"retention": null}).as_object().unwrap());
         assert!(
             !merged.contains_key("retention"),
             "null patch should remove the key from merged"
