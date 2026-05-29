@@ -81,11 +81,18 @@ pub fn validate_schema_modifiers(content: &Value) -> Result<(), String> {
 /// rejected (fail fast) rather than silently ignored.
 ///
 /// The rule constrains only the *position* of the keyword, not the *contents*
-/// of its value: the top-level `x-gts-traits-schema` is an ordinary JSON Schema
-/// subschema whose body may legitimately carry `x-gts-*` members (e.g. when an
-/// existing GTS type is reused as a trait-schema source via `$ref`). The
-/// top-level `x-gts-traits` / `x-gts-traits-schema` values are therefore not
-/// re-scanned.
+/// of the two top-level trait keywords, so neither value is re-scanned — for
+/// distinct reasons:
+///
+/// - `x-gts-traits-schema` is an ordinary JSON Schema subschema whose body may
+///   legitimately carry `x-gts-*` members (e.g. when an existing GTS type is
+///   reused as a trait-schema source via `$ref`); §9.7.1 explicitly exempts its
+///   contents.
+/// - `x-gts-traits` is a plain JSON object of trait *values* matched against
+///   the effective trait-schema. A member that happens to be keyed
+///   `x-gts-traits` / `x-gts-traits-schema` inside it is ordinary data, not a
+///   misplaced keyword — just as instance data may contain any key. There is no
+///   subschema there for a keyword to be "misplaced" in.
 ///
 /// # Errors
 /// Returns an error describing the first misplaced keyword found.
@@ -354,6 +361,23 @@ mod tests {
         }));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("x-gts-traits-schema"));
+    }
+
+    #[test]
+    fn test_x_gts_keys_inside_trait_values_tolerated() {
+        // The top-level x-gts-traits holds trait *values* matched against the
+        // effective trait-schema, not a subschema. A member keyed
+        // `x-gts-traits` nested inside those values is ordinary data, not a
+        // misplaced keyword, and must NOT be flagged (§9.7.1 scope clause).
+        assert!(
+            validate_trait_placement(&json!({
+                "type": "object",
+                "x-gts-traits": {
+                    "nested": {"x-gts-traits": {}}
+                }
+            }))
+            .is_ok()
+        );
     }
 
     #[test]

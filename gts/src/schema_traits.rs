@@ -167,12 +167,23 @@ pub fn validate_effective_traits(
 /// Returns true when at least one subschema along the chain is the JSON
 /// boolean `false`. Under JSON Schema `allOf` semantics, `false` makes the
 /// composed schema unsatisfiable; treat it as the "traits prohibited" signal.
+///
+/// Recursion is bounded by [`MAX_RECURSION_DEPTH`] to prevent stack overflow.
 fn effective_schema_is_false(schema: &Value) -> bool {
+    effective_schema_is_false_recursive(schema, 0)
+}
+
+fn effective_schema_is_false_recursive(schema: &Value, depth: usize) -> bool {
+    if depth >= MAX_RECURSION_DEPTH {
+        return false;
+    }
     match schema {
         Value::Bool(false) => true,
         Value::Object(obj) => {
             if let Some(Value::Array(items)) = obj.get("allOf") {
-                items.iter().any(effective_schema_is_false)
+                items
+                    .iter()
+                    .any(|item| effective_schema_is_false_recursive(item, depth + 1))
             } else {
                 false
             }
@@ -269,10 +280,25 @@ fn collect_traits_recursive(
 ///
 /// This is the trait-merge primitive used to compose `x-gts-traits` along the
 /// `$id` chain (root → leaf).
+///
+/// Recursion over nested objects is bounded by [`MAX_RECURSION_DEPTH`] to
+/// prevent stack overflow on deeply-nested (or maliciously crafted) trait
+/// values.
 pub(crate) fn merge_rfc7396_into(
     target: &mut serde_json::Map<String, Value>,
     patch: &serde_json::Map<String, Value>,
 ) {
+    merge_rfc7396_recursive(target, patch, 0);
+}
+
+fn merge_rfc7396_recursive(
+    target: &mut serde_json::Map<String, Value>,
+    patch: &serde_json::Map<String, Value>,
+    depth: usize,
+) {
+    if depth >= MAX_RECURSION_DEPTH {
+        return;
+    }
     for (k, v) in patch {
         match v {
             Value::Null => {
@@ -280,13 +306,13 @@ pub(crate) fn merge_rfc7396_into(
             }
             Value::Object(patch_obj) => {
                 if let Some(Value::Object(existing)) = target.get_mut(k) {
-                    merge_rfc7396_into(existing, patch_obj);
+                    merge_rfc7396_recursive(existing, patch_obj, depth + 1);
                 } else {
                     // Either target lacks the key or holds a non-object —
                     // RFC 7396: a new object value replaces wholesale, but
                     // inner `null`s in the patch still mean "no such key".
                     let mut fresh = serde_json::Map::new();
-                    merge_rfc7396_into(&mut fresh, patch_obj);
+                    merge_rfc7396_recursive(&mut fresh, patch_obj, depth + 1);
                     target.insert(k.clone(), Value::Object(fresh));
                 }
             }
