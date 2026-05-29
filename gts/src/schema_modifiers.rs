@@ -72,6 +72,49 @@ pub fn validate_schema_modifiers(content: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate that `x-gts-traits` and `x-gts-traits-schema` appear only at the
+/// schema document top level (GTS spec § 9.7.1/§9.11).
+///
+/// Like the modifier placement rule, these are type-level keywords describing
+/// the GTS Type as a whole; nesting either inside a subschema (`allOf`,
+/// `properties`, `$defs`, combinators, `items`, …) is a misplacement and is
+/// rejected (fail fast) rather than silently ignored.
+///
+/// The rule constrains only the *position* of the keyword, not the *contents*
+/// of its value: the top-level `x-gts-traits-schema` is an ordinary JSON Schema
+/// subschema whose body may legitimately carry `x-gts-*` members (e.g. when an
+/// existing GTS type is reused as a trait-schema source via `$ref`). The
+/// top-level `x-gts-traits` / `x-gts-traits-schema` values are therefore not
+/// re-scanned.
+///
+/// # Errors
+/// Returns an error describing the first misplaced keyword found.
+pub fn validate_trait_placement(content: &Value) -> Result<(), String> {
+    if let Value::Object(map) = content {
+        for (k, v) in map {
+            // The four document-level keyword slots are allowed at the top
+            // level; their own values are not re-scanned (see doc comment).
+            if k == X_GTS_FINAL
+                || k == X_GTS_ABSTRACT
+                || k == X_GTS_TRAITS
+                || k == X_GTS_TRAITS_SCHEMA
+            {
+                continue;
+            }
+            if contains_key_recursive(v, X_GTS_TRAITS_SCHEMA) {
+                return Err(format!(
+                    "{X_GTS_TRAITS_SCHEMA} must be at the schema top level"
+                ));
+            }
+            if contains_key_recursive(v, X_GTS_TRAITS) {
+                return Err(format!("{X_GTS_TRAITS} must be at the schema top level"));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Check that schema-only keywords (`x-gts-final`, `x-gts-abstract`,
 /// `x-gts-traits-schema`, `x-gts-traits`) do not appear anywhere in instance
 /// content. Per GTS spec § 9.7.1 and § 9.11.1 these annotations are only
@@ -235,6 +278,104 @@ mod tests {
         }));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("x-gts-abstract"));
+    }
+
+    // =========================================================================
+    // validate_trait_placement unit tests (GTS spec §9.7.1/§9.11)
+    // =========================================================================
+
+    #[test]
+    fn test_traits_top_level_ok() {
+        assert!(
+            validate_trait_placement(&json!({
+                "type": "object",
+                "x-gts-traits-schema": {
+                    "type": "object",
+                    "properties": {"topicRef": {"type": "string"}}
+                },
+                "x-gts-traits": {"topicRef": "events.orders"},
+                "allOf": [{"$ref": "gts.x.foo.base.v1~"}]
+            }))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_traits_inside_allof_rejected() {
+        let result = validate_trait_placement(&json!({
+            "type": "object",
+            "allOf": [
+                {"$ref": "gts.x.foo.base.v1~"},
+                {"type": "object", "x-gts-traits": {"topicRef": "events.orders"}},
+            ],
+        }));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("x-gts-traits"));
+    }
+
+    #[test]
+    fn test_traits_schema_inside_allof_rejected() {
+        let result = validate_trait_placement(&json!({
+            "type": "object",
+            "allOf": [
+                {"$ref": "gts.x.foo.base.v1~"},
+                {
+                    "type": "object",
+                    "x-gts-traits-schema": {
+                        "type": "object",
+                        "properties": {"auditRetention": {"type": "string"}}
+                    }
+                },
+            ],
+        }));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("x-gts-traits-schema"));
+    }
+
+    #[test]
+    fn test_traits_inside_properties_rejected() {
+        let result = validate_trait_placement(&json!({
+            "type": "object",
+            "properties": {
+                "nested": {"type": "object", "x-gts-traits": {"topicRef": "x"}},
+            },
+        }));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("x-gts-traits"));
+    }
+
+    #[test]
+    fn test_traits_schema_inside_defs_rejected() {
+        let result = validate_trait_placement(&json!({
+            "type": "object",
+            "$defs": {
+                "Sub": {"type": "object", "x-gts-traits-schema": {"type": "object"}},
+            },
+        }));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("x-gts-traits-schema"));
+    }
+
+    #[test]
+    fn test_x_gts_keys_inside_trait_schema_value_tolerated() {
+        // The contents of the top-level x-gts-traits-schema are an ordinary
+        // JSON Schema subschema and may carry x-gts-* members (e.g. a $ref-
+        // reused GTS type). The placement rule constrains only the keyword's
+        // position, so nested x-gts-traits / x-gts-traits-schema *inside* the
+        // top-level trait-schema value must NOT be flagged (§9.7.1 scope clause).
+        assert!(
+            validate_trait_placement(&json!({
+                "type": "object",
+                "x-gts-traits-schema": {
+                    "type": "object",
+                    "x-gts-traits-schema": {"type": "object"},
+                    "x-gts-traits": {"foo": "bar"},
+                    "properties": {"retention": {"type": "string"}}
+                },
+                "x-gts-traits": {"retention": "P30D"}
+            }))
+            .is_ok()
+        );
     }
 
     // =========================================================================
