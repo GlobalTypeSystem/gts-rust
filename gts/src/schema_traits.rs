@@ -85,8 +85,9 @@ pub fn validate_traits_chain(chain_schemas: &[(String, Value)]) -> Result<(), Ve
 ///
 /// `merged_traits` – shallow-merged `x-gts-traits` values (rightmost wins).
 ///
-/// When `check_unresolved` is `true`, every trait-schema property without a
-/// default must have a value in `merged_traits`; set to `false` for
+/// When `check_unresolved` is `true`, every *required* trait-schema property
+/// without a default must have a value in `merged_traits` (optional properties
+/// may be left unresolved, per README §9.7.5 / OP#13); set to `false` for
 /// intermediate schema validation where descendants may still supply values.
 ///
 /// # Errors
@@ -414,15 +415,53 @@ fn collect_props_recursive(schema: &Value, props: &mut Vec<(String, Value)>, dep
     }
 }
 
+/// Collect the union of `required` property names declared at the top level or
+/// within any `allOf` branch of the (effective) trait schema. Mirrors
+/// [`collect_all_properties`] so completeness enforcement matches JSON Schema's
+/// own `required` aggregation across the composed chain.
+fn collect_all_required(schema: &Value) -> std::collections::HashSet<String> {
+    let mut req = std::collections::HashSet::new();
+    collect_required_recursive(schema, &mut req, 0);
+    req
+}
+
+fn collect_required_recursive(
+    schema: &Value,
+    req: &mut std::collections::HashSet<String>,
+    depth: usize,
+) {
+    if depth >= MAX_RECURSION_DEPTH {
+        return;
+    }
+
+    let Some(obj) = schema.as_object() else {
+        return;
+    };
+
+    if let Some(Value::Array(required)) = obj.get("required") {
+        for item in required {
+            if let Some(name) = item.as_str() {
+                req.insert(name.to_owned());
+            }
+        }
+    }
+
+    if let Some(Value::Array(all_of)) = obj.get("allOf") {
+        for item in all_of {
+            collect_required_recursive(item, req, depth + 1);
+        }
+    }
+}
+
 /// Validate the effective traits object against the effective trait schema.
 ///
 /// Uses the `jsonschema` crate for standard JSON Schema validation.  This
 /// catches type mismatches, enum violations, `additionalProperties` errors,
 /// and any other constraint issues.
 ///
-/// Additionally checks that every property defined in the trait schema is
-/// resolved (has a value) — i.e. there are no "holes" left after applying
-/// defaults.
+/// Additionally checks that every *required* property defined in the trait
+/// schema is resolved (has a value or default) — i.e. there are no required
+/// "holes" left after applying defaults. Optional properties may be unresolved.
 fn validate_traits_against_schema(
     trait_schema: &Value,
     effective_traits: &Value,
@@ -457,9 +496,20 @@ fn validate_traits_against_schema(
     }
 
     let all_props = collect_all_properties(trait_schema);
+    let required = collect_all_required(trait_schema);
     let traits_obj = effective_traits.as_object();
 
     for (prop_name, prop_schema) in &all_props {
+        // Only *required* trait properties must be resolved. An optional
+        // property left unresolved is spec-valid: the GTS spec keys completeness
+        // on standard JSON Schema validation (README §9.7.5) and OP#13 requires
+        // resolution of "all required trait properties" — not every declared one.
+        // (Standard JSON Schema validation above already reports missing required
+        // members; this loop adds a type-annotated, trait-specific message.)
+        if !required.contains(prop_name.as_str()) {
+            continue;
+        }
+
         let has_value = traits_obj.is_some_and(|m| m.contains_key(prop_name.as_str()));
 
         let has_default = prop_schema
@@ -607,7 +657,8 @@ mod tests {
                         "properties": {
                             "topicRef": {"type": "string"},
                             "retention": {"type": "string", "default": "P30D"}
-                        }
+                        },
+                        "required": ["topicRef"]
                     }
                 }),
             ),
@@ -625,6 +676,32 @@ mod tests {
         assert!(
             err.iter().any(|e| e.contains("topicRef")),
             "should mention missing topicRef: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_optional_unresolved_trait_passes() {
+        // Spec (README §9.7.5 / OP#13): only *required* trait properties must be
+        // resolved. An optional declared property left unresolved is valid — it
+        // simply stays absent and standard JSON Schema validation accepts it.
+        let chain = vec![(
+            "base~".to_owned(),
+            json!({
+                "type": "object",
+                "x-gts-traits-schema": {
+                    "type": "object",
+                    "properties": {
+                        "topicRef": {"type": "string"},
+                        "note": {"type": "string"}
+                    },
+                    "required": ["topicRef"]
+                },
+                "x-gts-traits": {"topicRef": "events.orders"}
+            }),
+        )];
+        assert!(
+            validate_traits_chain(&chain).is_ok(),
+            "optional unresolved trait property must not fail completeness"
         );
     }
 
@@ -783,7 +860,8 @@ mod tests {
                         "type": "object",
                         "properties": {
                             "priority": {"type": "string"}
-                        }
+                        },
+                        "required": ["priority"]
                     }
                 }),
             ),
@@ -1159,7 +1237,8 @@ mod tests {
                         "properties": {
                             "topicRef": {"type": "string"},
                             "retention": {"type": "string", "default": "P30D"}
-                        }
+                        },
+                        "required": ["topicRef"]
                     }
                 }),
             ),
@@ -1251,7 +1330,10 @@ mod tests {
             "dedup should keep rightmost definition"
         );
 
-        // Verify that missing priority only reports once
+        // Verify the unresolved-property check dedups: priority is declared in
+        // two layers but the trait-specific "is not resolved" message must be
+        // emitted only once (not per declaration). priority is required here so
+        // the completeness check fires.
         let chain_missing = vec![
             (
                 "base~".to_owned(),
@@ -1262,7 +1344,8 @@ mod tests {
                         "properties": {
                             "priority": {"type": "string"},
                             "retention": {"type": "string", "default": "P30D"}
-                        }
+                        },
+                        "required": ["priority"]
                     }
                 }),
             ),
@@ -1284,11 +1367,16 @@ mod tests {
             ("leaf~".to_owned(), json!({"type": "object"})),
         ];
         let err = validate_traits_chain(&chain_missing).unwrap_err();
-        let priority_errors: Vec<_> = err.iter().filter(|e| e.contains("priority")).collect();
+        // Isolate the manual completeness message (the standard JSON Schema
+        // validator separately reports the missing `required` member).
+        let unresolved_priority: Vec<_> = err
+            .iter()
+            .filter(|e| e.contains("priority") && e.contains("is not resolved"))
+            .collect();
         assert_eq!(
-            priority_errors.len(),
+            unresolved_priority.len(),
             1,
-            "priority should be reported exactly once, got: {priority_errors:?}"
+            "priority should be reported as unresolved exactly once, got: {unresolved_priority:?}"
         );
     }
 
