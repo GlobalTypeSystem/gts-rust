@@ -1,0 +1,20 @@
+{
+  "$id": "gts://gts.x.test.golden.open.v1~",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "Open traits host",
+  "properties": {
+    "id": {
+      "description": "GTS instance identifier",
+      "format": "gts-instance-id",
+      "title": "GTS Instance ID",
+      "type": "string",
+      "x-gts-ref": "gts.*"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "type": "object",
+  "x-gts-traits-schema": true
+}

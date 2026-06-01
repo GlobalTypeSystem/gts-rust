@@ -1,0 +1,50 @@
+{
+  "$id": "gts://gts.x.test.golden.litevent.v1~",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "Abstract base declaring the order trait shape",
+  "properties": {
+    "id": {
+      "description": "GTS instance identifier",
+      "format": "gts-instance-id",
+      "title": "GTS Instance ID",
+      "type": "string",
+      "x-gts-ref": "gts.*"
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "id",
+    "payload"
+  ],
+  "type": "object",
+  "x-gts-abstract": true,
+  "x-gts-traits-schema": {
+    "properties": {
+      "indexed": {
+        "type": "boolean"
+      },
+      "partition_count": {
+        "format": "uint32",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "retention": {
+        "type": "string"
+      },
+      "topic_ref": {
+        "type": "string",
+        "x-gts-ref": "gts.x.core.events.topic.v1~"
+      }
+    },
+    "required": [
+      "topic_ref",
+      "retention",
+      "indexed",
+      "partition_count"
+    ],
+    "type": "object"
+  }
+}

@@ -1,44 +1,32 @@
 {
-  "$id": "gts://gts.x.core.events.type.v1~",
+  "$id": "gts://gts.x.test.golden.event.v1~",
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
-  "description": "Base event type definition",
+  "description": "Base event",
   "properties": {
     "id": {
-      "format": "uuid",
-      "type": "string"
+      "description": "GTS instance identifier",
+      "format": "gts-instance-id",
+      "title": "GTS Instance ID",
+      "type": "string",
+      "x-gts-ref": "gts.*"
     },
     "payload": {
       "type": "object"
-    },
-    "sequence_id": {
-      "format": "uint64",
-      "minimum": 0,
-      "type": "integer"
-    },
-    "tenant_id": {
-      "format": "uuid",
-      "type": "string"
-    },
-    "type": {
-      "description": "GTS type identifier",
-      "format": "gts-type-id",
-      "title": "GTS Type ID",
-      "type": "string",
-      "x-gts-ref": "gts.*"
     }
   },
   "required": [
-    "type",
     "id",
-    "tenant_id",
-    "sequence_id",
     "payload"
   ],
   "type": "object",
   "x-gts-abstract": true,
   "x-gts-traits-schema": {
     "properties": {
+      "indexed": {
+        "const": true,
+        "type": "boolean"
+      },
       "retention": {
         "default": "P30D",
         "type": "string"
@@ -49,7 +37,8 @@
       }
     },
     "required": [
-      "topic_ref"
+      "topic_ref",
+      "indexed"
     ],
     "type": "object"
   }

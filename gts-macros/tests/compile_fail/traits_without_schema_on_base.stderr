@@ -1,0 +1,13 @@
+error: struct_to_gts_schema: `traits` values were provided but no `traits_schema` is declared on this base type. A base host must declare its own trait-shape via `traits_schema = ...` to legally carry trait values.
+  --> tests/compile_fail/traits_without_schema_on_base.rs:13:14
+   |
+13 |     traits = serde_json::json!({ "retention": "P30D" }),
+   |              ^^^^^^^^^^
+
+warning: unused import: `gts::GtsInstanceId`
+ --> tests/compile_fail/traits_without_schema_on_base.rs:4:5
+  |
+4 | use gts::GtsInstanceId;
+  |     ^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

@@ -74,7 +74,13 @@ pub fn validate_traits_chain(chain_schemas: &[(String, Value)]) -> Result<(), Ve
         collect_trait_schema_from_value(content, &mut trait_schemas);
         collect_traits_from_value(content, &mut merged);
     }
-    validate_effective_traits(&trait_schemas, &Value::Object(merged), true)
+    // Dialect comes from the leaf document's `$schema`, mirroring the store path.
+    // Absent (synthetic fixtures without `$schema`) falls back to the validator's
+    // default draft, exactly like the rest of the crate.
+    let dialect = chain_schemas
+        .last()
+        .and_then(|(_, content)| content.get("$schema").and_then(Value::as_str));
+    validate_effective_traits(&trait_schemas, &Value::Object(merged), true, dialect)
 }
 
 /// Validates trait values against the effective trait schema built from the
@@ -90,6 +96,16 @@ pub fn validate_traits_chain(chain_schemas: &[(String, Value)]) -> Result<(), Ve
 /// may be left unresolved, per README §9.7.5 / OP#13); set to `false` for
 /// intermediate schema validation where descendants may still supply values.
 ///
+/// `dialect` is the host document's `$schema` URI (e.g.
+/// `http://json-schema.org/draft-07/schema#`). When `Some`, it pins the JSON
+/// Schema draft used to validate trait values so they are interpreted under the
+/// same dialect as the rest of the type schema (README §9.10) — necessary
+/// because the inline trait fragment had its root-only `$schema` stripped when
+/// embedded. When `None`, validation falls back to the validator's automatic
+/// draft detection (Draft 2020-12 when no `$schema` is present), matching how
+/// instance and schema validation behave elsewhere in this crate. A GTS Type
+/// Schema always declares `$schema`, so the store path always passes `Some`.
+///
 /// # Errors
 /// Returns `Vec<String>` of error messages if trait values don't conform to the
 /// effective trait schema, if required traits are missing, or if traits exist
@@ -98,6 +114,7 @@ pub fn validate_effective_traits(
     resolved_trait_schemas: &[Value],
     merged_traits: &Value,
     check_unresolved: bool,
+    dialect: Option<&str>,
 ) -> Result<(), Vec<String>> {
     let has_trait_values = merged_traits.as_object().is_some_and(|m| !m.is_empty());
 
@@ -144,7 +161,7 @@ pub fn validate_effective_traits(
         }
     }
 
-    let effective_trait_schema = build_effective_trait_schema(resolved_trait_schemas);
+    let mut effective_trait_schema = build_effective_trait_schema(resolved_trait_schemas);
 
     // If any subschema in the chain is the boolean `false`, the effective
     // schema is unsatisfiable. A type that carries no traits at all is still
@@ -160,8 +177,45 @@ pub fn validate_effective_traits(
         return Ok(());
     }
 
+    // Pin the JSON Schema dialect to the host document's `$schema` so trait
+    // values validate under the same draft as the rest of the type schema
+    // (README §9.10: the dialect is set by `$schema`). The inline trait fragment
+    // had its root-only `$schema` stripped when embedded, so we (re)set it from
+    // the host here. When the caller supplies no dialect, we leave the schema as
+    // is and let the validator detect/default the draft (Draft 2020-12), matching
+    // instance/schema validation elsewhere in this crate.
+    if let Some(dialect) = dialect
+        && let Some(obj) = effective_trait_schema.as_object_mut()
+    {
+        obj.insert("$schema".to_owned(), Value::String(dialect.to_owned()));
+    }
+
     let effective_traits = apply_defaults(&effective_trait_schema, merged_traits);
-    validate_traits_against_schema(&effective_trait_schema, &effective_traits, check_unresolved)
+
+    let mut errors = match validate_traits_against_schema(
+        &effective_trait_schema,
+        &effective_traits,
+        check_unresolved,
+    ) {
+        Ok(()) => Vec::new(),
+        Err(e) => e,
+    };
+
+    // Enforce `x-gts-ref` on trait values (README §9.6). The standard
+    // `jsonschema` validator ignores `x-gts-ref` as an unknown keyword, so a
+    // trait value that violates the declared GTS-prefix would otherwise slip
+    // through. Treat the effective trait-schema as the schema and the
+    // materialized effective traits as the instance.
+    let xref = crate::x_gts_ref::XGtsRefValidator::new();
+    for err in xref.validate_instance(&effective_traits, &effective_trait_schema, "") {
+        errors.push(format!("trait x-gts-ref: {err}"));
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
 }
 
 /// Returns true when at least one subschema along the chain is the JSON
@@ -550,7 +604,10 @@ fn validate_traits_against_schema(
                 .unwrap_or("any");
             errors.push(format!(
                 "trait property '{prop_name}' (type: {expected_type}) is not resolved: \
-                 no value provided and no default defined in the trait schema"
+                 no value provided and no default defined in the trait schema. \
+                 All traits must be resolved (via a {X_GTS_TRAITS} value in the chain \
+                 or a `default` in the trait schema) on non-abstract types; otherwise \
+                 mark the type abstract (x-gts-abstract: true)"
             ));
         }
     }
@@ -576,7 +633,7 @@ mod tests {
     fn test_no_traits_schema_passes() {
         let chain = vec![(
             "gts.x.test.base.v1~".to_owned(),
-            json!({"type": "object", "properties": {"id": {"type": "string"}}}),
+            json!({"$schema": "http://json-schema.org/draft-07/schema#", "type": "object", "properties": {"id": {"type": "string"}}}),
         )];
         assert!(validate_traits_chain(&chain).is_ok());
     }
@@ -586,11 +643,11 @@ mod tests {
         let chain = vec![
             (
                 "base~".to_owned(),
-                json!({"type": "object", "properties": {"id": {"type": "string"}}}),
+                json!({"$schema": "http://json-schema.org/draft-07/schema#", "type": "object", "properties": {"id": {"type": "string"}}}),
             ),
             (
                 "derived~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits": {"retention": "P30D"}
                 }),
@@ -607,7 +664,7 @@ mod tests {
     fn test_traits_without_schema_in_base_fails() {
         let chain = vec![(
             "base~".to_owned(),
-            json!({
+            json!({"$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "x-gts-traits": {"retention": "P30D"},
                 "properties": {"id": {"type": "string"}}
@@ -625,7 +682,7 @@ mod tests {
         let chain = vec![
             (
                 "gts.x.test.base.v1~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits-schema": {
                         "type": "object",
@@ -638,7 +695,7 @@ mod tests {
             ),
             (
                 "gts.x.test.base.v1~x.test._.derived.v1~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits": {
                         "retention": "P90D",
@@ -655,7 +712,7 @@ mod tests {
         let chain = vec![
             (
                 "base~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits-schema": {
                         "type": "object",
@@ -666,7 +723,10 @@ mod tests {
                     }
                 }),
             ),
-            ("derived~".to_owned(), json!({"type": "object"})),
+            (
+                "derived~".to_owned(),
+                json!({"$schema": "http://json-schema.org/draft-07/schema#", "type": "object"}),
+            ),
         ];
         assert!(validate_traits_chain(&chain).is_ok());
     }
@@ -676,7 +736,7 @@ mod tests {
         let chain = vec![
             (
                 "base~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits-schema": {
                         "type": "object",
@@ -690,7 +750,7 @@ mod tests {
             ),
             (
                 "derived~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits": {
                         "retention": "P90D"
@@ -712,7 +772,7 @@ mod tests {
         // simply stays absent and standard JSON Schema validation accepts it.
         let chain = vec![(
             "base~".to_owned(),
-            json!({
+            json!({"$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "x-gts-traits-schema": {
                     "type": "object",
@@ -736,7 +796,7 @@ mod tests {
         let chain = vec![
             (
                 "base~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits-schema": {
                         "type": "object",
@@ -748,7 +808,7 @@ mod tests {
             ),
             (
                 "derived~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits": {
                         "maxRetries": "not_a_number"
@@ -765,7 +825,7 @@ mod tests {
         let chain = vec![
             (
                 "base~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits-schema": {
                         "type": "object",
@@ -778,7 +838,7 @@ mod tests {
             ),
             (
                 "derived~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits": {
                         "retention": "P90D",
@@ -800,7 +860,7 @@ mod tests {
         let chain = vec![
             (
                 "base~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits-schema": {
                         "type": "object",
@@ -812,14 +872,14 @@ mod tests {
             ),
             (
                 "mid~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits": {"retention": "P30D"}
                 }),
             ),
             (
                 "leaf~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits": {"retention": "P365D"}
                 }),
@@ -833,7 +893,7 @@ mod tests {
         let chain = vec![
             (
                 "base~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits-schema": {
                         "type": "object",
@@ -846,7 +906,7 @@ mod tests {
             ),
             (
                 "mid~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits-schema": {
                         "type": "object",
@@ -868,7 +928,7 @@ mod tests {
         let chain = vec![
             (
                 "base~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits-schema": {
                         "type": "object",
@@ -880,7 +940,7 @@ mod tests {
             ),
             (
                 "mid~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits-schema": {
                         "type": "object",
@@ -893,7 +953,7 @@ mod tests {
             ),
             (
                 "leaf~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits": {"retention": "P90D"}
                 }),
@@ -911,7 +971,7 @@ mod tests {
         let chain = vec![
             (
                 "base~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits-schema": {
                         "type": "object",
@@ -927,7 +987,7 @@ mod tests {
             ),
             (
                 "derived~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits": {"priority": "ultra_high"}
                 }),
@@ -942,7 +1002,7 @@ mod tests {
         let chain = vec![
             (
                 "base~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits-schema": {
                         "type": "object",
@@ -959,7 +1019,7 @@ mod tests {
             ),
             (
                 "derived~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits": {"maxRetries": -1}
                 }),
@@ -976,7 +1036,7 @@ mod tests {
         let chain = vec![
             (
                 "base~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits-schema": {
                         "type": "object",
@@ -989,7 +1049,7 @@ mod tests {
             ),
             (
                 "mid~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits-schema": {
                         "type": "object",
@@ -1012,7 +1072,7 @@ mod tests {
         let chain = vec![
             (
                 "base~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits-schema": {
                         "type": "object",
@@ -1025,7 +1085,7 @@ mod tests {
             ),
             (
                 "mid~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits-schema": {
                         "type": "object",
@@ -1041,7 +1101,7 @@ mod tests {
             ),
             (
                 "leaf~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits": {"priority": "ultra_high"}
                 }),
@@ -1056,7 +1116,7 @@ mod tests {
         // Chain near MAX_RECURSION_DEPTH — exercises recursion guard boundary
         let mut chain = vec![(
             "base~".to_owned(),
-            json!({
+            json!({"$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "x-gts-traits-schema": {
                     "type": "object",
@@ -1067,7 +1127,10 @@ mod tests {
             }),
         )];
         for i in 1..super::MAX_RECURSION_DEPTH {
-            chain.push((format!("level{i}~"), json!({"type": "object"})));
+            chain.push((
+                format!("level{i}~"),
+                json!({"$schema": "http://json-schema.org/draft-07/schema#", "type": "object"}),
+            ));
         }
         assert!(validate_traits_chain(&chain).is_ok());
     }
@@ -1078,14 +1141,14 @@ mod tests {
         let chain = vec![
             (
                 "base~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits-schema": "not_an_object"
                 }),
             ),
             (
                 "derived~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits": {"foo": "bar"}
                 }),
@@ -1107,7 +1170,7 @@ mod tests {
         let chain = vec![
             (
                 "base~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits-schema": {
                         "type": "object",
@@ -1125,7 +1188,7 @@ mod tests {
             ),
             (
                 "derived~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits": {
                         "retry": {"maxAttempts": 5}
@@ -1145,7 +1208,7 @@ mod tests {
         let chain = vec![
             (
                 "base~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits-schema": {
                         "type": "object",
@@ -1161,7 +1224,7 @@ mod tests {
             ),
             (
                 "derived~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits": {
                         "tags": ["audit", "compliance"]
@@ -1189,7 +1252,7 @@ mod tests {
         // supplies a matching x-gts-traits value.
         let chain = vec![(
             "base~".to_owned(),
-            json!({
+            json!({"$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "x-gts-traits-schema": {
                     "type": "object",
@@ -1218,7 +1281,7 @@ mod tests {
         let chain = vec![
             (
                 "base~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits-schema": {
                         "type": "object",
@@ -1236,7 +1299,7 @@ mod tests {
             ),
             (
                 "derived~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits": {
                         "retry": {"maxAttempts": 5}
@@ -1256,7 +1319,7 @@ mod tests {
         let chain = vec![
             (
                 "base~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits-schema": {
                         "type": "object",
@@ -1270,7 +1333,7 @@ mod tests {
             ),
             (
                 "derived~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits": {"retention": "P90D"}
                 }),
@@ -1289,14 +1352,14 @@ mod tests {
         let chain = vec![
             (
                 "base~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits-schema": {}
                 }),
             ),
             (
                 "derived~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits": {"anything": "goes", "count": 42}
                 }),
@@ -1316,7 +1379,7 @@ mod tests {
         let chain = vec![
             (
                 "base~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits-schema": {
                         "type": "object",
@@ -1329,7 +1392,7 @@ mod tests {
             ),
             (
                 "mid~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits-schema": {
                         "type": "object",
@@ -1344,7 +1407,7 @@ mod tests {
             ),
             (
                 "leaf~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits": {"priority": "high"}
                 }),
@@ -1363,7 +1426,7 @@ mod tests {
         let chain_missing = vec![
             (
                 "base~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits-schema": {
                         "type": "object",
@@ -1377,7 +1440,7 @@ mod tests {
             ),
             (
                 "mid~".to_owned(),
-                json!({
+                json!({"$schema": "http://json-schema.org/draft-07/schema#",
                     "type": "object",
                     "x-gts-traits-schema": {
                         "type": "object",
@@ -1390,7 +1453,10 @@ mod tests {
                     }
                 }),
             ),
-            ("leaf~".to_owned(), json!({"type": "object"})),
+            (
+                "leaf~".to_owned(),
+                json!({"$schema": "http://json-schema.org/draft-07/schema#", "type": "object"}),
+            ),
         ];
         let err = validate_traits_chain(&chain_missing).unwrap_err();
         // Isolate the manual completeness message (the standard JSON Schema
@@ -1412,7 +1478,7 @@ mod tests {
         // with a clear message about being an invalid JSON Schema
         let chain = vec![(
             "base~".to_owned(),
-            json!({
+            json!({"$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "x-gts-traits-schema": {
                     "type": "invalid_type_value"
@@ -1435,19 +1501,19 @@ mod tests {
         // because (a) defaults are JSON Schema annotations that don't participate
         // in narrowing and (b) `collect_all_properties` dedup keeps the last
         // occurrence along the root→leaf-ordered `allOf`.
-        let base_ts = json!({
+        let base_ts = json!({"$schema": "http://json-schema.org/draft-07/schema#",
             "type": "object",
             "properties": {
                 "retention": {"type": "string", "default": "P30D"}
             }
         });
-        let mid_ts = json!({
+        let mid_ts = json!({"$schema": "http://json-schema.org/draft-07/schema#",
             "type": "object",
             "properties": {
                 "retention": {"type": "string", "default": "P90D"}
             }
         });
-        let leaf_ts = json!({
+        let leaf_ts = json!({"$schema": "http://json-schema.org/draft-07/schema#",
             "type": "object",
             "properties": {
                 "retention": {"type": "string", "default": "P365D"}
@@ -1473,19 +1539,19 @@ mod tests {
         // Same 3-level chain as above, but mid supplies an explicit value via
         // x-gts-traits. After RFC 7396 chain merge, retention is set; the
         // materialization step must NOT clobber it with the leaf's default.
-        let base_ts = json!({
+        let base_ts = json!({"$schema": "http://json-schema.org/draft-07/schema#",
             "type": "object",
             "properties": {
                 "retention": {"type": "string", "default": "P30D"}
             }
         });
-        let mid_ts = json!({
+        let mid_ts = json!({"$schema": "http://json-schema.org/draft-07/schema#",
             "type": "object",
             "properties": {
                 "retention": {"type": "string", "default": "P90D"}
             }
         });
-        let leaf_ts = json!({
+        let leaf_ts = json!({"$schema": "http://json-schema.org/draft-07/schema#",
             "type": "object",
             "properties": {
                 "retention": {"type": "string", "default": "P365D"}
@@ -1515,13 +1581,13 @@ mod tests {
         // materialization should fill it from the leaf-most default declaration.
         // This is the "null reverts to the schema default" path documented for
         // the merge strategy.
-        let base_ts = json!({
+        let base_ts = json!({"$schema": "http://json-schema.org/draft-07/schema#",
             "type": "object",
             "properties": {
                 "retention": {"type": "string", "default": "P30D"}
             }
         });
-        let leaf_ts = json!({
+        let leaf_ts = json!({"$schema": "http://json-schema.org/draft-07/schema#",
             "type": "object",
             "properties": {
                 "retention": {"type": "string", "default": "P365D"}
@@ -1533,9 +1599,16 @@ mod tests {
         let mut merged = serde_json::Map::new();
         merge_rfc7396_into(
             &mut merged,
-            json!({"retention": "P7D"}).as_object().unwrap(),
+            json!({"$schema": "http://json-schema.org/draft-07/schema#", "retention": "P7D"})
+                .as_object()
+                .unwrap(),
         );
-        merge_rfc7396_into(&mut merged, json!({"retention": null}).as_object().unwrap());
+        merge_rfc7396_into(
+            &mut merged,
+            json!({"$schema": "http://json-schema.org/draft-07/schema#", "retention": null})
+                .as_object()
+                .unwrap(),
+        );
         assert!(
             !merged.contains_key("retention"),
             "null patch should remove the key from merged"

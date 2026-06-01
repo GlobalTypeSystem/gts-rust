@@ -15,12 +15,32 @@ mod test_structs {
     use gts_macros::struct_to_gts_schema;
     use schemars::JsonSchema;
 
+    // GTS spec sec. 9.7: inline trait-shape declaring the system-behaviour
+    // properties shared by every event type. It is an ordinary JsonSchema
+    // struct - `x-gts-ref` / `default` come from standard schemars/serde
+    // attributes. The base host embeds it via `traits_schema = inline(...)`;
+    // the leaf resolves concrete values via `traits = EventTypeTraitsV1 { ... }`.
+    #[derive(JsonSchema, Serialize, Deserialize)]
+    pub struct EventTypeTraitsV1 {
+        // Required trait: no default, so every non-abstract type in the chain
+        // must resolve it explicitly via `x-gts-traits` (OP#13 completeness).
+        #[schemars(extend("x-gts-ref" = "gts.x.core.events.topic.v1~"))]
+        pub topic_ref: String,
+        #[serde(default = "default_retention")]
+        pub retention: String,
+    }
+    fn default_retention() -> String {
+        "P30D".to_owned()
+    }
+
     #[struct_to_gts_schema(
         dir_path = "schemas",
         base = true,
         type_id = "gts.x.core.events.type.v1~",
         description = "Base event type definition",
-        properties = "event_type,id,tenant_id,sequence_id,payload"
+        properties = "event_type,id,tenant_id,sequence_id,payload",
+        traits_schema = inline(EventTypeTraitsV1),
+        gts_abstract = true,
     )]
     #[derive(Debug, Serialize, Deserialize, JsonSchema)]
     pub struct BaseEventV1<P> {
@@ -37,7 +57,8 @@ mod test_structs {
         base = BaseEventV1,
         type_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~",
         description = "Audit event with user context",
-        properties = "user_agent,user_id,ip_address,data"
+        properties = "user_agent,user_id,ip_address,data",
+        gts_abstract = true,
     )]
     #[derive(Debug, JsonSchema)]
     pub struct AuditPayloadV1<D> {
@@ -52,7 +73,10 @@ mod test_structs {
         base = AuditPayloadV1,
         type_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~",
         description = "Order placement audit event",
-        properties = "order_id,product_id"
+        properties = "order_id,product_id",
+        traits = serde_json::json!({
+            "topic_ref": "gts.x.core.events.topic.v1~x.marketplace._.orders.v1"
+        }),
     )]
     #[derive(Debug, JsonSchema)]
     pub struct PlaceOrderDataV1<E> {

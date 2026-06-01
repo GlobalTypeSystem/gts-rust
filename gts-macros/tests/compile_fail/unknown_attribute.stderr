@@ -1,4 +1,4 @@
-error: Unknown attribute. Expected: dir_path, type_id (or deprecated `schema_id`), description, properties, or base
+error: Unknown attribute. Expected: dir_path, type_id (or deprecated `schema_id`), description, properties, base, traits_schema, traits, gts_abstract, or gts_final
   --> tests/compile_fail/unknown_attribute.rs:11:5
    |
 11 |     unknown_key = "some value"

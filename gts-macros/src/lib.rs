@@ -345,7 +345,7 @@ fn validate_version_match(struct_ident: &syn::Ident, type_id: &str) -> syn::Resu
 /// so `#[derive(MyJsonSchema)]` does NOT match `JsonSchema` and
 /// `#[derive(SerializeIfPresent)]` does NOT match `Serialize`. Path prefixes
 /// are stripped (`serde::Serialize` matches `Serialize`). `cfg_attr`-wrapped
-/// derives are intentionally not consulted here — the callers (`add_missing_derives`)
+/// derives are intentionally not consulted here - the callers (`add_missing_derives`)
 /// auto-add unconditional derives, and a conditional derive is treated as
 /// "not present" for the unconditional case.
 fn has_derive(input: &syn::DeriveInput, trait_name: &str) -> bool {
@@ -629,6 +629,25 @@ enum BaseAttr {
 }
 
 /// Arguments for the `struct_to_gts_schema` macro
+/// How a host declares its `x-gts-traits-schema` (GTS spec sec. 9.7).
+///
+/// The form is explicit in the grammar (no host-side branching on the type):
+/// `inline(T)` embeds T's schemars object subschema; a bare type `T` (a
+/// `#[struct_to_gts_schema]` GTS type) becomes an `allOf` + `$ref` to its
+/// `TYPE_ID`; `true`/`false` are boolean subschemas. `const`/`default`/`x-gts-ref`
+/// on trait properties are expressed with standard `#[schemars(extend(...))]` /
+/// `#[serde(default)]` attributes on the inline struct.
+enum TraitsSchemaSpec {
+    /// `traits_schema = true` / `false` - boolean subschema.
+    Bool(bool),
+    /// `traits_schema = inline(T)` - embed `T`'s `JsonSchema` object subschema.
+    Inline(syn::Path),
+    /// `traits_schema = T` - `$ref` to a registered `#[struct_to_gts_schema]`
+    /// type via its `TYPE_ID`.
+    Ref(syn::Path),
+}
+
+#[allow(clippy::struct_excessive_bools)]
 struct GtsSchemaArgs {
     dir_path: String,
     type_id: String,
@@ -638,6 +657,17 @@ struct GtsSchemaArgs {
     /// True if the user wrote `schema_id = ...` (deprecated) instead of `type_id = ...`.
     /// Drives a compile-time deprecation warning emitted by the macro.
     schema_id_alias_used: bool,
+    /// `traits_schema = ...` - the host's `x-gts-traits-schema` (sec. 9.7.2).
+    traits_schema: Option<TraitsSchemaSpec>,
+    /// `traits = <expr>` - the host's `x-gts-traits` values (sec. 9.7.3); any
+    /// expression whose serde output is a JSON object.
+    traits: Option<syn::Expr>,
+    /// Span of the `traits` expression, for the base-without-schema diagnostic.
+    traits_span: Option<proc_macro2::Span>,
+    /// `gts_abstract = true` -> `x-gts-abstract: true` (sec. 9.11).
+    gts_abstract: bool,
+    /// `gts_final = true` -> `x-gts-final: true` (sec. 9.11).
+    gts_final: bool,
 }
 
 impl Parse for GtsSchemaArgs {
@@ -648,6 +678,11 @@ impl Parse for GtsSchemaArgs {
         let mut description: Option<String> = None;
         let mut properties: Option<String> = None;
         let mut base: Option<BaseAttr> = None;
+        let mut traits_schema: Option<TraitsSchemaSpec> = None;
+        let mut traits: Option<syn::Expr> = None;
+        let mut traits_span: Option<proc_macro2::Span> = None;
+        let mut gts_abstract = false;
+        let mut gts_final = false;
 
         while !input.is_empty() {
             let key: syn::Ident = input.parse()?;
@@ -729,10 +764,36 @@ impl Parse for GtsSchemaArgs {
                         ));
                     }
                 }
+                "traits_schema" => {
+                    // `true` / `false` -> boolean subschema; `inline(T)` -> embed
+                    // T's schemars object; bare type `T` -> $ref to its TYPE_ID.
+                    if input.peek(syn::LitBool) {
+                        let lit: syn::LitBool = input.parse()?;
+                        traits_schema = Some(TraitsSchemaSpec::Bool(lit.value));
+                    } else {
+                        let expr: syn::Expr = input.parse()?;
+                        traits_schema = Some(classify_traits_schema_expr(expr)?);
+                    }
+                }
+                "traits" => {
+                    // Any expression; the emitter serializes it via
+                    // `serde_json::to_value` at runtime and asserts it is an object.
+                    let expr: syn::Expr = input.parse()?;
+                    traits_span = Some(syn::spanned::Spanned::span(&expr));
+                    traits = Some(expr);
+                }
+                "gts_abstract" => {
+                    let lit: syn::LitBool = input.parse()?;
+                    gts_abstract = lit.value;
+                }
+                "gts_final" => {
+                    let lit: syn::LitBool = input.parse()?;
+                    gts_final = lit.value;
+                }
                 _ => {
                     return Err(syn::Error::new_spanned(
                         key,
-                        "Unknown attribute. Expected: dir_path, type_id (or deprecated `schema_id`), description, properties, or base",
+                        "Unknown attribute. Expected: dir_path, type_id (or deprecated `schema_id`), description, properties, base, traits_schema, traits, gts_abstract, or gts_final",
                     ));
                 }
             }
@@ -754,7 +815,43 @@ impl Parse for GtsSchemaArgs {
             base: base
                 .ok_or_else(|| input.error("Missing required attribute: base (use 'base = true' for base types or 'base = ParentStruct' for child types)"))?,
             schema_id_alias_used,
+            traits_schema,
+            traits,
+            traits_span,
+            gts_abstract,
+            gts_final,
         })
+    }
+}
+
+/// Classify the expression form of `traits_schema = ...` into a
+/// [`TraitsSchemaSpec`]: `inline(T)`, a bare type path `T`, or reject anything
+/// else (the `true`/`false` literal forms are handled before this is called).
+fn classify_traits_schema_expr(expr: syn::Expr) -> syn::Result<TraitsSchemaSpec> {
+    const HELP: &str = "expected `inline(T)`, a type path, or `true`/`false`";
+    match expr {
+        syn::Expr::Call(call) => {
+            let is_inline = matches!(&*call.func, syn::Expr::Path(p) if p.path.is_ident("inline"));
+            if !is_inline {
+                return Err(syn::Error::new_spanned(&call.func, HELP));
+            }
+            if call.args.len() != 1 {
+                return Err(syn::Error::new_spanned(
+                    &call,
+                    "inline(...) takes exactly one type path, e.g. `inline(MyTraits)`",
+                ));
+            }
+            match call.args.into_iter().next() {
+                Some(syn::Expr::Path(p)) => Ok(TraitsSchemaSpec::Inline(p.path)),
+                Some(other) => Err(syn::Error::new_spanned(
+                    other,
+                    "inline(...) expects a type path, e.g. `inline(MyTraits)`",
+                )),
+                None => Err(syn::Error::new_spanned(HELP, HELP)),
+            }
+        }
+        syn::Expr::Path(p) => Ok(TraitsSchemaSpec::Ref(p.path)),
+        other => Err(syn::Error::new_spanned(other, HELP)),
     }
 }
 
@@ -765,12 +862,12 @@ impl Parse for GtsSchemaArgs {
 /// ## 1. Compile-Time Validation & Guarantees
 ///
 /// The macro validates your annotations at compile time, catching errors early:
-/// - ✅ All required attributes exist (`dir_path`, `type_id`, `description`, `properties`)
-/// - ✅ Every property in `properties` exists as a field in the struct
-/// - ✅ Only structs with named fields are supported (no tuple/unit structs or enums)
-/// - ✅ Single generic parameter maximum (prevents inheritance ambiguity)
-/// - ✅ Valid GTS ID format enforcement
-/// - ✅ Zero runtime allocation for generated constants
+/// -   All required attributes exist (`dir_path`, `type_id`, `description`, `properties`)
+/// -   Every property in `properties` exists as a field in the struct
+/// -   Only structs with named fields are supported (no tuple/unit structs or enums)
+/// -   Single generic parameter maximum (prevents inheritance ambiguity)
+/// -   Valid GTS ID format enforcement
+/// -   Zero runtime allocation for generated constants
 ///
 /// ## 2. Schema Generation
 ///
@@ -856,6 +953,39 @@ impl Parse for GtsSchemaArgs {
 pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr as GtsSchemaArgs);
     let input = parse_macro_input!(item as DeriveInput);
+
+    // Semantic check: a `base = true` host cannot supply `traits` without a local
+    // `traits_schema` - there is no parent to provide the trait-shape (sec. 9.7.3).
+    if args.traits.is_some()
+        && args.traits_schema.is_none()
+        && matches!(args.base, BaseAttr::IsBase)
+    {
+        let span = args
+            .traits_span
+            .unwrap_or_else(proc_macro2::Span::call_site);
+        return syn::Error::new(
+            span,
+            "struct_to_gts_schema: `traits` values were provided but no `traits_schema` is declared \
+             on this base type. A base host must declare its own trait-shape via `traits_schema = ...` \
+             to legally carry trait values.",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    // Semantic check: `x-gts-abstract: true` + `x-gts-final: true` is invalid
+    // (GTS spec sec. 9.11.1 mutual exclusion - "MUST be rejected"). The registry
+    // also rejects it; this fails faster with a clearer message.
+    if args.gts_abstract && args.gts_final {
+        return syn::Error::new_spanned(
+            &input.ident,
+            "struct_to_gts_schema: a type cannot declare both `gts_abstract = true` and \
+             `gts_final = true` (GTS spec sec. 9.11.1: a type that is neither inheritable \
+             nor instantiable is meaningless).",
+        )
+        .to_compile_error()
+        .into();
+    }
 
     // Prohibit multiple type generic parameters (GTS notation assumes nested segments)
     let generic_count = input.generics.type_params().count();
@@ -1169,6 +1299,89 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         BaseAttr::IsBase => quote! {},
     };
 
+    // --- GTS traits (sec. 9.7) / modifiers (sec. 9.11) emission --------------------
+
+    // Compile-time check that the `traits_schema` type satisfies the bound its
+    // representation needs: `inline(T)` requires `T: schemars::JsonSchema`; a
+    // bare `T` ($ref form) requires `T: gts::GtsSchema` (a struct_to_gts_schema
+    // type). Yields a clear trait-bound error otherwise.
+    let traits_schema_assert = match &args.traits_schema {
+        Some(TraitsSchemaSpec::Inline(path)) => quote! {
+            const _: fn() = || {
+                fn _assert_inline_traits_schema<__T: ::schemars::JsonSchema>() {}
+                _assert_inline_traits_schema::<#path>();
+            };
+        },
+        Some(TraitsSchemaSpec::Ref(path)) => quote! {
+            const _: fn() = || {
+                fn _assert_ref_traits_schema<__T: ::gts::GtsSchema>() {}
+                _assert_ref_traits_schema::<#path>();
+            };
+        },
+        _ => quote! {},
+    };
+
+    // Runtime `Option<Value>` for the `x-gts-traits-schema` value.
+    let traits_schema_value_tokens: proc_macro2::TokenStream = match &args.traits_schema {
+        Some(TraitsSchemaSpec::Inline(path)) => quote! {
+            Some(::gts::inline_traits_schema_of::<#path>())
+        },
+        Some(TraitsSchemaSpec::Ref(path)) => quote! {
+            Some(::serde_json::json!({
+                "type": "object",
+                "allOf": [
+                    { "$ref": format!("gts://{}", <#path as ::gts::GtsSchema>::TYPE_ID) }
+                ]
+            }))
+        },
+        Some(TraitsSchemaSpec::Bool(b)) => quote! {
+            Some(::serde_json::Value::Bool(#b))
+        },
+        None => quote! { None::<::serde_json::Value> },
+    };
+
+    // Runtime `Option<Value>` for the `x-gts-traits` value.
+    let traits_value_tokens: proc_macro2::TokenStream = if let Some(expr) = &args.traits {
+        quote! {{
+            let v: ::serde_json::Value = ::serde_json::to_value(&(#expr))
+                .expect("gts traits: serde_json::to_value failed");
+            assert!(
+                v.is_object(),
+                "gts traits expression must serialize to a JSON object",
+            );
+            Some(v)
+        }}
+    } else {
+        quote! { None::<::serde_json::Value> }
+    };
+
+    let abstract_insert = if args.gts_abstract {
+        quote! { obj.insert("x-gts-abstract".to_owned(), ::serde_json::Value::Bool(true)); }
+    } else {
+        quote! {}
+    };
+    let final_insert = if args.gts_final {
+        quote! { obj.insert("x-gts-final".to_owned(), ::serde_json::Value::Bool(true)); }
+    } else {
+        quote! {}
+    };
+
+    // Mutates the root document (bound to `schema`) in place, inserting the trait
+    // and modifier keywords at the **document top level** - sibling of `$id`/
+    // `allOf`, never inside the `allOf` overlay (GTS spec sec. 9.7.1 / sec. 9.11).
+    let inject_root_traits = quote! {
+        if let Some(obj) = schema.as_object_mut() {
+            if let Some(ts) = (#traits_schema_value_tokens) {
+                obj.insert("x-gts-traits-schema".to_owned(), ts);
+            }
+            if let Some(tv) = (#traits_value_tokens) {
+                obj.insert("x-gts-traits".to_owned(), tv);
+            }
+            #abstract_insert
+            #final_insert
+        }
+    };
+
     let gts_schema_impl = if has_generic {
         let generic_param = input.generics.type_params().next().unwrap();
         let generic_ident = &generic_param.ident;
@@ -1301,6 +1514,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                     if !required.as_array().map(|a| a.is_empty()).unwrap_or(true) {
                         schema["required"] = required;
                     }
+                    #inject_root_traits
                     return schema;
                 }
 
@@ -1337,7 +1551,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 // tightness invariant the macro maintains is carried by the
                 // parent's `additionalProperties: false`, which the validator
                 // applies via the resolved $ref inside `allOf[0]`.
-                serde_json::json!({
+                let mut schema = serde_json::json!({
                     "$id": format!("gts://{}", type_id),
                     "$schema": "http://json-schema.org/draft-07/schema#",
                     "description": #description,
@@ -1349,7 +1563,11 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                             "properties": nested_properties
                         }
                     ]
-                })
+                });
+                // Trait/modifier keywords go at the document top level, never in
+                // the allOf overlay (GTS spec sec. 9.7.1 / sec. 9.7.4).
+                #inject_root_traits
+                schema
             }
         }
     } else {
@@ -1417,6 +1635,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                     if !required.as_array().map(|a| a.is_empty()).unwrap_or(true) {
                         schema["required"] = required;
                     }
+                    #inject_root_traits
                     return schema;
                 }
 
@@ -1430,7 +1649,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 let nested_properties = Self::wrap_in_nesting_path(&path_refs, properties, required, None);
                 // No top-level `additionalProperties: false` here either -
                 // see the matching comment in `gts_schema_for!` above.
-                serde_json::json!({
+                let mut schema = serde_json::json!({
                     "$id": format!("gts://{}", type_id),
                     "$schema": "http://json-schema.org/draft-07/schema#",
                     "description": #description,
@@ -1442,7 +1661,11 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                             "properties": nested_properties
                         }
                     ]
-                })
+                });
+                // Trait/modifier keywords go at the document top level, never in
+                // the allOf overlay (GTS spec sec. 9.7.1 / sec. 9.7.4).
+                #inject_root_traits
+                schema
             }
         }
     };
@@ -1854,6 +2077,9 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         // Compile-time assertion for base struct matching (if specified)
         #base_assertion
 
+        // Compile-time bound check for `traits_schema = inline(T)` / bare `T`
+        #traits_schema_assert
+
         // Custom serialization for unit structs to serialize as {} instead of null
         #custom_serialize_impl
 
@@ -1933,6 +2159,18 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 Self::gts_schema_with_refs_allof()
             }
 
+            // This type's own `x-gts-traits-schema` / `x-gts-traits` (the same
+            // values injected at the document top level by gts_schema_with_refs),
+            // exposed as typed accessors so callers need not re-parse the schema.
+            // Type-parameter independent: they reflect the type's own declaration.
+            fn gts_traits_schema() -> Option<serde_json::Value> {
+                #traits_schema_value_tokens
+            }
+
+            fn gts_traits() -> Option<serde_json::Value> {
+                #traits_value_tokens
+            }
+
             #gts_schema_impl
         }
 
@@ -1977,7 +2215,7 @@ mod instance;
 /// The macro takes a Rust struct literal and rewrites the GTS instance-id
 /// field's string-literal value into a `GtsInstanceId::new(prefix, segment)`
 /// call after compile-time validation. The id field is one of `id` /
-/// `gts_id` / `gtsId` — whichever your `#[struct_to_gts_schema]`-generated
+/// `gts_id` / `gtsId` - whichever your `#[struct_to_gts_schema]`-generated
 /// type uses; the macro picks the matching name automatically.
 ///
 /// ## Expression form (default)
@@ -1992,14 +2230,14 @@ mod instance;
 ///
 /// The literal is validated against `gts_id::validate_gts_id` and
 /// const-asserted to share its prefix with `<TopicV1 as GtsSchema>::TYPE_ID`.
-/// The id field's apparent string value is rewritten by the macro — at
+/// The id field's apparent string value is rewritten by the macro - at
 /// runtime `t.id` is a `GtsInstanceId`, not a `String`.
 ///
-/// ## Chained generic carriers — turbofish drives the prefix-assert
+/// ## Chained generic carriers - turbofish drives the prefix-assert
 ///
 /// For chained schemas, write the conforming type as a turbofish on the
 /// struct literal. The macro descends through angle args to the deepest
-/// non-generic path and uses that as the const-assert target — so the
+/// non-generic path and uses that as the const-assert target - so the
 /// literal's prefix is matched against the full chain's schema id, not
 /// the bare carrier's:
 ///
@@ -2012,11 +2250,11 @@ mod instance;
 ///
 /// `BaseV1::<()> { ... }` keeps the carrier itself as the target (a
 /// base-level instance). Bare `BaseV1 { ... }` (no turbofish on a generic
-/// carrier) is rejected — Rust requires explicit generics in the trait
+/// carrier) is rejected - Rust requires explicit generics in the trait
 /// position the macro emits, and the turbofish is the only signal the
 /// macro has for picking the conforming type.
 ///
-/// ## `#[gts_static(NAME)]` — emit a `pub static LazyLock<T>` binding
+/// ## `#[gts_static(NAME)]` - emit a `pub static LazyLock<T>` binding
 ///
 /// In item position, the macro can additionally wrap the produced value
 /// in a lazily-initialised static binding so that other modules can
@@ -2032,7 +2270,7 @@ mod instance;
 ///     }
 /// }
 ///
-/// // Elsewhere — typed access by name, no JSON round-trip:
+/// // Elsewhere - typed access by name, no JSON round-trip:
 /// let t: &TopicV1 = &ORDERS_TOPIC;
 /// ```
 ///
@@ -2042,7 +2280,7 @@ mod instance;
 /// ## What you don't need `#[gts_static]` for
 ///
 /// Adding an instance to a JSON-shaped runtime registry (e.g.
-/// `inventory::submit!`) doesn't need a static — pass the bare expression
+/// `inventory::submit!`) doesn't need a static - pass the bare expression
 /// form into a closure:
 ///
 /// ```ignore
@@ -2085,7 +2323,7 @@ pub fn gts_instance(input: TokenStream) -> TokenStream {
 /// is `"id"` carrying a string-literal value. The id is validated at
 /// proc-macro time (full GTS spec format + chained-form rules) and the
 /// resulting `serde_json::Value` always has the validated literal in its
-/// `"id"` slot — even if the original body is later edited to disagree.
+/// `"id"` slot - even if the original body is later edited to disagree.
 ///
 /// ```ignore
 /// let v: serde_json::Value = gts_macros::gts_instance_raw!({
@@ -2097,7 +2335,7 @@ pub fn gts_instance(input: TokenStream) -> TokenStream {
 ///
 /// Other top-level keys, nested objects, and arrays pass through to
 /// `serde_json::json!` unchanged. The macro only inspects the top-level
-/// `"id"` key — nested `"id"` fields inside sub-objects are payload data,
+/// `"id"` key - nested `"id"` fields inside sub-objects are payload data,
 /// not the instance identifier.
 ///
 /// ## Errors

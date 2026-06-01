@@ -39,5 +39,8 @@
     }
   ],
   "description": "Order placement audit event",
-  "type": "object"
+  "type": "object",
+  "x-gts-traits": {
+    "topic_ref": "gts.x.core.events.topic.v1~x.marketplace._.orders.v1"
+  }
 }

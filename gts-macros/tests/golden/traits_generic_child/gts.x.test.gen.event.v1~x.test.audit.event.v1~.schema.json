@@ -1,9 +1,9 @@
 {
-  "$id": "gts://gts.x.core.events.type.v1~x.core.audit.event.v1~",
+  "$id": "gts://gts.x.test.gen.event.v1~x.test.audit.event.v1~",
   "$schema": "http://json-schema.org/draft-07/schema#",
   "allOf": [
     {
-      "$ref": "gts://gts.x.core.events.type.v1~"
+      "$ref": "gts://gts.x.test.gen.event.v1~"
     },
     {
       "properties": {
@@ -13,21 +13,12 @@
             "data": {
               "type": "object"
             },
-            "ip_address": {
-              "type": "string"
-            },
-            "user_agent": {
-              "type": "string"
-            },
             "user_id": {
-              "format": "uuid",
               "type": "string"
             }
           },
           "required": [
-            "user_agent",
             "user_id",
-            "ip_address",
             "data"
           ],
           "type": "object"
@@ -36,7 +27,10 @@
       "type": "object"
     }
   ],
-  "description": "Audit event with user context",
+  "description": "Still-generic abstract mid resolving the inherited topic trait",
   "type": "object",
-  "x-gts-abstract": true
+  "x-gts-abstract": true,
+  "x-gts-traits": {
+    "topic_ref": "gts.x.core.events.topic.v1~x.test._.audit.v1"
+  }
 }

@@ -1,0 +1,28 @@
+{
+  "$id": "gts://gts.x.test.traits.priority.v1~x.test.urgent.detail.v1~",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "allOf": [
+    {
+      "$ref": "gts://gts.x.test.traits.priority.v1~"
+    },
+    {
+      "properties": {
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "category": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "category"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "object"
+    }
+  ],
+  "description": "Priority trait specifying the payload slot",
+  "type": "object"
+}

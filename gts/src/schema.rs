@@ -87,6 +87,33 @@ pub trait GtsSchema {
         Self::gts_schema_with_refs()
     }
 
+    /// This type's *own* declared `x-gts-traits-schema` (GTS spec §9.7.2), or
+    /// `None` if it declares no trait shape.
+    ///
+    /// This is the single layer this type contributes — **not** the
+    /// chain-aggregated effective trait-schema. The registry composes all
+    /// `x-gts-traits-schema` declarations along the `$id` chain via `allOf`
+    /// (§9.7.5); to get the effective shape, collect this across the chain.
+    ///
+    /// The default returns `None`; `#[struct_to_gts_schema]` overrides it when
+    /// `traits_schema = …` is set.
+    #[must_use]
+    fn gts_traits_schema() -> Option<Value> {
+        None
+    }
+
+    /// This type's *own* declared `x-gts-traits` values (GTS spec §9.7.3), or
+    /// `None` if it resolves no trait values.
+    ///
+    /// This is the single layer this type contributes — **not** the chain-merged
+    /// effective traits object (the registry merges layers root→leaf per RFC 7396,
+    /// §9.7.5). The default returns `None`; `#[struct_to_gts_schema]` overrides it
+    /// when `traits = …` is set.
+    #[must_use]
+    fn gts_traits() -> Option<Value> {
+        None
+    }
+
     /// Collect the nesting path (generic field names) from outer to inner types.
     /// For `BaseEventV1<AuditPayloadV1<PlaceOrderDataV1>>`, returns `["payload", "data"]`.
     #[must_use]
