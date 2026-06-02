@@ -99,8 +99,8 @@ pub fn validate_traits_chain(chain_schemas: &[(String, Value)]) -> Result<(), Ve
 /// `dialect` is the host document's `$schema` URI (e.g.
 /// `http://json-schema.org/draft-07/schema#`). When `Some`, it pins the JSON
 /// Schema draft used to validate trait values so they are interpreted under the
-/// same dialect as the rest of the type schema (README §9.10) — necessary
-/// because the inline trait fragment had its root-only `$schema` stripped when
+/// same dialect as the rest of the type schema — necessary because the inline
+/// trait fragment had its root-only `$schema` stripped when
 /// embedded. When `None`, validation falls back to the validator's automatic
 /// draft detection (Draft 2020-12 when no `$schema` is present), matching how
 /// instance and schema validation behave elsewhere in this crate. A GTS Type
@@ -179,8 +179,8 @@ pub fn validate_effective_traits(
 
     // Pin the JSON Schema dialect to the host document's `$schema` so trait
     // values validate under the same draft as the rest of the type schema
-    // (README §9.10: the dialect is set by `$schema`). The inline trait fragment
-    // had its root-only `$schema` stripped when embedded, so we (re)set it from
+    // (the dialect is set by `$schema`). The inline trait fragment had its
+    // root-only `$schema` stripped when embedded, so we (re)set it from
     // the host here. When the caller supplies no dialect, we leave the schema as
     // is and let the validator detect/default the draft (Draft 2020-12), matching
     // instance/schema validation elsewhere in this crate.
@@ -201,7 +201,7 @@ pub fn validate_effective_traits(
         Err(e) => e,
     };
 
-    // Enforce `x-gts-ref` on trait values (README §9.6). The standard
+    // Enforce `x-gts-ref` on trait values. The standard
     // `jsonschema` validator ignores `x-gts-ref` as an unknown keyword, so a
     // trait value that violates the declared GTS-prefix would otherwise slip
     // through. Treat the effective trait-schema as the schema and the

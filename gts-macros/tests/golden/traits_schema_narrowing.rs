@@ -1,10 +1,8 @@
 // Golden case: BOTH a base and a derived type declare `x-gts-traits-schema`.
 // The base declares `priority` as an open string; the derived **narrows** it to
 // an enum. The macro emits each type's own trait-schema at the document top
-// level — the registry composes them via `allOf` along the chain (spec §9.7.5),
-// so the leaf's effective trait-schema constrains `priority` to both the base's
-// `string` and the derived's enum. The behavioural counterpart that proves the
-// composed `allOf` accepts/rejects values lives in `traits_tests.rs`.
+// level; the registry composes them via `allOf` along the chain. The
+// behavioural counterpart (accept/reject) lives in `traits_tests.rs`.
 
 use gts::{GtsInstanceId, GtsSchema};
 use gts_macros::struct_to_gts_schema;

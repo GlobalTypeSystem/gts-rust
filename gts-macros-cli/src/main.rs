@@ -15,8 +15,8 @@ mod test_structs {
     use gts_macros::struct_to_gts_schema;
     use schemars::JsonSchema;
 
-    // GTS spec sec. 9.7: inline trait-shape declaring the system-behaviour
-    // properties shared by every event type. It is an ordinary JsonSchema
+    // Inline trait-shape declaring the system-behaviour properties shared by
+    // every event type. It is an ordinary JsonSchema
     // struct - `x-gts-ref` / `default` come from standard schemars/serde
     // attributes. The base host embeds it via `traits_schema = inline(...)`;
     // the leaf resolves concrete values via `traits = EventTypeTraitsV1 { ... }`.

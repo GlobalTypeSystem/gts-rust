@@ -3,15 +3,12 @@
 // open `payload` slot; a derived trait `UrgentDetailTraitV1` specifies that
 // payload. Because the derived trait is itself a `#[struct_to_gts_schema]`
 // child, the macro emits its document as `allOf: [{ $ref: gts://<base-trait> }]`
-// — i.e. the derived traits schema references the base traits schema (§9.7.2,
-// "$ref to reusable trait schemas").
+// — i.e. the derived traits schema references the base traits schema.
 //
-// The hosts pull these in via the referenced form (`traits_schema = T`):
-// - the base host references the base trait → `x-gts-traits-schema` is
-//   `{ type: object, allOf: [{ $ref: gts://<base-trait> }] }`;
-// - the derived host references the derived trait → `{ ... allOf: [{ $ref:
-//   gts://<derived-trait> }] }`, and that derived trait in turn `$ref`s the base
-//   trait, so the base trait surface is reachable through the chain.
+// The hosts pull these in via the referenced form (`traits_schema = T`): the
+// base host references the base trait, the derived host references the derived
+// trait (which in turn `$ref`s the base trait, so the base surface is reachable
+// through the chain).
 
 use gts::{GtsInstanceId, GtsSchema};
 use gts_macros::struct_to_gts_schema;
@@ -62,10 +59,9 @@ pub struct RefBaseV1<P> {
     pub payload: P,
 }
 
-// Abstract: the referenced trait chain (`UrgentDetailTraitV1` → `$ref`
-// `PriorityTraitV1`) carries required properties (`id`, `priority`, `payload`)
-// that this host does not resolve, so OP#13 completeness is skipped for it
-// (§9.11.4). The point of the case is the `$ref` emission, not value resolution.
+// Abstract: the referenced trait chain carries required properties (`id`,
+// `priority`, `payload`) that this host does not resolve, so OP#13 completeness
+// is skipped for it. The point of the case is the `$ref` emission.
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = RefBaseV1,

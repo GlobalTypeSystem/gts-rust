@@ -16,5 +16,9 @@
     "id"
   ],
   "type": "object",
+  "x-gts-traits": {
+    "anything": "goes",
+    "count": 7
+  },
   "x-gts-traits-schema": true
 }

@@ -1,7 +1,7 @@
 //! GTS Type Schema Traits — Rust-side helper for building the inline
-//! `x-gts-traits-schema` fragment (GTS spec sec. 9.7).
+//! `x-gts-traits-schema` fragment.
 //!
-//! A trait shape can be supplied two ways (sec. 9.7.2):
+//! A trait shape can be supplied two ways:
 //!
 //! - **inline** — a private object subschema embedded directly under
 //!   `x-gts-traits-schema`. Produced from any `#[derive(schemars::JsonSchema)]`

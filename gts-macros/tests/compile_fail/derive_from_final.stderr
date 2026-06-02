@@ -1,0 +1,11 @@
+error[E0080]: evaluation panicked: struct_to_gts_schema: cannot derive from final type 'FinalBaseV1' (it declares `gts_final = true` / `x-gts-final: true`; final types are not inheritable)
+  --> tests/compile_fail/derive_from_final.rs:21:1
+   |
+21 | / #[struct_to_gts_schema(
+22 | |     dir_path = "schemas",
+23 | |     base = FinalBaseV1,
+24 | |     type_id = "gts.x.app.entities.leaf.v1~x.app.child.thing.v1~",
+25 | |     description = "Illegal child of a final type",
+26 | |     properties = "name",
+27 | | )]
+   | |__^ evaluation of `_` failed here

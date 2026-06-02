@@ -1,4 +1,4 @@
-//! Trait (§9.7 / OP#13) **behaviour** tests for the macros — things a static
+//! Trait (OP#13) **behaviour** tests for the macros — things a static
 //! golden cannot capture: chain composition through the registry and
 //! JSON-Schema compilability of the emitted trait shape.
 //!
@@ -54,7 +54,7 @@ pub struct OrderPlacedV1 {
     pub order_id: String,
 }
 
-// --- Negative cases (OP#13 / §9.7) ------------------------------------------
+// --- Negative cases (OP#13) -------------------------------------------------
 //
 // These exercise *registry-time* trait validation that the proc-macro
 // deliberately cannot perform at compile time: the required-property set of an
@@ -154,7 +154,7 @@ pub struct CompatBadV1 {
     pub name: String,
 }
 
-// --- const lock (§9.7.5) ----------------------------------------------------
+// --- const lock -------------------------------------------------------------
 
 #[derive(JsonSchema, serde::Serialize, serde::Deserialize)]
 pub struct IndexedTraits {
@@ -193,7 +193,7 @@ pub struct ConstBadLeafV1 {
     pub name: String,
 }
 
-// --- default materializes a required trait (§9.7.5) --------------------------
+// --- default materializes a required trait ----------------------------------
 
 #[derive(JsonSchema, serde::Serialize, serde::Deserialize)]
 pub struct DefaultedTraits {
@@ -218,7 +218,7 @@ pub struct DefaultBaseV1 {
     pub id: GtsInstanceId,
 }
 
-// --- additionalProperties: false narrowing (§9.7.2 / §3.1) -------------------
+// --- additionalProperties: false narrowing ----------------------------------
 
 #[derive(JsonSchema, serde::Serialize, serde::Deserialize)]
 #[schemars(extend("additionalProperties" = false))]
@@ -268,7 +268,7 @@ pub struct ExtendBadLeafV1 {
     pub name: String,
 }
 
-// --- trait-schema chain merge via allOf (§9.7.5) -----------------------------
+// --- trait-schema chain merge via allOf -------------------------------------
 
 #[derive(JsonSchema, serde::Serialize, serde::Deserialize)]
 pub struct BasePriorityTraits {
@@ -376,9 +376,8 @@ fn derived_trait_schema_incompatible_with_parent_fails() {
 }
 
 /// A leaf that overrides a `const`-locked trait value must fail — the
-/// materialized effective traits cannot satisfy `const: true` (§9.7.5). Proves
-/// the macro's schemars `extend("const" = ...)` lands so the registry enforces
-/// the lock.
+/// materialized effective traits cannot satisfy `const: true`. Proves the
+/// macro's schemars `extend("const" = ...)` lands so the registry enforces it.
 #[test]
 fn const_locked_trait_override_on_leaf_fails() {
     let base = ConstBaseV1::<()>::gts_schema_with_refs();
@@ -393,8 +392,8 @@ fn const_locked_trait_override_on_leaf_fails() {
 
 /// A non-abstract type whose only required trait carries a `default` passes
 /// completeness with no `x-gts-traits` — materialization fills the value before
-/// the check (§9.7.5). Proves schemars `extend("default" = ...)` reaches the
-/// effective trait-schema.
+/// the check. Proves schemars `extend("default" = ...)` reaches the effective
+/// trait-schema.
 #[test]
 fn default_materializes_required_trait_on_concrete_base() {
     let base = DefaultBaseV1::gts_schema_with_refs();
@@ -404,8 +403,8 @@ fn default_materializes_required_trait_on_concrete_base() {
 
 /// A leaf that introduces a new trait property under an ancestor's
 /// `additionalProperties: false` must fail — the composed `allOf` rejects the
-/// extra property against the closed ancestor branch (§9.7.2 / §3.1). Proves the
-/// container-level schemars `extend("additionalProperties" = false)` composes.
+/// extra property against the closed ancestor branch. Proves the container-level
+/// schemars `extend("additionalProperties" = false)` composes.
 #[test]
 fn extending_closed_trait_surface_on_leaf_fails() {
     let base = ClosedBaseV1::<()>::gts_schema_with_refs();
@@ -475,8 +474,8 @@ fn trait_accessors_return_the_declared_values() {
         Some(&order_traits)
     );
 
-    // `NarrowOkLeafV1`: both keywords (§9.7.4) — narrows `priority` to an enum
-    // and resolves it.
+    // `NarrowOkLeafV1`: both keywords — narrows `priority` to an enum and
+    // resolves it.
     assert_eq!(
         NarrowOkLeafV1::gts_traits_schema(),
         Some(json!({
@@ -495,4 +494,19 @@ fn trait_accessors_return_the_declared_values() {
     // Default impl: a type that declares no traits returns `None` for both.
     assert_eq!(<() as gts::GtsSchema>::gts_traits_schema(), None);
     assert_eq!(<() as gts::GtsSchema>::gts_traits(), None);
+}
+
+/// The macro sets the `GTS_FINAL` / `GTS_ABSTRACT` modifier consts that the
+/// derive-from-final and instance-of-abstract guards read; the guards themselves
+/// are covered by the `compile_fail` cases.
+// The consts are compile-time-known, so these assertions fold to a constant —
+// that is the point (we verify the emitted value), hence `assertions_on_constants`.
+#[allow(clippy::assertions_on_constants)]
+#[test]
+fn modifier_consts_reflect_macro_args() {
+    assert!(EventV1::<()>::GTS_ABSTRACT && !EventV1::<()>::GTS_FINAL);
+    assert!(OrderPlacedV1::GTS_FINAL && !OrderPlacedV1::GTS_ABSTRACT);
+    // Defaults on the `()` placeholder impl.
+    assert!(!<() as gts::GtsSchema>::GTS_FINAL);
+    assert!(!<() as gts::GtsSchema>::GTS_ABSTRACT);
 }

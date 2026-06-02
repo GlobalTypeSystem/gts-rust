@@ -51,13 +51,11 @@ impl jsonschema::Retrieve for CaseRetriever {
 
 /// Assert every generated document in a case compiles as a JSON Schema.
 ///
-/// Each document is compiled with a retriever populated from the case's own
-/// schemas, so chain `$ref`s resolve. Inline `x-gts-traits-schema` object
-/// subschemas are compiled separately — they are a custom keyword the validator
-/// otherwise ignores, yet must themselves be valid JSON Schema (spec §9.7.1).
-///
-/// This is the *structural* (metaschema) check; [`assert_registry_valid`] adds
-/// the *semantic* GTS checks (OP#12 chain compatibility + OP#13 traits).
+/// Compiled with a retriever populated from the case's own schemas, so chain
+/// `$ref`s resolve. Inline `x-gts-traits-schema` object subschemas are compiled
+/// separately — a custom keyword the validator ignores, yet which must itself be
+/// valid JSON Schema. The *structural* check; [`assert_registry_valid`] adds the
+/// *semantic* GTS checks (OP#12 chain + OP#13 traits).
 fn assert_schemas_valid(case: &str, schemas: &[(String, serde_json::Value)]) {
     let by_uri: HashMap<String, serde_json::Value> = schemas
         .iter()
@@ -93,14 +91,11 @@ fn assert_schemas_valid(case: &str, schemas: &[(String, serde_json::Value)]) {
 
 /// Assert the whole case registers and validates in a real GTS registry.
 ///
-/// Registers every generated schema (trait types, hosts, intermediates) and
-/// runs OP#12 (chain compatibility) + OP#13 (trait-schema / trait-value
-/// validation) on each — the semantic checks the metaschema compile in
-/// [`assert_schemas_valid`] cannot perform: trait completeness on non-abstract
-/// types, `const`/enum/`additionalProperties` enforcement against the merged
-/// effective trait-schema, and resolution of `$ref`-ed reusable trait types.
-/// Every golden case must therefore be a registry-valid set, not merely
-/// compilable JSON Schema.
+/// Registers every generated schema and runs OP#12 (chain) + OP#13 (traits) on
+/// each — the semantic checks compilation can't perform: trait completeness on
+/// non-abstract types, `const`/enum/`additionalProperties` enforcement against
+/// the merged effective trait-schema, and resolution of `$ref`-ed trait types.
+/// Every golden case must therefore be a registry-valid set.
 fn assert_registry_valid(case: &str, schemas: &[(String, serde_json::Value)]) {
     let refs: Vec<&serde_json::Value> = schemas.iter().map(|(_, s)| s).collect();
     gts::testing::validate_all(&refs)

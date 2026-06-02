@@ -1,5 +1,5 @@
 // Golden case: `traits_schema = false` emits the boolean `false` subschema,
-// which prohibits any traits on this host and its descendants (spec §9.7.1).
+// which prohibits any traits on this host and its descendants.
 
 use gts::{GtsInstanceId, GtsSchema};
 use gts_macros::struct_to_gts_schema;

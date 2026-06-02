@@ -2,8 +2,8 @@
 //! with `gts-macros`.
 //!
 //! The primary entry point is [`validate_traits_chain`], which runs the registry
-//! OP#13 trait validation (§ 9.7) over a derivation chain of macro-generated
-//! schemas without the caller having to wire up a [`GtsOps`] by hand.
+//! OP#13 trait validation over a derivation chain of macro-generated schemas
+//! without the caller having to wire up a [`GtsOps`] by hand.
 
 use serde_json::Value;
 
@@ -12,14 +12,10 @@ use crate::ops::GtsOps;
 /// Register a base→leaf chain of GTS type schemas and run OP#13 trait validation
 /// on the leaf.
 ///
-/// Each schema except the last is registered with `validate = false` (it is an
+/// Each schema except the last is registered with `validate = false` (an
 /// intermediate whose required traits may legitimately be closed by a
-/// descendant); the last is registered with `validate = true`, which triggers
-/// the chain-aggregated trait completeness / merge check (§ 9.7.5) against the
-/// fully composed chain.
-///
-/// This mirrors how a real registration pipeline wires parent→child, so a
-/// passing call means the macro-generated schemas form a spec-valid trait chain.
+/// descendant); the last with `validate = true`, triggering the chain-aggregated
+/// trait completeness / merge check against the fully composed chain.
 ///
 /// # Errors
 /// Returns the registry error string of the first schema that fails to register
@@ -42,12 +38,10 @@ pub fn validate_traits_chain(chain: &[&Value]) -> Result<(), String> {
 /// validation) on every one of them.
 ///
 /// Unlike [`validate_traits_chain`], this does not assume a single linear host
-/// chain. All schemas are first registered with `validate = false` (so order is
-/// irrelevant and `$ref`s — e.g. a host's `x-gts-traits-schema` referencing a
-/// reusable trait type — resolve regardless of registration order), and only
-/// then is each validated. Use it when a set of macro-generated schemas (trait
-/// types, hosts, intermediates) must *all* be valid and mutually consistent in
-/// one registry, not just compilable as standalone JSON Schema.
+/// chain. All schemas register first with `validate = false` (so order is
+/// irrelevant and `$ref`s between them resolve), then each is validated. Use it
+/// when a set of macro-generated schemas (trait types, hosts, intermediates)
+/// must *all* be valid and mutually consistent in one registry.
 ///
 /// # Errors
 /// Returns the error of the first schema that fails to register or validate,

@@ -331,6 +331,17 @@ fn build_typed_instance_block(args: &TypedInstanceArgs) -> syn::Result<TokenStre
                     "instance id literal must equal the type's GtsSchema::TYPE_ID followed by a single non-empty segment (no extra `~`); for chained schemas, write the full type as a turbofish on the struct literal (e.g. `BaseV1::<LeafV1>` rather than bare `BaseV1`) so the macro can derive the conforming schema"
                 );
             };
+            // Compile-time guard: an abstract type is not directly instantiable.
+            // `#schema_path` is the rightmost (most-derived) target type.
+            const _: () = {
+                if <#schema_path as ::gts::GtsSchema>::GTS_ABSTRACT {
+                    panic!(
+                        "gts_instance: cannot create an instance of an abstract type \
+                         (it declares `gts_abstract = true` / `x-gts-abstract: true`); \
+                         instantiate a concrete derived type instead"
+                    );
+                }
+            };
             #struct_expr
         }
     })

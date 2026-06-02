@@ -1,4 +1,6 @@
-// Golden case: `traits_schema = true` emits a boolean subschema.
+// Golden case: `traits_schema = true` emits the boolean `true` subschema, which
+// admits any trait values. The host also carries arbitrary `traits` to show they
+// pass validation against the unconstrained `true` shape.
 
 use gts::{GtsInstanceId, GtsSchema};
 use gts_macros::struct_to_gts_schema;
@@ -10,7 +12,11 @@ use schemars::JsonSchema;
     type_id = "gts.x.test.golden.open.v1~",
     description = "Open traits host",
     properties = "id",
-    traits_schema = true
+    traits_schema = true,
+    traits = serde_json::json!({
+        "anything": "goes",
+        "count": 7
+    }),
 )]
 #[derive(Debug, JsonSchema)]
 pub struct OpenHostV1 {

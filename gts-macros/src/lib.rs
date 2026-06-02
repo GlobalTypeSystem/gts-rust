@@ -628,15 +628,11 @@ enum BaseAttr {
     Parent(syn::Ident),
 }
 
-/// Arguments for the `struct_to_gts_schema` macro
-/// How a host declares its `x-gts-traits-schema` (GTS spec sec. 9.7).
-///
-/// The form is explicit in the grammar (no host-side branching on the type):
-/// `inline(T)` embeds T's schemars object subschema; a bare type `T` (a
-/// `#[struct_to_gts_schema]` GTS type) becomes an `allOf` + `$ref` to its
-/// `TYPE_ID`; `true`/`false` are boolean subschemas. `const`/`default`/`x-gts-ref`
-/// on trait properties are expressed with standard `#[schemars(extend(...))]` /
-/// `#[serde(default)]` attributes on the inline struct.
+/// How a host declares its `x-gts-traits-schema`. `inline(T)` embeds `T`'s
+/// schemars object subschema; a bare type `T` (a `#[struct_to_gts_schema]` GTS
+/// type) becomes an `allOf` + `$ref` to its `TYPE_ID`; `true`/`false` are
+/// boolean subschemas. `const`/`default`/`x-gts-ref` on trait properties use
+/// standard `#[schemars(extend(...))]` / `#[serde(default)]` attributes.
 enum TraitsSchemaSpec {
     /// `traits_schema = true` / `false` - boolean subschema.
     Bool(bool),
@@ -657,16 +653,16 @@ struct GtsSchemaArgs {
     /// True if the user wrote `schema_id = ...` (deprecated) instead of `type_id = ...`.
     /// Drives a compile-time deprecation warning emitted by the macro.
     schema_id_alias_used: bool,
-    /// `traits_schema = ...` - the host's `x-gts-traits-schema` (sec. 9.7.2).
+    /// `traits_schema = ...` - the host's `x-gts-traits-schema`.
     traits_schema: Option<TraitsSchemaSpec>,
-    /// `traits = <expr>` - the host's `x-gts-traits` values (sec. 9.7.3); any
-    /// expression whose serde output is a JSON object.
+    /// `traits = <expr>` - the host's `x-gts-traits` values; any expression
+    /// whose serde output is a JSON object.
     traits: Option<syn::Expr>,
     /// Span of the `traits` expression, for the base-without-schema diagnostic.
     traits_span: Option<proc_macro2::Span>,
-    /// `gts_abstract = true` -> `x-gts-abstract: true` (sec. 9.11).
+    /// `gts_abstract = true` -> `x-gts-abstract: true`.
     gts_abstract: bool,
-    /// `gts_final = true` -> `x-gts-final: true` (sec. 9.11).
+    /// `gts_final = true` -> `x-gts-final: true`.
     gts_final: bool,
 }
 
@@ -955,7 +951,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     let input = parse_macro_input!(item as DeriveInput);
 
     // Semantic check: a `base = true` host cannot supply `traits` without a local
-    // `traits_schema` - there is no parent to provide the trait-shape (sec. 9.7.3).
+    // `traits_schema` - there is no parent to provide the trait-shape.
     if args.traits.is_some()
         && args.traits_schema.is_none()
         && matches!(args.base, BaseAttr::IsBase)
@@ -974,14 +970,13 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     }
 
     // Semantic check: `x-gts-abstract: true` + `x-gts-final: true` is invalid
-    // (GTS spec sec. 9.11.1 mutual exclusion - "MUST be rejected"). The registry
-    // also rejects it; this fails faster with a clearer message.
+    // (mutual exclusion). The registry also rejects it; this fails faster.
     if args.gts_abstract && args.gts_final {
         return syn::Error::new_spanned(
             &input.ident,
             "struct_to_gts_schema: a type cannot declare both `gts_abstract = true` and \
-             `gts_final = true` (GTS spec sec. 9.11.1: a type that is neither inheritable \
-             nor instantiable is meaningless).",
+             `gts_final = true` (a type that is neither inheritable nor instantiable is \
+             meaningless).",
         )
         .to_compile_error()
         .into();
@@ -1230,6 +1225,11 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 "struct_to_gts_schema: Base struct '{parent_ident}' must have exactly 1 generic field. \
                  Parent types must define a generic field (e.g., `pub payload: P`) that child types extend."
             );
+            let final_assertion_msg = format!(
+                "struct_to_gts_schema: cannot derive from final type '{parent_ident}' \
+                 (it declares `gts_final = true` / `x-gts-final: true`; final types are \
+                 not inheritable)"
+            );
             quote! {
                 // Compile-time assertion: verify parent struct's TYPE_ID matches expected parent segment
                 // We use <ParentStruct<()> as GtsSchema> since all GTS structs must be generic
@@ -1258,6 +1258,14 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                     const PARENT_GENERIC_FIELD: Option<&'static str> = <#parent_ident<()> as ::gts::GtsSchema>::GENERIC_FIELD;
                     if PARENT_GENERIC_FIELD.is_none() {
                         panic!(#generic_field_assertion_msg);
+                    }
+                };
+
+                // Compile-time guard: a final type is not inheritable, so deriving
+                // from it (`base = <final type>`) must fail to compile.
+                const _: () = {
+                    if <#parent_ident<()> as ::gts::GtsSchema>::GTS_FINAL {
+                        panic!(#final_assertion_msg);
                     }
                 };
             }
@@ -1299,7 +1307,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         BaseAttr::IsBase => quote! {},
     };
 
-    // --- GTS traits (sec. 9.7) / modifiers (sec. 9.11) emission --------------------
+    // --- GTS traits / modifiers emission --------------------
 
     // Compile-time check that the `traits_schema` type satisfies the bound its
     // representation needs: `inline(T)` requires `T: schemars::JsonSchema`; a
@@ -1368,7 +1376,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
 
     // Mutates the root document (bound to `schema`) in place, inserting the trait
     // and modifier keywords at the **document top level** - sibling of `$id`/
-    // `allOf`, never inside the `allOf` overlay (GTS spec sec. 9.7.1 / sec. 9.11).
+    // `allOf`, never inside the `allOf` overlay.
     let inject_root_traits = quote! {
         if let Some(obj) = schema.as_object_mut() {
             if let Some(ts) = (#traits_schema_value_tokens) {
@@ -1381,6 +1389,10 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
             #final_insert
         }
     };
+
+    // Bool literals for the `GTS_FINAL` / `GTS_ABSTRACT` associated consts.
+    let gts_final_value = args.gts_final;
+    let gts_abstract_value = args.gts_abstract;
 
     let gts_schema_impl = if has_generic {
         let generic_param = input.generics.type_params().next().unwrap();
@@ -1565,7 +1577,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                     ]
                 });
                 // Trait/modifier keywords go at the document top level, never in
-                // the allOf overlay (GTS spec sec. 9.7.1 / sec. 9.7.4).
+                // the allOf overlay.
                 #inject_root_traits
                 schema
             }
@@ -1663,7 +1675,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                     ]
                 });
                 // Trait/modifier keywords go at the document top level, never in
-                // the allOf overlay (GTS spec sec. 9.7.1 / sec. 9.7.4).
+                // the allOf overlay.
                 #inject_root_traits
                 schema
             }
@@ -2154,6 +2166,10 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         impl #impl_generics ::gts::GtsSchema for #struct_name #ty_generics #gts_schema_where_clause {
             const TYPE_ID: &'static str = #type_id;
             const GENERIC_FIELD: Option<&'static str> = #generic_field_option;
+            // Modifiers, so children / `gts_instance!` can guard at compile time
+            // on the parent's / target's finality / abstractness.
+            const GTS_FINAL: bool = #gts_final_value;
+            const GTS_ABSTRACT: bool = #gts_abstract_value;
 
             fn gts_schema_with_refs() -> serde_json::Value {
                 Self::gts_schema_with_refs_allof()

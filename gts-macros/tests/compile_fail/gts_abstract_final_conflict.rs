@@ -1,5 +1,5 @@
 //! `gts_abstract = true` together with `gts_final = true` must be rejected
-//! (GTS spec § 9.11.1 mutual exclusion).
+//! (mutual exclusion).
 
 use gts::GtsInstanceId;
 use gts_macros::struct_to_gts_schema;

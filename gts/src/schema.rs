@@ -37,6 +37,16 @@ pub trait GtsSchema {
     /// For example, `BaseEventV1<P>` has `payload` as the generic field.
     const GENERIC_FIELD: Option<&'static str> = None;
 
+    /// `true` if this type declares `x-gts-final` (not inheritable). Set by
+    /// `#[struct_to_gts_schema]` from `gts_final = true`; read by the
+    /// derive-from-final compile-time guard.
+    const GTS_FINAL: bool = false;
+
+    /// `true` if this type declares `x-gts-abstract` (not directly
+    /// instantiable). Set by `#[struct_to_gts_schema]` from `gts_abstract =
+    /// true`; read by the `gts_instance!` compile-time guard.
+    const GTS_ABSTRACT: bool = false;
+
     /// Returns the JSON schema for this type with $ref references intact.
     fn gts_schema_with_refs() -> Value;
 
@@ -87,28 +97,20 @@ pub trait GtsSchema {
         Self::gts_schema_with_refs()
     }
 
-    /// This type's *own* declared `x-gts-traits-schema` (GTS spec §9.7.2), or
-    /// `None` if it declares no trait shape.
-    ///
-    /// This is the single layer this type contributes — **not** the
-    /// chain-aggregated effective trait-schema. The registry composes all
-    /// `x-gts-traits-schema` declarations along the `$id` chain via `allOf`
-    /// (§9.7.5); to get the effective shape, collect this across the chain.
-    ///
-    /// The default returns `None`; `#[struct_to_gts_schema]` overrides it when
-    /// `traits_schema = …` is set.
+    /// This type's *own* declared `x-gts-traits-schema`, or `None` if it
+    /// declares none. The single layer this type contributes — not the
+    /// chain-aggregated effective trait-schema (the registry composes those
+    /// along the `$id` chain via `allOf`). Overridden by
+    /// `#[struct_to_gts_schema]` when `traits_schema = …` is set.
     #[must_use]
     fn gts_traits_schema() -> Option<Value> {
         None
     }
 
-    /// This type's *own* declared `x-gts-traits` values (GTS spec §9.7.3), or
-    /// `None` if it resolves no trait values.
-    ///
-    /// This is the single layer this type contributes — **not** the chain-merged
-    /// effective traits object (the registry merges layers root→leaf per RFC 7396,
-    /// §9.7.5). The default returns `None`; `#[struct_to_gts_schema]` overrides it
-    /// when `traits = …` is set.
+    /// This type's *own* declared `x-gts-traits` values, or `None` if it
+    /// resolves none. The single layer this type contributes — not the
+    /// chain-merged effective traits object. Overridden by
+    /// `#[struct_to_gts_schema]` when `traits = …` is set.
     #[must_use]
     fn gts_traits() -> Option<Value> {
         None

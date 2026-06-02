@@ -1,4 +1,4 @@
-error: struct_to_gts_schema: a type cannot declare both `gts_abstract = true` and `gts_final = true` (GTS spec sec. 9.11.1: a type that is neither inheritable nor instantiable is meaningless).
+error: struct_to_gts_schema: a type cannot declare both `gts_abstract = true` and `gts_final = true` (a type that is neither inheritable nor instantiable is meaningless).
   --> tests/compile_fail/gts_abstract_final_conflict.rs:16:12
    |
 16 | pub struct Thing {
