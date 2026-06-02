@@ -633,6 +633,13 @@ enum BaseAttr {
 /// type) becomes an `allOf` + `$ref` to its `TYPE_ID`; `true`/`false` are
 /// boolean subschemas. `const`/`default`/`x-gts-ref` on trait properties use
 /// standard `#[schemars(extend(...))]` / `#[serde(default)]` attributes.
+///
+/// The `inline(T)` vs bare-`T` split is deliberately the same "embed vs
+/// reference" axis schemars itself exposes: `#[schemars(inline)]` embeds a
+/// type's subschema at every use site, whereas the default factors it into
+/// `$defs` and references it via `$ref`. Our `Inline` mirrors the former and
+/// `Ref` the latter (literally emitting `$ref`), so the keyword and the
+/// semantics line up 1:1 with schemars at the trait-surface layer.
 enum TraitsSchemaSpec {
     /// `traits_schema = true` / `false` - boolean subschema.
     Bool(bool),
@@ -658,8 +665,6 @@ struct GtsSchemaArgs {
     /// `traits = <expr>` - the host's `x-gts-traits` values; any expression
     /// whose serde output is a JSON object.
     traits: Option<syn::Expr>,
-    /// Span of the `traits` expression, for the base-without-schema diagnostic.
-    traits_span: Option<proc_macro2::Span>,
     /// `gts_abstract = true` -> `x-gts-abstract: true`.
     gts_abstract: bool,
     /// `gts_final = true` -> `x-gts-final: true`.
@@ -676,7 +681,6 @@ impl Parse for GtsSchemaArgs {
         let mut base: Option<BaseAttr> = None;
         let mut traits_schema: Option<TraitsSchemaSpec> = None;
         let mut traits: Option<syn::Expr> = None;
-        let mut traits_span: Option<proc_macro2::Span> = None;
         let mut gts_abstract = false;
         let mut gts_final = false;
 
@@ -774,9 +778,7 @@ impl Parse for GtsSchemaArgs {
                 "traits" => {
                     // Any expression; the emitter serializes it via
                     // `serde_json::to_value` at runtime and asserts it is an object.
-                    let expr: syn::Expr = input.parse()?;
-                    traits_span = Some(syn::spanned::Spanned::span(&expr));
-                    traits = Some(expr);
+                    traits = Some(input.parse()?);
                 }
                 "gts_abstract" => {
                     let lit: syn::LitBool = input.parse()?;
@@ -813,7 +815,6 @@ impl Parse for GtsSchemaArgs {
             schema_id_alias_used,
             traits_schema,
             traits,
-            traits_span,
             gts_abstract,
             gts_final,
         })
@@ -858,12 +859,12 @@ fn classify_traits_schema_expr(expr: syn::Expr) -> syn::Result<TraitsSchemaSpec>
 /// ## 1. Compile-Time Validation & Guarantees
 ///
 /// The macro validates your annotations at compile time, catching errors early:
-/// -   All required attributes exist (`dir_path`, `type_id`, `description`, `properties`)
-/// -   Every property in `properties` exists as a field in the struct
-/// -   Only structs with named fields are supported (no tuple/unit structs or enums)
-/// -   Single generic parameter maximum (prevents inheritance ambiguity)
-/// -   Valid GTS ID format enforcement
-/// -   Zero runtime allocation for generated constants
+/// - ✅ All required attributes exist (`dir_path`, `type_id`, `description`, `properties`)
+/// - ✅ Every property in `properties` exists as a field in the struct
+/// - ✅ Only structs with named fields are supported (no tuple/unit structs or enums)
+/// - ✅ Single generic parameter maximum (prevents inheritance ambiguity)
+/// - ✅ Valid GTS ID format enforcement
+/// - ✅ Zero runtime allocation for generated constants
 ///
 /// ## 2. Schema Generation
 ///
@@ -949,25 +950,6 @@ fn classify_traits_schema_expr(expr: syn::Expr) -> syn::Result<TraitsSchemaSpec>
 pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr as GtsSchemaArgs);
     let input = parse_macro_input!(item as DeriveInput);
-
-    // Semantic check: a `base = true` host cannot supply `traits` without a local
-    // `traits_schema` - there is no parent to provide the trait-shape.
-    if args.traits.is_some()
-        && args.traits_schema.is_none()
-        && matches!(args.base, BaseAttr::IsBase)
-    {
-        let span = args
-            .traits_span
-            .unwrap_or_else(proc_macro2::Span::call_site);
-        return syn::Error::new(
-            span,
-            "struct_to_gts_schema: `traits` values were provided but no `traits_schema` is declared \
-             on this base type. A base host must declare its own trait-shape via `traits_schema = ...` \
-             to legally carry trait values.",
-        )
-        .to_compile_error()
-        .into();
-    }
 
     // Semantic check: `x-gts-abstract: true` + `x-gts-final: true` is invalid
     // (mutual exclusion). The registry also rejects it; this fails faster.
@@ -1394,6 +1376,45 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     let gts_final_value = args.gts_final;
     let gts_abstract_value = args.gts_abstract;
 
+    // --- chain-aggregated trait-schema state (`TRAIT_SCHEMA`) + guard ---------
+    // This type's own `x-gts-traits-schema` kind, mapped to a `TraitSchemaState`.
+    let own_trait_state = match &args.traits_schema {
+        None => quote! { ::gts::TraitSchemaState::Absent },
+        Some(TraitsSchemaSpec::Bool(false)) => quote! { ::gts::TraitSchemaState::Prohibited },
+        // `true`, an inline object, or a `$ref` are all satisfiable shapes.
+        Some(_) => quote! { ::gts::TraitSchemaState::Open },
+    };
+    // The ancestor-side state: `Absent` for a base, else the parent's const.
+    let parent_trait_state = match &args.base {
+        BaseAttr::IsBase => quote! { ::gts::TraitSchemaState::Absent },
+        BaseAttr::Parent(parent_ident) => {
+            quote! { <#parent_ident<()> as ::gts::GtsSchema>::TRAIT_SCHEMA }
+        }
+    };
+    // Compile-time guard: `traits` values need a usable trait shape in the chain.
+    // Emitted only when this type carries `traits`; mirrors the registry's OP#13
+    // precondition (`Absent` -> no schema, `Prohibited` -> `false` in chain).
+    let trait_chain_guard = if args.traits.is_some() {
+        quote! {
+            const _: () = {
+                match (#parent_trait_state).join(#own_trait_state) {
+                    ::gts::TraitSchemaState::Absent => panic!(
+                        "struct_to_gts_schema: `traits` values were provided but no `traits_schema` \
+                         is declared anywhere in this type's chain; a trait shape must exist for the \
+                         values to validate against"
+                    ),
+                    ::gts::TraitSchemaState::Prohibited => panic!(
+                        "struct_to_gts_schema: `traits` values were provided but the chain's \
+                         `traits_schema` resolves to `false`, which prohibits all traits"
+                    ),
+                    ::gts::TraitSchemaState::Open => {}
+                }
+            };
+        }
+    } else {
+        quote! {}
+    };
+
     let gts_schema_impl = if has_generic {
         let generic_param = input.generics.type_params().next().unwrap();
         let generic_ident = &generic_param.ident;
@@ -1517,7 +1538,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 if parent_type_id.is_empty() {
                     let mut schema = serde_json::json!({
                         "$id": format!("gts://{}", type_id),
-                        "$schema": "http://json-schema.org/draft-07/schema#",
+                        "$schema": ::gts::JSON_SCHEMA_DRAFT_07,
                         "description": #description,
                         "type": "object",
                         "additionalProperties": false,
@@ -1565,7 +1586,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 // applies via the resolved $ref inside `allOf[0]`.
                 let mut schema = serde_json::json!({
                     "$id": format!("gts://{}", type_id),
-                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "$schema": ::gts::JSON_SCHEMA_DRAFT_07,
                     "description": #description,
                     "type": "object",
                     "allOf": [
@@ -1638,7 +1659,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 if parent_type_id.is_empty() {
                     let mut schema = serde_json::json!({
                         "$id": format!("gts://{}", type_id),
-                        "$schema": "http://json-schema.org/draft-07/schema#",
+                        "$schema": ::gts::JSON_SCHEMA_DRAFT_07,
                         "description": #description,
                         "type": "object",
                         "additionalProperties": false,
@@ -1663,7 +1684,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 // see the matching comment in `gts_schema_for!` above.
                 let mut schema = serde_json::json!({
                     "$id": format!("gts://{}", type_id),
-                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "$schema": ::gts::JSON_SCHEMA_DRAFT_07,
                     "description": #description,
                     "type": "object",
                     "allOf": [
@@ -2092,6 +2113,9 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         // Compile-time bound check for `traits_schema = inline(T)` / bare `T`
         #traits_schema_assert
 
+        // Compile-time guard: `traits` values require a usable trait-schema in the chain
+        #trait_chain_guard
+
         // Custom serialization for unit structs to serialize as {} instead of null
         #custom_serialize_impl
 
@@ -2170,6 +2194,10 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
             // on the parent's / target's finality / abstractness.
             const GTS_FINAL: bool = #gts_final_value;
             const GTS_ABSTRACT: bool = #gts_abstract_value;
+            // Chain-aggregated trait-schema state (own layer `allOf`-composed with
+            // the parent's), powering the traits-need-a-schema compile-time guard.
+            const TRAIT_SCHEMA: ::gts::TraitSchemaState =
+                (#parent_trait_state).join(#own_trait_state);
 
             fn gts_schema_with_refs() -> serde_json::Value {
                 Self::gts_schema_with_refs_allof()

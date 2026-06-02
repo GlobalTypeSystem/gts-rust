@@ -1,10 +1,17 @@
-//! Generic golden-file harness for macro-generated JSON Schemas.
+//! Test harness for macro-generated JSON Schemas. Each case runs three layers:
+//!
+//! 1. **Validity** ([`assert_schemas_valid`]) — every generated document
+//!    compiles as a JSON Schema (structural check).
+//! 2. **Registry** ([`assert_registry_valid`]) — the case registers and passes
+//!    OP#12 (chain) + OP#13 (traits) in a real GTS registry (semantic check).
+//! 3. **Golden** ([`check_golden`]) — the generated schemas are snapshot-matched
+//!    against committed expected files (the *golden* files).
 //!
 //! Each case lives in `tests/golden/<area>_<case>.rs` (structs + a `schemas()`
-//! function returning `(type_id, generated_schema)` pairs) with its expected
-//! JSON Schemas in the sibling directory
-//! `tests/golden/<area>_<case>/<type_id>.schema.json`. Generated schemas are
-//! compared **semantically** (parsed `serde_json::Value`) against the goldens.
+//! function returning `(type_id, generated_schema)` pairs) with its golden
+//! files in the sibling directory
+//! `tests/golden/<area>_<case>/<type_id>.schema.json`. The golden match compares
+//! parsed `serde_json::Value`s (key-order independent), not raw text.
 //!
 //! Bless (regenerate) after an intended change:
 //!
@@ -25,7 +32,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 /// Resolves `gts://<type_id>` `$ref`s against the schemas generated within the
@@ -141,12 +148,22 @@ golden_cases!(
 /// Compare each generated `(type_id, schema)` against
 /// `tests/golden/<case>/<type_id>.schema.json`, or rewrite the goldens when
 /// `GTS_GOLDEN=overwrite` is set.
+///
+/// Also fails on **orphaned** goldens — `*.schema.json` files in the case
+/// directory that no longer correspond to a generated `type_id` (left behind by
+/// a rename/removal). In overwrite mode the orphans are deleted instead, so a
+/// bless after a rename leaves a clean directory.
 fn check_golden(case: &str, schemas: Vec<(String, serde_json::Value)>) {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("golden")
         .join(case);
     let overwrite = std::env::var("GTS_GOLDEN").is_ok_and(|v| v == "overwrite");
+
+    let expected_files: HashSet<String> = schemas
+        .iter()
+        .map(|(type_id, _)| format!("{type_id}.schema.json"))
+        .collect();
 
     for (type_id, schema) in schemas {
         let path = dir.join(format!("{type_id}.schema.json"));
@@ -175,5 +192,26 @@ fn check_golden(case: &str, schemas: Vec<(String, serde_json::Value)>) {
              (run GTS_GOLDEN=overwrite to update)\n--- actual ---\n{}",
             serde_json::to_string_pretty(&schema).unwrap(),
         );
+    }
+
+    // Orphan detection: any `*.schema.json` in the case dir not produced by
+    // `schemas()` is stale (a renamed/removed type left it behind).
+    if dir.exists() {
+        for entry in std::fs::read_dir(&dir).expect("read golden dir") {
+            let entry = entry.expect("read golden dir entry");
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.ends_with(".schema.json") || expected_files.contains(&name) {
+                continue;
+            }
+            if overwrite {
+                std::fs::remove_file(entry.path()).expect("remove orphan golden");
+            } else {
+                panic!(
+                    "orphaned golden file '{name}' in case '{case}' has no matching generated \
+                     schema — delete it or run `GTS_GOLDEN=overwrite cargo test -p gts-macros \
+                     --test golden_tests` to prune"
+                );
+            }
+        }
     }
 }

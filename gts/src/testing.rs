@@ -18,9 +18,12 @@ use crate::ops::GtsOps;
 /// trait completeness / merge check against the fully composed chain.
 ///
 /// # Errors
-/// Returns the registry error string of the first schema that fails to register
-/// (or fails validation).
+/// Returns an error if `chain` is empty, or the registry error string of the
+/// first schema that fails to register (or fails validation).
 pub fn validate_traits_chain(chain: &[&Value]) -> Result<(), String> {
+    if chain.is_empty() {
+        return Err("validate_traits_chain: empty chain (no schemas to validate)".to_owned());
+    }
     let mut ops = GtsOps::new(None, None, 0);
     let last = chain.len().saturating_sub(1);
     for (i, schema) in chain.iter().enumerate() {
@@ -44,9 +47,12 @@ pub fn validate_traits_chain(chain: &[&Value]) -> Result<(), String> {
 /// must *all* be valid and mutually consistent in one registry.
 ///
 /// # Errors
-/// Returns the error of the first schema that fails to register or validate,
-/// prefixed with its `$id`.
+/// Returns an error if `schemas` is empty, or the error of the first schema that
+/// fails to register or validate, prefixed with its `$id`.
 pub fn validate_all(schemas: &[&Value]) -> Result<(), String> {
+    if schemas.is_empty() {
+        return Err("validate_all: empty schema set (nothing to validate)".to_owned());
+    }
     let mut ops = GtsOps::new(None, None, 0);
 
     for schema in schemas {

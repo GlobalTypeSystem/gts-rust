@@ -1,7 +1,6 @@
 //! `gts_abstract = true` together with `gts_final = true` must be rejected
 //! (mutual exclusion).
 
-use gts::GtsInstanceId;
 use gts_macros::struct_to_gts_schema;
 
 #[struct_to_gts_schema(
@@ -14,7 +13,7 @@ use gts_macros::struct_to_gts_schema;
     gts_final = true,
 )]
 pub struct Thing {
-    pub id: GtsInstanceId,
+    pub id: gts::GtsInstanceId,
 }
 
 fn main() {}

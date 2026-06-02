@@ -38,6 +38,7 @@
   "type": "object",
   "x-gts-abstract": true,
   "x-gts-traits-schema": {
+    "additionalProperties": false,
     "properties": {
       "retention": {
         "default": "P30D",

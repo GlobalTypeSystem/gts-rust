@@ -5,6 +5,43 @@
 
 use serde_json::Value;
 
+/// The JSON Schema **draft-07** dialect URI that GTS Type Schemas declare via
+/// `$schema`. Single source of truth for the value emitted by the schema
+/// generators (the `struct_to_gts_schema` macro, the CLI generator).
+pub const JSON_SCHEMA_DRAFT_07: &str = "http://json-schema.org/draft-07/schema#";
+
+/// Chain-aggregated state of a type's `x-gts-traits-schema`, under JSON Schema
+/// `allOf` composition over the `$id` chain. Drives the macro's compile-time
+/// "traits values need a usable schema" guard.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TraitSchemaState {
+    /// No `x-gts-traits-schema` declared anywhere in the chain.
+    Absent,
+    /// A satisfiable trait shape exists (`true`, an object subschema, or a
+    /// `$ref`); trait values are permitted and their *contents* are left to
+    /// runtime validation (OP#13), not checked here.
+    Open,
+    /// Some layer declares `false`, so the composed `allOf` is unsatisfiable —
+    /// any trait values are prohibited.
+    Prohibited,
+}
+
+impl TraitSchemaState {
+    /// Compose this (ancestor-side) state with a descendant layer's own state
+    /// under `allOf` semantics: `false` anywhere wins (`Prohibited`); otherwise
+    /// any satisfiable schema makes the chain `Open`; otherwise `Absent`.
+    #[must_use]
+    pub const fn join(self, own: TraitSchemaState) -> TraitSchemaState {
+        match (self, own) {
+            (TraitSchemaState::Prohibited, _) | (_, TraitSchemaState::Prohibited) => {
+                TraitSchemaState::Prohibited
+            }
+            (TraitSchemaState::Open, _) | (_, TraitSchemaState::Open) => TraitSchemaState::Open,
+            _ => TraitSchemaState::Absent,
+        }
+    }
+}
+
 /// Trait for types that have a GTS schema.
 ///
 /// This trait enables runtime schema composition for nested generic types.
@@ -46,6 +83,13 @@ pub trait GtsSchema {
     /// instantiable). Set by `#[struct_to_gts_schema]` from `gts_abstract =
     /// true`; read by the `gts_instance!` compile-time guard.
     const GTS_ABSTRACT: bool = false;
+
+    /// Chain-aggregated `x-gts-traits-schema` state (this type's own layer
+    /// `allOf`-composed with its ancestors'). Set by `#[struct_to_gts_schema]`;
+    /// read by the compile-time guard that rejects `traits` values when the
+    /// chain has no usable trait shape ([`TraitSchemaState::Absent`]) or
+    /// prohibits traits ([`TraitSchemaState::Prohibited`]).
+    const TRAIT_SCHEMA: TraitSchemaState = TraitSchemaState::Absent;
 
     /// Returns the JSON schema for this type with $ref references intact.
     fn gts_schema_with_refs() -> Value;

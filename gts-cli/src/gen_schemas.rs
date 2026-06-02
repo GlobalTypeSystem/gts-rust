@@ -416,7 +416,7 @@ fn build_json_schema(
             // Base type - simple flat schema
             let mut s = json!({
                 "$id": format!("gts://{type_id}"),
-                "$schema": "http://json-schema.org/draft-07/schema#",
+                "$schema": gts::JSON_SCHEMA_DRAFT_07,
                 "title": struct_name,
                 "type": "object",
                 "additionalProperties": false,
@@ -448,7 +448,7 @@ fn build_json_schema(
 
             let mut s = json!({
                 "$id": format!("gts://{type_id}"),
-                "$schema": "http://json-schema.org/draft-07/schema#",
+                "$schema": gts::JSON_SCHEMA_DRAFT_07,
                 "title": format!("{struct_name} (extends {parent_name})"),
                 "type": "object",
                 "allOf": [

@@ -2,7 +2,6 @@
 //! expansion: a trait shape can only be `true`, `false`, an `inline(T)` object
 //! subschema, or a `$ref` to a GTS type - never an arbitrary string.
 
-use gts::GtsInstanceId;
 use gts_macros::struct_to_gts_schema;
 
 #[struct_to_gts_schema(
@@ -14,7 +13,7 @@ use gts_macros::struct_to_gts_schema;
     traits_schema = "P30D",
 )]
 pub struct ThingV1 {
-    pub id: GtsInstanceId,
+    pub id: gts::GtsInstanceId,
 }
 
 fn main() {}

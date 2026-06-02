@@ -24,7 +24,8 @@ pub use ops::GtsOps;
 pub use path_resolver::JsonPathResolver;
 pub use schema::{
     GtsDeserialize, GtsDeserializeWrapper, GtsNoDirectDeserialize, GtsNoDirectSerialize, GtsSchema,
-    GtsSerialize, GtsSerializeWrapper, deserialize_gts, serialize_gts, strip_schema_metadata,
+    GtsSerialize, GtsSerializeWrapper, JSON_SCHEMA_DRAFT_07, TraitSchemaState, deserialize_gts,
+    serialize_gts, strip_schema_metadata,
 };
 pub use schema_cast::{GtsEntityCastResult, SchemaCastError};
 pub use schema_narrow::{NarrowError, try_narrow};

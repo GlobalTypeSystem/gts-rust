@@ -20,7 +20,11 @@ mod test_structs {
     // struct - `x-gts-ref` / `default` come from standard schemars/serde
     // attributes. The base host embeds it via `traits_schema = inline(...)`;
     // the leaf resolves concrete values via `traits = EventTypeTraitsV1 { ... }`.
+    // `deny_unknown_fields` closes the trait surface (emits
+    // `additionalProperties: false`), so descendants cannot introduce unknown
+    // trait keys.
     #[derive(JsonSchema, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
     pub struct EventTypeTraitsV1 {
         // Required trait: no default, so every non-abstract type in the chain
         // must resolve it explicitly via `x-gts-traits` (OP#13 completeness).

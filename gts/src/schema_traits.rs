@@ -1595,20 +1595,14 @@ mod tests {
         });
 
         // Simulate chain merge: base sets retention=P7D, leaf deletes via null
-        // → merged is empty.
+        // → merged is empty. The patches are `x-gts-traits` value objects, which
+        // never carry `$schema`.
         let mut merged = serde_json::Map::new();
         merge_rfc7396_into(
             &mut merged,
-            json!({"$schema": "http://json-schema.org/draft-07/schema#", "retention": "P7D"})
-                .as_object()
-                .unwrap(),
+            json!({"retention": "P7D"}).as_object().unwrap(),
         );
-        merge_rfc7396_into(
-            &mut merged,
-            json!({"$schema": "http://json-schema.org/draft-07/schema#", "retention": null})
-                .as_object()
-                .unwrap(),
-        );
+        merge_rfc7396_into(&mut merged, json!({"retention": null}).as_object().unwrap());
         assert!(
             !merged.contains_key("retention"),
             "null patch should remove the key from merged"

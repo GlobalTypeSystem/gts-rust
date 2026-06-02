@@ -16,17 +16,28 @@ use schemars::JsonSchema;
 
 // --- trait types (the reusable, separately-governed trait surface) -----------
 
+#[derive(Debug, JsonSchema, serde::Serialize, serde::Deserialize)]
+#[schemars(inline)]
+#[serde(rename_all = "lowercase")]
+pub enum Priority {
+    Low,
+    Medium,
+    High,
+}
+
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
     type_id = "gts.x.test.traits.priority.v1~",
     description = "Reusable priority trait with an open payload slot",
-    properties = "id,priority,payload"
+    properties = "id,label,priority,payload"
 )]
 #[derive(Debug, JsonSchema)]
 pub struct PriorityTraitV1<P> {
     pub id: GtsInstanceId,
-    pub priority: String,
+    #[schemars(length(min = 1, max = 32))]
+    pub label: String,
+    pub priority: Priority,
     pub payload: P,
 }
 

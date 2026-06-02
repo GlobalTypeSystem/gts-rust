@@ -1,7 +1,6 @@
 //! Test: Both struct and schema_id missing version
 //! BaseEvent should not work with schema without version
 
-use gts::GtsInstanceId;
 use gts_macros::struct_to_gts_schema;
 
 #[struct_to_gts_schema(
@@ -12,7 +11,7 @@ use gts_macros::struct_to_gts_schema;
     properties = "id"
 )]
 pub struct BaseEvent {
-    pub id: GtsInstanceId,
+    pub id: gts::GtsInstanceId,
 }
 
 fn main() {}

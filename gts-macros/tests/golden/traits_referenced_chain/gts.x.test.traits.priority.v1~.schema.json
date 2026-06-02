@@ -11,15 +11,26 @@
       "type": "string",
       "x-gts-ref": "gts.*"
     },
+    "label": {
+      "maxLength": 32,
+      "minLength": 1,
+      "type": "string"
+    },
     "payload": {
       "type": "object"
     },
     "priority": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
       "type": "string"
     }
   },
   "required": [
     "id",
+    "label",
     "priority",
     "payload"
   ],
