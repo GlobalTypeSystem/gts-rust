@@ -12,18 +12,18 @@ const SEPARATOR: &str =
 // Include test structs to access their generated constants
 mod test_structs {
     use super::{Deserialize, GtsTypeId, Serialize};
-    use gts_macros::struct_to_gts_schema;
+    use gts_macros::{GtsTraitsSchema, struct_to_gts_schema};
     use schemars::JsonSchema;
 
     // Inline trait-shape declaring the system-behaviour properties shared by
-    // every event type. It is an ordinary JsonSchema
-    // struct - `x-gts-ref` / `default` come from standard schemars/serde
-    // attributes. The base host embeds it via `traits_schema = inline(...)`;
-    // the leaf resolves concrete values via `traits = EventTypeTraitsV1 { ... }`.
-    // `deny_unknown_fields` closes the trait surface (emits
-    // `additionalProperties: false`), so descendants cannot introduce unknown
-    // trait keys.
-    #[derive(JsonSchema, Serialize, Deserialize)]
+    // every event type. An ordinary `JsonSchema` struct marked with
+    // `#[derive(GtsTraitsSchema)]` - `x-gts-ref` / `default` come from standard
+    // schemars/serde attributes. The base host embeds it via
+    // `traits_schema = inline(...)`; leaves resolve concrete values via
+    // `traits = serde_json::json!({ ... })`. `deny_unknown_fields` closes the
+    // trait surface (emits `additionalProperties: false`), so descendants
+    // cannot introduce unknown trait keys.
+    #[derive(JsonSchema, Serialize, GtsTraitsSchema)]
     #[serde(deny_unknown_fields)]
     pub struct EventTypeTraitsV1 {
         // Required trait: no default, so every non-abstract type in the chain

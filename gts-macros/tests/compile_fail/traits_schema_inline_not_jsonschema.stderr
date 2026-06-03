@@ -1,47 +1,37 @@
-error[E0277]: the trait bound `PlainTraits: JsonSchema` is not satisfied
-  --> tests/compile_fail/traits_schema_inline_not_jsonschema.rs:18:28
+error[E0277]: the trait bound `PlainTraits: GtsTraitsSchema` is not satisfied
+  --> tests/compile_fail/traits_schema_inline_not_jsonschema.rs:21:28
    |
-18 |     traits_schema = inline(PlainTraits),
+21 |     traits_schema = inline(PlainTraits),
    |                            ^^^^^^^^^^^ unsatisfied trait bound
    |
-help: the trait `JsonSchema` is not implemented for `PlainTraits`
-  --> tests/compile_fail/traits_schema_inline_not_jsonschema.rs:8:1
+help: the trait `GtsTraitsSchema` is not implemented for `PlainTraits`
+  --> tests/compile_fail/traits_schema_inline_not_jsonschema.rs:11:1
    |
- 8 | pub struct PlainTraits {
+11 | pub struct PlainTraits {
    | ^^^^^^^^^^^^^^^^^^^^^^
-   = help: the following other types implement trait `JsonSchema`:
-             &'a T
-             &'a mut T
-             ()
-             (T0, T1)
-             (T0, T1, T2)
-             (T0, T1, T2, T3)
-             (T0, T1, T2, T3, T4)
-             (T0, T1, T2, T3, T4, T5)
-           and $N others
 note: required by a bound in `_assert_inline_traits_schema`
-  --> tests/compile_fail/traits_schema_inline_not_jsonschema.rs:12:1
+  --> tests/compile_fail/traits_schema_inline_not_jsonschema.rs:15:1
    |
-12 | / #[struct_to_gts_schema(
-13 | |     dir_path = "schemas",
-14 | |     base = true,
-15 | |     type_id = "gts.x.app.entities.thing.v1~",
+15 | / #[struct_to_gts_schema(
+16 | |     dir_path = "schemas",
+17 | |     base = true,
+18 | |     type_id = "gts.x.app.entities.thing.v1~",
 ...  |
-18 | |     traits_schema = inline(PlainTraits),
-19 | | )]
+21 | |     traits_schema = inline(PlainTraits),
+22 | | )]
    | |__^ required by this bound in `_assert_inline_traits_schema`
    = note: this error originates in the attribute macro `struct_to_gts_schema` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `PlainTraits: JsonSchema` is not satisfied
-  --> tests/compile_fail/traits_schema_inline_not_jsonschema.rs:18:28
+  --> tests/compile_fail/traits_schema_inline_not_jsonschema.rs:21:28
    |
-18 |     traits_schema = inline(PlainTraits),
+21 |     traits_schema = inline(PlainTraits),
    |                            ^^^^^^^^^^^ unsatisfied trait bound
    |
 help: the trait `JsonSchema` is not implemented for `PlainTraits`
-  --> tests/compile_fail/traits_schema_inline_not_jsonschema.rs:8:1
+  --> tests/compile_fail/traits_schema_inline_not_jsonschema.rs:11:1
    |
- 8 | pub struct PlainTraits {
+11 | pub struct PlainTraits {
    | ^^^^^^^^^^^^^^^^^^^^^^
    = help: the following other types implement trait `JsonSchema`:
              &'a T

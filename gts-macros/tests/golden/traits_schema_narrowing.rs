@@ -5,16 +5,16 @@
 // behavioural counterpart (accept/reject) lives in `traits_tests.rs`.
 
 use gts::{GtsInstanceId, GtsSchema};
-use gts_macros::struct_to_gts_schema;
+use gts_macros::{struct_to_gts_schema, GtsTraitsSchema};
 use schemars::JsonSchema;
 
-#[derive(JsonSchema, serde::Serialize, serde::Deserialize)]
+#[derive(JsonSchema, serde::Serialize, GtsTraitsSchema)]
 pub struct BasePriorityTraits {
     #[schemars(extend("default" = "medium"))]
     pub priority: String,
 }
 
-#[derive(JsonSchema, serde::Serialize, serde::Deserialize)]
+#[derive(JsonSchema, serde::Serialize, GtsTraitsSchema)]
 pub struct NarrowPriorityTraits {
     #[schemars(extend("enum" = ["low", "medium", "high", "critical"]))]
     pub priority: String,

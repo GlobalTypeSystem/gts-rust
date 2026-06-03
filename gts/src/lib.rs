@@ -30,5 +30,5 @@ pub use schema::{
 pub use schema_cast::{GtsEntityCastResult, SchemaCastError};
 pub use schema_narrow::{NarrowError, try_narrow};
 pub use store::{GtsReader, GtsStore, GtsStoreQueryResult, StoreError};
-pub use traits_schema::inline_traits_schema_of;
+pub use traits_schema::{GtsTraitsSchema, inline_traits_schema_of};
 pub use x_gts_ref::{XGtsRefValidationError, XGtsRefValidator};

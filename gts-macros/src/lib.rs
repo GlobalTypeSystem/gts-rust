@@ -1292,13 +1292,14 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     // --- GTS traits / modifiers emission --------------------
 
     // Compile-time check that the `traits_schema` type satisfies the bound its
-    // representation needs: `inline(T)` requires `T: schemars::JsonSchema`; a
-    // bare `T` ($ref form) requires `T: gts::GtsSchema` (a struct_to_gts_schema
-    // type). Yields a clear trait-bound error otherwise.
+    // representation needs: `inline(T)` requires `T: gts::GtsTraitsSchema` (opt
+    // in via `#[gts_traits_schema]`); a bare `T` ($ref form) requires
+    // `T: gts::GtsSchema` (a struct_to_gts_schema type). Yields a clear
+    // trait-bound error otherwise.
     let traits_schema_assert = match &args.traits_schema {
         Some(TraitsSchemaSpec::Inline(path)) => quote! {
             const _: fn() = || {
-                fn _assert_inline_traits_schema<__T: ::schemars::JsonSchema>() {}
+                fn _assert_inline_traits_schema<__T: ::gts::GtsTraitsSchema>() {}
                 _assert_inline_traits_schema::<#path>();
             };
         },
@@ -2400,4 +2401,44 @@ pub fn gts_instance_raw(input: TokenStream) -> TokenStream {
         Ok(tokens) => tokens.into(),
         Err(e) => e.to_compile_error().into(),
     }
+}
+
+/// Derive the `gts::GtsTraitsSchema` marker for a struct that backs an inline
+/// `x-gts-traits-schema`. Add it to the struct's `#[derive(...)]` alongside
+/// `schemars::JsonSchema`:
+///
+/// ```ignore
+/// #[derive(schemars::JsonSchema, gts_macros::GtsTraitsSchema)]
+/// pub struct EventTraitsV1 {
+///     #[schemars(extend("x-gts-ref" = "gts.x.core.events.topic.v1~"))]
+///     pub topic_ref: String,
+/// }
+/// ```
+///
+/// Emits `impl gts::GtsTraitsSchema for T {}` — the bound
+/// `#[struct_to_gts_schema(..., traits_schema = inline(T))]` requires of `T`,
+/// so a struct used in `inline(...)` without this derive fails to compile (the
+/// same opt-in gate the `$ref` form already gets from `gts::GtsSchema`). The
+/// marker emits no schema keywords, so generated documents are unchanged.
+///
+/// Because `gts::GtsTraitsSchema: schemars::JsonSchema`, deriving it without
+/// also deriving `JsonSchema` is itself a compile error — the same way
+/// `#[derive(Eq)]` requires `PartialEq`.
+#[proc_macro_derive(GtsTraitsSchema)]
+pub fn derive_gts_traits_schema(item: TokenStream) -> TokenStream {
+    match expand_gts_traits_schema(item.into()) {
+        Ok(tokens) => tokens.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+fn expand_gts_traits_schema(
+    item: proc_macro2::TokenStream,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let input: DeriveInput = syn::parse2(item)?;
+    let ident = &input.ident;
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    Ok(quote! {
+        impl #impl_generics ::gts::GtsTraitsSchema for #ident #ty_generics #where_clause {}
+    })
 }

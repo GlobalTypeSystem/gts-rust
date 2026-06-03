@@ -1,5 +1,8 @@
-//! `traits_schema = inline(T)` where `T` does not implement
-//! `schemars::JsonSchema` must fail with a clear trait-bound error.
+//! `traits_schema = inline(T)` where `T` is neither marked with
+//! `#[gts_traits_schema]` nor implements `schemars::JsonSchema` must fail: the
+//! `gts::GtsTraitsSchema` gate fires first, and the JsonSchema-bounded inline
+//! value builder fires second. (The clean single-error cases are
+//! `traits_inline_not_marked` and `traits_marked_not_jsonschema`.)
 
 use gts::GtsInstanceId;
 use gts_macros::struct_to_gts_schema;

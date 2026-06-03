@@ -4,14 +4,14 @@
 // `gts_abstract`/`gts_final`.
 
 use gts::{GtsInstanceId, GtsSchema};
-use gts_macros::struct_to_gts_schema;
+use gts_macros::{struct_to_gts_schema, GtsTraitsSchema};
 use schemars::JsonSchema;
 
 fn default_retention() -> String {
     "P30D".to_owned()
 }
 
-#[derive(JsonSchema, serde::Serialize, serde::Deserialize)]
+#[derive(JsonSchema, serde::Serialize, GtsTraitsSchema)]
 pub struct EventTraits {
     #[schemars(extend("x-gts-ref" = "gts.x.core.events.topic.v1~"))]
     pub topic_ref: String,

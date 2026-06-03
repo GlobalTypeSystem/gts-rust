@@ -21,6 +21,21 @@ use serde_json::Value;
 
 use crate::gts::{GtsInstanceId, GtsTypeId};
 
+/// Opt-in marker for a struct that backs an inline `x-gts-traits-schema`.
+///
+/// Implement it by adding `GtsTraitsSchema` to a struct's `#[derive(...)]` list
+/// (the derive macro lives in `gts_macros`), alongside `schemars::JsonSchema`.
+/// It is the bound `#[struct_to_gts_schema(..., traits_schema = inline(T))]`
+/// requires of `T`, so a struct used in `inline(...)` without the derive fails
+/// to compile — the same opt-in gate the `$ref` form already gets from
+/// [`crate::GtsSchema`].
+///
+/// `JsonSchema` is a supertrait because the inline subschema is generated from
+/// `T`'s `JsonSchema` impl at runtime (see [`inline_traits_schema_of`]); this
+/// also means deriving `GtsTraitsSchema` without `JsonSchema` is a compile
+/// error, mirroring `Eq: PartialEq`.
+pub trait GtsTraitsSchema: schemars::JsonSchema {}
+
 /// Build the inline `x-gts-traits-schema` object subschema for a `JsonSchema` type.
 ///
 /// Returns the type's own JSON Schema with the root-only `$schema` annotation

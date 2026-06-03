@@ -8,14 +8,14 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use gts::{GtsInstanceId, GtsSchema};
-use gts_macros::struct_to_gts_schema;
+use gts_macros::{GtsTraitsSchema, struct_to_gts_schema};
 use schemars::JsonSchema;
 
 fn default_retention() -> String {
     "P30D".to_owned()
 }
 
-#[derive(JsonSchema, serde::Serialize, serde::Deserialize)]
+#[derive(JsonSchema, serde::Serialize, GtsTraitsSchema)]
 pub struct EventTraits {
     #[schemars(extend("x-gts-ref" = "gts.x.core.events.topic.v1~"))]
     pub topic_ref: String,
@@ -111,12 +111,12 @@ pub struct AbsLeafV1 {
     pub name: String,
 }
 
-#[derive(JsonSchema, serde::Serialize, serde::Deserialize)]
+#[derive(JsonSchema, serde::Serialize, GtsTraitsSchema)]
 pub struct RetentionString {
     pub retention: String,
 }
 
-#[derive(JsonSchema, serde::Serialize, serde::Deserialize)]
+#[derive(JsonSchema, serde::Serialize, GtsTraitsSchema)]
 pub struct RetentionInt {
     pub retention: i64,
 }
@@ -156,7 +156,7 @@ pub struct CompatBadV1 {
 
 // --- const lock -------------------------------------------------------------
 
-#[derive(JsonSchema, serde::Serialize, serde::Deserialize)]
+#[derive(JsonSchema, serde::Serialize, GtsTraitsSchema)]
 pub struct IndexedTraits {
     #[schemars(extend("const" = true))]
     pub indexed: bool,
@@ -195,7 +195,7 @@ pub struct ConstBadLeafV1 {
 
 // --- default materializes a required trait ----------------------------------
 
-#[derive(JsonSchema, serde::Serialize, serde::Deserialize)]
+#[derive(JsonSchema, serde::Serialize, GtsTraitsSchema)]
 pub struct DefaultedTraits {
     // Required (non-Option, no serde default) yet carries a schema `default`, so
     // materialization fills it on a concrete type that supplies no value.
@@ -220,14 +220,14 @@ pub struct DefaultBaseV1 {
 
 // --- additionalProperties: false narrowing ----------------------------------
 
-#[derive(JsonSchema, serde::Serialize, serde::Deserialize)]
+#[derive(JsonSchema, serde::Serialize, GtsTraitsSchema)]
 #[schemars(extend("additionalProperties" = false))]
 pub struct ClosedTraits {
     #[schemars(extend("x-gts-ref" = "gts.x.core.events.topic.v1~"))]
     pub topic_ref: String,
 }
 
-#[derive(JsonSchema, serde::Serialize, serde::Deserialize)]
+#[derive(JsonSchema, serde::Serialize, GtsTraitsSchema)]
 pub struct ExtraTraits {
     pub extra: String,
 }
@@ -270,13 +270,13 @@ pub struct ExtendBadLeafV1 {
 
 // --- trait-schema chain merge via allOf -------------------------------------
 
-#[derive(JsonSchema, serde::Serialize, serde::Deserialize)]
+#[derive(JsonSchema, serde::Serialize, GtsTraitsSchema)]
 pub struct BasePriorityTraits {
     #[schemars(extend("default" = "medium"))]
     pub priority: String,
 }
 
-#[derive(JsonSchema, serde::Serialize, serde::Deserialize)]
+#[derive(JsonSchema, serde::Serialize, GtsTraitsSchema)]
 pub struct NarrowPriorityTraits {
     #[schemars(extend("enum" = ["low", "medium", "high", "critical"]))]
     pub priority: String,

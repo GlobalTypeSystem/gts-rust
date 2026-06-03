@@ -6,10 +6,10 @@
 // generic param is the nested payload field carried forward down the chain.
 
 use gts::{GtsInstanceId, GtsSchema};
-use gts_macros::struct_to_gts_schema;
+use gts_macros::{struct_to_gts_schema, GtsTraitsSchema};
 use schemars::JsonSchema;
 
-#[derive(JsonSchema, serde::Serialize, serde::Deserialize)]
+#[derive(JsonSchema, serde::Serialize, GtsTraitsSchema)]
 pub struct EventTraits {
     #[schemars(extend("x-gts-ref" = "gts.x.core.events.topic.v1~"))]
     pub topic_ref: String,
