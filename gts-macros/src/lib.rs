@@ -825,6 +825,7 @@ impl Parse for GtsSchemaArgs {
 /// [`TraitsSchemaSpec`]: `inline(T)`, a bare type path `T`, or reject anything
 /// else (the `true`/`false` literal forms are handled before this is called).
 fn classify_traits_schema_expr(expr: syn::Expr) -> syn::Result<TraitsSchemaSpec> {
+    use syn::spanned::Spanned;
     const HELP: &str = "expected `inline(T)`, a type path, or `true`/`false`";
     match expr {
         syn::Expr::Call(call) => {
@@ -832,19 +833,21 @@ fn classify_traits_schema_expr(expr: syn::Expr) -> syn::Result<TraitsSchemaSpec>
             if !is_inline {
                 return Err(syn::Error::new_spanned(&call.func, HELP));
             }
-            if call.args.len() != 1 {
-                return Err(syn::Error::new_spanned(
-                    &call,
-                    "inline(...) takes exactly one type path, e.g. `inline(MyTraits)`",
-                ));
-            }
-            match call.args.into_iter().next() {
-                Some(syn::Expr::Path(p)) => Ok(TraitsSchemaSpec::Inline(p.path)),
-                Some(other) => Err(syn::Error::new_spanned(
+            // Match arity and shape in one step: exactly one argument, a type
+            // path. `(Some, None)` is exactly-one; `(None, _)` / `(Some, Some)`
+            // are zero / 2+ args — both arity errors.
+            let call_span = call.span();
+            let mut args = call.args.into_iter();
+            match (args.next(), args.next()) {
+                (Some(syn::Expr::Path(p)), None) => Ok(TraitsSchemaSpec::Inline(p.path)),
+                (Some(other), None) => Err(syn::Error::new_spanned(
                     other,
                     "inline(...) expects a type path, e.g. `inline(MyTraits)`",
                 )),
-                None => Err(syn::Error::new_spanned(HELP, HELP)),
+                _ => Err(syn::Error::new(
+                    call_span,
+                    "inline(...) takes exactly one type path, e.g. `inline(MyTraits)`",
+                )),
             }
         }
         syn::Expr::Path(p) => Ok(TraitsSchemaSpec::Ref(p.path)),
@@ -1409,6 +1412,33 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                          `traits_schema` resolves to `false`, which prohibits all traits"
                     ),
                     ::gts::TraitSchemaState::Open => {}
+                }
+            };
+        }
+    } else {
+        quote! {}
+    };
+
+    // Compile-time guard (symmetric to `trait_chain_guard`): declaring a
+    // *satisfiable* `traits_schema` (`true` / `inline(T)` / `$ref` T) under an
+    // ancestor that prohibits traits (`traits_schema = false`) composes to
+    // `allOf[T, false]`, which is unsatisfiable. Reject this at compile time
+    // rather than letting it surface only at runtime registry validation.
+    // Emitted whenever this type declares an `Open` shape; `false` re-declared
+    // under a prohibiting ancestor is harmless redundancy and left alone.
+    let own_traits_schema_is_open = matches!(
+        &args.traits_schema,
+        Some(TraitsSchemaSpec::Bool(true) | TraitsSchemaSpec::Inline(_) | TraitsSchemaSpec::Ref(_))
+    );
+    let trait_schema_decl_guard = if own_traits_schema_is_open {
+        quote! {
+            const _: () = {
+                if let ::gts::TraitSchemaState::Prohibited = #parent_trait_state {
+                    panic!(
+                        "struct_to_gts_schema: an ancestor declares `traits_schema = false`, which \
+                         prohibits all traits, so this type cannot declare its own `traits_schema`; \
+                         the composed schema would be unsatisfiable (`allOf[T, false]`)"
+                    )
                 }
             };
         }
@@ -2116,6 +2146,9 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
 
         // Compile-time guard: `traits` values require a usable trait-schema in the chain
         #trait_chain_guard
+
+        // Compile-time guard: a `traits_schema` cannot be declared under a prohibiting ancestor
+        #trait_schema_decl_guard
 
         // Custom serialization for unit structs to serialize as {} instead of null
         #custom_serialize_impl

@@ -10,8 +10,8 @@ pub mod schema_modifiers;
 pub mod schema_narrow;
 pub mod schema_traits;
 pub mod store;
+#[doc(hidden)]
 pub mod testing;
-pub mod traits_schema;
 pub mod x_gts_ref;
 
 // Re-export commonly used types
@@ -29,6 +29,6 @@ pub use schema::{
 };
 pub use schema_cast::{GtsEntityCastResult, SchemaCastError};
 pub use schema_narrow::{NarrowError, try_narrow};
+pub use schema_traits::{GtsTraitsSchema, inline_traits_schema_of};
 pub use store::{GtsReader, GtsStore, GtsStoreQueryResult, StoreError};
-pub use traits_schema::{GtsTraitsSchema, inline_traits_schema_of};
 pub use x_gts_ref::{XGtsRefValidationError, XGtsRefValidator};

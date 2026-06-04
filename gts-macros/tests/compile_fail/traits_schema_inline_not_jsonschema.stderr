@@ -44,7 +44,7 @@ help: the trait `JsonSchema` is not implemented for `PlainTraits`
              (T0, T1, T2, T3, T4, T5)
            and $N others
 note: required by a bound in `inline_traits_schema_of`
-  --> $WORKSPACE/gts/src/traits_schema.rs
+  --> $WORKSPACE/gts/src/schema_traits.rs
    |
    | pub fn inline_traits_schema_of<T: schemars::JsonSchema>() -> Value {
    |                                   ^^^^^^^^^^^^^^^^^^^^ required by this bound in `inline_traits_schema_of`

@@ -513,6 +513,35 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn trait_schema_state_join_truth_table() {
+        use TraitSchemaState::{Absent, Open, Prohibited};
+
+        // Full 3×3 lattice under `allOf` composition:
+        // - `Prohibited` (a `false` subschema) annihilates anything → Prohibited.
+        // - otherwise any `Open` (satisfiable schema) makes the chain Open.
+        // - otherwise (both sides Absent) the chain stays Absent.
+        let cases = [
+            (Absent, Absent, Absent),
+            (Absent, Open, Open),
+            (Absent, Prohibited, Prohibited),
+            (Open, Absent, Open),
+            (Open, Open, Open),
+            (Open, Prohibited, Prohibited),
+            (Prohibited, Absent, Prohibited),
+            (Prohibited, Open, Prohibited),
+            (Prohibited, Prohibited, Prohibited),
+        ];
+
+        for (ancestor, own, expected) in cases {
+            assert_eq!(
+                ancestor.join(own),
+                expected,
+                "join({ancestor:?}, {own:?}) should be {expected:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_unit_type_properties() {
         // Test all unit type properties in one test
         let schema = <()>::gts_schema();

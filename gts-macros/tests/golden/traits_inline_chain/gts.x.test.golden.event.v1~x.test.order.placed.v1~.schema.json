@@ -27,7 +27,12 @@
   "type": "object",
   "x-gts-final": true,
   "x-gts-traits": {
+    "escalation": {
+      "after": "PT5M",
+      "to": "Low"
+    },
     "indexed": true,
+    "severity": "High",
     "topic_ref": "gts.x.core.events.topic.v1~x.test._.orders.v1"
   }
 }

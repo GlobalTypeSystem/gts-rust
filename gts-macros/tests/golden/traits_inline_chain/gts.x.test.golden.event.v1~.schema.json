@@ -23,12 +23,38 @@
   "x-gts-abstract": true,
   "x-gts-traits-schema": {
     "properties": {
+      "escalation": {
+        "properties": {
+          "after": {
+            "type": "string"
+          },
+          "to": {
+            "enum": [
+              "Low",
+              "High"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "after",
+          "to"
+        ],
+        "type": "object"
+      },
       "indexed": {
         "const": true,
         "type": "boolean"
       },
       "retention": {
         "default": "P30D",
+        "type": "string"
+      },
+      "severity": {
+        "enum": [
+          "Low",
+          "High"
+        ],
         "type": "string"
       },
       "topic_ref": {
@@ -38,7 +64,9 @@
     },
     "required": [
       "topic_ref",
-      "indexed"
+      "indexed",
+      "severity",
+      "escalation"
     ],
     "type": "object"
   }

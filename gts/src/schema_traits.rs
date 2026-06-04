@@ -32,6 +32,13 @@
 //! sub-schema. `false` contributes a sub-schema that rejects all values; a
 //! type whose effective schema is `false` and which carries no traits passes
 //! (nothing is validated), but any non-empty trait value fails.
+//!
+//! **Construction side.** This module also owns the Rust-side helpers that
+//! *build* the `x-gts-traits-schema` value the validation logic above consumes:
+//! the [`GtsTraitsSchema`] opt-in marker and [`inline_traits_schema_of`] (see
+//! the "Inline trait-schema construction" section). Keeping construction and
+//! validation together — alongside the [`X_GTS_TRAITS_SCHEMA`] / [`X_GTS_TRAITS`]
+//! keyword constants — means there is one home for everything `x-gts-traits-*`.
 
 use serde_json::Value;
 
@@ -48,6 +55,86 @@ pub const X_GTS_TRAITS: &str = "x-gts-traits";
 /// Maximum recursion depth for traversing `allOf` nesting.
 /// Prevents stack overflow on deeply nested or maliciously crafted schemas.
 const MAX_RECURSION_DEPTH: usize = 64;
+
+// ---------------------------------------------------------------------------
+// Inline trait-schema construction
+// ---------------------------------------------------------------------------
+//
+// A trait shape can be supplied two ways:
+//
+// - **inline** — a private object subschema embedded directly under
+//   `x-gts-traits-schema`. Produced from any `#[derive(schemars::JsonSchema)]`
+//   struct via [`inline_traits_schema_of`] (the macro emits
+//   `traits_schema = inline(MyStruct)`).
+// - **referenced** — a reusable trait-schema registered as an ordinary GTS
+//   type, pulled in via `$ref`. The macro emits this for `traits_schema = T`
+//   where `T` is a `#[struct_to_gts_schema]` type, as
+//   `{ "type": "object", "allOf": [{ "$ref": "gts://<TYPE_ID>" }] }`.
+//
+// `const`, `default` and `x-gts-ref` on trait properties are expressed with
+// standard schemars/serde attributes (`#[schemars(extend("const" = ...))]`,
+// `#[serde(default = "...")]`, `#[schemars(extend("x-gts-ref" = "..."))]`), so
+// no GTS-specific field attributes are needed.
+
+/// Opt-in marker for a struct that backs an inline `x-gts-traits-schema`.
+///
+/// Implement it by adding `GtsTraitsSchema` to a struct's `#[derive(...)]` list
+/// (the derive macro lives in `gts_macros`), alongside `schemars::JsonSchema`.
+/// It is the bound `#[struct_to_gts_schema(..., traits_schema = inline(T))]`
+/// requires of `T`, so a struct used in `inline(...)` without the derive fails
+/// to compile — the same opt-in gate the `$ref` form already gets from
+/// [`crate::GtsSchema`].
+///
+/// `JsonSchema` is a supertrait because the inline subschema is generated from
+/// `T`'s `JsonSchema` impl at runtime (see [`inline_traits_schema_of`]); this
+/// also means deriving `GtsTraitsSchema` without `JsonSchema` is a compile
+/// error, mirroring `Eq: PartialEq`.
+pub trait GtsTraitsSchema: schemars::JsonSchema {}
+
+/// Build the inline `x-gts-traits-schema` object subschema for a `JsonSchema` type.
+///
+/// Returns the type's own JSON Schema with the root-only `$schema` annotation
+/// stripped (meaningless inside an embedded subschema), so the fragment is
+/// self-contained when embedded into a host document.
+///
+/// All subschemas are inlined via `inline_subschemas`: any `$ref` schemars
+/// would otherwise emit points at `#/$defs/<Name>`, a JSON pointer resolved
+/// against the *host document* root rather than this fragment — and the
+/// fragment carries no `$defs` of its own, so such a ref would be structurally
+/// broken. Inlining expands every named subschema in place, including
+/// `GtsInstanceId` / `GtsTypeId` (whose `JsonSchema` impls already emit the
+/// canonical inline body) and arbitrary user enums / nested structs used as
+/// trait-schema fields.
+///
+/// The one shape that cannot be inlined is a genuinely *recursive* type, for
+/// which schemars must keep a `$ref` to break the cycle; such a type is not a
+/// valid inline trait-schema field.
+///
+/// # Panics
+/// Panics only if serializing `T`'s generated `schemars::Schema` to a
+/// `serde_json::Value` fails, which is infallible for a valid `JsonSchema`
+/// impl (a schema carries no non-string map keys or non-finite floats). The
+/// panic is preferred over silently degrading to an accept-anything `{}`.
+#[must_use]
+// `serde_json::to_value` on a `schemars::Schema` is infallible (no non-string
+// map keys, no NaN/Inf floats in a generated schema), so the only way to reach
+// the panic is a schemars bug. For a spec reference implementation, failing
+// loudly is correct: silently degrading to `{ "type": "object" }` would yield
+// an accept-anything trait schema that validates nothing.
+#[allow(clippy::expect_used)]
+pub fn inline_traits_schema_of<T: schemars::JsonSchema>() -> Value {
+    let mut generator = schemars::generate::SchemaSettings::default()
+        .with(|s| s.inline_subschemas = true)
+        .into_generator();
+    let schema = <T as schemars::JsonSchema>::json_schema(&mut generator);
+    let mut value = serde_json::to_value(&schema)
+        .expect("schemars JsonSchema serialization to a JSON value is infallible for valid types");
+
+    if let Some(obj) = value.as_object_mut() {
+        obj.remove("$schema");
+    }
+    value
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -1620,5 +1707,100 @@ mod tests {
             retention, "P365D",
             "after null delete, materialization must use the leaf-most default; got {retention}"
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod inline_traits_schema_tests {
+    use super::*;
+    use crate::gts::GtsInstanceId;
+    use schemars::JsonSchema;
+
+    /// Recursively collect every `$ref` string found anywhere in the value.
+    fn collect_refs(v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::Object(map) => {
+                if let Some(Value::String(r)) = map.get("$ref") {
+                    out.push(r.clone());
+                }
+                for val in map.values() {
+                    collect_refs(val, out);
+                }
+            }
+            Value::Array(arr) => {
+                for val in arr {
+                    collect_refs(val, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[derive(JsonSchema)]
+    #[allow(dead_code)]
+    enum SeverityLevel {
+        Low,
+        High,
+    }
+
+    #[derive(JsonSchema)]
+    #[allow(dead_code)]
+    struct EnumFieldTraits {
+        level: SeverityLevel,
+    }
+
+    /// A non-primitive field (here an enum) must be inlined into the embedded
+    /// fragment, not left as a `$ref` into a `$defs` block that the fragment
+    /// does not carry. Otherwise `x-gts-traits-schema` is structurally broken
+    /// and fails when a JSON Schema validator tries to resolve the dangling ref.
+    #[test]
+    fn enum_field_is_inlined_with_no_dangling_refs() {
+        let schema = inline_traits_schema_of::<EnumFieldTraits>();
+
+        // The embedded fragment must be self-contained: no $defs block...
+        assert!(
+            schema.get("$defs").is_none(),
+            "embedded fragment must not carry a $defs block: {schema}"
+        );
+        // ...and therefore no $ref anywhere pointing into one.
+        let mut refs = Vec::new();
+        collect_refs(&schema, &mut refs);
+        assert!(
+            refs.is_empty(),
+            "embedded fragment has dangling refs: {refs:?} in {schema}"
+        );
+
+        // The enum's variants must actually be present inline.
+        let serialized = schema.to_string();
+        assert!(
+            serialized.contains("Low") && serialized.contains("High"),
+            "enum variants should be inlined into the fragment: {schema}"
+        );
+    }
+
+    #[derive(JsonSchema)]
+    #[allow(dead_code)]
+    struct InstanceIdTraits {
+        topic_ref: GtsInstanceId,
+    }
+
+    /// Regression: the canonical `GtsInstanceId` representation (its inline
+    /// `x-gts-ref` body) must survive, with no dangling ref left behind.
+    #[test]
+    fn gts_instance_id_field_keeps_canonical_inline_form() {
+        let schema = inline_traits_schema_of::<InstanceIdTraits>();
+
+        let mut refs = Vec::new();
+        collect_refs(&schema, &mut refs);
+        assert!(
+            refs.is_empty(),
+            "unexpected dangling refs: {refs:?} in {schema}"
+        );
+
+        let prop = &schema["properties"]["topic_ref"];
+        assert_eq!(prop["type"], "string");
+        assert_eq!(prop["format"], "gts-instance-id");
+        assert_eq!(prop["x-gts-ref"], "gts.*");
     }
 }
