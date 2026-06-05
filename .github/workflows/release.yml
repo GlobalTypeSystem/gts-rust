@@ -443,16 +443,13 @@ jobs:
           fi
           echo "jq $(jq --version) available."
 
-      # Preflight: cargo publish --dry-run validates packaging AND metadata without uploading.
-      # Using --dry-run (not --no-verify) ensures full verification runs as a last-mile check.
-      # CARGO_REGISTRY_TOKEN is not set here: --dry-run does not upload to the registry
-      # and does not require a valid token on the network path exercised by preflight.
+      # Preflight: validate packaging + metadata without uploading.
+      # Must be --workspace (not per-crate -p): on a version bump, per-crate dry-run resolves
+      # internal deps (gts-macros -> gts-id) against crates.io, where the new version isn't yet
+      # published, and fails. --workspace resolves them against the locally packaged crates and
+      # skips publish=false members. Requires cargo >= 1.90.
       - name: cargo publish dry-run preflight (all publishable crates)
-        run: |
-          cargo publish -p gts-id --dry-run --locked
-          cargo publish -p gts-macros --dry-run --locked
-          cargo publish -p gts --dry-run --locked
-          cargo publish -p gts-validator --dry-run --locked
+        run: cargo publish --workspace --dry-run --locked
 
       # Publish in dependency order. Shared helper functions enforce identical retry/reconcile/wait
       # behavior across all crates, eliminating per-crate duplication and drift risk.
