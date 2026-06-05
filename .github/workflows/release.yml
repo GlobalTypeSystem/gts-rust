@@ -462,9 +462,16 @@ jobs:
           set -euo pipefail
           VERSION="${{ needs.validate.outputs.version }}"
 
+          # crates.io enforces an API data-access policy: requests without a descriptive
+          # User-Agent are rejected with HTTP 403. Without -H the -sf curl fails silently,
+          # is_published always returns false, and wait_visible spins for 5min then errors
+          # even though the crate is already live. Always send a UA identifying this workflow.
+          CRATES_UA="gts-rust release workflow (+https://github.com/GlobalTypeSystem/gts-rust)"
+
           is_published() {
             local crate="$1"
-            curl -sf --max-time 15 --retry 3 "https://crates.io/api/v1/crates/${crate}/${VERSION}" \
+            curl -sf --max-time 15 --retry 3 -H "User-Agent: ${CRATES_UA}" \
+              "https://crates.io/api/v1/crates/${crate}/${VERSION}" \
               | jq -e --arg v "${VERSION}" '.version.num == $v' > /dev/null 2>&1
           }
 
