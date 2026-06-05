@@ -1,0 +1,5 @@
+error: struct_to_gts_schema: a type cannot declare both `gts_abstract = true` and `gts_final = true` (a type that is neither inheritable nor instantiable is meaningless).
+  --> tests/compile_fail/gts_abstract_final_conflict.rs:15:12
+   |
+15 | pub struct Thing {
+   |            ^^^^^

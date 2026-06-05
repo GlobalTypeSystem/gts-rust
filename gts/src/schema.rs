@@ -5,6 +5,43 @@
 
 use serde_json::Value;
 
+/// The JSON Schema **draft-07** dialect URI that GTS Type Schemas declare via
+/// `$schema`. Single source of truth for the value emitted by the schema
+/// generators (the `struct_to_gts_schema` macro, the CLI generator).
+pub const JSON_SCHEMA_DRAFT_07: &str = "http://json-schema.org/draft-07/schema#";
+
+/// Chain-aggregated state of a type's `x-gts-traits-schema`, under JSON Schema
+/// `allOf` composition over the `$id` chain. Drives the macro's compile-time
+/// "traits values need a usable schema" guard.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TraitSchemaState {
+    /// No `x-gts-traits-schema` declared anywhere in the chain.
+    Absent,
+    /// A satisfiable trait shape exists (`true`, an object subschema, or a
+    /// `$ref`); trait values are permitted and their *contents* are left to
+    /// runtime validation (OP#13), not checked here.
+    Open,
+    /// Some layer declares `false`, so the composed `allOf` is unsatisfiable —
+    /// any trait values are prohibited.
+    Prohibited,
+}
+
+impl TraitSchemaState {
+    /// Compose this (ancestor-side) state with a descendant layer's own state
+    /// under `allOf` semantics: `false` anywhere wins (`Prohibited`); otherwise
+    /// any satisfiable schema makes the chain `Open`; otherwise `Absent`.
+    #[must_use]
+    pub const fn join(self, own: TraitSchemaState) -> TraitSchemaState {
+        match (self, own) {
+            (TraitSchemaState::Prohibited, _) | (_, TraitSchemaState::Prohibited) => {
+                TraitSchemaState::Prohibited
+            }
+            (TraitSchemaState::Open, _) | (_, TraitSchemaState::Open) => TraitSchemaState::Open,
+            _ => TraitSchemaState::Absent,
+        }
+    }
+}
+
 /// Trait for types that have a GTS schema.
 ///
 /// This trait enables runtime schema composition for nested generic types.
@@ -36,6 +73,23 @@ pub trait GtsSchema {
     /// The name of the field that contains the generic type parameter, if any.
     /// For example, `BaseEventV1<P>` has `payload` as the generic field.
     const GENERIC_FIELD: Option<&'static str> = None;
+
+    /// `true` if this type declares `x-gts-final` (not inheritable). Set by
+    /// `#[struct_to_gts_schema]` from `gts_final = true`; read by the
+    /// derive-from-final compile-time guard.
+    const GTS_FINAL: bool = false;
+
+    /// `true` if this type declares `x-gts-abstract` (not directly
+    /// instantiable). Set by `#[struct_to_gts_schema]` from `gts_abstract =
+    /// true`; read by the `gts_instance!` compile-time guard.
+    const GTS_ABSTRACT: bool = false;
+
+    /// Chain-aggregated `x-gts-traits-schema` state (this type's own layer
+    /// `allOf`-composed with its ancestors'). Set by `#[struct_to_gts_schema]`;
+    /// read by the compile-time guard that rejects `traits` values when the
+    /// chain has no usable trait shape ([`TraitSchemaState::Absent`]) or
+    /// prohibits traits ([`TraitSchemaState::Prohibited`]).
+    const TRAIT_SCHEMA: TraitSchemaState = TraitSchemaState::Absent;
 
     /// Returns the JSON schema for this type with $ref references intact.
     fn gts_schema_with_refs() -> Value;
@@ -85,6 +139,25 @@ pub trait GtsSchema {
     #[must_use]
     fn innermost_schema() -> Value {
         Self::gts_schema_with_refs()
+    }
+
+    /// This type's *own* declared `x-gts-traits-schema`, or `None` if it
+    /// declares none. The single layer this type contributes — not the
+    /// chain-aggregated effective trait-schema (the registry composes those
+    /// along the `$id` chain via `allOf`). Overridden by
+    /// `#[struct_to_gts_schema]` when `traits_schema = …` is set.
+    #[must_use]
+    fn gts_traits_schema() -> Option<Value> {
+        None
+    }
+
+    /// This type's *own* declared `x-gts-traits` values, or `None` if it
+    /// resolves none. The single layer this type contributes — not the
+    /// chain-merged effective traits object. Overridden by
+    /// `#[struct_to_gts_schema]` when `traits = …` is set.
+    #[must_use]
+    fn gts_traits() -> Option<Value> {
+        None
     }
 
     /// Collect the nesting path (generic field names) from outer to inner types.
@@ -438,6 +511,35 @@ pub fn build_gts_allof_schema(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn trait_schema_state_join_truth_table() {
+        use TraitSchemaState::{Absent, Open, Prohibited};
+
+        // Full 3×3 lattice under `allOf` composition:
+        // - `Prohibited` (a `false` subschema) annihilates anything → Prohibited.
+        // - otherwise any `Open` (satisfiable schema) makes the chain Open.
+        // - otherwise (both sides Absent) the chain stays Absent.
+        let cases = [
+            (Absent, Absent, Absent),
+            (Absent, Open, Open),
+            (Absent, Prohibited, Prohibited),
+            (Open, Absent, Open),
+            (Open, Open, Open),
+            (Open, Prohibited, Prohibited),
+            (Prohibited, Absent, Prohibited),
+            (Prohibited, Open, Prohibited),
+            (Prohibited, Prohibited, Prohibited),
+        ];
+
+        for (ancestor, own, expected) in cases {
+            assert_eq!(
+                ancestor.join(own),
+                expected,
+                "join({ancestor:?}, {own:?}) should be {expected:?}"
+            );
+        }
+    }
 
     #[test]
     fn test_unit_type_properties() {

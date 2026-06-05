@@ -1,0 +1,38 @@
+{
+  "$id": "gts://gts.x.test.golden.event.v1~x.test.order.placed.v1~",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "allOf": [
+    {
+      "$ref": "gts://gts.x.test.golden.event.v1~"
+    },
+    {
+      "properties": {
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "order_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "order_id"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "object"
+    }
+  ],
+  "description": "Order placed",
+  "type": "object",
+  "x-gts-final": true,
+  "x-gts-traits": {
+    "escalation": {
+      "after": "PT5M",
+      "to": "Low"
+    },
+    "indexed": true,
+    "severity": "High",
+    "topic_ref": "gts.x.core.events.topic.v1~x.test._.orders.v1"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "$id": "gts://gts.x.test.gen.event.v1~x.test.audit.event.v1~",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "allOf": [
+    {
+      "$ref": "gts://gts.x.test.gen.event.v1~"
+    },
+    {
+      "properties": {
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "type": "object"
+            },
+            "user_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "user_id",
+            "data"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "object"
+    }
+  ],
+  "description": "Still-generic abstract mid resolving the inherited topic trait",
+  "type": "object",
+  "x-gts-abstract": true,
+  "x-gts-traits": {
+    "topic_ref": "gts.x.core.events.topic.v1~x.test._.audit.v1"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "$id": "gts://gts.x.test.golden.narrow.v1~",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "Base declaring an open-string priority trait",
+  "properties": {
+    "id": {
+      "description": "GTS instance identifier",
+      "format": "gts-instance-id",
+      "title": "GTS Instance ID",
+      "type": "string",
+      "x-gts-ref": "gts.*"
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "id",
+    "payload"
+  ],
+  "type": "object",
+  "x-gts-abstract": true,
+  "x-gts-traits-schema": {
+    "properties": {
+      "priority": {
+        "default": "medium",
+        "type": "string"
+      }
+    },
+    "required": [
+      "priority"
+    ],
+    "type": "object"
+  }
+}

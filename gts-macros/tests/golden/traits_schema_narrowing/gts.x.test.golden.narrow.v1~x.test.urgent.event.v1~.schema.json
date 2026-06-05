@@ -1,0 +1,49 @@
+{
+  "$id": "gts://gts.x.test.golden.narrow.v1~x.test.urgent.event.v1~",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "allOf": [
+    {
+      "$ref": "gts://gts.x.test.golden.narrow.v1~"
+    },
+    {
+      "properties": {
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "order_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "order_id"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "object"
+    }
+  ],
+  "description": "Derived narrowing priority to an enum and resolving it",
+  "type": "object",
+  "x-gts-final": true,
+  "x-gts-traits": {
+    "priority": "high"
+  },
+  "x-gts-traits-schema": {
+    "properties": {
+      "priority": {
+        "enum": [
+          "low",
+          "medium",
+          "high",
+          "critical"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "priority"
+    ],
+    "type": "object"
+  }
+}

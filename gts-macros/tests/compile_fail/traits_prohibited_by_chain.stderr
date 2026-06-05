@@ -1,0 +1,11 @@
+error[E0080]: evaluation panicked: struct_to_gts_schema: `traits` values were provided but the chain's `traits_schema` resolves to `false`, which prohibits all traits
+  --> tests/compile_fail/traits_prohibited_by_chain.rs:20:1
+   |
+20 | / #[struct_to_gts_schema(
+21 | |     dir_path = "schemas",
+22 | |     base = ClosedBaseV1,
+23 | |     type_id = "gts.x.app.entities.closed.v1~x.app.child.thing.v1~",
+...  |
+26 | |     traits = serde_json::json!({ "retention": "P30D" }),
+27 | | )]
+   | |__^ evaluation of `_` failed here

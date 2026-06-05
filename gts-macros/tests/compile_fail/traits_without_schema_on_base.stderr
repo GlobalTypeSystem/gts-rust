@@ -1,0 +1,11 @@
+error[E0080]: evaluation panicked: struct_to_gts_schema: `traits` values were provided but no `traits_schema` is declared anywhere in this type's chain; a trait shape must exist for the values to validate against
+  --> tests/compile_fail/traits_without_schema_on_base.rs:6:1
+   |
+ 6 | / #[struct_to_gts_schema(
+ 7 | |     dir_path = "schemas",
+ 8 | |     base = true,
+ 9 | |     type_id = "gts.x.app.entities.thing.v1~",
+...  |
+12 | |     traits = serde_json::json!({ "retention": "P30D" }),
+13 | | )]
+   | |__^ evaluation of `_` failed here

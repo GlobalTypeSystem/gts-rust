@@ -37,5 +37,6 @@
     }
   ],
   "description": "Audit event with user context",
-  "type": "object"
+  "type": "object",
+  "x-gts-abstract": true
 }

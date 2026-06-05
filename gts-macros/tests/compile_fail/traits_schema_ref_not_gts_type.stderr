@@ -1,0 +1,68 @@
+error[E0277]: the trait bound `PlainType: GtsSchema` is not satisfied
+  --> tests/compile_fail/traits_schema_ref_not_gts_type.rs:18:21
+   |
+18 |     traits_schema = PlainType,
+   |                     ^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `GtsSchema` is not implemented for `PlainType`
+  --> tests/compile_fail/traits_schema_ref_not_gts_type.rs:8:1
+   |
+ 8 | pub struct PlainType {
+   | ^^^^^^^^^^^^^^^^^^^^
+help: the following other types implement trait `GtsSchema`
+  --> tests/compile_fail/traits_schema_ref_not_gts_type.rs:12:1
+   |
+12 | / #[struct_to_gts_schema(
+13 | |     dir_path = "schemas",
+14 | |     base = true,
+15 | |     type_id = "gts.x.app.entities.thing.v1~",
+...  |
+18 | |     traits_schema = PlainType,
+19 | | )]
+   | |__^ `ThingV1`
+   |
+  ::: $WORKSPACE/gts/src/schema.rs
+   |
+   |   impl GtsSchema for () {
+   |   ^^^^^^^^^^^^^^^^^^^^^ `()`
+note: required by a bound in `_assert_ref_traits_schema`
+  --> tests/compile_fail/traits_schema_ref_not_gts_type.rs:12:1
+   |
+12 | / #[struct_to_gts_schema(
+13 | |     dir_path = "schemas",
+14 | |     base = true,
+15 | |     type_id = "gts.x.app.entities.thing.v1~",
+...  |
+18 | |     traits_schema = PlainType,
+19 | | )]
+   | |__^ required by this bound in `_assert_ref_traits_schema`
+   = note: this error originates in the attribute macro `struct_to_gts_schema` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `PlainType: GtsSchema` is not satisfied
+  --> tests/compile_fail/traits_schema_ref_not_gts_type.rs:18:21
+   |
+18 |     traits_schema = PlainType,
+   |                     ^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `GtsSchema` is not implemented for `PlainType`
+  --> tests/compile_fail/traits_schema_ref_not_gts_type.rs:8:1
+   |
+ 8 | pub struct PlainType {
+   | ^^^^^^^^^^^^^^^^^^^^
+help: the following other types implement trait `GtsSchema`
+  --> tests/compile_fail/traits_schema_ref_not_gts_type.rs:12:1
+   |
+12 | / #[struct_to_gts_schema(
+13 | |     dir_path = "schemas",
+14 | |     base = true,
+15 | |     type_id = "gts.x.app.entities.thing.v1~",
+...  |
+18 | |     traits_schema = PlainType,
+19 | | )]
+   | |__^ `ThingV1`
+   |
+  ::: $WORKSPACE/gts/src/schema.rs
+   |
+   |   impl GtsSchema for () {
+   |   ^^^^^^^^^^^^^^^^^^^^^ `()`
+   = note: this error originates in the attribute macro `struct_to_gts_schema` (in Nightly builds, run with -Z macro-backtrace for more info)

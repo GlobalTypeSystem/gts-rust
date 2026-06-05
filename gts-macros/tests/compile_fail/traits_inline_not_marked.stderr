@@ -1,0 +1,23 @@
+error[E0277]: the trait bound `UnmarkedTraits: GtsTraitsSchema` is not satisfied
+  --> tests/compile_fail/traits_inline_not_marked.rs:22:28
+   |
+22 |     traits_schema = inline(UnmarkedTraits),
+   |                            ^^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `GtsTraitsSchema` is not implemented for `UnmarkedTraits`
+  --> tests/compile_fail/traits_inline_not_marked.rs:12:1
+   |
+12 | pub struct UnmarkedTraits {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `_assert_inline_traits_schema`
+  --> tests/compile_fail/traits_inline_not_marked.rs:16:1
+   |
+16 | / #[struct_to_gts_schema(
+17 | |     dir_path = "schemas",
+18 | |     base = true,
+19 | |     type_id = "gts.x.app.entities.thing.v1~",
+...  |
+22 | |     traits_schema = inline(UnmarkedTraits),
+23 | | )]
+   | |__^ required by this bound in `_assert_inline_traits_schema`
+   = note: this error originates in the attribute macro `struct_to_gts_schema` (in Nightly builds, run with -Z macro-backtrace for more info)

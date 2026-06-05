@@ -1,0 +1,11 @@
+error[E0080]: evaluation panicked: struct_to_gts_schema: an ancestor declares `traits_schema = false`, which prohibits all traits, so this type cannot declare its own `traits_schema`; the composed schema would be unsatisfiable (`allOf[T, false]`)
+  --> tests/compile_fail/traits_schema_under_prohibited.rs:27:1
+   |
+27 | / #[struct_to_gts_schema(
+28 | |     dir_path = "schemas",
+29 | |     base = SealedBaseV1,
+30 | |     type_id = "gts.x.app.entities.sealed.v1~x.app.child.thing.v1~",
+...  |
+33 | |     traits_schema = inline(ChildTraits),
+34 | | )]
+   | |__^ evaluation of `_` failed here

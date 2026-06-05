@@ -10,6 +10,8 @@ pub mod schema_modifiers;
 pub mod schema_narrow;
 pub mod schema_traits;
 pub mod store;
+#[doc(hidden)]
+pub mod testing;
 pub mod x_gts_ref;
 
 // Re-export commonly used types
@@ -22,9 +24,11 @@ pub use ops::GtsOps;
 pub use path_resolver::JsonPathResolver;
 pub use schema::{
     GtsDeserialize, GtsDeserializeWrapper, GtsNoDirectDeserialize, GtsNoDirectSerialize, GtsSchema,
-    GtsSerialize, GtsSerializeWrapper, deserialize_gts, serialize_gts, strip_schema_metadata,
+    GtsSerialize, GtsSerializeWrapper, JSON_SCHEMA_DRAFT_07, TraitSchemaState, deserialize_gts,
+    serialize_gts, strip_schema_metadata,
 };
 pub use schema_cast::{GtsEntityCastResult, SchemaCastError};
 pub use schema_narrow::{NarrowError, try_narrow};
+pub use schema_traits::{GtsTraitsSchema, inline_traits_schema_of};
 pub use store::{GtsReader, GtsStore, GtsStoreQueryResult, StoreError};
 pub use x_gts_ref::{XGtsRefValidationError, XGtsRefValidator};

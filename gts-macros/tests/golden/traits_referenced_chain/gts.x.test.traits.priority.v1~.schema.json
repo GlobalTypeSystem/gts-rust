@@ -1,0 +1,38 @@
+{
+  "$id": "gts://gts.x.test.traits.priority.v1~",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "Reusable priority trait with an open payload slot",
+  "properties": {
+    "id": {
+      "description": "GTS instance identifier",
+      "format": "gts-instance-id",
+      "title": "GTS Instance ID",
+      "type": "string",
+      "x-gts-ref": "gts.*"
+    },
+    "label": {
+      "maxLength": 32,
+      "minLength": 1,
+      "type": "string"
+    },
+    "payload": {
+      "type": "object"
+    },
+    "priority": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "label",
+    "priority",
+    "payload"
+  ],
+  "type": "object"
+}

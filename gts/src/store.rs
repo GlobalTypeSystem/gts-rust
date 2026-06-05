@@ -895,25 +895,41 @@ impl GtsStore {
 
         // Check if the leaf schema is abstract — skip trait validation entirely.
         // Abstract schemas are not leaf schemas, so trait resolution completeness is not enforced.
-        if let Some(leaf_entity) = self.get(gts_id)
-            && leaf_entity
+        // While we hold the leaf entity, capture its `$schema` dialect so trait
+        // values validate under the same JSON Schema draft as the host document
+        // (a GTS Type Schema always declares `$schema`).
+        let dialect = if let Some(leaf_entity) = self.get(gts_id) {
+            if leaf_entity
                 .content
                 .get(crate::schema_modifiers::X_GTS_ABSTRACT)
                 == Some(&Value::Bool(true))
-        {
-            return Ok(());
-        }
+            {
+                return Ok(());
+            }
+            leaf_entity
+                .content
+                .get("$schema")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        } else {
+            None
+        };
 
         // Delegate to the schema_traits module
         let merged = serde_json::Value::Object(merged_traits);
-        crate::schema_traits::validate_effective_traits(&resolved_trait_schemas, &merged, true)
-            .map_err(|errors| {
-                StoreError::ValidationError(format!(
-                    "Schema '{}' trait validation failed: {}",
-                    gts_id,
-                    errors.join("; ")
-                ))
-            })
+        crate::schema_traits::validate_effective_traits(
+            &resolved_trait_schemas,
+            &merged,
+            true,
+            dialect.as_deref(),
+        )
+        .map_err(|errors| {
+            StoreError::ValidationError(format!(
+                "Schema '{}' trait validation failed: {}",
+                gts_id,
+                errors.join("; ")
+            ))
+        })
     }
 
     /// OP#13 entity-level check: ensures the effective trait schema is "closed".

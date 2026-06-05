@@ -1,0 +1,5 @@
+error: expected `inline(T)`, a type path, or `true`/`false`
+  --> tests/compile_fail/traits_schema_string_literal.rs:13:21
+   |
+13 |     traits_schema = "P30D",
+   |                     ^^^^^^

@@ -1,0 +1,9 @@
+error[E0080]: evaluation panicked: gts_instance: cannot create an instance of an abstract type (it declares `gts_abstract = true` / `x-gts-abstract: true`); instantiate a concrete derived type instead
+  --> tests/compile_fail/instance_of_abstract.rs:24:13
+   |
+24 |       let _ = gts_instance!(AbstractThingV1 {
+   |  _____________^
+25 | |         id: "gts.x.app.events.thing.v1~vendor.app.x.thing.v1",
+26 | |         name: "x".to_owned(),
+27 | |     });
+   | |______^ evaluation of `main::_` failed here
