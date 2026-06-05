@@ -482,6 +482,12 @@ jobs:
               return 0
             fi
             for attempt in 1 2 3; do
+              # Drop the cached sparse index before each attempt. rust-cache restores a
+              # registry index snapshot that can predate internal crates just published
+              # earlier in this job (e.g. gts-validator -> gts ^0.10.0), causing
+              # "failed to select a version for the requirement". Clearing forces cargo
+              # to re-fetch fresh index entries that include the new versions.
+              rm -rf ~/.cargo/registry/index
               # Token scoped to this single invocation only, not the surrounding shell environment
               if CARGO_REGISTRY_TOKEN="${{ secrets.CARGO_REGISTRY_TOKEN }}" cargo publish -p "${crate}" --locked; then
                 echo "${crate} published successfully on attempt ${attempt}."
