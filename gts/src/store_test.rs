@@ -3852,6 +3852,70 @@ fn test_op13_traits_missing_required_fails() {
 }
 
 #[test]
+fn test_op13_entity_traits_abstract_base_skips_completeness() {
+    // gts-spec §9.7.5 / §9.11.4 (ADR-0003): a type marked `x-gts-abstract: true`
+    // is exempt from the OP#13 entity-level completeness check. It may declare an
+    // `x-gts-traits-schema` without resolving any `x-gts-traits` values — concrete
+    // descendants are expected to close the required traits.
+    let mut store = GtsStore::new(None);
+
+    let base = json!({
+        "$id": "gts://gts.x.test13.abs.base.v1~",
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "x-gts-abstract": true,
+        "x-gts-traits-schema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "topicRef": {"type": "string"}
+            }
+        },
+        "properties": {"id": {"type": "string"}}
+    });
+    store
+        .register_schema("gts.x.test13.abs.base.v1~", &base)
+        .expect("register abstract base");
+
+    let result = store.validate_entity_traits("gts.x.test13.abs.base.v1~");
+    assert!(
+        result.is_ok(),
+        "Abstract base must be exempt from the OP#13 completeness check: {result:?}"
+    );
+}
+
+#[test]
+fn test_op13_entity_traits_non_abstract_base_without_values_fails() {
+    // The flip side of the abstract exemption: a non-abstract type that declares
+    // a trait schema but supplies no `x-gts-traits` values anywhere in its chain
+    // is incomplete and must still fail OP#13.
+    let mut store = GtsStore::new(None);
+
+    let base = json!({
+        "$id": "gts://gts.x.test13.conc.base.v1~",
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "x-gts-traits-schema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "topicRef": {"type": "string"}
+            }
+        },
+        "properties": {"id": {"type": "string"}}
+    });
+    store
+        .register_schema("gts.x.test13.conc.base.v1~", &base)
+        .expect("register concrete base");
+
+    let result = store.validate_entity_traits("gts.x.test13.conc.base.v1~");
+    assert!(
+        result.is_err(),
+        "Non-abstract base with no trait values must fail the OP#13 completeness check"
+    );
+}
+
+#[test]
 fn test_op13_traits_wrong_type_fails() {
     let mut store = GtsStore::new(None);
 
