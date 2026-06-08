@@ -943,6 +943,23 @@ impl GtsStore {
         let gid = GtsID::new(gts_id)
             .map_err(|e| StoreError::ValidationError(format!("Invalid GTS ID: {e}")))?;
 
+        // If the type named by `gts_id` is abstract, it is exempt from the OP#13
+        // entity-level checks (completeness + closed trait schema). An abstract
+        // type is a template, not a deployable standalone entity: it may carry an
+        // `x-gts-traits-schema` without resolving its required traits, and its
+        // descendants are expected to close them. The exemption is keyed on
+        // `x-gts-abstract` specifically — `x-gts-final` types are non-abstract and
+        // MUST satisfy completeness themselves (gts-spec §9.7.5 / §9.11.4,
+        // ADR-0003). Mirrors the abstract skip in `validate_schema_traits`.
+        if let Some(leaf_entity) = self.get(gts_id)
+            && leaf_entity
+                .content
+                .get(crate::schema_modifiers::X_GTS_ABSTRACT)
+                == Some(&Value::Bool(true))
+        {
+            return Ok(());
+        }
+
         let segments = &gid.gts_id_segments;
 
         let mut trait_schemas: Vec<serde_json::Value> = Vec::new();
