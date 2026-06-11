@@ -539,7 +539,6 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tracing",
- "uuid",
  "walkdir",
 ]
 
@@ -568,6 +567,7 @@ name = "gts-id"
 version = "0.10.0"
 dependencies = [
  "thiserror",
+ "uuid",
 ]
 
 [[package]]

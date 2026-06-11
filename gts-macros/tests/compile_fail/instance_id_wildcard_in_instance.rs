@@ -1,7 +1,7 @@
 //! Test: typed `gts_instance!` rejects an id literal containing a
 //! wildcard (`*`). Wildcards are valid only in pattern-matching contexts
 //! (`<schema>~*` for "any instance of this type"), never in concrete
-//! instance ids — `validate_gts_id(_, allow_wildcards=false)` enforces
+//! instance ids — `parse_gts_string(_, allow_wildcards=false)` enforces
 //! this at proc-macro time.
 
 use gts::GtsInstanceId;

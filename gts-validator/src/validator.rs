@@ -128,7 +128,7 @@ pub fn validate_candidate(
         match gts::GtsWildcard::new(gts_id) {
             Ok(parsed) => {
                 if let Some(expected) = expected_vendor
-                    && let Some(first_seg) = parsed.gts_id_segments.first()
+                    && let Some(first_seg) = parsed.segments().first()
                     && !first_seg.vendor.contains('*')
                     && first_seg.vendor != expected
                     && !is_example_vendor(&first_seg.vendor)
@@ -149,7 +149,7 @@ pub fn validate_candidate(
             Ok(parsed) => {
                 // Vendor check
                 if let Some(expected) = expected_vendor
-                    && let Some(first_seg) = parsed.gts_id_segments.first()
+                    && let Some(first_seg) = parsed.segments().first()
                     && first_seg.vendor != expected
                     && !is_example_vendor(&first_seg.vendor)
                 {

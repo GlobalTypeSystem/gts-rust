@@ -734,13 +734,13 @@ impl GtsStore {
             .map_err(|e| StoreError::ValidationError(format!("Invalid GTS ID: {e}")))?;
 
         // Single-segment schemas have no parent to validate against
-        if gid.gts_id_segments.len() < 2 {
+        if gid.segments().len() < 2 {
             return Ok(());
         }
 
         // Build pairs of (base_id, derived_id) for each adjacent level
         // Note: segment.segment already includes the trailing '~' for type segments
-        let segments = &gid.gts_id_segments;
+        let segments = &gid.segments();
         for i in 0..segments.len() - 1 {
             let base_id = format!(
                 "gts.{}",
@@ -835,7 +835,7 @@ impl GtsStore {
         let gid = GtsID::new(gts_id)
             .map_err(|e| StoreError::ValidationError(format!("Invalid GTS ID: {e}")))?;
 
-        let segments = &gid.gts_id_segments;
+        let segments = &gid.segments();
 
         // Collect raw trait schemas and trait values from every schema in the chain.
         // We use *raw* content because resolve_schema_refs flattens allOf and only
@@ -960,7 +960,7 @@ impl GtsStore {
             return Ok(());
         }
 
-        let segments = &gid.gts_id_segments;
+        let segments = &gid.segments();
 
         let mut trait_schemas: Vec<serde_json::Value> = Vec::new();
         let mut has_trait_values = false;
@@ -1030,7 +1030,7 @@ impl GtsStore {
         // Try to parse as GTS ID first (for well-known instances)
         // If that fails, use the instance_id directly (for anonymous instances with UUIDs)
         let lookup_id = if let Ok(gid) = GtsID::new(instance_id) {
-            gid.id
+            gid.id().to_owned()
         } else {
             instance_id.to_owned()
         };
@@ -1156,8 +1156,8 @@ impl GtsStore {
                 .gts_id
                 .as_ref()
                 .ok_or(StoreError::InvalidEntity)?
-                .id
-                .clone();
+                .id()
+                .to_owned();
             (from_entity.clone(), id)
         } else {
             let type_id = from_entity
@@ -1421,7 +1421,7 @@ impl GtsStore {
         } else {
             match GtsID::new(base_pattern) {
                 Ok(gts_id) => {
-                    if gts_id.gts_id_segments.is_empty() {
+                    if gts_id.segments().is_empty() {
                         (
                             None,
                             None,
@@ -1451,10 +1451,10 @@ impl GtsStore {
         if let Some(_exact) = exact_gts_id {
             match GtsWildcard::new(base_pattern) {
                 Ok(pattern_as_wildcard) => entity_id.wildcard_match(&pattern_as_wildcard),
-                Err(_) => entity_id.id == base_pattern,
+                Err(_) => entity_id.id() == base_pattern,
             }
         } else {
-            entity_id.id == base_pattern
+            entity_id.id() == base_pattern
         }
     }
 

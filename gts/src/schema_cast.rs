@@ -138,10 +138,8 @@ impl GtsEntityCastResult {
     #[must_use]
     pub fn infer_direction(from_id: &str, to_id: &str) -> String {
         if let (Ok(gid_from), Ok(gid_to)) = (GtsID::new(from_id), GtsID::new(to_id))
-            && let (Some(from_seg), Some(to_seg)) = (
-                gid_from.gts_id_segments.last(),
-                gid_to.gts_id_segments.last(),
-            )
+            && let (Some(from_seg), Some(to_seg)) =
+                (gid_from.segments().last(), gid_to.segments().last())
             && let (Some(from_minor), Some(to_minor)) = (from_seg.ver_minor, to_seg.ver_minor)
         {
             if to_minor > from_minor {

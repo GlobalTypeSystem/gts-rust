@@ -481,7 +481,7 @@ impl GtsOps {
                     id: gts_id.to_owned(),
                     valid: true,
                     error: String::new(),
-                    is_type: Some(w.id.ends_with('~')),
+                    is_type: Some(w.id().ends_with('~')),
                     is_wildcard: true,
                 },
                 Err(e) => GtsIdValidationResult {
@@ -519,18 +519,14 @@ impl GtsOps {
             // Use GtsWildcard for wildcard pattern parsing/validation
             match GtsWildcard::new(gts_id) {
                 Ok(w) => {
-                    let segments = w
-                        .gts_id_segments
-                        .iter()
-                        .map(GtsIdSegmentInfo::from)
-                        .collect();
+                    let segments = w.segments().iter().map(GtsIdSegmentInfo::from).collect();
 
                     GtsIdParseResult {
                         id: gts_id.to_owned(),
                         ok: true,
                         segments,
                         error: String::new(),
-                        is_type: Some(w.id.ends_with('~')),
+                        is_type: Some(w.id().ends_with('~')),
                         is_wildcard: true,
                     }
                 }
@@ -546,11 +542,7 @@ impl GtsOps {
         } else {
             match GtsID::new(gts_id) {
                 Ok(id) => {
-                    let segments = id
-                        .gts_id_segments
-                        .iter()
-                        .map(GtsIdSegmentInfo::from)
-                        .collect();
+                    let segments = id.segments().iter().map(GtsIdSegmentInfo::from).collect();
 
                     GtsIdParseResult {
                         id: gts_id.to_owned(),
@@ -575,31 +567,21 @@ impl GtsOps {
 
     #[must_use]
     pub fn match_id_pattern(candidate: &str, pattern: &str) -> GtsIdMatchResult {
-        // Both candidate and pattern can be either valid GTS ID or valid wildcard
-        // Try to parse both as GtsID or GtsWildcard
-        let candidate_result = if candidate.contains('*') {
-            GtsWildcard::new(candidate).map(|w| (w.id.clone(), w.gts_id_segments))
+        // Parse the candidate into segments. It may itself be a wildcard pattern,
+        // in which case its segments are treated as the concrete side to match.
+        let candidate_segments = if candidate.contains('*') {
+            GtsWildcard::new(candidate).map(GtsWildcard::into_segments)
         } else {
-            GtsID::new(candidate).map(|g| (g.id.clone(), g.gts_id_segments))
+            GtsID::new(candidate).map(GtsID::into_segments)
         };
 
-        let pattern_result = if pattern.contains('*') {
-            GtsWildcard::new(pattern).map(|w| (w.id.clone(), w.gts_id_segments))
-        } else {
-            GtsID::new(pattern).map(|g| (g.id.clone(), g.gts_id_segments))
-        };
+        // The pattern side is always a wildcard pattern; a concrete id is just a
+        // zero-`*` pattern, which `GtsWildcard::new` accepts.
+        let pattern_result = GtsWildcard::new(pattern);
 
-        match (candidate_result, pattern_result) {
-            (Ok((c_id, c_segments)), Ok((p_id, p_segments))) => {
-                let c = GtsID {
-                    id: c_id,
-                    gts_id_segments: c_segments,
-                };
-                let p = GtsWildcard {
-                    id: p_id,
-                    gts_id_segments: p_segments,
-                };
-                let is_match = c.wildcard_match(&p);
+        match (candidate_segments, pattern_result) {
+            (Ok(cand_segs), Ok(pat)) => {
+                let is_match = pat.matches_segments(&cand_segs);
                 GtsIdMatchResult {
                     candidate: candidate.to_owned(),
                     pattern: pattern.to_owned(),
@@ -626,7 +608,7 @@ impl GtsOps {
     pub fn uuid(gts_id: &str) -> GtsUuidResult {
         match GtsID::new(gts_id) {
             Ok(g) => GtsUuidResult {
-                id: g.id.clone(),
+                id: g.id().to_owned(),
                 uuid: g.to_uuid().to_string(),
             },
             Err(_) => GtsUuidResult {
@@ -850,7 +832,7 @@ impl GtsOps {
                 id: entity
                     .gts_id
                     .as_ref()
-                    .map_or_else(|| gts_id.to_owned(), |g| g.id.clone()),
+                    .map_or_else(|| gts_id.to_owned(), |g| g.id().to_owned()),
                 type_id: entity.type_id.clone(),
                 is_type_schema: entity.is_schema,
                 content: Some(entity.content.clone()),
