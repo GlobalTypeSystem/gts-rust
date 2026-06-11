@@ -163,6 +163,46 @@ impl GtsInstanceId {
         Self(GtsEntityId::new(&format!("{schema_id}{segment}")))
     }
 
+    /// Creates a new GTS instance ID from a fully-formed string, validating
+    /// that it is a well-formed *instance* identifier.
+    ///
+    /// Unlike the infallible [`GtsInstanceId::new`], this constructor enforces
+    /// the instance/type discrimination via the type system rather than relying
+    /// on downstream `ends_with('~')` string checks. The string is first parsed
+    /// and structurally validated via [`GtsID::new`], then classified:
+    ///
+    /// * it must parse as a valid GTS identifier, and
+    /// * it must **not** be a type id (a trailing `~` denotes a type id).
+    ///
+    /// A successfully parsed instance id is always chained with at least one
+    /// type segment (single-segment instance ids are rejected by [`GtsID::new`]),
+    /// so it necessarily contains `~`.
+    ///
+    /// # Errors
+    /// Returns the underlying [`GtsIdError`] if the string fails GTS ID
+    /// validation, or [`GtsIdError`] if it is a (trailing-`~`) type id.
+    ///
+    /// # Example
+    /// ```
+    /// use gts::GtsInstanceId;
+    ///
+    /// assert!(GtsInstanceId::try_new("gts.x.core.events.event.v1~a.b.c.d.v1.0").is_ok());
+    /// // Trailing '~' is a type id, not an instance id:
+    /// assert!(GtsInstanceId::try_new("gts.x.core.events.event.v1~").is_err());
+    /// // A bare single-segment id is not a chained instance id:
+    /// assert!(GtsInstanceId::try_new("gts.x.core.events.event.v1").is_err());
+    /// ```
+    pub fn try_new(instance_id: &str) -> Result<Self, GtsIdError> {
+        let parsed = GtsID::new(instance_id)?;
+        if parsed.is_type() {
+            return Err(GtsIdError::new(
+                instance_id,
+                "GTS instance IDs must not end with '~' (a trailing '~' denotes a type id)",
+            ));
+        }
+        Ok(Self(GtsEntityId::new(parsed.as_ref())))
+    }
+
     /// Returns the underlying string representation of the instance ID.
     #[must_use]
     pub fn into_string(self) -> String {
@@ -326,6 +366,37 @@ impl GtsTypeId {
         Self(GtsEntityId::new(type_id))
     }
 
+    /// Creates a new GTS type ID from a string, validating that it is a
+    /// well-formed *type* identifier.
+    ///
+    /// Unlike the infallible [`GtsTypeId::new`], this constructor enforces the
+    /// type/instance discrimination via the type system rather than relying on
+    /// downstream `ends_with('~')` string checks. The string is first parsed and
+    /// structurally validated via [`GtsID::new`], then classified:
+    ///
+    /// * it must parse as a valid GTS identifier, and
+    /// * it must be a type id (i.e. end with `~`).
+    ///
+    /// # Errors
+    /// Returns the underlying [`GtsIdError`] if the string fails GTS ID
+    /// validation, or [`GtsIdError`] if it is an instance id (no trailing `~`).
+    ///
+    /// # Example
+    /// ```
+    /// use gts::GtsTypeId;
+    ///
+    /// assert!(GtsTypeId::try_new("gts.x.core.events.event.v1~").is_ok());
+    /// // An instance id (no trailing '~') is not a type id:
+    /// assert!(GtsTypeId::try_new("gts.x.core.events.event.v1~a.b.c.d.v1.0").is_err());
+    /// ```
+    pub fn try_new(type_id: &str) -> Result<Self, GtsIdError> {
+        let parsed = GtsID::new(type_id)?;
+        if !parsed.is_type() {
+            return Err(GtsIdError::new(type_id, "GTS type IDs must end with '~'"));
+        }
+        Ok(Self(GtsEntityId::new(parsed.as_ref())))
+    }
+
     /// Returns the underlying string representation of the type ID.
     #[must_use]
     pub fn into_string(self) -> String {
@@ -374,5 +445,41 @@ impl PartialEq<&str> for GtsTypeId {
 impl PartialEq<String> for GtsTypeId {
     fn eq(&self, other: &String) -> bool {
         self.0.as_ref() == other
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_type_id_try_new_accepts_type_rejects_instance() {
+        // A trailing-'~' type id is accepted.
+        let id = GtsTypeId::try_new("gts.x.core.events.event.v1~").expect("test");
+        assert_eq!(id.as_ref(), "gts.x.core.events.event.v1~");
+
+        // A valid instance id (no trailing '~') is classified out.
+        let err = GtsTypeId::try_new("gts.x.core.events.event.v1~a.b.c.d.v1.0")
+            .expect_err("must reject instance id");
+        assert!(err.to_string().contains("must end with '~'"));
+
+        // A wholly invalid CTI is rejected by GtsID::new before classification.
+        assert!(GtsTypeId::try_new("not a valid cti~").is_err());
+    }
+
+    #[test]
+    fn test_instance_id_try_new_accepts_instance_rejects_type() {
+        // A chained, non-type id is accepted.
+        let id = GtsInstanceId::try_new("gts.x.core.events.event.v1~a.b.c.d.v1.0").expect("test");
+        assert_eq!(id.as_ref(), "gts.x.core.events.event.v1~a.b.c.d.v1.0");
+
+        // A valid type id (trailing '~') is classified out.
+        let err =
+            GtsInstanceId::try_new("gts.x.core.events.event.v1~").expect_err("must reject type id");
+        assert!(err.to_string().contains("must not end with '~'"));
+
+        // A wholly invalid CTI is rejected by GtsID::new before classification.
+        assert!(GtsInstanceId::try_new("not a valid cti").is_err());
     }
 }
