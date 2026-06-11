@@ -2210,7 +2210,7 @@ impl GtsReader for MockGtsReader {
     fn read_by_id(&self, entity_id: &str) -> Option<GtsEntity> {
         self.entities
             .iter()
-            .find(|e| e.gts_id.as_ref().map(|id| id.id.as_str()) == Some(entity_id))
+            .find(|e| e.gts_id.as_ref().map(gts_id::GtsID::id) == Some(entity_id))
             .cloned()
     }
 

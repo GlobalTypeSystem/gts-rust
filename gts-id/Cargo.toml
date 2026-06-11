@@ -15,5 +15,12 @@ publish = true
 [lints]
 workspace = true
 
+[features]
+# Opt-in deterministic UUID v5 derivation (`GtsID::to_uuid`). Off by default so
+# parsing-only consumers — notably the `gts-macros` proc-macro crate — don't pull
+# `uuid` into their build graph or couple their semver to it.
+uuid = ["dep:uuid"]
+
 [dependencies]
 thiserror.workspace = true
+uuid = { workspace = true, optional = true }

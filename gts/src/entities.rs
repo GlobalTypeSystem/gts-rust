@@ -104,7 +104,7 @@ pub struct GtsEntity {
     /// or from `$id` field for schemas). None for anonymous instances.
     pub gts_id: Option<GtsID>,
     /// The instance ID - for anonymous instances this is the UUID from `id` field,
-    /// for well-known instances this equals `gts_id.id`, for schemas this equals `gts_id.id`.
+    /// for well-known instances this equals `gts_id.id()`, for schemas this equals `gts_id.id()`.
     pub instance_id: Option<String>,
     /// True if this is a JSON Schema (has `$schema` field), false if it's an instance.
     pub is_schema: bool,
@@ -181,7 +181,7 @@ impl GtsEntity {
         } else if let Some(ref instance_id) = entity.instance_id {
             entity.label = instance_id.clone();
         } else if let Some(ref gts_id) = entity.gts_id {
-            entity.label = gts_id.id.clone();
+            entity.label = gts_id.id().to_owned();
         } else if entity.label.is_empty() {
             entity.label = String::new();
         }
@@ -261,14 +261,14 @@ impl GtsEntity {
 
             // For chained GTS IDs, extract the parent schema from the chain
             if let Some(ref gts_id) = self.gts_id
-                && gts_id.gts_id_segments.len() > 1
+                && gts_id.segments().len() > 1
             {
                 // Build parent schema ID from all segments except the last
                 // Each segment.segment already includes the ~ suffix if it's a type
                 let parent_segments: Vec<&str> = gts_id
-                    .gts_id_segments
+                    .segments()
                     .iter()
-                    .take(gts_id.gts_id_segments.len() - 1)
+                    .take(gts_id.segments().len() - 1)
                     .map(|seg| seg.segment.as_str())
                     .collect();
                 if !parent_segments.is_empty() {
@@ -344,10 +344,10 @@ impl GtsEntity {
                 // Extract schema ID: everything up to and including last ~
                 // For a 2-segment chain, this gives first segment (parent)
                 if let Some(ref gts_id) = self.gts_id
-                    && gts_id.gts_id_segments.len() > 1
-                    && let Some(last_tilde) = gts_id.id.rfind('~')
+                    && gts_id.segments().len() > 1
+                    && let Some(last_tilde) = gts_id.id().rfind('~')
                 {
-                    self.type_id = Some(gts_id.id[..=last_tilde].to_string());
+                    self.type_id = Some(gts_id.id()[..=last_tilde].to_string());
                     // Mark that type_id was extracted from the id field
                     self.selected_type_id_field = self.selected_entity_field.clone();
                 }
@@ -421,7 +421,7 @@ impl GtsEntity {
         let gts_id = self
             .gts_id
             .as_ref()
-            .map(|g| g.id.clone())
+            .map(|g| g.id().to_owned())
             .unwrap_or_default();
         JsonPathResolver::new(gts_id, self.content.clone()).resolve(path)
     }
@@ -439,11 +439,12 @@ impl GtsEntity {
         // When casting a schema, from_schema might be a standard JSON Schema (no gts_id)
         if self.is_schema
             && let (Some(self_id), Some(from_id)) = (&self.gts_id, &from_schema.gts_id)
-            && self_id.id != from_id.id
+            && self_id.id() != from_id.id()
         {
             return Err(SchemaCastError::InternalError(format!(
                 "Internal error: {} != {}",
-                self_id.id, from_id.id
+                self_id.id(),
+                from_id.id()
             )));
         }
 
@@ -458,12 +459,12 @@ impl GtsEntity {
         let from_id = self
             .gts_id
             .as_ref()
-            .map(|g| g.id.clone())
+            .map(|g| g.id().to_owned())
             .unwrap_or_default();
         let to_id = to_schema
             .gts_id
             .as_ref()
-            .map(|g| g.id.clone())
+            .map(|g| g.id().to_owned())
             .unwrap_or_default();
 
         GtsEntityCastResult::cast(
@@ -639,7 +640,7 @@ impl GtsEntity {
     pub fn effective_id(&self) -> Option<String> {
         // Prefer GTS ID if available
         if let Some(ref gts_id) = self.gts_id {
-            return Some(gts_id.id.clone());
+            return Some(gts_id.id().to_owned());
         }
         // Fall back to instance_id for anonymous instances
         self.instance_id.clone()
@@ -1034,7 +1035,7 @@ mod tests {
 
         // The gts_id should have the prefix stripped
         let gts_id = entity.gts_id.as_ref().expect("Entity should have a GTS ID");
-        assert_eq!(gts_id.id, "gts.vendor.package.namespace.type.v1.0~");
+        assert_eq!(gts_id.id(), "gts.vendor.package.namespace.type.v1.0~");
         assert!(entity.is_schema, "Entity should be detected as a schema");
     }
 
@@ -1063,7 +1064,7 @@ mod tests {
 
         let gts_id = entity.gts_id.as_ref().expect("Entity should have a GTS ID");
         assert_eq!(
-            gts_id.id,
+            gts_id.id(),
             "gts.vendor.package.namespace.type.v1~other.app.data.item.v1.0"
         );
 
@@ -1266,7 +1267,7 @@ mod tests {
             "Well-known instance should have gts_id"
         );
         assert_eq!(
-            entity.gts_id.as_ref().unwrap().id,
+            entity.gts_id.as_ref().unwrap().id(),
             "gts.x.core.events.type.v1~abc.app._.custom_event.v1.2"
         );
         assert_eq!(
@@ -1452,7 +1453,7 @@ mod tests {
         assert!(!entity.is_schema);
         assert!(entity.gts_id.is_some());
         assert_eq!(
-            entity.gts_id.as_ref().unwrap().id,
+            entity.gts_id.as_ref().unwrap().id(),
             "gts.vendor.package.namespace.type.v1.0~a.b.c.d.v1"
         );
         // Chained ID should have type_id extracted from the chain

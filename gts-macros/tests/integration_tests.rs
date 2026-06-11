@@ -608,10 +608,13 @@ fn test_schema_parsed_as_gts_entity() {
 
     // Verify GTS ID was parsed
     let gts_id = entity.gts_id.as_ref().expect("Entity should have a GTS ID");
-    assert_eq!(gts_id.id, "gts.x.core.events.topic.v1~");
+    assert_eq!(gts_id.id(), "gts.x.core.events.topic.v1~");
 
     // Verify the ID matches what the macro generates
-    assert_eq!(gts_id.id, EventTopicV1::gts_type_id().clone().into_string());
+    assert_eq!(
+        gts_id.id(),
+        EventTopicV1::gts_type_id().clone().into_string()
+    );
 }
 
 #[test]
@@ -644,7 +647,7 @@ fn test_instance_parsed_as_gts_entity() {
     // Verify GTS ID was parsed from the instance
     let gts_id = entity.gts_id.as_ref().expect("Entity should have a GTS ID");
     assert_eq!(
-        gts_id.id,
+        gts_id.id(),
         "gts.x.core.events.topic.v1~x.commerce.orders.orders.v1.0"
     );
 }
@@ -658,13 +661,9 @@ fn test_gts_id_segments_match_schema() {
     let gts_id = GtsID::new(schema_id_str).expect("Schema ID should be valid");
 
     // Verify segments
-    assert_eq!(
-        gts_id.gts_id_segments.len(),
-        1,
-        "Schema should have 1 segment"
-    );
+    assert_eq!(gts_id.segments().len(), 1, "Schema should have 1 segment");
 
-    let segment = &gts_id.gts_id_segments[0];
+    let segment = &gts_id.segments()[0];
     assert_eq!(segment.vendor, "x");
     assert_eq!(segment.package, "core");
     assert_eq!(segment.namespace, "events");
@@ -683,13 +682,13 @@ fn test_gts_id_segments_match_instance() {
 
     // Instance IDs have 2 segments: type segment + instance segment
     assert_eq!(
-        gts_id.gts_id_segments.len(),
+        gts_id.segments().len(),
         2,
         "Instance should have 2 segments"
     );
 
     // First segment is the type/schema segment
-    let type_segment = &gts_id.gts_id_segments[0];
+    let type_segment = &gts_id.segments()[0];
     assert_eq!(type_segment.vendor, "x");
     assert_eq!(type_segment.package, "core");
     assert_eq!(type_segment.namespace, "events");
@@ -698,7 +697,7 @@ fn test_gts_id_segments_match_instance() {
     assert!(type_segment.is_type, "First segment should be a type");
 
     // Second segment is the instance segment
-    let instance_segment = &gts_id.gts_id_segments[1];
+    let instance_segment = &gts_id.segments()[1];
     assert_eq!(instance_segment.vendor, "x");
     assert_eq!(instance_segment.package, "commerce");
     assert_eq!(instance_segment.namespace, "orders");
@@ -717,8 +716,8 @@ fn test_schema_and_instance_segments_relationship() {
     let instance_id = GtsID::new(&instance_id_str).unwrap();
 
     // The first segment of the instance should match the schema's segment
-    let schema_segment = &schema_id.gts_id_segments[0];
-    let instance_type_segment = &instance_id.gts_id_segments[0];
+    let schema_segment = &schema_id.segments()[0];
+    let instance_type_segment = &instance_id.segments()[0];
 
     assert_eq!(schema_segment.vendor, instance_type_segment.vendor);
     assert_eq!(schema_segment.package, instance_type_segment.package);
@@ -759,17 +758,17 @@ fn test_entity_and_gts_id_vendor_package_namespace_match() {
     let direct_gts_id = GtsID::new(EventTopicV1::gts_type_id().as_ref()).unwrap();
 
     // Verify they match
-    assert_eq!(entity_gts_id.id, direct_gts_id.id);
+    assert_eq!(entity_gts_id.id(), direct_gts_id.id());
     assert_eq!(
-        entity_gts_id.gts_id_segments.len(),
-        direct_gts_id.gts_id_segments.len()
+        entity_gts_id.segments().len(),
+        direct_gts_id.segments().len()
     );
 
     // Compare segment properties
     for (entity_seg, direct_seg) in entity_gts_id
-        .gts_id_segments
+        .segments()
         .iter()
-        .zip(direct_gts_id.gts_id_segments.iter())
+        .zip(direct_gts_id.segments().iter())
     {
         assert_eq!(entity_seg.vendor, direct_seg.vendor);
         assert_eq!(entity_seg.package, direct_seg.package);
@@ -827,7 +826,8 @@ fn test_gts_entity_strips_uri_prefix_from_schema() {
     // The GTS ID should have the gts:// prefix stripped (entities.rs strips gts:// from $id field)
     let gts_id = entity.gts_id.as_ref().expect("Entity should have a GTS ID");
     assert_eq!(
-        gts_id.id, "gts.x.core.events.topic.v1~",
+        gts_id.id(),
+        "gts.x.core.events.topic.v1~",
         "GTS ID should not contain 'gts://' prefix"
     );
 }
