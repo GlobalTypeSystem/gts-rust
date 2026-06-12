@@ -54,13 +54,23 @@ Technical Backlog:
 
 ## Architecture
 
-The project is organized as a Cargo workspace with two crates:
+The project is organized as a Cargo workspace. The three primary crates are:
+
+### `gts-id` (Library Crate)
+
+Standalone GTS identifier crate (no dependency on `gts`) — GTS ID parsing,
+validation, and wildcard matching:
+
+- **gts_id.rs** - `GtsId` parsing and validation
+- **gts_id_segment.rs** - parsed identifier segments
+- **gts_id_wildcard.rs** - `GtsIdWildcard` pattern matching
+- **parse.rs** - the shared identifier parser
 
 ### `gts` (Library Crate)
 
-Core library providing all GTS functionality:
+Core library providing all GTS functionality (re-exports the `gts-id` types):
 
-- **gts.rs** - GTS ID parsing, validation, wildcard matching
+- **gts.rs** - typed `GtsTypeId` / `GtsInstanceId` schema-aware wrappers and `gts-id` re-exports
 - **entities.rs** - JSON entities, configuration, validation
 - **path_resolver.rs** - JSON path resolution
 - **schema_cast.rs** - Schema compatibility and casting
@@ -566,7 +576,7 @@ assert_eq!(result.segments.len(), 2);
 
 // Direct parsing
 let id = GtsId::new("gts.x.core.events.event.v1~")?;
-assert_eq!(id.gts_id_segments.len(), 1);
+assert_eq!(id.segments().len(), 1);
 ```
 
 #### OP#4 - ID Pattern Matching
@@ -589,7 +599,7 @@ assert!(!result.is_match);
 // Direct wildcard matching
 let pattern = GtsIdWildcard::new("gts.x.*.events.*")?;
 let id = GtsId::new("gts.x.core.events.event.v1~")?;
-assert!(pattern.matches(&id));
+assert!(id.wildcard_match(&pattern));
 ```
 
 #### OP#5 - ID to UUID Mapping

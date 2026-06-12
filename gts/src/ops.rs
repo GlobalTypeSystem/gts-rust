@@ -46,7 +46,14 @@ impl From<&crate::gts::GtsIdSegment> for GtsIdSegmentInfo {
             package: seg.package().to_owned(),
             namespace: seg.namespace().to_owned(),
             type_name: seg.type_name().to_owned(),
-            ver_major: Some(seg.ver_major()),
+            // For a wildcard segment, `ver_major() == 0` is the "unspecified"
+            // sentinel and must serialize as `null`. A concrete segment always
+            // carries a real major (including a legitimate `v0`), so keep it.
+            ver_major: if seg.is_wildcard() && seg.ver_major() == 0 {
+                None
+            } else {
+                Some(seg.ver_major())
+            },
             ver_minor: seg.ver_minor(),
             is_type: seg.is_type(),
         }

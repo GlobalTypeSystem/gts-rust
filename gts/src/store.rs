@@ -600,12 +600,17 @@ impl GtsStore {
                     if ref_uri.starts_with('#') {
                         // Valid local ref
                     }
-                    // GTS refs must use gts:// URI format
+                    // GTS refs must use gts:// URI format and target a schema
+                    // (type) document. Only `entity.is_schema` documents are
+                    // registered for retrieval (see `GtsRetriever::new`), so an
+                    // instance-id ref would pass a plain `is_valid` check here
+                    // and then fail later during retrieval. Require a type id up
+                    // front via `GtsTypeId::try_new` (valid GTS id ending in `~`).
                     else if let Some(gts_id) = ref_uri.strip_prefix(GTS_URI_PREFIX) {
-                        // Validate the GTS ID
-                        if !GtsId::is_valid(gts_id) {
+                        if crate::GtsTypeId::try_new(gts_id).is_err() {
                             return Err(StoreError::InvalidRef(format!(
-                                "at '{current_path}': '{ref_uri}' contains invalid GTS identifier '{gts_id}'"
+                                "at '{current_path}': '{ref_uri}' must reference a GTS type id \
+                                 (a valid identifier ending with '~'), got '{gts_id}'"
                             )));
                         }
                     }

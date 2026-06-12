@@ -99,9 +99,6 @@ impl GtsId {
     /// Check if a string is a valid GTS identifier.
     #[must_use]
     pub fn is_valid(s: &str) -> bool {
-        if !s.starts_with(GTS_PREFIX) {
-            return false;
-        }
         Self::new(s).is_ok()
     }
 

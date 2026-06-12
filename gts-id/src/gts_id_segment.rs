@@ -1,25 +1,22 @@
 //! A single parsed segment of a GTS identifier.
 //!
 //! [`GtsIdSegment`] is the structured view of one segment (the part between
-//! `~` markers). It is a sum type: a segment is either a [concrete]
-//! vendor.package.namespace.type.version segment, a [wildcard] pattern
-//! segment, or a trailing anonymous-instance [UUID]. Segments are produced by
-//! the parser ([`GtsIdSegment::parse`]); callers obtain them by parsing a full
+//! `~` markers). Internally it is a sum type: a segment is either a concrete
+//! vendor.package.namespace.type.version segment, a wildcard pattern segment,
+//! or a trailing anonymous-instance UUID. Segments are produced by the parser
+//! ([`GtsIdSegment::parse`]); callers obtain them by parsing a full
 //! [`GtsId`](crate::GtsId) or [`GtsIdWildcard`](crate::GtsIdWildcard), never by
-//! constructing one directly — the variants and their fields are private so the
-//! parser's invariants (validated tokens, canonical versions, well-formed UUID
-//! tails) always hold.
-//!
-//! [concrete]: GtsIdSegment::Concrete
-//! [wildcard]: GtsIdSegment::Wildcard
-//! [UUID]: GtsIdSegment::UuidTail
+//! constructing one directly — [`GtsIdSegment`] is an opaque wrapper around a
+//! private representation, so the parser's invariants (validated tokens,
+//! canonical versions, well-formed UUID tails) always hold and cannot be forged
+//! by downstream crates. Inspect a segment through its accessor methods.
 
 use crate::parse::{expected_format, is_valid_segment_token, parse_u32_exact};
 
 /// The parsed name and version components shared by concrete and wildcard
 /// segments.
 ///
-/// For a [`Wildcard`](GtsIdSegment::Wildcard) segment these fields hold the
+/// For a wildcard segment these fields hold the
 /// (possibly partial) prefix that precedes the `*` token — e.g. `x.core.*`
 /// fills `vendor` and `package` and leaves the rest empty. Empty strings, a
 /// zero `ver_major`, and a `None` `ver_minor` therefore mean "unspecified" in
@@ -40,8 +37,17 @@ pub struct GtsIdSegmentParts {
 }
 
 /// A single `~`-delimited segment of a parsed GTS identifier.
+///
+/// Opaque wrapper around a private representation: the only way to obtain one
+/// is through the parser, so downstream crates cannot construct a segment with
+/// forged contents (such as a UUID tail holding a non-UUID string). Inspect a
+/// segment through its accessor methods.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum GtsIdSegment {
+pub struct GtsIdSegment(GtsIdSegmentKind);
+
+/// The private representation backing a [`GtsIdSegment`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum GtsIdSegmentKind {
     /// A concrete vendor.package.namespace.type.version segment.
     Concrete(GtsIdSegmentParts),
     /// A wildcard pattern segment: a (possibly empty) prefix followed by `*`.
@@ -54,12 +60,12 @@ pub enum GtsIdSegment {
 
 impl GtsIdSegment {
     /// The parsed name/version parts, when this is a concrete or wildcard
-    /// segment. `None` for a [`UuidTail`](Self::UuidTail).
+    /// segment. `None` for a UUID-tail segment.
     #[must_use]
     fn parts(&self) -> Option<&GtsIdSegmentParts> {
-        match self {
-            GtsIdSegment::Concrete(p) | GtsIdSegment::Wildcard(p) => Some(p),
-            GtsIdSegment::UuidTail(_) => None,
+        match &self.0 {
+            GtsIdSegmentKind::Concrete(p) | GtsIdSegmentKind::Wildcard(p) => Some(p),
+            GtsIdSegmentKind::UuidTail(_) => None,
         }
     }
 
@@ -69,9 +75,9 @@ impl GtsIdSegment {
     /// UUID tail it is the UUID itself.
     #[must_use]
     pub fn raw(&self) -> &str {
-        match self {
-            GtsIdSegment::Concrete(p) | GtsIdSegment::Wildcard(p) => &p.raw,
-            GtsIdSegment::UuidTail(uuid) => uuid,
+        match &self.0 {
+            GtsIdSegmentKind::Concrete(p) | GtsIdSegmentKind::Wildcard(p) => &p.raw,
+            GtsIdSegmentKind::UuidTail(uuid) => uuid,
         }
     }
 
@@ -118,26 +124,26 @@ impl GtsIdSegment {
         self.parts().is_some_and(|p| p.is_type)
     }
 
-    /// `true` when this is a [`Wildcard`](Self::Wildcard) segment.
+    /// `true` when this is a wildcard segment.
     #[must_use]
     pub fn is_wildcard(&self) -> bool {
-        matches!(self, GtsIdSegment::Wildcard(_))
+        matches!(self.0, GtsIdSegmentKind::Wildcard(_))
     }
 
-    /// The UUID string when this is a [`UuidTail`](Self::UuidTail), else `None`.
+    /// The UUID string when this is a UUID-tail segment, else `None`.
     #[must_use]
     pub fn uuid_tail(&self) -> Option<&str> {
-        match self {
-            GtsIdSegment::UuidTail(uuid) => Some(uuid),
+        match &self.0 {
+            GtsIdSegmentKind::UuidTail(uuid) => Some(uuid),
             _ => None,
         }
     }
 
-    /// The deterministic UUID parsed from a [`UuidTail`](Self::UuidTail) segment.
+    /// The deterministic UUID parsed from a UUID-tail segment.
     ///
-    /// Returns `None` for any other variant. The stored string was validated as
-    /// a well-formed UUID when the segment was parsed, so this never fails for a
-    /// UUID tail.
+    /// Returns `None` for any other segment kind. The stored string was
+    /// validated as a well-formed UUID when the segment was parsed, so this
+    /// never fails for a UUID tail.
     ///
     /// Requires the `uuid` feature.
     #[cfg(feature = "uuid")]
@@ -146,10 +152,9 @@ impl GtsIdSegment {
         self.uuid_tail().and_then(|s| uuid::Uuid::parse_str(s).ok())
     }
 
-    /// Construct a [`UuidTail`](Self::UuidTail) segment from an already-validated
-    /// UUID string.
+    /// Construct a UUID-tail segment from an already-validated UUID string.
     pub(crate) fn uuid_tail_segment(uuid: &str) -> Self {
-        GtsIdSegment::UuidTail(uuid.to_owned())
+        GtsIdSegment(GtsIdSegmentKind::UuidTail(uuid.to_owned()))
     }
 
     /// Parse a single GTS segment (the part between `~` markers).
@@ -257,28 +262,28 @@ impl GtsIdSegment {
 
         if !tokens.is_empty() {
             if allow_wildcards && tokens[0] == "*" {
-                return Ok(GtsIdSegment::Wildcard(parts));
+                return Ok(GtsIdSegment(GtsIdSegmentKind::Wildcard(parts)));
             }
             tokens[0].clone_into(&mut parts.vendor);
         }
 
         if tokens.len() > 1 {
             if allow_wildcards && tokens[1] == "*" {
-                return Ok(GtsIdSegment::Wildcard(parts));
+                return Ok(GtsIdSegment(GtsIdSegmentKind::Wildcard(parts)));
             }
             tokens[1].clone_into(&mut parts.package);
         }
 
         if tokens.len() > 2 {
             if allow_wildcards && tokens[2] == "*" {
-                return Ok(GtsIdSegment::Wildcard(parts));
+                return Ok(GtsIdSegment(GtsIdSegmentKind::Wildcard(parts)));
             }
             tokens[2].clone_into(&mut parts.namespace);
         }
 
         if tokens.len() > 3 {
             if allow_wildcards && tokens[3] == "*" {
-                return Ok(GtsIdSegment::Wildcard(parts));
+                return Ok(GtsIdSegment(GtsIdSegmentKind::Wildcard(parts)));
             }
             tokens[3].clone_into(&mut parts.type_name);
         }
@@ -288,7 +293,7 @@ impl GtsIdSegment {
                 if 4 != tokens.len() - 1 {
                     return Err("Wildcard '*' is only allowed as the final token".to_owned());
                 }
-                return Ok(GtsIdSegment::Wildcard(parts));
+                return Ok(GtsIdSegment(GtsIdSegmentKind::Wildcard(parts)));
             }
 
             if !tokens[4].starts_with('v') {
@@ -302,7 +307,7 @@ impl GtsIdSegment {
 
         if tokens.len() > 5 {
             if allow_wildcards && tokens[5] == "*" {
-                return Ok(GtsIdSegment::Wildcard(parts));
+                return Ok(GtsIdSegment(GtsIdSegmentKind::Wildcard(parts)));
             }
 
             parts.ver_minor =
@@ -311,7 +316,7 @@ impl GtsIdSegment {
                 })?);
         }
 
-        Ok(GtsIdSegment::Concrete(parts))
+        Ok(GtsIdSegment(GtsIdSegmentKind::Concrete(parts)))
     }
 }
 
