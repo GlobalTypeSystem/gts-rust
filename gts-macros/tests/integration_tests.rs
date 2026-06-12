@@ -9,7 +9,7 @@
 
 mod inheritance_tests;
 
-use gts::{GtsConfig, GtsEntity, GtsID, GtsInstanceId, GtsSchema};
+use gts::{GtsConfig, GtsEntity, GtsId, GtsInstanceId, GtsSchema};
 use gts_macros::struct_to_gts_schema;
 /// Event Topic (Stream) definition for testing GTS schema generation.
 /// Inspired by examples/examples/events/schemas/gts.x.core.events.topic.v1~.schema.json
@@ -581,7 +581,7 @@ fn test_multiple_instances_validate_independently() {
 }
 
 // =============================================================================
-// Tests for GtsEntity and GtsID integration
+// Tests for GtsEntity and GtsId integration
 // =============================================================================
 
 #[test]
@@ -608,10 +608,13 @@ fn test_schema_parsed_as_gts_entity() {
 
     // Verify GTS ID was parsed
     let gts_id = entity.gts_id.as_ref().expect("Entity should have a GTS ID");
-    assert_eq!(gts_id.id, "gts.x.core.events.topic.v1~");
+    assert_eq!(gts_id.id(), "gts.x.core.events.topic.v1~");
 
     // Verify the ID matches what the macro generates
-    assert_eq!(gts_id.id, EventTopicV1::gts_type_id().clone().into_string());
+    assert_eq!(
+        gts_id.id(),
+        EventTopicV1::gts_type_id().clone().into_string()
+    );
 }
 
 #[test]
@@ -644,7 +647,7 @@ fn test_instance_parsed_as_gts_entity() {
     // Verify GTS ID was parsed from the instance
     let gts_id = entity.gts_id.as_ref().expect("Entity should have a GTS ID");
     assert_eq!(
-        gts_id.id,
+        gts_id.id(),
         "gts.x.core.events.topic.v1~x.commerce.orders.orders.v1.0"
     );
 }
@@ -654,23 +657,22 @@ fn test_gts_id_segments_match_schema() {
     // Get the schema ID from the macro
     let schema_id_str = EventTopicV1::gts_type_id().as_ref();
 
-    // Parse it with GtsID
-    let gts_id = GtsID::new(schema_id_str).expect("Schema ID should be valid");
+    // Parse it with GtsId
+    let gts_id = GtsId::new(schema_id_str).expect("Schema ID should be valid");
 
     // Verify segments
-    assert_eq!(
-        gts_id.gts_id_segments.len(),
-        1,
-        "Schema should have 1 segment"
-    );
+    assert_eq!(gts_id.segments().len(), 1, "Schema should have 1 segment");
 
-    let segment = &gts_id.gts_id_segments[0];
-    assert_eq!(segment.vendor, "x");
-    assert_eq!(segment.package, "core");
-    assert_eq!(segment.namespace, "events");
-    assert_eq!(segment.type_name, "topic");
-    assert_eq!(segment.ver_major, 1);
-    assert!(segment.is_type, "Schema ID should be a type (ends with ~)");
+    let segment = &gts_id.segments()[0];
+    assert_eq!(segment.vendor(), "x");
+    assert_eq!(segment.package(), "core");
+    assert_eq!(segment.namespace(), "events");
+    assert_eq!(segment.type_name(), "topic");
+    assert_eq!(segment.ver_major(), 1);
+    assert!(
+        segment.is_type(),
+        "Schema ID should be a type (ends with ~)"
+    );
 }
 
 #[test]
@@ -678,53 +680,62 @@ fn test_gts_id_segments_match_instance() {
     // Generate an instance ID using the macro
     let instance_id_str = EventTopicV1::gts_make_instance_id("x.commerce.orders.orders.v1.0");
 
-    // Parse it with GtsID
-    let gts_id = GtsID::new(&instance_id_str).expect("Instance ID should be valid");
+    // Parse it with GtsId
+    let gts_id = GtsId::new(&instance_id_str).expect("Instance ID should be valid");
 
     // Instance IDs have 2 segments: type segment + instance segment
     assert_eq!(
-        gts_id.gts_id_segments.len(),
+        gts_id.segments().len(),
         2,
         "Instance should have 2 segments"
     );
 
     // First segment is the type/schema segment
-    let type_segment = &gts_id.gts_id_segments[0];
-    assert_eq!(type_segment.vendor, "x");
-    assert_eq!(type_segment.package, "core");
-    assert_eq!(type_segment.namespace, "events");
-    assert_eq!(type_segment.type_name, "topic");
-    assert_eq!(type_segment.ver_major, 1);
-    assert!(type_segment.is_type, "First segment should be a type");
+    let type_segment = &gts_id.segments()[0];
+    assert_eq!(type_segment.vendor(), "x");
+    assert_eq!(type_segment.package(), "core");
+    assert_eq!(type_segment.namespace(), "events");
+    assert_eq!(type_segment.type_name(), "topic");
+    assert_eq!(type_segment.ver_major(), 1);
+    assert!(type_segment.is_type(), "First segment should be a type");
 
     // Second segment is the instance segment
-    let instance_segment = &gts_id.gts_id_segments[1];
-    assert_eq!(instance_segment.vendor, "x");
-    assert_eq!(instance_segment.package, "commerce");
-    assert_eq!(instance_segment.namespace, "orders");
-    assert_eq!(instance_segment.type_name, "orders");
-    assert_eq!(instance_segment.ver_major, 1);
-    assert_eq!(instance_segment.ver_minor, Some(0));
+    let instance_segment = &gts_id.segments()[1];
+    assert_eq!(instance_segment.vendor(), "x");
+    assert_eq!(instance_segment.package(), "commerce");
+    assert_eq!(instance_segment.namespace(), "orders");
+    assert_eq!(instance_segment.type_name(), "orders");
+    assert_eq!(instance_segment.ver_major(), 1);
+    assert_eq!(instance_segment.ver_minor(), Some(0));
 }
 
 #[test]
 fn test_schema_and_instance_segments_relationship() {
     // The schema ID from macro
-    let schema_id = GtsID::new(EventTopicV1::gts_type_id().as_ref()).unwrap();
+    let schema_id = GtsId::new(EventTopicV1::gts_type_id().as_ref()).unwrap();
 
     // An instance ID from the macro
     let instance_id_str = EventTopicV1::gts_make_instance_id("x.core.idp.contacts.v1");
-    let instance_id = GtsID::new(&instance_id_str).unwrap();
+    let instance_id = GtsId::new(&instance_id_str).unwrap();
 
     // The first segment of the instance should match the schema's segment
-    let schema_segment = &schema_id.gts_id_segments[0];
-    let instance_type_segment = &instance_id.gts_id_segments[0];
+    let schema_segment = &schema_id.segments()[0];
+    let instance_type_segment = &instance_id.segments()[0];
 
-    assert_eq!(schema_segment.vendor, instance_type_segment.vendor);
-    assert_eq!(schema_segment.package, instance_type_segment.package);
-    assert_eq!(schema_segment.namespace, instance_type_segment.namespace);
-    assert_eq!(schema_segment.type_name, instance_type_segment.type_name);
-    assert_eq!(schema_segment.ver_major, instance_type_segment.ver_major);
+    assert_eq!(schema_segment.vendor(), instance_type_segment.vendor());
+    assert_eq!(schema_segment.package(), instance_type_segment.package());
+    assert_eq!(
+        schema_segment.namespace(),
+        instance_type_segment.namespace()
+    );
+    assert_eq!(
+        schema_segment.type_name(),
+        instance_type_segment.type_name()
+    );
+    assert_eq!(
+        schema_segment.ver_major(),
+        instance_type_segment.ver_major()
+    );
 
     // get_type_id() should return the schema ID (without the instance segment)
     let type_id = instance_id.get_type_id();
@@ -755,29 +766,29 @@ fn test_entity_and_gts_id_vendor_package_namespace_match() {
     // Get the GTS ID from the entity
     let entity_gts_id = entity.gts_id.as_ref().unwrap();
 
-    // Parse the same ID directly using GtsID
-    let direct_gts_id = GtsID::new(EventTopicV1::gts_type_id().as_ref()).unwrap();
+    // Parse the same ID directly using GtsId
+    let direct_gts_id = GtsId::new(EventTopicV1::gts_type_id().as_ref()).unwrap();
 
     // Verify they match
-    assert_eq!(entity_gts_id.id, direct_gts_id.id);
+    assert_eq!(entity_gts_id.id(), direct_gts_id.id());
     assert_eq!(
-        entity_gts_id.gts_id_segments.len(),
-        direct_gts_id.gts_id_segments.len()
+        entity_gts_id.segments().len(),
+        direct_gts_id.segments().len()
     );
 
     // Compare segment properties
     for (entity_seg, direct_seg) in entity_gts_id
-        .gts_id_segments
+        .segments()
         .iter()
-        .zip(direct_gts_id.gts_id_segments.iter())
+        .zip(direct_gts_id.segments().iter())
     {
-        assert_eq!(entity_seg.vendor, direct_seg.vendor);
-        assert_eq!(entity_seg.package, direct_seg.package);
-        assert_eq!(entity_seg.namespace, direct_seg.namespace);
-        assert_eq!(entity_seg.type_name, direct_seg.type_name);
-        assert_eq!(entity_seg.ver_major, direct_seg.ver_major);
-        assert_eq!(entity_seg.ver_minor, direct_seg.ver_minor);
-        assert_eq!(entity_seg.is_type, direct_seg.is_type);
+        assert_eq!(entity_seg.vendor(), direct_seg.vendor());
+        assert_eq!(entity_seg.package(), direct_seg.package());
+        assert_eq!(entity_seg.namespace(), direct_seg.namespace());
+        assert_eq!(entity_seg.type_name(), direct_seg.type_name());
+        assert_eq!(entity_seg.ver_major(), direct_seg.ver_major());
+        assert_eq!(entity_seg.ver_minor(), direct_seg.ver_minor());
+        assert_eq!(entity_seg.is_type(), direct_seg.is_type());
     }
 }
 
@@ -827,24 +838,25 @@ fn test_gts_entity_strips_uri_prefix_from_schema() {
     // The GTS ID should have the gts:// prefix stripped (entities.rs strips gts:// from $id field)
     let gts_id = entity.gts_id.as_ref().expect("Entity should have a GTS ID");
     assert_eq!(
-        gts_id.id, "gts.x.core.events.topic.v1~",
+        gts_id.id(),
+        "gts.x.core.events.topic.v1~",
         "GTS ID should not contain 'gts://' prefix"
     );
 }
 
 #[test]
 fn test_gts_id_does_not_accept_uri_prefix() {
-    // GtsID::new should NOT accept IDs with gts:// or gts: prefix directly
+    // GtsId::new should NOT accept IDs with gts:// or gts: prefix directly
     // The gts:// prefix is ONLY for JSON Schema $id field and must be stripped before parsing
-    assert!(GtsID::new("gts://gts.x.core.events.topic.v1~").is_err());
-    assert!(!GtsID::is_valid("gts://gts.x.core.events.topic.v1~"));
+    assert!(GtsId::new("gts://gts.x.core.events.topic.v1~").is_err());
+    assert!(!GtsId::is_valid("gts://gts.x.core.events.topic.v1~"));
 
     // "gts:" (without //) is also not valid
-    assert!(GtsID::new("gts:gts.x.core.events.topic.v1~").is_err());
-    assert!(!GtsID::is_valid("gts:gts.x.core.events.topic.v1~"));
+    assert!(GtsId::new("gts:gts.x.core.events.topic.v1~").is_err());
+    assert!(!GtsId::is_valid("gts:gts.x.core.events.topic.v1~"));
 
     // Regular GTS IDs should work
-    assert!(GtsID::is_valid("gts.x.core.events.topic.v1~"));
+    assert!(GtsId::is_valid("gts.x.core.events.topic.v1~"));
 }
 
 // =============================================================================

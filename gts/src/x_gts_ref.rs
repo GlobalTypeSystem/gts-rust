@@ -92,7 +92,7 @@
 use serde_json::Value;
 use std::fmt;
 
-use crate::gts::GtsID;
+use crate::gts::GtsId;
 
 /// Error type for x-gts-ref validation failures
 #[derive(Debug, Clone)]
@@ -406,7 +406,7 @@ impl XGtsRefValidator {
         if ref_pattern.starts_with('/') {
             match Self::resolve_pointer(root_schema, ref_pattern) {
                 Some(resolved) => {
-                    if !GtsID::is_valid(&resolved) {
+                    if !GtsId::is_valid(&resolved) {
                         return Some(XGtsRefValidationError::new(
                             field_path.to_owned(),
                             ref_pattern.to_owned(),
@@ -461,7 +461,7 @@ impl XGtsRefValidator {
         }
 
         // Specific GTS ID
-        if !GtsID::is_valid(pattern) {
+        if !GtsId::is_valid(pattern) {
             return Some(XGtsRefValidationError::new(
                 field_path.to_owned(),
                 pattern.to_owned(),
@@ -481,7 +481,7 @@ impl XGtsRefValidator {
         field_path: &str,
     ) -> Option<XGtsRefValidationError> {
         // Validate it's a valid GTS ID
-        if !GtsID::is_valid(value) {
+        if !GtsId::is_valid(value) {
             return Some(XGtsRefValidationError::new(
                 field_path.to_owned(),
                 value.to_owned(),

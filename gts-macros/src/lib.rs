@@ -713,18 +713,10 @@ impl Parse for GtsSchemaArgs {
                         ));
                     }
                     // General GTS ID validation via shared crate
-                    if let Err(e) = gts_id::validate_gts_id(&id, false) {
-                        let msg = match &e {
-                            gts_id::GtsIdError::Id { cause, .. } => {
-                                format!("Invalid GTS type ID: {cause}")
-                            }
-                            gts_id::GtsIdError::Segment { num, cause, .. } => {
-                                format!("Segment #{num}: {cause}")
-                            }
-                        };
+                    if let Err(e) = gts_id::parse_gts_id(&id, false) {
                         return Err(syn::Error::new_spanned(
                             value,
-                            format!("struct_to_gts_schema: {msg}"),
+                            format!("struct_to_gts_schema: Invalid GTS type ID: {e}"),
                         ));
                     }
                     type_id = Some(id);
@@ -2306,7 +2298,7 @@ mod instance;
 /// });
 /// ```
 ///
-/// The literal is validated against `gts_id::validate_gts_id` and
+/// The literal is validated against `gts_id::parse_gts_id` and
 /// const-asserted to share its prefix with `<TopicV1 as GtsSchema>::TYPE_ID`.
 /// The id field's apparent string value is rewritten by the macro - at
 /// runtime `t.id` is a `GtsInstanceId`, not a `String`.
@@ -2381,7 +2373,7 @@ mod instance;
 ///   exactly one of: id, gts_id, gtsId`.
 /// - Two id fields (`id:` and `gts_id:` together): `ambiguous id field`.
 /// - Non-literal id value (`id: some_var`): `must be a string literal`.
-/// - Malformed id literal: full error from `gts_id::validate_gts_id`.
+/// - Malformed id literal: full error from `gts_id::parse_gts_id`.
 /// - Schema-prefix mismatch: const-assert fails at build time.
 /// - `..rest` struct update syntax: not supported.
 ///
@@ -2421,7 +2413,7 @@ pub fn gts_instance(input: TokenStream) -> TokenStream {
 /// - Missing top-level `"id"`: `missing top-level "id" key`.
 /// - Duplicate top-level `"id"`: pointed at both spans.
 /// - Non-literal `"id"` value: `"id" must be a string literal`.
-/// - Malformed id literal: full error from `gts_id::validate_gts_id`.
+/// - Malformed id literal: full error from `gts_id::parse_gts_id`.
 /// - Body missing chained `~`: `instance id literal must contain at
 ///   least one ~`.
 ///

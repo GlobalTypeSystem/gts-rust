@@ -1,4 +1,4 @@
-error: struct_to_gts_schema: Invalid GTS type ID: must start with 'gts.'
+error: struct_to_gts_schema: Invalid GTS type ID: Invalid GTS identifier: x.core.events.type.v1~: must start with 'gts.'
  --> tests/compile_fail/invalid_gts_id_missing_prefix.rs:8:15
   |
 8 |     type_id = "x.core.events.type.v1~",
