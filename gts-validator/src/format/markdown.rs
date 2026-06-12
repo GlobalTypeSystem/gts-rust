@@ -44,7 +44,7 @@ fn parse_fence(trimmed_line: &str) -> Option<(char, usize)> {
 }
 
 /// Discovery regex (relaxed): finds strings that LOOK like GTS identifiers.
-/// This is intentionally broader than the spec — validation is done by `GtsID::new()`.
+/// This is intentionally broader than the spec — validation is done by `GtsId::new()`.
 ///
 /// Strategy: Match gts. followed by 4+ dot-separated segments where at least one
 /// segment looks like a version (starts with 'v' followed by digit).

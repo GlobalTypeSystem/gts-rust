@@ -489,7 +489,7 @@ All operations are available through the `GtsOps` API.
 #### Setup
 
 ```rust
-use gts::{GtsID, GtsOps, GtsConfig, GtsWildcard};
+use gts::{GtsId, GtsOps, GtsConfig, GtsIdWildcard};
 use serde_json::json;
 
 // Initialize GTS operations with data paths
@@ -513,7 +513,7 @@ assert!(!result.valid);
 assert!(!result.error.is_empty());
 
 // Direct validation without ops
-let is_valid = GtsID::is_valid("gts.x.core.events.event.v1~");
+let is_valid = GtsId::is_valid("gts.x.core.events.event.v1~");
 assert!(is_valid);
 ```
 
@@ -565,7 +565,7 @@ let result = ops.parse_id("gts.x.core.events.event.v1~vendor.app._.custom.v2~");
 assert_eq!(result.segments.len(), 2);
 
 // Direct parsing
-let id = GtsID::new("gts.x.core.events.event.v1~")?;
+let id = GtsId::new("gts.x.core.events.event.v1~")?;
 assert_eq!(id.gts_id_segments.len(), 1);
 ```
 
@@ -587,8 +587,8 @@ let result = ops.match_id_pattern(
 assert!(!result.is_match);
 
 // Direct wildcard matching
-let pattern = GtsWildcard::new("gts.x.*.events.*")?;
-let id = GtsID::new("gts.x.core.events.event.v1~")?;
+let pattern = GtsIdWildcard::new("gts.x.*.events.*")?;
+let id = GtsId::new("gts.x.core.events.event.v1~")?;
 assert!(pattern.matches(&id));
 ```
 
@@ -603,13 +603,13 @@ assert!(!result.uuid.is_empty());
 let result = ops.uuid("gts.x.core.events.event.v1.0", "minor");
 
 // Direct UUID generation
-let id = GtsID::new("gts.x.core.events.event.v1~")?;
+let id = GtsId::new("gts.x.core.events.event.v1~")?;
 let uuid = id.to_uuid();
 println!("UUID: {}", uuid);
 
 // Same major version produces same UUID
-let id1 = GtsID::new("gts.x.core.events.event.v1.0")?;
-let id2 = GtsID::new("gts.x.core.events.event.v1.5")?;
+let id1 = GtsId::new("gts.x.core.events.event.v1.0")?;
+let id2 = GtsId::new("gts.x.core.events.event.v1.5")?;
 assert_eq!(id1.to_uuid(), id2.to_uuid());
 ```
 

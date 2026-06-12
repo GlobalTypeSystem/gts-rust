@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::gts::{GTS_URI_PREFIX, GtsID};
+use crate::gts::{GTS_URI_PREFIX, GtsId};
 use crate::path_resolver::JsonPathResolver;
 use crate::schema_cast::{GtsEntityCastResult, SchemaCastError};
 
@@ -102,7 +102,7 @@ pub struct GtsRef {
 pub struct GtsEntity {
     /// The GTS ID if the entity has one (either from `id` field for well-known instances,
     /// or from `$id` field for schemas). None for anonymous instances.
-    pub gts_id: Option<GtsID>,
+    pub gts_id: Option<GtsId>,
     /// The instance ID - for anonymous instances this is the UUID from `id` field,
     /// for well-known instances this equals `gts_id.id()`, for schemas this equals `gts_id.id()`.
     pub instance_id: Option<String>,
@@ -133,7 +133,7 @@ impl GtsEntity {
         list_sequence: Option<usize>,
         content: &Value,
         cfg: Option<&GtsConfig>,
-        gts_id: Option<GtsID>,
+        gts_id: Option<GtsId>,
         is_schema: bool,
         label: String,
         validation: Option<ValidationResult>,
@@ -236,8 +236,8 @@ impl GtsEntity {
                 }
 
                 let normalized = trimmed.strip_prefix(GTS_URI_PREFIX).unwrap_or(trimmed);
-                if GtsID::is_valid(normalized) {
-                    self.gts_id = GtsID::new(normalized).ok();
+                if GtsId::is_valid(normalized) {
+                    self.gts_id = GtsId::new(normalized).ok();
                     self.instance_id = Some(normalized.to_owned());
                     self.selected_entity_field = Some("$id".to_owned());
                 }
@@ -253,7 +253,7 @@ impl GtsEntity {
                 // $schema values that parse as a GTS Type Identifier (chain
                 // ending in '~'); leave selected_type_id_field set either
                 // way so callers can see we looked at $schema.
-                if schema_str.ends_with('~') && GtsID::is_valid(schema_str) {
+                if schema_str.ends_with('~') && GtsId::is_valid(schema_str) {
                     self.type_id = Some(schema_str.to_owned());
                 }
                 self.selected_type_id_field = Some("$schema".to_owned());
@@ -269,7 +269,7 @@ impl GtsEntity {
                     .segments()
                     .iter()
                     .take(gts_id.segments().len() - 1)
-                    .map(|seg| seg.segment.as_str())
+                    .map(gts_id::GtsIdSegment::raw)
                     .collect();
                 if !parent_segments.is_empty() {
                     // Join segments - they already have ~ at the end if they're types
@@ -289,7 +289,7 @@ impl GtsEntity {
                     let already_gts_type_id = self
                         .type_id
                         .as_ref()
-                        .is_some_and(|s| s.ends_with('~') && GtsID::is_valid(s));
+                        .is_some_and(|s| s.ends_with('~') && GtsId::is_valid(s));
                     if !already_gts_type_id {
                         self.type_id = Some(parent_id);
                     }
@@ -301,9 +301,9 @@ impl GtsEntity {
         if self.gts_id.is_none() {
             let idv = self.calc_json_entity_id_legacy(cfg);
             if let Some(ref id) = idv
-                && GtsID::is_valid(id)
+                && GtsId::is_valid(id)
             {
-                self.gts_id = GtsID::new(id).ok();
+                self.gts_id = GtsId::new(id).ok();
                 self.instance_id = Some(id.clone());
             }
         }
@@ -327,9 +327,9 @@ impl GtsEntity {
 
         // Check if id is a valid GTS ID (well-known instance)
         if let Some(ref id) = id_value {
-            if GtsID::is_valid(id) {
+            if GtsId::is_valid(id) {
                 // Well-known instance: id IS the GTS ID
-                self.gts_id = GtsID::new(id).ok();
+                self.gts_id = GtsId::new(id).ok();
                 self.instance_id = Some(id.clone());
 
                 // PRIORITY 1: Extract schema from chained ID (always takes priority)
@@ -401,7 +401,7 @@ impl GtsEntity {
             }
             // Only accept valid GTS type IDs (ending with ~)
             if let Some(v) = self.get_field_value(f)
-                && GtsID::is_valid(&v)
+                && GtsId::is_valid(&v)
                 && v.ends_with('~')
             {
                 self.selected_type_id_field = Some(f.clone());
@@ -535,7 +535,7 @@ impl GtsEntity {
 
         let gts_id_matcher = |node: &Value, path: &str| -> Option<GtsRef> {
             if let Some(s) = node.as_str()
-                && GtsID::is_valid(s)
+                && GtsId::is_valid(s)
             {
                 return Some(GtsRef {
                     id: s.to_owned(),
@@ -614,7 +614,7 @@ impl GtsEntity {
         // First pass: look for valid GTS IDs
         for f in fields {
             if let Some(v) = self.get_field_value(f)
-                && GtsID::is_valid(&v)
+                && GtsId::is_valid(&v)
             {
                 self.selected_entity_field = Some(f.clone());
                 return Some(v);
@@ -1008,7 +1008,7 @@ mod tests {
     // =============================================================================
     // Tests for URI prefix "gts:" in JSON Schema $id field
     // The gts: prefix is used in JSON Schema for URI compatibility.
-    // GtsEntity strips it when parsing so the GtsID works with normal "gts." format.
+    // GtsEntity strips it when parsing so the GtsId works with normal "gts." format.
     // =============================================================================
 
     #[test]

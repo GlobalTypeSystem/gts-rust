@@ -2210,7 +2210,7 @@ impl GtsReader for MockGtsReader {
     fn read_by_id(&self, entity_id: &str) -> Option<GtsEntity> {
         self.entities
             .iter()
-            .find(|e| e.gts_id.as_ref().map(gts_id::GtsID::id) == Some(entity_id))
+            .find(|e| e.gts_id.as_ref().map(gts_id::GtsId::id) == Some(entity_id))
             .cloned()
     }
 
@@ -2679,7 +2679,7 @@ fn test_validate_schema_x_gts_refs_entity_not_schema() {
         "name": "test"
     });
 
-    let gts_id = GtsID::new("gts.vendor.package.namespace.type.v1.0~").expect("test");
+    let gts_id = GtsId::new("gts.vendor.package.namespace.type.v1.0~").expect("test");
     let entity = GtsEntity::new(
         None,
         None,
@@ -2763,7 +2763,7 @@ fn test_validate_schema_entity_not_schema() {
         "name": "test"
     });
 
-    let gts_id = GtsID::new("gts.vendor.package.namespace.type.v1.0~").expect("test");
+    let gts_id = GtsId::new("gts.vendor.package.namespace.type.v1.0~").expect("test");
     let entity = GtsEntity::new(
         None,
         None,

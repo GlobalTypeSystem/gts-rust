@@ -19,7 +19,9 @@ pub use entities::{GtsConfig, GtsEntity, GtsFile, ValidationError, ValidationRes
 pub use files_reader::GtsFileReader;
 #[allow(deprecated)]
 pub use gts::GtsSchemaId;
-pub use gts::{GtsID, GtsIdError, GtsIdSegment, GtsInstanceId, GtsTypeId, GtsWildcard};
+pub use gts::{
+    GtsId, GtsIdError, GtsIdSegment, GtsIdSegmentParts, GtsIdWildcard, GtsInstanceId, GtsTypeId,
+};
 pub use ops::GtsOps;
 pub use path_resolver::JsonPathResolver;
 pub use schema::{

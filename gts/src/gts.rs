@@ -1,7 +1,7 @@
 //! GTS identifier types.
 //!
-//! The low-level identifier primitives ([`GtsID`], [`GtsIdSegment`],
-//! [`GtsWildcard`]) and all validation live in the [`gts_id`] crate and are
+//! The low-level identifier primitives ([`GtsId`], [`GtsIdSegment`],
+//! [`GtsIdWildcard`]) and all validation live in the [`gts_id`] crate and are
 //! re-exported here. The typed, schema-aware wrappers [`GtsTypeId`] and
 //! [`GtsInstanceId`] live in this crate because they carry the JSON Schema
 //! integration (`serde`, `schemars`, [`GtsTypeId::json_schema_value`]), which is
@@ -14,7 +14,7 @@
 
 use std::fmt;
 
-pub use gts_id::{GTS_PREFIX, GtsID, GtsIdError, GtsIdSegment, GtsWildcard};
+pub use gts_id::{GTS_PREFIX, GtsId, GtsIdError, GtsIdSegment, GtsIdSegmentParts, GtsIdWildcard};
 
 /// A type-safe wrapper for GTS entity identifiers.
 ///
@@ -169,13 +169,13 @@ impl GtsInstanceId {
     /// Unlike the infallible [`GtsInstanceId::new`], this constructor enforces
     /// the instance/type discrimination via the type system rather than relying
     /// on downstream `ends_with('~')` string checks. The string is first parsed
-    /// and structurally validated via [`GtsID::new`], then classified:
+    /// and structurally validated via [`GtsId::new`], then classified:
     ///
     /// * it must parse as a valid GTS identifier, and
     /// * it must **not** be a type id (a trailing `~` denotes a type id).
     ///
     /// A successfully parsed instance id is always chained with at least one
-    /// type segment (single-segment instance ids are rejected by [`GtsID::new`]),
+    /// type segment (single-segment instance ids are rejected by [`GtsId::new`]),
     /// so it necessarily contains `~`.
     ///
     /// # Errors
@@ -193,7 +193,7 @@ impl GtsInstanceId {
     /// assert!(GtsInstanceId::try_new("gts.x.core.events.event.v1").is_err());
     /// ```
     pub fn try_new(instance_id: &str) -> Result<Self, GtsIdError> {
-        let parsed = GtsID::new(instance_id)?;
+        let parsed = GtsId::new(instance_id)?;
         if parsed.is_type() {
             return Err(GtsIdError::new(
                 instance_id,
@@ -372,7 +372,7 @@ impl GtsTypeId {
     /// Unlike the infallible [`GtsTypeId::new`], this constructor enforces the
     /// type/instance discrimination via the type system rather than relying on
     /// downstream `ends_with('~')` string checks. The string is first parsed and
-    /// structurally validated via [`GtsID::new`], then classified:
+    /// structurally validated via [`GtsId::new`], then classified:
     ///
     /// * it must parse as a valid GTS identifier, and
     /// * it must be a type id (i.e. end with `~`).
@@ -390,7 +390,7 @@ impl GtsTypeId {
     /// assert!(GtsTypeId::try_new("gts.x.core.events.event.v1~a.b.c.d.v1.0").is_err());
     /// ```
     pub fn try_new(type_id: &str) -> Result<Self, GtsIdError> {
-        let parsed = GtsID::new(type_id)?;
+        let parsed = GtsId::new(type_id)?;
         if !parsed.is_type() {
             return Err(GtsIdError::new(type_id, "GTS type IDs must end with '~'"));
         }
@@ -464,7 +464,7 @@ mod tests {
             .expect_err("must reject instance id");
         assert!(err.to_string().contains("must end with '~'"));
 
-        // A wholly invalid CTI is rejected by GtsID::new before classification.
+        // A wholly invalid CTI is rejected by GtsId::new before classification.
         assert!(GtsTypeId::try_new("not a valid cti~").is_err());
     }
 
@@ -479,7 +479,7 @@ mod tests {
             GtsInstanceId::try_new("gts.x.core.events.event.v1~").expect_err("must reject type id");
         assert!(err.to_string().contains("must not end with '~'"));
 
-        // A wholly invalid CTI is rejected by GtsID::new before classification.
+        // A wholly invalid CTI is rejected by GtsId::new before classification.
         assert!(GtsInstanceId::try_new("not a valid cti").is_err());
     }
 }

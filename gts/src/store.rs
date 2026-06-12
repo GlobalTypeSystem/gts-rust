@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 use thiserror::Error;
 
 use crate::entities::GtsEntity;
-use crate::gts::{GTS_URI_PREFIX, GtsID, GtsWildcard};
+use crate::gts::{GTS_URI_PREFIX, GtsId, GtsIdWildcard};
 use crate::schema_cast::GtsEntityCastResult;
 
 /// Custom retriever for resolving gts:// URI scheme references in JSON Schema validation
@@ -155,7 +155,7 @@ impl GtsStore {
             return Err(StoreError::InvalidSchemaId);
         }
 
-        let gts_id = GtsID::new(type_id).map_err(|_| StoreError::InvalidSchemaId)?;
+        let gts_id = GtsId::new(type_id).map_err(|_| StoreError::InvalidSchemaId)?;
         let entity = GtsEntity::new(
             None,
             None,
@@ -603,7 +603,7 @@ impl GtsStore {
                     // GTS refs must use gts:// URI format
                     else if let Some(gts_id) = ref_uri.strip_prefix(GTS_URI_PREFIX) {
                         // Validate the GTS ID
-                        if !GtsID::is_valid(gts_id) {
+                        if !GtsId::is_valid(gts_id) {
                             return Err(StoreError::InvalidRef(format!(
                                 "at '{current_path}': '{ref_uri}' contains invalid GTS identifier '{gts_id}'"
                             )));
@@ -730,7 +730,7 @@ impl GtsStore {
     /// # Errors
     /// Returns `StoreError::ValidationError` if any derived schema loosens base constraints.
     pub(crate) fn validate_schema_chain(&mut self, gts_id: &str) -> Result<(), StoreError> {
-        let gid = GtsID::new(gts_id)
+        let gid = GtsId::new(gts_id)
             .map_err(|e| StoreError::ValidationError(format!("Invalid GTS ID: {e}")))?;
 
         // Single-segment schemas have no parent to validate against
@@ -746,7 +746,7 @@ impl GtsStore {
                 "gts.{}",
                 segments[..=i]
                     .iter()
-                    .map(|s| s.segment.as_str())
+                    .map(gts_id::GtsIdSegment::raw)
                     .collect::<Vec<_>>()
                     .join("")
             );
@@ -754,7 +754,7 @@ impl GtsStore {
                 "gts.{}",
                 segments[..=i + 1]
                     .iter()
-                    .map(|s| s.segment.as_str())
+                    .map(gts_id::GtsIdSegment::raw)
                     .collect::<Vec<_>>()
                     .join("")
             );
@@ -832,7 +832,7 @@ impl GtsStore {
     /// # Errors
     /// Returns `StoreError::ValidationError` if trait validation fails.
     pub(crate) fn validate_schema_traits(&mut self, gts_id: &str) -> Result<(), StoreError> {
-        let gid = GtsID::new(gts_id)
+        let gid = GtsId::new(gts_id)
             .map_err(|e| StoreError::ValidationError(format!("Invalid GTS ID: {e}")))?;
 
         let segments = &gid.segments();
@@ -857,7 +857,7 @@ impl GtsStore {
                 "gts.{}",
                 segments[..=i]
                     .iter()
-                    .map(|s| s.segment.as_str())
+                    .map(gts_id::GtsIdSegment::raw)
                     .collect::<Vec<_>>()
                     .join("")
             );
@@ -940,7 +940,7 @@ impl GtsStore {
     /// entity.  Additionally, if a trait schema is defined but no `x-gts-traits`
     /// values exist anywhere in the chain, the entity is incomplete.
     pub(crate) fn validate_entity_traits(&mut self, gts_id: &str) -> Result<(), StoreError> {
-        let gid = GtsID::new(gts_id)
+        let gid = GtsId::new(gts_id)
             .map_err(|e| StoreError::ValidationError(format!("Invalid GTS ID: {e}")))?;
 
         // If the type named by `gts_id` is abstract, it is exempt from the OP#13
@@ -970,7 +970,7 @@ impl GtsStore {
                 "gts.{}",
                 segments[..=i]
                     .iter()
-                    .map(|s| s.segment.as_str())
+                    .map(gts_id::GtsIdSegment::raw)
                     .collect::<Vec<_>>()
                     .join("")
             );
@@ -1029,7 +1029,7 @@ impl GtsStore {
     pub fn validate_instance(&mut self, instance_id: &str) -> Result<(), StoreError> {
         // Try to parse as GTS ID first (for well-known instances)
         // If that fails, use the instance_id directly (for anonymous instances with UUIDs)
-        let lookup_id = if let Ok(gid) = GtsID::new(instance_id) {
+        let lookup_id = if let Ok(gid) = GtsId::new(instance_id) {
             gid.id().to_owned()
         } else {
             instance_id.to_owned()
@@ -1405,7 +1405,7 @@ impl GtsStore {
     fn validate_query_pattern(
         base_pattern: &str,
         is_wildcard: bool,
-    ) -> (Option<GtsWildcard>, Option<GtsID>, String) {
+    ) -> (Option<GtsIdWildcard>, Option<GtsId>, String) {
         if is_wildcard {
             if !base_pattern.ends_with(".*") && !base_pattern.ends_with("~*") {
                 return (
@@ -1414,12 +1414,12 @@ impl GtsStore {
                     "Invalid query: wildcard patterns must end with .* or ~*".to_owned(),
                 );
             }
-            match GtsWildcard::new(base_pattern) {
+            match GtsIdWildcard::new(base_pattern) {
                 Ok(pattern) => (Some(pattern), None, String::new()),
                 Err(e) => (None, None, format!("Invalid query: {e}")),
             }
         } else {
-            match GtsID::new(base_pattern) {
+            match GtsId::new(base_pattern) {
                 Ok(gts_id) => {
                     if gts_id.segments().is_empty() {
                         (
@@ -1437,11 +1437,11 @@ impl GtsStore {
     }
 
     fn matches_id_pattern(
-        entity_id: &GtsID,
+        entity_id: &GtsId,
         base_pattern: &str,
         is_wildcard: bool,
-        wildcard_pattern: Option<&GtsWildcard>,
-        exact_gts_id: Option<&GtsID>,
+        wildcard_pattern: Option<&GtsIdWildcard>,
+        exact_gts_id: Option<&GtsId>,
     ) -> bool {
         if is_wildcard && let Some(pattern) = wildcard_pattern {
             return entity_id.wildcard_match(pattern);
@@ -1449,7 +1449,7 @@ impl GtsStore {
 
         // For non-wildcard patterns, use wildcard_match to support version flexibility
         if let Some(_exact) = exact_gts_id {
-            match GtsWildcard::new(base_pattern) {
+            match GtsIdWildcard::new(base_pattern) {
                 Ok(pattern_as_wildcard) => entity_id.wildcard_match(&pattern_as_wildcard),
                 Err(_) => entity_id.id() == base_pattern,
             }
