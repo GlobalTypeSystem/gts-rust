@@ -2208,9 +2208,12 @@ impl GtsReader for MockGtsReader {
     }
 
     fn read_by_id(&self, entity_id: &str) -> Option<GtsEntity> {
+        // Match on `effective_id()` to mirror `GtsStore::populate_from_reader`,
+        // which keys entities by their effective id (so anonymous instances are
+        // addressable by `instance_id`, not just by `gts_id`).
         self.entities
             .iter()
-            .find(|e| e.gts_id.as_ref().map(gts_id::GtsID::id) == Some(entity_id))
+            .find(|e| e.effective_id().as_deref() == Some(entity_id))
             .cloned()
     }
 
@@ -2363,7 +2366,7 @@ fn test_validate_schema_refs_invalid_gts_id_in_uri() {
     let result = GtsStore::validate_schema_refs(&schema, "");
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
-    assert!(err.contains("invalid GTS identifier"));
+    assert!(err.contains("must reference a GTS type id"));
 }
 
 #[test]
@@ -2510,8 +2513,8 @@ fn test_validate_schema_refs_rejects_malformed_gts_id_in_ref() {
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(
-        err.contains("invalid GTS identifier") || err.contains("contains invalid"),
-        "Error should mention invalid GTS identifier"
+        err.contains("must reference a GTS type id"),
+        "Error should explain a GTS type id is required, got: {err}"
     );
 }
 
@@ -2631,8 +2634,8 @@ fn test_validate_schema_refs_gts_prefix_but_empty_id() {
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(
-        err.contains("invalid GTS identifier") || err.contains("contains invalid"),
-        "Error should mention invalid GTS identifier"
+        err.contains("must reference a GTS type id"),
+        "Error should explain a GTS type id is required, got: {err}"
     );
 }
 
@@ -2679,7 +2682,7 @@ fn test_validate_schema_x_gts_refs_entity_not_schema() {
         "name": "test"
     });
 
-    let gts_id = GtsID::new("gts.vendor.package.namespace.type.v1.0~").expect("test");
+    let gts_id = GtsId::try_new("gts.vendor.package.namespace.type.v1.0~").expect("test");
     let entity = GtsEntity::new(
         None,
         None,
@@ -2763,7 +2766,7 @@ fn test_validate_schema_entity_not_schema() {
         "name": "test"
     });
 
-    let gts_id = GtsID::new("gts.vendor.package.namespace.type.v1.0~").expect("test");
+    let gts_id = GtsId::try_new("gts.vendor.package.namespace.type.v1.0~").expect("test");
     let entity = GtsEntity::new(
         None,
         None,

@@ -4,7 +4,7 @@ use std::fmt;
 
 /// Pinpoints the `~`-delimited segment at fault within a GTS identifier.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GtsSegmentError {
+pub struct GtsIdSegmentError {
     /// 1-based segment number.
     pub num: usize,
     /// Byte offset of this segment within the full ID string.
@@ -29,7 +29,7 @@ pub struct GtsIdError {
     /// Human-readable description of the problem.
     pub cause: String,
     /// Set when a specific segment is at fault.
-    pub segment: Option<GtsSegmentError>,
+    pub segment: Option<GtsIdSegmentError>,
 }
 
 impl GtsIdError {
@@ -46,7 +46,7 @@ impl GtsIdError {
     /// Attach the location of the offending `~`-segment.
     #[must_use]
     pub fn with_segment(mut self, num: usize, offset: usize, segment: impl Into<String>) -> Self {
-        self.segment = Some(GtsSegmentError {
+        self.segment = Some(GtsIdSegmentError {
             num,
             offset,
             segment: segment.into(),

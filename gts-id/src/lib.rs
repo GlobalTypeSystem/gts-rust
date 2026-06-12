@@ -6,12 +6,12 @@
 
 mod error;
 mod gts_id;
+mod gts_id_pattern;
 mod gts_id_segment;
-mod gts_wildcard;
 mod parse;
 
-pub use error::{GtsIdError, GtsSegmentError};
-pub use gts_id::GtsID;
-pub use gts_id_segment::GtsIdSegment;
-pub use gts_wildcard::GtsWildcard;
-pub use parse::{GTS_MAX_LENGTH, GTS_PREFIX, parse_gts_string};
+pub use error::{GtsIdError, GtsIdSegmentError};
+pub use gts_id::GtsId;
+pub use gts_id_pattern::GtsIdPattern;
+pub use gts_id_segment::{GtsIdPatternSegment, GtsIdSegment, GtsIdSegmentParts, GtsUuidTail};
+pub use parse::{GTS_MAX_LENGTH, GTS_PREFIX};

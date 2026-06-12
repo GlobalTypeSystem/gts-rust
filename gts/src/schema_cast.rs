@@ -3,7 +3,7 @@ use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
-use crate::gts::GtsID;
+use crate::gts::GtsId;
 
 #[derive(Debug, Error)]
 pub enum SchemaCastError {
@@ -137,10 +137,10 @@ impl GtsEntityCastResult {
 
     #[must_use]
     pub fn infer_direction(from_id: &str, to_id: &str) -> String {
-        if let (Ok(gid_from), Ok(gid_to)) = (GtsID::new(from_id), GtsID::new(to_id))
+        if let (Ok(gid_from), Ok(gid_to)) = (GtsId::try_new(from_id), GtsId::try_new(to_id))
             && let (Some(from_seg), Some(to_seg)) =
                 (gid_from.segments().last(), gid_to.segments().last())
-            && let (Some(from_minor), Some(to_minor)) = (from_seg.ver_minor, to_seg.ver_minor)
+            && let (Some(from_minor), Some(to_minor)) = (from_seg.ver_minor(), to_seg.ver_minor())
         {
             if to_minor > from_minor {
                 return "up".to_owned();
@@ -267,8 +267,8 @@ impl GtsEntityCastResult {
                 && let Some(const_value) = p_obj.get("const")
                 && let Some(old_value) = result.get(prop)
                 && let (Some(const_str), Some(old_str)) = (const_value.as_str(), old_value.as_str())
-                && GtsID::is_valid(const_str)
-                && GtsID::is_valid(old_str)
+                && GtsId::is_valid(const_str)
+                && GtsId::is_valid(old_str)
                 && old_str != const_str
             {
                 result.insert(prop.clone(), const_value.clone());

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use crate::entities::{GtsConfig, GtsEntity};
 use crate::files_reader::GtsFileReader;
-use crate::gts::{GtsID, GtsWildcard};
+use crate::gts::{GtsId, GtsIdPattern};
 use crate::path_resolver::JsonPathResolver;
 use crate::schema_cast::GtsEntityCastResult;
 use crate::store::{GtsStore, GtsStoreQueryResult};
@@ -41,14 +41,37 @@ pub struct GtsIdSegmentInfo {
 
 impl From<&crate::gts::GtsIdSegment> for GtsIdSegmentInfo {
     fn from(seg: &crate::gts::GtsIdSegment) -> Self {
+        // A concrete segment always carries a real major version (including a
+        // legitimate `v0`), so `ver_major` is never the wildcard "unspecified"
+        // sentinel here.
         Self {
-            vendor: seg.vendor.clone(),
-            package: seg.package.clone(),
-            namespace: seg.namespace.clone(),
-            type_name: seg.type_name.clone(),
-            ver_major: Some(seg.ver_major),
-            ver_minor: seg.ver_minor,
-            is_type: seg.is_type,
+            vendor: seg.vendor().to_owned(),
+            package: seg.package().to_owned(),
+            namespace: seg.namespace().to_owned(),
+            type_name: seg.type_name().to_owned(),
+            ver_major: Some(seg.ver_major()),
+            ver_minor: seg.ver_minor(),
+            is_type: seg.is_type(),
+        }
+    }
+}
+
+impl From<&crate::gts::GtsIdPatternSegment> for GtsIdSegmentInfo {
+    fn from(seg: &crate::gts::GtsIdPatternSegment) -> Self {
+        Self {
+            vendor: seg.vendor().to_owned(),
+            package: seg.package().to_owned(),
+            namespace: seg.namespace().to_owned(),
+            type_name: seg.type_name().to_owned(),
+            // For a wildcard segment, `ver_major() == 0` is the "unspecified"
+            // sentinel and must serialize as `null`.
+            ver_major: if seg.is_wildcard() && seg.ver_major() == 0 {
+                None
+            } else {
+                Some(seg.ver_major())
+            },
+            ver_minor: seg.ver_minor(),
+            is_type: seg.is_type(),
         }
     }
 }
@@ -472,16 +495,16 @@ impl GtsOps {
         let contains_wildcard = gts_id.contains('*');
 
         if contains_wildcard {
-            // Use GtsWildcard for wildcard pattern validation - it enforces:
+            // Use GtsIdPattern for wildcard pattern validation - it enforces:
             // - Only one '*' allowed
             // - '*' must be at end (ending with '.*' or '~*')
             // - No '*' in the middle of segments
-            match GtsWildcard::new(gts_id) {
+            match GtsIdPattern::try_new(gts_id) {
                 Ok(w) => GtsIdValidationResult {
                     id: gts_id.to_owned(),
                     valid: true,
                     error: String::new(),
-                    is_type: Some(w.id().ends_with('~')),
+                    is_type: Some(w.pattern().ends_with('~')),
                     is_wildcard: true,
                 },
                 Err(e) => GtsIdValidationResult {
@@ -493,7 +516,7 @@ impl GtsOps {
                 },
             }
         } else {
-            match GtsID::new(gts_id) {
+            match GtsId::try_new(gts_id) {
                 Ok(id) => GtsIdValidationResult {
                     id: gts_id.to_owned(),
                     valid: true,
@@ -516,8 +539,8 @@ impl GtsOps {
         let contains_wildcard = gts_id.contains('*');
 
         if contains_wildcard {
-            // Use GtsWildcard for wildcard pattern parsing/validation
-            match GtsWildcard::new(gts_id) {
+            // Use GtsIdPattern for wildcard pattern parsing/validation
+            match GtsIdPattern::try_new(gts_id) {
                 Ok(w) => {
                     let segments = w.segments().iter().map(GtsIdSegmentInfo::from).collect();
 
@@ -526,7 +549,7 @@ impl GtsOps {
                         ok: true,
                         segments,
                         error: String::new(),
-                        is_type: Some(w.id().ends_with('~')),
+                        is_type: Some(w.pattern().ends_with('~')),
                         is_wildcard: true,
                     }
                 }
@@ -540,7 +563,7 @@ impl GtsOps {
                 },
             }
         } else {
-            match GtsID::new(gts_id) {
+            match GtsId::try_new(gts_id) {
                 Ok(id) => {
                     let segments = id.segments().iter().map(GtsIdSegmentInfo::from).collect();
 
@@ -567,46 +590,51 @@ impl GtsOps {
 
     #[must_use]
     pub fn match_id_pattern(candidate: &str, pattern: &str) -> GtsIdMatchResult {
-        // Parse the candidate into segments. It may itself be a wildcard pattern,
-        // in which case its segments are treated as the concrete side to match.
-        let candidate_segments = if candidate.contains('*') {
-            GtsWildcard::new(candidate).map(GtsWildcard::into_segments)
+        // The pattern side is always a pattern; a concrete id is just a
+        // zero-`*` pattern, which `GtsIdPattern::try_new` accepts.
+        let pattern_result = GtsIdPattern::try_new(pattern);
+
+        // The candidate may itself be a wildcard pattern. Either way it is matched
+        // against the pattern with the same field-level logic (minor-version
+        // flexibility, wildcard tails); `matches_pattern` is defined on both
+        // `GtsId` and `GtsIdPattern`.
+        let match_result: Result<bool, (bool, String)> = if candidate.contains('*') {
+            match (GtsIdPattern::try_new(candidate), &pattern_result) {
+                (Ok(cand), Ok(pat)) => Ok(cand.matches_pattern(pat)),
+                (Err(e), _) => Err((true, e.to_string())),
+                (_, Err(e)) => Err((false, e.to_string())),
+            }
         } else {
-            GtsID::new(candidate).map(GtsID::into_segments)
+            match (GtsId::try_new(candidate), &pattern_result) {
+                (Ok(cand), Ok(pat)) => Ok(cand.matches_pattern(pat)),
+                (Err(e), _) => Err((true, e.to_string())),
+                (_, Err(e)) => Err((false, e.to_string())),
+            }
         };
 
-        // The pattern side is always a wildcard pattern; a concrete id is just a
-        // zero-`*` pattern, which `GtsWildcard::new` accepts.
-        let pattern_result = GtsWildcard::new(pattern);
-
-        match (candidate_segments, pattern_result) {
-            (Ok(cand_segs), Ok(pat)) => {
-                let is_match = pat.matches_segments(&cand_segs);
-                GtsIdMatchResult {
-                    candidate: candidate.to_owned(),
-                    pattern: pattern.to_owned(),
-                    is_match,
-                    error: String::new(),
-                }
-            }
-            (Err(e), _) => GtsIdMatchResult {
+        match match_result {
+            Ok(is_match) => GtsIdMatchResult {
                 candidate: candidate.to_owned(),
                 pattern: pattern.to_owned(),
-                is_match: false,
-                error: format!("Invalid candidate: {e}"),
+                is_match,
+                error: String::new(),
             },
-            (_, Err(e)) => GtsIdMatchResult {
+            Err((is_candidate, e)) => GtsIdMatchResult {
                 candidate: candidate.to_owned(),
                 pattern: pattern.to_owned(),
                 is_match: false,
-                error: format!("Invalid pattern: {e}"),
+                error: if is_candidate {
+                    format!("Invalid candidate: {e}")
+                } else {
+                    format!("Invalid pattern: {e}")
+                },
             },
         }
     }
 
     #[must_use]
     pub fn uuid(gts_id: &str) -> GtsUuidResult {
-        match GtsID::new(gts_id) {
+        match GtsId::try_new(gts_id) {
             Ok(g) => GtsUuidResult {
                 id: g.id().to_owned(),
                 uuid: g.to_uuid().to_string(),
@@ -787,7 +815,7 @@ impl GtsOps {
     }
 
     pub fn attr(&mut self, gts_with_path: &str) -> JsonPathResolver {
-        match GtsID::split_at_path(gts_with_path) {
+        match GtsId::split_at_path(gts_with_path) {
             Ok((gts, Some(path))) => {
                 if let Some(entity) = self.store.get(&gts) {
                     entity.resolve_path(&path)
@@ -883,7 +911,7 @@ impl GtsOps {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::gts::GtsID;
+    use crate::gts::GtsId;
     use serde_json::json;
 
     #[test]
@@ -974,10 +1002,10 @@ mod tests {
 
     #[test]
     fn test_gts_id_validation() {
-        assert!(!GtsID::is_valid("gts.vendor.package.namespace.type.v1.0")); // Single-segment instance - should be invalid
-        assert!(GtsID::is_valid("gts.vendor.package.namespace.type.v1.0~")); // Single-segment type - should be valid
-        assert!(!GtsID::is_valid("invalid"));
-        assert!(!GtsID::is_valid(""));
+        assert!(!GtsId::is_valid("gts.vendor.package.namespace.type.v1.0")); // Single-segment instance - should be invalid
+        assert!(GtsId::is_valid("gts.vendor.package.namespace.type.v1.0~")); // Single-segment type - should be valid
+        assert!(!GtsId::is_valid("invalid"));
+        assert!(!GtsId::is_valid(""));
     }
 
     #[test]

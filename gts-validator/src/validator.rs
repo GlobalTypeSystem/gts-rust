@@ -94,7 +94,7 @@ pub fn is_bad_example_context(line: &str, match_start: usize) -> bool {
 
 /// Validate a GTS identifier candidate.
 ///
-/// This function delegates all validation to `gts::GtsID::new()` and `gts::GtsWildcard::new()`.
+/// This function delegates all validation to `gts::GtsId::try_new()` and `gts::GtsIdPattern::try_new()`.
 /// It does NOT re-implement GTS parsing.
 ///
 /// # Arguments
@@ -122,20 +122,20 @@ pub fn validate_candidate(
                 candidate.original
             )];
         }
-        // GtsWildcard::new() delegates to GtsID::new() internally,
+        // GtsIdPattern::try_new() delegates to GtsId::try_new() internally,
         // so all spec rules are enforced. Single parse — vendor check
         // only runs on success to avoid duplicate/misleading errors.
-        match gts::GtsWildcard::new(gts_id) {
+        match gts::GtsIdPattern::try_new(gts_id) {
             Ok(parsed) => {
                 if let Some(expected) = expected_vendor
                     && let Some(first_seg) = parsed.segments().first()
-                    && !first_seg.vendor.contains('*')
-                    && first_seg.vendor != expected
-                    && !is_example_vendor(&first_seg.vendor)
+                    && !first_seg.vendor().contains('*')
+                    && first_seg.vendor() != expected
+                    && !is_example_vendor(first_seg.vendor())
                 {
                     errors.push(format!(
                         "Vendor mismatch: expected '{expected}', found '{}'",
-                        first_seg.vendor
+                        first_seg.vendor()
                     ));
                 }
             }
@@ -145,17 +145,17 @@ pub fn validate_candidate(
         }
     } else {
         // Delegate to gts crate — the single source of truth
-        match gts::GtsID::new(gts_id) {
+        match gts::GtsId::try_new(gts_id) {
             Ok(parsed) => {
                 // Vendor check
                 if let Some(expected) = expected_vendor
                     && let Some(first_seg) = parsed.segments().first()
-                    && first_seg.vendor != expected
-                    && !is_example_vendor(&first_seg.vendor)
+                    && first_seg.vendor() != expected
+                    && !is_example_vendor(first_seg.vendor())
                 {
                     errors.push(format!(
                         "Vendor mismatch: expected '{expected}', found '{}'",
-                        first_seg.vendor
+                        first_seg.vendor()
                     ));
                 }
             }

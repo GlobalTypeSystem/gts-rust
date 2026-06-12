@@ -48,7 +48,7 @@ use syn::{
 /// suffix, etc.) at compile time with span pointing at the literal.
 fn validate_instance_id_format(instance_id: &LitStr) -> syn::Result<()> {
     let raw = instance_id.value();
-    if let Err(e) = gts_id::parse_gts_string(&raw, false) {
+    if let Err(e) = gts_id::GtsId::try_new(&raw) {
         let msg = format!("Invalid GTS instance ID: {e}");
         return Err(syn::Error::new_spanned(instance_id, msg));
     }

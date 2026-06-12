@@ -1,5 +1,5 @@
 //! Test: typed `gts_instance!` rejects a malformed id literal at
-//! proc-macro time via the shared `gts_id::parse_gts_string`. Catches
+//! proc-macro time via the shared `gts_id::GtsId::try_new`. Catches
 //! issues like a missing `<vendor>.<package>.<namespace>.<type>.v<N>`
 //! segment shape before any further checks.
 

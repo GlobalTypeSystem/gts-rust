@@ -54,13 +54,25 @@ Technical Backlog:
 
 ## Architecture
 
-The project is organized as a Cargo workspace with two crates:
+The project is organized as a Cargo workspace. The three primary crates are:
+
+### `gts-id` (Library Crate)
+
+Standalone GTS identifier crate (no dependency on `gts`) — GTS ID parsing,
+validation, and wildcard matching:
+
+- **gts_id.rs** - `GtsId` parsing and validation
+- **gts_id_segment.rs** - parsed identifier segments
+- **gts_id_pattern.rs** - `GtsIdPattern` pattern matching
+- **parse.rs** - the shared identifier parser
+
+See [`gts-id/README.md`](gts-id/README.md) for usage examples.
 
 ### `gts` (Library Crate)
 
-Core library providing all GTS functionality:
+Core library providing all GTS functionality (re-exports the `gts-id` types):
 
-- **gts.rs** - GTS ID parsing, validation, wildcard matching
+- **gts.rs** - typed `GtsTypeId` / `GtsInstanceId` schema-aware wrappers and `gts-id` re-exports
 - **entities.rs** - JSON entities, configuration, validation
 - **path_resolver.rs** - JSON path resolution
 - **schema_cast.rs** - Schema compatibility and casting
@@ -489,7 +501,7 @@ All operations are available through the `GtsOps` API.
 #### Setup
 
 ```rust
-use gts::{GtsID, GtsOps, GtsConfig, GtsWildcard};
+use gts::{GtsId, GtsOps, GtsConfig, GtsIdPattern};
 use serde_json::json;
 
 // Initialize GTS operations with data paths
@@ -513,7 +525,7 @@ assert!(!result.valid);
 assert!(!result.error.is_empty());
 
 // Direct validation without ops
-let is_valid = GtsID::is_valid("gts.x.core.events.event.v1~");
+let is_valid = GtsId::is_valid("gts.x.core.events.event.v1~");
 assert!(is_valid);
 ```
 
@@ -565,8 +577,8 @@ let result = ops.parse_id("gts.x.core.events.event.v1~vendor.app._.custom.v2~");
 assert_eq!(result.segments.len(), 2);
 
 // Direct parsing
-let id = GtsID::new("gts.x.core.events.event.v1~")?;
-assert_eq!(id.gts_id_segments.len(), 1);
+let id = GtsId::try_new("gts.x.core.events.event.v1~")?;
+assert_eq!(id.segments().len(), 1);
 ```
 
 #### OP#4 - ID Pattern Matching
@@ -587,9 +599,9 @@ let result = ops.match_id_pattern(
 assert!(!result.is_match);
 
 // Direct wildcard matching
-let pattern = GtsWildcard::new("gts.x.*.events.*")?;
-let id = GtsID::new("gts.x.core.events.event.v1~")?;
-assert!(pattern.matches(&id));
+let pattern = GtsIdPattern::try_new("gts.x.*.events.*")?;
+let id = GtsId::try_new("gts.x.core.events.event.v1~")?;
+assert!(id.pattern_match(&pattern));
 ```
 
 #### OP#5 - ID to UUID Mapping
@@ -603,13 +615,13 @@ assert!(!result.uuid.is_empty());
 let result = ops.uuid("gts.x.core.events.event.v1.0", "minor");
 
 // Direct UUID generation
-let id = GtsID::new("gts.x.core.events.event.v1~")?;
+let id = GtsId::try_new("gts.x.core.events.event.v1~")?;
 let uuid = id.to_uuid();
 println!("UUID: {}", uuid);
 
 // Same major version produces same UUID
-let id1 = GtsID::new("gts.x.core.events.event.v1.0")?;
-let id2 = GtsID::new("gts.x.core.events.event.v1.5")?;
+let id1 = GtsId::try_new("gts.x.core.events.event.v1.0")?;
+let id2 = GtsId::try_new("gts.x.core.events.event.v1.5")?;
 assert_eq!(id1.to_uuid(), id2.to_uuid());
 ```
 

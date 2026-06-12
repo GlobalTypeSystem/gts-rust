@@ -713,7 +713,7 @@ impl Parse for GtsSchemaArgs {
                         ));
                     }
                     // General GTS ID validation via shared crate
-                    if let Err(e) = gts_id::parse_gts_string(&id, false) {
+                    if let Err(e) = gts_id::GtsId::try_new(&id) {
                         return Err(syn::Error::new_spanned(
                             value,
                             format!("struct_to_gts_schema: Invalid GTS type ID: {e}"),
@@ -2298,7 +2298,7 @@ mod instance;
 /// });
 /// ```
 ///
-/// The literal is validated against `gts_id::parse_gts_string` and
+/// The literal is validated against `gts_id::GtsId::try_new` and
 /// const-asserted to share its prefix with `<TopicV1 as GtsSchema>::TYPE_ID`.
 /// The id field's apparent string value is rewritten by the macro - at
 /// runtime `t.id` is a `GtsInstanceId`, not a `String`.
@@ -2373,7 +2373,7 @@ mod instance;
 ///   exactly one of: id, gts_id, gtsId`.
 /// - Two id fields (`id:` and `gts_id:` together): `ambiguous id field`.
 /// - Non-literal id value (`id: some_var`): `must be a string literal`.
-/// - Malformed id literal: full error from `gts_id::parse_gts_string`.
+/// - Malformed id literal: full error from `gts_id::GtsId::try_new`.
 /// - Schema-prefix mismatch: const-assert fails at build time.
 /// - `..rest` struct update syntax: not supported.
 ///
@@ -2413,7 +2413,7 @@ pub fn gts_instance(input: TokenStream) -> TokenStream {
 /// - Missing top-level `"id"`: `missing top-level "id" key`.
 /// - Duplicate top-level `"id"`: pointed at both spans.
 /// - Non-literal `"id"` value: `"id" must be a string literal`.
-/// - Malformed id literal: full error from `gts_id::parse_gts_string`.
+/// - Malformed id literal: full error from `gts_id::GtsId::try_new`.
 /// - Body missing chained `~`: `instance id literal must contain at
 ///   least one ~`.
 ///
