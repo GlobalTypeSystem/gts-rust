@@ -5,7 +5,7 @@
 //! pattern is not exact-match: a base type id used as a pattern also matches
 //! everything derived from it down the chain — `gts.a.b.c.d.v1~` behaves as the
 //! implicit envelope `gts.a.b.c.d.v1~*` (GTS spec §3.6, "implicit derived-type
-//! coverage"), with minor-version flexibility. It supports prefix-based coverage
+//! coverage"), with minor-version flexibility. It supports segment-wise coverage
 //! reasoning via [`covers`](GtsIdPattern::covers); actual ID-vs-pattern matching
 //! lives on [`GtsId::matches_pattern`].
 
@@ -167,23 +167,16 @@ impl GtsIdPattern {
         true
     }
 
-    /// Returns the non-wildcard prefix of a pattern string.
-    ///
-    /// For `"gts.x.core.srr.resource.v1~*"` returns `"gts.x.core.srr.resource.v1~"`.
-    /// For an exact pattern (no `*`) returns the full string.
-    fn prefix_str(pattern: &str) -> &str {
-        match pattern.find('*') {
-            Some(idx) => &pattern[..idx],
-            None => pattern,
-        }
-    }
-
     /// Returns `true` if `self` covers `other`: every GTS ID matched by the
     /// `other` pattern is also matched by `self`.
     ///
     /// In other words `self` is the broader (less specific) pattern and `other`
-    /// is contained within it. This holds exactly when `self`'s fixed prefix is a
-    /// prefix of `other`'s fixed prefix. An exact pattern covers only itself.
+    /// is contained within it. Coverage is decided segment-by-segment with the
+    /// same field logic as matching — minor-version flexibility, wildcard
+    /// widening, and the implicit derived-type coverage of a bare type id — so
+    /// `…event.v1~*` covers `…event.v1.0~*` (any-minor covers a specific minor)
+    /// and `…event.v1~` covers `…event.v1.0~`, which a naive string-prefix test
+    /// would miss.
     ///
     /// # Examples
     ///
@@ -198,9 +191,11 @@ impl GtsIdPattern {
     /// ```
     #[must_use]
     pub fn covers(&self, other: &GtsIdPattern) -> bool {
-        let self_prefix = Self::prefix_str(&self.pattern);
-        let other_prefix = Self::prefix_str(&other.pattern);
-        other_prefix.starts_with(self_prefix)
+        // `self` covers `other` iff `self`, used as a pattern, matches `other`'s
+        // segments taken as the candidate: where `self` is concrete the fields
+        // must agree, and where `self` widens (wildcard / omitted minor) it
+        // accepts whatever `other` fixes at that position.
+        self.matches_views(other.segments())
     }
 
     /// Checks if a string is a valid GTS identifier pattern.
@@ -491,6 +486,92 @@ mod tests {
         assert!(!l2.covers(&l1));
         assert!(!l3.covers(&l1));
         assert!(!l3.covers(&l2));
+    }
+
+    // ---- glued version wildcard `v*` ----
+
+    #[test]
+    fn test_version_wildcard_valid_and_is_wildcard() {
+        let pattern = GtsIdPattern::try_new("gts.x.llm.chat.message.v*").expect("test");
+        assert_eq!(pattern.segments().len(), 1);
+        assert!(pattern.segments()[0].is_wildcard());
+        assert!(GtsIdPattern::is_valid("gts.x.llm.chat.message.v*"));
+    }
+
+    #[test]
+    fn test_version_wildcard_matches_any_version_and_chain() {
+        let pattern = GtsIdPattern::try_new("gts.x.llm.chat.message.v*").expect("test");
+        for id in [
+            "gts.x.llm.chat.message.v1.0~",
+            "gts.x.llm.chat.message.v1.1~",
+            "gts.x.llm.chat.message.v2~",
+            "gts.x.llm.chat.message.v1.0~acme.app.ns.derived.v1~",
+        ] {
+            let candidate = GtsId::try_new(id).expect("test");
+            assert!(candidate.matches_pattern(&pattern), "should match: {id}");
+        }
+        // Different type is not matched.
+        let other = GtsId::try_new("gts.x.llm.chat.other.v1~").expect("test");
+        assert!(!other.matches_pattern(&pattern));
+    }
+
+    #[test]
+    fn test_version_wildcard_equivalent_to_version_position_star() {
+        // `message.v*` and `message.*` match the same set: the `v` marker adds no
+        // constraint because every version token starts with `v`.
+        let v_star = GtsIdPattern::try_new("gts.x.llm.chat.message.v*").expect("test");
+        let dot_star = GtsIdPattern::try_new("gts.x.llm.chat.message.*").expect("test");
+        for id in [
+            "gts.x.llm.chat.message.v1~",
+            "gts.x.llm.chat.message.v9.9~",
+            "gts.x.llm.chat.message.v1.0~acme.app.ns.derived.v1~",
+        ] {
+            let candidate = GtsId::try_new(id).expect("test");
+            assert_eq!(
+                candidate.matches_pattern(&v_star),
+                candidate.matches_pattern(&dot_star),
+                "match divergence for {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_version_wildcard_rejections() {
+        // `*` after `v*` — two wildcards.
+        assert!(!GtsIdPattern::is_valid("gts.x.llm.chat.message.v*~*"));
+        // A stray `~` after the wildcard — `*` is not the final character.
+        assert!(!GtsIdPattern::is_valid("gts.x.llm.chat.message.v1.*~"));
+        // Partial (non-version) token wildcard.
+        assert!(!GtsIdPattern::is_valid("gts.x.llm.chat.msg*"));
+    }
+
+    // ---- covers: minor-version flexibility (segment-based) ----
+
+    #[test]
+    fn test_covers_any_minor_covers_specific_minor() {
+        // A pattern pinned to a major (no minor) is broader than one pinned to a
+        // specific minor — segment-based coverage captures this; string prefixes
+        // would not (`…v1~` is not a string prefix of `…v1.0~`).
+        let any_minor = GtsIdPattern::try_new("gts.x.core.events.event.v1~*").expect("test");
+        let specific = GtsIdPattern::try_new("gts.x.core.events.event.v1.0~*").expect("test");
+        assert!(any_minor.covers(&specific));
+        assert!(!specific.covers(&any_minor));
+    }
+
+    #[test]
+    fn test_covers_bare_type_minor_flexibility() {
+        let any_minor = GtsIdPattern::try_new("gts.x.core.events.event.v1~").expect("test");
+        let specific = GtsIdPattern::try_new("gts.x.core.events.event.v1.0~").expect("test");
+        assert!(any_minor.covers(&specific));
+        assert!(!specific.covers(&any_minor));
+    }
+
+    #[test]
+    fn test_covers_major_version_mismatch() {
+        let v1 = GtsIdPattern::try_new("gts.x.core.events.event.v1~*").expect("test");
+        let v2 = GtsIdPattern::try_new("gts.x.core.events.event.v2~*").expect("test");
+        assert!(!v1.covers(&v2));
+        assert!(!v2.covers(&v1));
     }
 
     // ---- From<GtsId> conversion ----

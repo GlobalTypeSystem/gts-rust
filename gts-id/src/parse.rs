@@ -100,11 +100,6 @@ fn split_raw_segments(
         ));
     }
 
-    // Wildcard placement rules. These are the wildcard-pattern-specific
-    // constraints (no analog for a concrete id) — and they live here, in the
-    // shared structural pass, so both entry points (`parse_id`, `parse_pattern`)
-    // report them identically. When `allow_wildcards` is false a `*` is simply an
-    // invalid segment token, caught later by `GtsIdSegment::parse`.
     if allow_wildcards {
         let wildcards_num = raw.matches('*').count();
         if wildcards_num > 1 {
@@ -113,7 +108,7 @@ fn split_raw_segments(
                 "The wildcard '*' token is allowed only once",
             ));
         }
-        if wildcards_num > 0 && !raw.ends_with(".*") && !raw.ends_with("~*") {
+        if wildcards_num > 0 && !raw.ends_with('*') {
             return Err(GtsIdError::new(
                 id,
                 "The wildcard '*' token is allowed only at the end of the pattern",
@@ -475,6 +470,33 @@ mod tests {
     #[test]
     fn test_parse_pattern_star_not_at_end_rejected() {
         let err = parse_pattern("gts.*.core.events.event.v1~").unwrap_err();
+        assert!(err.segment.is_none(), "expected id-level error, got: {err}");
+        assert!(err.cause.contains("only at the end"), "got: {err}");
+    }
+
+    #[test]
+    fn test_parse_pattern_version_wildcard_accepted() {
+        // `v*` ends the string with `*`, so the structural gate admits it; the
+        // segment parser turns it into a single wildcard segment.
+        let segments = parse_pattern("gts.x.llm.chat.message.v*").unwrap();
+        assert_eq!(segments.len(), 1);
+        assert!(segments[0].is_wildcard());
+    }
+
+    #[test]
+    fn test_parse_pattern_star_then_tilde_rejected() {
+        // `…*~` does not end with `*`, so the gate rejects it id-level rather
+        // than the segment parser silently stripping the trailing `~`.
+        let err = parse_pattern("gts.x.llm.chat.message.v1.*~").unwrap_err();
+        assert!(err.segment.is_none(), "expected id-level error, got: {err}");
+        assert!(err.cause.contains("only at the end"), "got: {err}");
+    }
+
+    #[test]
+    fn test_parse_pattern_midchain_wildcard_rejected() {
+        // A wildcard that is the final token of a non-final chain segment is only
+        // catchable structurally — the per-segment parser sees it as valid.
+        let err = parse_pattern("gts.x.*~a.b.c.d.v1~").unwrap_err();
         assert!(err.segment.is_none(), "expected id-level error, got: {err}");
         assert!(err.cause.contains("only at the end"), "got: {err}");
     }

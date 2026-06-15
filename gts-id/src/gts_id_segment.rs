@@ -471,6 +471,17 @@ fn parse_segment_parts(
             return Ok((parts, true));
         }
 
+        // Glued version wildcard `v*` — the only wildcard form not standing as
+        // its own `*` token. The `v` is the mandatory marker that begins every
+        // version, so `v*` means "any version" (GTS spec §10 rule 4) and is
+        // equivalent to a `*` at this position. Only valid as the final token.
+        if allow_wildcards && tokens[4] == "v*" {
+            if 4 != tokens.len() - 1 {
+                return Err("Wildcard '*' is only allowed as the final token".to_owned());
+            }
+            return Ok((parts, true));
+        }
+
         if !tokens[4].starts_with('v') {
             return Err("Major version must start with 'v'".to_owned());
         }
@@ -720,6 +731,53 @@ mod tests {
         let err = GtsIdPatternSegment::parse(1, "x.pkg.ns.type.*.extra").unwrap_err();
         assert!(
             err.contains("only allowed as the final token"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_glued_version_wildcard() {
+        // `v*` is the one wildcard form glued to a token: the version marker `v`
+        // plus `*` means "any version". It parses as a wildcard segment carrying
+        // the vendor..type prefix and no version.
+        let parsed = GtsIdPatternSegment::parse(1, "x.pkg.ns.type.v*").unwrap();
+        assert!(parsed.is_wildcard());
+        assert_eq!(parsed.vendor(), "x");
+        assert_eq!(parsed.package(), "pkg");
+        assert_eq!(parsed.namespace(), "ns");
+        assert_eq!(parsed.type_name(), "type");
+        assert_eq!(parsed.ver_major(), 0);
+        assert_eq!(parsed.ver_minor(), None);
+    }
+
+    #[test]
+    fn test_glued_version_wildcard_only_v_star() {
+        // Only the bare `v*` is the glued form. A partial major like `v1*` is
+        // not a wildcard — it fails as a malformed version.
+        let err = GtsIdPatternSegment::parse(1, "x.pkg.ns.type.v1*").unwrap_err();
+        assert!(
+            err.contains("Major version must be an integer"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_glued_version_wildcard_rejected_at_minor() {
+        // `v*` is only the major-version wildcard; at the minor position it is a
+        // malformed minor, not a wildcard.
+        let err = GtsIdPatternSegment::parse(1, "x.pkg.ns.type.v1.v*").unwrap_err();
+        assert!(
+            err.contains("Minor version must be an integer"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_glued_version_wildcard_rejected_for_concrete() {
+        // A concrete segment never accepts `v*` — wildcards need `allow_wildcards`.
+        let err = GtsIdSegment::parse(1, "x.pkg.ns.type.v*").unwrap_err();
+        assert!(
+            err.contains("Major version must be an integer"),
             "got: {err}"
         );
     }
