@@ -599,9 +599,9 @@ let result = ops.match_id_pattern(
 assert!(!result.is_match);
 
 // Direct wildcard matching
-let pattern = GtsIdPattern::try_new("gts.x.*.events.*")?;
+let pattern = GtsIdPattern::try_new("gts.x.core.events.*")?;
 let id = GtsId::try_new("gts.x.core.events.event.v1~")?;
-assert!(id.pattern_match(&pattern));
+assert!(id.matches_pattern(&pattern));
 ```
 
 #### OP#5 - ID to UUID Mapping

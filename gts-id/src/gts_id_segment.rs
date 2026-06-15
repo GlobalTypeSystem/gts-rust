@@ -38,6 +38,58 @@ pub struct GtsIdSegmentParts {
     ver_minor: Option<u32>,
 }
 
+impl GtsIdSegmentParts {
+    /// The raw segment string as it appeared in the source.
+    ///
+    /// This includes any trailing `~` for a type segment.
+    #[must_use]
+    pub fn raw(&self) -> &str {
+        &self.raw
+    }
+
+    /// The vendor token, or `""` when unspecified in a wildcard segment.
+    #[must_use]
+    pub fn vendor(&self) -> &str {
+        &self.vendor
+    }
+
+    /// The package token, or `""` when unspecified in a wildcard segment.
+    #[must_use]
+    pub fn package(&self) -> &str {
+        &self.package
+    }
+
+    /// The namespace token, or `""` when unspecified in a wildcard segment.
+    #[must_use]
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
+    /// The type token, or `""` when unspecified in a wildcard segment.
+    #[must_use]
+    pub fn type_name(&self) -> &str {
+        &self.type_name
+    }
+
+    /// The major version, or `0` when unspecified in a wildcard segment.
+    #[must_use]
+    pub fn ver_major(&self) -> u32 {
+        self.ver_major
+    }
+
+    /// The minor version, when present.
+    #[must_use]
+    pub fn ver_minor(&self) -> Option<u32> {
+        self.ver_minor
+    }
+
+    /// `true` when the segment is a type definition (ended with `~`).
+    #[must_use]
+    pub fn is_type(&self) -> bool {
+        self.raw.ends_with('~')
+    }
+}
+
 /// A read-only view of a segment's parsed fields.
 ///
 /// Implemented by both [`GtsIdSegment`] and [`GtsIdPatternSegment`] so the
@@ -786,23 +838,53 @@ mod tests {
 
     #[test]
     fn test_uuid_tail_segment_accessors() {
-        let seg = GtsIdSegment::uuid_tail_segment("7a1d2f34-5678-49ab-9012-abcdef123456");
-        assert_eq!(
-            seg.uuid_tail(),
-            Some("7a1d2f34-5678-49ab-9012-abcdef123456")
-        );
-        assert_eq!(seg.raw(), "7a1d2f34-5678-49ab-9012-abcdef123456");
+        const UUID_TAIL: &str = "7a1d2f34-5678-49ab-9012-abcdef123456";
+
+        let seg = GtsIdSegment::uuid_tail_segment(UUID_TAIL);
+        assert_eq!(seg.uuid_tail(), Some(UUID_TAIL));
+        assert_eq!(seg.raw(), UUID_TAIL);
         assert!(!seg.is_type());
         assert_eq!(seg.vendor(), "");
         assert_eq!(seg.ver_major(), 0);
         assert_eq!(seg.ver_minor(), None);
+
+        #[cfg(feature = "uuid")]
+        {
+            let expected = uuid::Uuid::parse_str(UUID_TAIL).ok();
+            assert_eq!(seg.uuid(), expected);
+
+            let GtsIdSegment::UuidTail(tail) = &seg else {
+                panic!("expected uuid-tail segment");
+            };
+            assert_eq!(tail.uuid(), expected);
+        }
     }
 
     #[test]
     fn test_concrete_and_wildcard_have_no_uuid_tail() {
         let concrete = GtsIdSegment::parse(1, "x.core.events.event.v1~").unwrap();
         assert_eq!(concrete.uuid_tail(), None);
+        #[cfg(feature = "uuid")]
+        assert_eq!(concrete.uuid(), None);
+
         let wildcard = GtsIdPatternSegment::parse(1, "x.*").unwrap();
         assert_eq!(wildcard.uuid_tail(), None);
+    }
+
+    #[test]
+    fn test_segment_parts_accessors() {
+        let concrete = GtsIdSegment::parse(1, "x.core.events.event.v1.2~").unwrap();
+        let GtsIdSegment::Concrete(parts) = concrete else {
+            panic!("expected concrete segment");
+        };
+
+        assert_eq!(parts.raw(), "x.core.events.event.v1.2~");
+        assert_eq!(parts.vendor(), "x");
+        assert_eq!(parts.package(), "core");
+        assert_eq!(parts.namespace(), "events");
+        assert_eq!(parts.type_name(), "event");
+        assert_eq!(parts.ver_major(), 1);
+        assert_eq!(parts.ver_minor(), Some(2));
+        assert!(parts.is_type());
     }
 }

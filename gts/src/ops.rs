@@ -2505,6 +2505,24 @@ mod tests {
     }
 
     #[test]
+    fn test_gts_ops_match_id_pattern_wildcard_candidate_directionality() {
+        let broad_candidate = GtsOps::match_id_pattern("gts.vendor.*", "gts.vendor.package.*");
+        assert!(
+            !broad_candidate.is_match,
+            "A broader candidate pattern must not match a narrower pattern"
+        );
+
+        let narrow_candidate = GtsOps::match_id_pattern("gts.vendor.package.*", "gts.vendor.*");
+        assert!(
+            narrow_candidate.is_match,
+            "A narrower candidate pattern should match a broader pattern"
+        );
+
+        let disjoint_candidate = GtsOps::match_id_pattern("gts.vendor.package.*", "gts.other.*");
+        assert!(!disjoint_candidate.is_match);
+    }
+
+    #[test]
     fn test_gts_ops_match_id_pattern_invalid() {
         let result = GtsOps::match_id_pattern(
             "gts.vendor.package.namespace.type.v1.0~abc.app.custom.event.v1.0",
@@ -3529,7 +3547,30 @@ mod tests {
         let result = GtsOps::parse_id("gts.vendor.package.namespace.*");
         assert!(result.ok, "Parsing valid wildcard should succeed");
         assert!(result.is_wildcard);
-        assert!(!result.segments.is_empty(), "Should have parsed segments");
+        assert_eq!(result.segments.len(), 1);
+        assert_eq!(result.segments[0].vendor, "vendor");
+        assert_eq!(result.segments[0].package, "package");
+        assert_eq!(result.segments[0].namespace, "namespace");
+        assert_eq!(result.segments[0].type_name, "");
+        assert_eq!(result.segments[0].ver_major, None);
+        assert_eq!(result.segments[0].ver_minor, None);
+        assert!(!result.segments[0].is_type);
+        assert_eq!(result.is_type, Some(false));
+    }
+
+    #[test]
+    fn test_parse_id_with_version_wildcard_shape() {
+        let result = GtsOps::parse_id("gts.vendor.package.namespace.type.v*");
+        assert!(result.ok, "Parsing valid version wildcard should succeed");
+        assert!(result.is_wildcard);
+        assert_eq!(result.segments.len(), 1);
+        assert_eq!(result.segments[0].vendor, "vendor");
+        assert_eq!(result.segments[0].package, "package");
+        assert_eq!(result.segments[0].namespace, "namespace");
+        assert_eq!(result.segments[0].type_name, "type");
+        assert_eq!(result.segments[0].ver_major, None);
+        assert_eq!(result.segments[0].ver_minor, None);
+        assert!(!result.segments[0].is_type);
         assert_eq!(result.is_type, Some(false));
     }
 
@@ -3540,7 +3581,21 @@ mod tests {
         let result = GtsOps::parse_id("gts.vendor.package.namespace.type.v1~*");
         assert!(result.ok, "Parsing valid wildcard should succeed");
         assert!(result.is_wildcard);
-        assert!(!result.segments.is_empty(), "Should have parsed segments");
+        assert_eq!(result.segments.len(), 2);
+        assert_eq!(result.segments[0].vendor, "vendor");
+        assert_eq!(result.segments[0].package, "package");
+        assert_eq!(result.segments[0].namespace, "namespace");
+        assert_eq!(result.segments[0].type_name, "type");
+        assert_eq!(result.segments[0].ver_major, Some(1));
+        assert_eq!(result.segments[0].ver_minor, None);
+        assert!(result.segments[0].is_type);
+        assert_eq!(result.segments[1].vendor, "");
+        assert_eq!(result.segments[1].package, "");
+        assert_eq!(result.segments[1].namespace, "");
+        assert_eq!(result.segments[1].type_name, "");
+        assert_eq!(result.segments[1].ver_major, None);
+        assert_eq!(result.segments[1].ver_minor, None);
+        assert!(!result.segments[1].is_type);
         assert_eq!(
             result.is_type,
             Some(false),

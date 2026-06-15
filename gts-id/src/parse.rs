@@ -80,35 +80,33 @@ fn split_raw_segments(
     id: &str,
     allow_wildcards: bool,
 ) -> Result<(Vec<String>, Option<String>), GtsIdError> {
-    let raw = id.trim();
-
-    if !raw.starts_with(GTS_PREFIX) {
+    if !id.starts_with(GTS_PREFIX) {
         return Err(GtsIdError::new(
             id,
             format!("must start with '{GTS_PREFIX}'"),
         ));
     }
 
-    if raw != raw.to_lowercase() {
+    if id != id.to_lowercase() {
         return Err(GtsIdError::new(id, "must be lowercase"));
     }
 
-    if raw.len() > GTS_MAX_LENGTH {
+    if id.len() > GTS_MAX_LENGTH {
         return Err(GtsIdError::new(
             id,
-            format!("too long ({} chars, max {GTS_MAX_LENGTH})", raw.len()),
+            format!("too long ({} chars, max {GTS_MAX_LENGTH})", id.len()),
         ));
     }
 
     if allow_wildcards {
-        let wildcards_num = raw.matches('*').count();
+        let wildcards_num = id.matches('*').count();
         if wildcards_num > 1 {
             return Err(GtsIdError::new(
                 id,
                 "The wildcard '*' token is allowed only once",
             ));
         }
-        if wildcards_num > 0 && !raw.ends_with('*') {
+        if wildcards_num > 0 && !id.ends_with('*') {
             return Err(GtsIdError::new(
                 id,
                 "The wildcard '*' token is allowed only at the end of the pattern",
@@ -116,7 +114,7 @@ fn split_raw_segments(
         }
     }
 
-    let remainder = &raw[GTS_PREFIX.len()..];
+    let remainder = &id[GTS_PREFIX.len()..];
     let tilde_parts: Vec<&str> = remainder.split('~').collect();
 
     // Detect combined anonymous instance: last tilde-part is a UUID.
@@ -131,8 +129,8 @@ fn split_raw_segments(
 
     // Reject hyphens in the GTS segments portion (hyphens are only allowed in the UUID tail).
     let segments_portion = match uuid_tail {
-        Some(uuid) => &raw[..raw.len() - uuid.len() - 1], // strip "~<uuid>"
-        None => raw,
+        Some(uuid) => &id[..id.len() - uuid.len() - 1], // strip "~<uuid>"
+        None => id,
     };
     if segments_portion.contains('-') {
         return Err(GtsIdError::new(id, "must not contain '-'"));
@@ -369,8 +367,14 @@ mod tests {
     }
 
     #[test]
-    fn test_gts_id_whitespace_trimmed() {
-        let segments = parse_id("  gts.x.core.events.event.v1~  ").unwrap();
+    fn test_gts_id_parser_expects_trimmed_input() {
+        let err = parse_id("  gts.x.core.events.event.v1~  ").unwrap_err();
+        assert!(err.cause.contains("must start with 'gts.'"), "got: {err}");
+    }
+
+    #[test]
+    fn test_gts_id_trimmed_input() {
+        let segments = parse_id("gts.x.core.events.event.v1~").unwrap();
         assert_eq!(segments.len(), 1);
     }
 

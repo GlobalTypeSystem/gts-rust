@@ -143,7 +143,7 @@ println!("{err}");
 
 ```toml
 [dependencies]
-gts-id = { version = "0.10", features = ["uuid"] }
+gts-id = { version = "0.11", features = ["uuid"] }
 ```
 
 ```rust

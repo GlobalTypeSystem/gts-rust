@@ -535,7 +535,7 @@ mod tests {
         let uuid2 = id.to_uuid();
         // UUIDs should be deterministic
         assert_eq!(uuid1, uuid2);
-        assert!(!uuid1.to_string().is_empty());
+        assert_eq!(uuid1.to_string(), "154302ad-df5c-56e6-97d4-f87c5faca44b");
     }
 
     #[cfg(feature = "uuid")]

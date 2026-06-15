@@ -334,6 +334,26 @@ mod tests {
     }
 
     #[test]
+    fn test_pattern_longer_than_candidate_does_not_match() {
+        let pattern =
+            GtsIdPattern::try_new("gts.x.core.events.topic.v1~vendor.app.orders.order.v1~")
+                .expect("test");
+        let id = GtsId::try_new("gts.x.core.events.topic.v1~").expect("test");
+        assert!(!id.matches_pattern(&pattern));
+    }
+
+    #[test]
+    fn test_uuid_tail_mismatch_does_not_match() {
+        let pattern = GtsIdPattern::try_new(
+            "gts.x.core.events.topic.v1~7a1d2f34-5678-49ab-9012-abcdef123456",
+        )
+        .expect("test");
+        let id = GtsId::try_new("gts.x.core.events.topic.v1~7a1d2f34-5678-49ab-9012-abcdef123457")
+            .expect("test");
+        assert!(!id.matches_pattern(&pattern));
+    }
+
+    #[test]
     fn test_gts_wildcard_with_minor_version() {
         let pattern = GtsIdPattern::try_new("gts.x.core.events.event.v1.0~").expect("test");
         let id = GtsId::try_new("gts.x.core.events.event.v1.0~").expect("test");

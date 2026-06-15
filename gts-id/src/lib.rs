@@ -8,7 +8,7 @@ mod error;
 mod gts_id;
 mod gts_id_pattern;
 mod gts_id_segment;
-mod parse;
+pub(crate) mod parse;
 
 pub use error::{GtsIdError, GtsIdSegmentError};
 pub use gts_id::GtsId;
