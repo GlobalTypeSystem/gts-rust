@@ -108,6 +108,23 @@ impl GtsId {
         pattern.matches_views(&self.segments)
     }
 
+    /// Converts this concrete identifier into an equivalent zero-wildcard
+    /// [`GtsIdPattern`].
+    ///
+    /// The conversion reuses the already validated segments, so it never
+    /// re-parses and cannot fail. This is the ergonomic borrowing form of
+    /// [`From<&GtsId>`](GtsIdPattern); the consuming form is
+    /// `GtsIdPattern::from(id)`.
+    ///
+    /// The resulting pattern matches this id *and* everything derived from it
+    /// down the chain: a base type id `gts.a.b.c.d.v1~` behaves as the implicit
+    /// envelope `gts.a.b.c.d.v1~*` (GTS spec §3.6, "implicit derived-type
+    /// coverage"), with the usual minor-version flexibility.
+    #[must_use]
+    pub fn to_pattern(&self) -> GtsIdPattern {
+        self.into()
+    }
+
     /// Splits a GTS ID with an optional attribute path.
     ///
     /// # Errors
@@ -488,6 +505,26 @@ mod tests {
         // A single segment has no parent.
         let id = GtsId::try_new("gts.x.core.events.topic.v1~").expect("single type segment");
         assert_eq!(id.get_type_id(), None);
+    }
+
+    #[test]
+    fn test_to_pattern_roundtrip() {
+        let id = GtsId::try_new("gts.x.core.events.event.v1~").expect("test");
+        let pattern = id.to_pattern();
+        assert_eq!(pattern.pattern(), id.id());
+        // The id at minimum matches the pattern derived from itself (it also
+        // covers derived chains — see gts_id_pattern's coverage test).
+        assert!(id.matches_pattern(&pattern));
+    }
+
+    #[test]
+    fn test_to_pattern_instance_id() {
+        // Works for a chained instance id too — every segment is carried over.
+        let id = GtsId::try_new("gts.x.core.events.event.v1~a.b.c.d.v1.0").expect("test");
+        let pattern = id.to_pattern();
+        assert_eq!(pattern.pattern(), id.id());
+        assert_eq!(pattern.segments().len(), id.segments().len());
+        assert!(id.matches_pattern(&pattern));
     }
 
     #[cfg(feature = "uuid")]

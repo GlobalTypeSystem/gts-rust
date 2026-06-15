@@ -1,16 +1,19 @@
 //! GTS identifier match patterns.
 //!
 //! [`GtsIdPattern`] is a validated GTS identifier that may end in a single
-//! trailing `*` wildcard token, but may also be fully concrete — a zero-wildcard
-//! pattern matches exactly one identifier (with minor-version flexibility). It
-//! supports prefix-based coverage reasoning via [`covers`](GtsIdPattern::covers);
-//! actual ID-vs-pattern matching lives on [`GtsId::matches_pattern`].
+//! trailing `*` wildcard token, but may also be fully concrete. A zero-wildcard
+//! pattern is not exact-match: a base type id used as a pattern also matches
+//! everything derived from it down the chain — `gts.a.b.c.d.v1~` behaves as the
+//! implicit envelope `gts.a.b.c.d.v1~*` (GTS spec §3.6, "implicit derived-type
+//! coverage"), with minor-version flexibility. It supports prefix-based coverage
+//! reasoning via [`covers`](GtsIdPattern::covers); actual ID-vs-pattern matching
+//! lives on [`GtsId::matches_pattern`].
 
 use std::fmt;
 use std::str::FromStr;
 
 use crate::gts_id_segment::SegmentView;
-use crate::{GtsIdError, GtsIdPatternSegment};
+use crate::{GtsId, GtsIdError, GtsIdPatternSegment};
 
 /// A GTS identifier match pattern (exact or trailing-`*` wildcard).
 #[derive(Debug, Clone, PartialEq)]
@@ -207,6 +210,45 @@ impl GtsIdPattern {
     }
 }
 
+impl From<&GtsId> for GtsIdPattern {
+    /// A concrete [`GtsId`] is always a valid zero-wildcard pattern. The
+    /// conversion reuses the id's already-validated segments (wrapping each in
+    /// [`GtsIdPatternSegment::Segment`]) instead of re-parsing, so it is cheap
+    /// and cannot fail.
+    ///
+    /// Note this is not an "exact-match" pattern: a base type id used as a
+    /// pattern also matches everything derived from it down the chain — a type
+    /// id `gts.a.b.c.d.v1~` behaves as the implicit envelope `gts.a.b.c.d.v1~*`
+    /// (GTS spec §3.6, "implicit derived-type coverage").
+    fn from(id: &GtsId) -> Self {
+        GtsIdPattern {
+            pattern: id.id().to_owned(),
+            segments: id
+                .segments()
+                .iter()
+                .cloned()
+                .map(GtsIdPatternSegment::Segment)
+                .collect(),
+        }
+    }
+}
+
+impl From<GtsId> for GtsIdPattern {
+    /// Consuming variant of [`From<&GtsId>`](GtsIdPattern). Reuses the id's owned
+    /// segments via [`GtsId::into_segments`], avoiding the per-segment clone.
+    fn from(id: GtsId) -> Self {
+        let pattern = id.id().to_owned();
+        GtsIdPattern {
+            pattern,
+            segments: id
+                .into_segments()
+                .into_iter()
+                .map(GtsIdPatternSegment::Segment)
+                .collect(),
+        }
+    }
+}
+
 impl fmt::Display for GtsIdPattern {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.pattern)
@@ -231,7 +273,6 @@ impl AsRef<str> for GtsIdPattern {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::GtsId;
 
     #[test]
     fn test_gts_wildcard_simple() {
@@ -450,6 +491,75 @@ mod tests {
         assert!(!l2.covers(&l1));
         assert!(!l3.covers(&l1));
         assert!(!l3.covers(&l2));
+    }
+
+    // ---- From<GtsId> conversion ----
+
+    #[test]
+    fn test_from_gts_id_ref() {
+        let id = GtsId::try_new("gts.x.core.events.event.v1~").expect("test");
+        let pattern = GtsIdPattern::from(&id);
+        // The pattern string is the id verbatim.
+        assert_eq!(pattern.pattern(), id.id());
+        // A concrete id maps to a concrete pattern — no wildcard segments.
+        assert!(pattern.segments().iter().all(|s| !s.is_wildcard()));
+        // The id at minimum matches the pattern derived from itself.
+        assert!(id.matches_pattern(&pattern));
+    }
+
+    #[test]
+    fn test_concrete_pattern_covers_derived_chain() {
+        // Per GTS spec §3.6 "implicit derived-type coverage": a base type id used
+        // as a pattern is treated as the implicit envelope `…~*`, so it matches
+        // not only itself but every type/instance derived from it down the chain.
+        let pattern = GtsId::try_new("gts.a.b.c.d.v1~")
+            .expect("test")
+            .to_pattern();
+
+        // Exact and derived candidates both match.
+        let exact = GtsId::try_new("gts.a.b.c.d.v1~").expect("test");
+        let derived = GtsId::try_new("gts.a.b.c.d.v1~w.x.y.z.v1").expect("test");
+        assert!(exact.matches_pattern(&pattern));
+        assert!(derived.matches_pattern(&pattern));
+
+        // A different base type is not covered.
+        let other_base = GtsId::try_new("gts.a.b.c.other.v1~w.x.y.z.v1").expect("test");
+        assert!(!other_base.matches_pattern(&pattern));
+    }
+
+    #[test]
+    fn test_from_gts_id_owned() {
+        let id = GtsId::try_new("gts.x.core.events.event.v1~").expect("test");
+        let expected = id.id().to_owned();
+        let pattern: GtsIdPattern = id.into();
+        assert_eq!(pattern.pattern(), expected);
+        assert!(pattern.segments().iter().all(|s| !s.is_wildcard()));
+    }
+
+    #[test]
+    fn test_from_gts_id_chained_preserves_segments() {
+        let id = GtsId::try_new("gts.x.core.events.topic.v1~vendor.app.orders.thing.v1.0")
+            .expect("test");
+        let pattern = GtsIdPattern::from(&id);
+        assert_eq!(pattern.segments().len(), id.segments().len());
+        assert_eq!(pattern.pattern(), id.id());
+        assert!(id.matches_pattern(&pattern));
+    }
+
+    #[test]
+    fn test_from_ref_and_owned_agree() {
+        let id = GtsId::try_new("gts.x.core.events.event.v1~").expect("test");
+        let from_ref = GtsIdPattern::from(&id);
+        let from_owned = GtsIdPattern::from(id);
+        // Borrowing and consuming conversions produce the same pattern.
+        assert_eq!(from_ref, from_owned);
+    }
+
+    #[test]
+    fn test_from_gts_id_matches_to_pattern() {
+        let id = GtsId::try_new("gts.x.core.events.event.v1~").expect("test");
+        // The inherent `to_pattern` is just the ergonomic form of `From<&GtsId>`.
+        assert_eq!(GtsIdPattern::from(&id), id.to_pattern());
     }
 
     // ---- is_valid ----
