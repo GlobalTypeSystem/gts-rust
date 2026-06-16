@@ -254,7 +254,9 @@ mod deserialisation {
         // are effectively identity wrappers — the payload survives
         // any nesting without mangling.
         let envelope = EnvelopeV1::<serde_json::Value> {
-            gts_type: GtsTypeId::new("gts.x.test.value_dispatch.envelope.v1~x.test.unknown.v1~"),
+            gts_type: GtsTypeId::new(
+                "gts.x.test.value_dispatch.envelope.v1~x.test.unknown.thing.v1~",
+            ),
             payload: serde_json::json!({
                 "anything": ["the", "future", 42, null, { "nested": true }]
             }),
@@ -368,7 +370,7 @@ mod dispatch {
             // A future / unknown gts_type — survives dispatch via the
             // open-set Unknown branch.
             serde_json::json!({
-                "gts_type": "gts.x.test.value_dispatch.envelope.v1~x.test.unmodelled_future.v1~",
+                "gts_type": "gts.x.test.value_dispatch.envelope.v1~x.test.unmodelled.future.v1~",
                 "payload": { "anything": "goes" }
             }),
         ];
@@ -415,7 +417,7 @@ mod dispatch {
             Decoded::Unknown(env) => {
                 assert_eq!(
                     env.gts_type.as_ref(),
-                    "gts.x.test.value_dispatch.envelope.v1~x.test.unmodelled_future.v1~"
+                    "gts.x.test.value_dispatch.envelope.v1~x.test.unmodelled.future.v1~"
                 );
                 // Payload survives intact as the original JSON Value:
                 assert_eq!(env.payload, serde_json::json!({ "anything": "goes" }));

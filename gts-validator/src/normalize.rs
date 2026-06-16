@@ -11,13 +11,13 @@
 /// Result of normalizing a raw candidate string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NormalizedCandidate {
-    /// The canonical GTS identifier string (ready for `GtsID::new()`)
+    /// The canonical GTS identifier string (ready for `GtsId::try_new()`)
     pub gts_id: String,
     /// The original raw string (for error reporting)
     pub original: String,
 }
 
-/// Normalize a raw candidate string into a form suitable for `GtsID::new()`.
+/// Normalize a raw candidate string into a form suitable for `GtsId::try_new()`.
 ///
 /// Steps:
 /// 1. Trim whitespace

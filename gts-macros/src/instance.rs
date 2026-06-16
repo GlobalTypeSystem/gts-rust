@@ -48,13 +48,8 @@ use syn::{
 /// suffix, etc.) at compile time with span pointing at the literal.
 fn validate_instance_id_format(instance_id: &LitStr) -> syn::Result<()> {
     let raw = instance_id.value();
-    if let Err(e) = gts_id::validate_gts_id(&raw, false) {
-        let msg = match &e {
-            gts_id::GtsIdError::Id { cause, .. } => format!("Invalid GTS instance ID: {cause}"),
-            gts_id::GtsIdError::Segment { num, cause, .. } => {
-                format!("Invalid GTS instance ID: segment #{num}: {cause}")
-            }
-        };
+    if let Err(e) = gts_id::GtsId::try_new(&raw) {
+        let msg = format!("Invalid GTS instance ID: {e}");
         return Err(syn::Error::new_spanned(instance_id, msg));
     }
     Ok(())

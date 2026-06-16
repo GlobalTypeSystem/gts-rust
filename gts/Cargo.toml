@@ -1,6 +1,6 @@
 [package]
 name = "gts"
-version = "0.10.1"
+version = "0.11.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -16,11 +16,10 @@ publish = true
 workspace = true
 
 [dependencies]
-gts-id.workspace = true
+gts-id = { workspace = true, features = ["uuid"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-uuid.workspace = true
 jsonschema.workspace = true
 schemars.workspace = true
 walkdir.workspace = true

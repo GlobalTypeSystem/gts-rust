@@ -1,493 +1,41 @@
+//! GTS identifier types.
+//!
+//! The low-level identifier primitives ([`GtsId`], [`GtsIdSegment`],
+//! [`GtsIdPattern`]) and all validation live in the [`gts_id`] crate and are
+//! re-exported here. The typed, schema-aware wrappers [`GtsTypeId`] and
+//! [`GtsInstanceId`] live in this crate because they carry the JSON Schema
+//! integration (`serde`, `schemars`, [`GtsTypeId::json_schema_value`]), which is
+//! a `gts` (schema) concern rather than a pure identifier concern. They are
+//! built on the crate-private [`GtsEntityId`] string newtype, which is plumbing
+//! for those wrappers and intentionally not part of the public API.
+//!
+//! [`GtsIdError`] — the single error type shared across all GTS identifier and
+//! wildcard parsing — is re-exported here from the [`gts_id`] crate.
+
 use std::fmt;
-use std::str::FromStr;
-use std::sync::LazyLock;
-use thiserror::Error;
-use uuid::Uuid;
 
-pub const GTS_PREFIX: &str = gts_id::GTS_PREFIX;
-/// URI-compatible prefix for GTS identifiers in JSON Schema `$id` field (e.g., `gts://gts.x.y.z...`).
-/// This is ONLY used for JSON Schema serialization/deserialization, not for GTS ID parsing.
-pub const GTS_URI_PREFIX: &str = "gts://";
-static GTS_NS: LazyLock<Uuid> = LazyLock::new(|| Uuid::new_v5(&Uuid::NAMESPACE_URL, b"gts"));
-
-#[derive(Debug, Error)]
-pub enum GtsError {
-    #[error("Invalid GTS segment #{num} @ offset {offset}: '{segment}': {cause}")]
-    Segment {
-        num: usize,
-        offset: usize,
-        segment: String,
-        cause: String,
-    },
-
-    #[error("Invalid GTS identifier: {id}: {cause}")]
-    Id { id: String, cause: String },
-
-    #[error("Invalid GTS wildcard pattern: {pattern}: {cause}")]
-    Wildcard { pattern: String, cause: String },
-}
-
-/// Parsed GTS segment containing vendor, package, namespace, type, and version info.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(clippy::struct_excessive_bools)]
-pub struct GtsIdSegment {
-    pub num: usize,
-    pub offset: usize,
-    pub segment: String,
-    pub vendor: String,
-    pub package: String,
-    pub namespace: String,
-    pub type_name: String,
-    pub ver_major: u32,
-    pub ver_minor: Option<u32>,
-    pub is_type: bool,
-    pub is_wildcard: bool,
-    pub is_uuid_tail: bool,
-}
-
-impl GtsIdSegment {
-    /// Creates a new GTS ID segment from a string.
-    ///
-    /// # Errors
-    /// Returns `GtsError::Segment` if the segment string is invalid.
-    pub fn new(num: usize, offset: usize, segment: &str) -> Result<Self, GtsError> {
-        let segment = segment.trim().to_owned();
-        let mut seg = GtsIdSegment {
-            num,
-            offset,
-            segment: segment.clone(),
-            vendor: String::new(),
-            package: String::new(),
-            namespace: String::new(),
-            type_name: String::new(),
-            ver_major: 0,
-            ver_minor: None,
-            is_type: false,
-            is_wildcard: false,
-            is_uuid_tail: false,
-        };
-
-        seg.parse_segment_id(&segment)?;
-        Ok(seg)
-    }
-
-    fn parse_segment_id(&mut self, segment: &str) -> Result<(), GtsError> {
-        let parsed = gts_id::validate_segment(self.num, segment, true).map_err(|cause| {
-            GtsError::Segment {
-                num: self.num,
-                offset: self.offset,
-                segment: self.segment.clone(),
-                cause,
-            }
-        })?;
-        self.vendor = parsed.vendor;
-        self.package = parsed.package;
-        self.namespace = parsed.namespace;
-        self.type_name = parsed.type_name;
-        self.ver_major = parsed.ver_major;
-        self.ver_minor = parsed.ver_minor;
-        self.is_type = parsed.is_type;
-        self.is_wildcard = parsed.is_wildcard;
-        self.is_uuid_tail = parsed.is_uuid_tail;
-        Ok(())
-    }
-}
-
-/// GTS ID - a validated Global Type System identifier.
-///
-/// GTS IDs follow the format: `gts.<vendor>.<package>.<namespace>.<type>.<version>[~]`
-/// where `~` suffix indicates a type/schema definition.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct GtsID {
-    pub id: String,
-    pub gts_id_segments: Vec<GtsIdSegment>,
-}
-
-impl GtsID {
-    /// Parse and validate a GTS identifier string.
-    ///
-    /// # Errors
-    /// Returns `GtsError::Id` if the string is not a valid GTS identifier.
-    pub fn new(id: &str) -> Result<Self, GtsError> {
-        let raw = id.trim();
-
-        // Delegate all validation to the shared gts-id crate (single source of truth).
-        let parsed_segments = gts_id::validate_gts_id(raw, true).map_err(|e| match e {
-            gts_id::GtsIdError::Id { cause, .. } => GtsError::Id {
-                id: id.to_owned(),
-                cause,
-            },
-            gts_id::GtsIdError::Segment {
-                num,
-                offset,
-                segment,
-                cause,
-            } => GtsError::Segment {
-                num,
-                offset,
-                segment,
-                cause,
-            },
-        })?;
-
-        // Convert ParsedSegment → GtsIdSegment
-        let gts_id_segments: Vec<GtsIdSegment> = parsed_segments
-            .into_iter()
-            .enumerate()
-            .map(|(i, p)| GtsIdSegment {
-                num: i + 1,
-                offset: p.offset,
-                segment: p.raw,
-                vendor: p.vendor,
-                package: p.package,
-                namespace: p.namespace,
-                type_name: p.type_name,
-                ver_major: p.ver_major,
-                ver_minor: p.ver_minor,
-                is_type: p.is_type,
-                is_wildcard: p.is_wildcard,
-                is_uuid_tail: p.is_uuid_tail,
-            })
-            .collect();
-
-        // Issue #37: Single-segment instance IDs are prohibited.
-        // Instance IDs must be chained with at least one type segment (e.g., 'type~instance').
-        // Exception: combined anonymous instances (UUID tail) are always valid.
-        let has_uuid_tail = gts_id_segments.last().is_some_and(|s| s.is_uuid_tail);
-        if !has_uuid_tail
-            && gts_id_segments.len() == 1
-            && !gts_id_segments[0].is_type
-            && !gts_id_segments[0].is_wildcard
-        {
-            return Err(GtsError::Id {
-                id: id.to_owned(),
-                cause: "Single-segment instance IDs are prohibited. Instance IDs must be chained with at least one type segment (e.g., 'type~instance')".to_owned(),
-            });
-        }
-
-        Ok(GtsID {
-            id: raw.to_owned(),
-            gts_id_segments,
-        })
-    }
-
-    #[must_use]
-    pub fn is_type(&self) -> bool {
-        self.id.ends_with('~')
-    }
-
-    #[must_use]
-    pub fn get_type_id(&self) -> Option<String> {
-        if self.gts_id_segments.len() < 2 {
-            return None;
-        }
-        let segments: String = self.gts_id_segments[..self.gts_id_segments.len() - 1]
-            .iter()
-            .map(|s| s.segment.as_str())
-            .collect::<Vec<_>>()
-            .join("");
-        Some(format!("{GTS_PREFIX}{segments}"))
-    }
-
-    /// Generate a deterministic UUID v5 from this GTS ID.
-    #[must_use]
-    pub fn to_uuid(&self) -> Uuid {
-        Uuid::new_v5(&GTS_NS, self.id.as_bytes())
-    }
-
-    /// Check if a string is a valid GTS identifier.
-    #[must_use]
-    pub fn is_valid(s: &str) -> bool {
-        if !s.starts_with(GTS_PREFIX) {
-            return false;
-        }
-        Self::new(s).is_ok()
-    }
-
-    /// Check if this GTS ID matches a wildcard pattern.
-    #[must_use]
-    pub fn wildcard_match(&self, pattern: &GtsWildcard) -> bool {
-        let p = &pattern.id;
-
-        // No wildcard case - need exact match with version flexibility
-        if !p.contains('*') {
-            return Self::match_segments(&pattern.gts_id_segments, &self.gts_id_segments);
-        }
-
-        // Wildcard case
-        if p.matches('*').count() > 1 || !p.ends_with('*') {
-            return false;
-        }
-
-        Self::match_segments(&pattern.gts_id_segments, &self.gts_id_segments)
-    }
-
-    fn match_segments(pattern_segs: &[GtsIdSegment], candidate_segs: &[GtsIdSegment]) -> bool {
-        // If pattern is longer than candidate, no match
-        if pattern_segs.len() > candidate_segs.len() {
-            return false;
-        }
-
-        for (i, p_seg) in pattern_segs.iter().enumerate() {
-            let c_seg = &candidate_segs[i];
-
-            // If pattern segment is a wildcard, check non-wildcard fields first
-            if p_seg.is_wildcard {
-                if !p_seg.vendor.is_empty() && p_seg.vendor != c_seg.vendor {
-                    return false;
-                }
-                if !p_seg.package.is_empty() && p_seg.package != c_seg.package {
-                    return false;
-                }
-                if !p_seg.namespace.is_empty() && p_seg.namespace != c_seg.namespace {
-                    return false;
-                }
-                if !p_seg.type_name.is_empty() && p_seg.type_name != c_seg.type_name {
-                    return false;
-                }
-                if p_seg.ver_major != 0 && p_seg.ver_major != c_seg.ver_major {
-                    return false;
-                }
-                if let Some(p_minor) = p_seg.ver_minor
-                    && Some(p_minor) != c_seg.ver_minor
-                {
-                    return false;
-                }
-                if p_seg.is_type && p_seg.is_type != c_seg.is_type {
-                    return false;
-                }
-                // Wildcard matches - accept anything after this point
-                return true;
-            }
-
-            // Non-wildcard UUID tail - compare raw segment string (the actual UUID)
-            if p_seg.is_uuid_tail && p_seg.segment != c_seg.segment {
-                return false;
-            }
-
-            // Non-wildcard segment - all fields must match exactly
-            if p_seg.vendor != c_seg.vendor {
-                return false;
-            }
-            if p_seg.package != c_seg.package {
-                return false;
-            }
-            if p_seg.namespace != c_seg.namespace {
-                return false;
-            }
-            if p_seg.type_name != c_seg.type_name {
-                return false;
-            }
-
-            // Check version matching
-            if p_seg.ver_major != c_seg.ver_major {
-                return false;
-            }
-
-            // Minor version: if pattern has no minor version, accept any minor in candidate
-            if let Some(p_minor) = p_seg.ver_minor
-                && Some(p_minor) != c_seg.ver_minor
-            {
-                return false;
-            }
-
-            // Check is_type flag matches
-            if p_seg.is_type != c_seg.is_type {
-                return false;
-            }
-        }
-
-        true
-    }
-
-    /// Splits a GTS ID with an optional attribute path.
-    ///
-    /// # Errors
-    /// Returns `GtsError::Id` if the path is empty after the `@` separator.
-    pub fn split_at_path(gts_with_path: &str) -> Result<(String, Option<String>), GtsError> {
-        if !gts_with_path.contains('@') {
-            return Ok((gts_with_path.to_owned(), None));
-        }
-
-        let parts: Vec<&str> = gts_with_path.splitn(2, '@').collect();
-        let gts = parts[0].to_owned();
-        let path = parts.get(1).map(|s| (*s).to_owned());
-
-        if let Some(ref p) = path
-            && p.is_empty()
-        {
-            return Err(GtsError::Id {
-                id: gts_with_path.to_owned(),
-                cause: "Attribute path cannot be empty".to_owned(),
-            });
-        }
-
-        Ok((gts, path))
-    }
-}
-
-impl fmt::Display for GtsID {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.id)
-    }
-}
-
-impl FromStr for GtsID {
-    type Err = GtsError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::new(s)
-    }
-}
-
-impl AsRef<str> for GtsID {
-    fn as_ref(&self) -> &str {
-        &self.id
-    }
-}
-
-/// GTS Wildcard pattern
-#[derive(Debug, Clone, PartialEq)]
-pub struct GtsWildcard {
-    pub id: String,
-    pub gts_id_segments: Vec<GtsIdSegment>,
-}
-
-impl GtsWildcard {
-    /// Returns the non-wildcard prefix of a pattern string.
-    ///
-    /// For `"gts.x.core.srr.resource.v1~*"` returns `"gts.x.core.srr.resource.v1~"`.
-    /// For an exact pattern (no `*`) returns the full string.
-    fn prefix_str(pattern: &str) -> &str {
-        match pattern.find('*') {
-            Some(idx) => &pattern[..idx],
-            None => pattern,
-        }
-    }
-
-    /// Returns `true` if there is at least one GTS ID that matches **both** patterns.
-    ///
-    /// Two patterns overlap when one pattern's fixed prefix is a prefix of the
-    /// other's fixed prefix (or they share the same prefix), meaning there exists
-    /// at least one concrete GTS ID that satisfies both constraints.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let broad  = GtsWildcard::new("gts.x.core.srr.resource.v1~*")?;
-    /// let narrow = GtsWildcard::new("gts.x.core.srr.resource.v1~acme.*")?;
-    /// assert!(broad.overlaps(&narrow));  // "acme.*" is a subset of "*"
-    ///
-    /// let other  = GtsWildcard::new("gts.x.core.other.resource.v1~*")?;
-    /// assert!(!broad.overlaps(&other));  // different base type — no overlap
-    /// ```
-    #[must_use]
-    pub fn overlaps(&self, other: &GtsWildcard) -> bool {
-        let a = Self::prefix_str(&self.id);
-        let b = Self::prefix_str(&other.id);
-        a.starts_with(b) || b.starts_with(a)
-    }
-
-    /// Returns `true` if every GTS ID matching `self` also matches `other`.
-    ///
-    /// In other words, `self` is a **narrower** (more specific) pattern than `other`:
-    /// the effective type set of `self` is a subset of the effective type set of `other`.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let broad  = GtsWildcard::new("gts.x.core.srr.resource.v1~*")?;
-    /// let narrow = GtsWildcard::new("gts.x.core.srr.resource.v1~acme.*")?;
-    /// assert!(narrow.is_subset_of(&broad));
-    /// assert!(!broad.is_subset_of(&narrow));
-    /// ```
-    #[must_use]
-    pub fn is_subset_of(&self, other: &GtsWildcard) -> bool {
-        let a = Self::prefix_str(&self.id);
-        let b = Self::prefix_str(&other.id);
-        a.starts_with(b)
-    }
-
-    /// Creates a new GTS wildcard pattern.
-    ///
-    /// # Errors
-    /// Returns `GtsError::Wildcard` if the pattern is invalid.
-    pub fn new(pattern: &str) -> Result<Self, GtsError> {
-        let p = pattern.trim();
-
-        if !p.starts_with(GTS_PREFIX) {
-            return Err(GtsError::Wildcard {
-                pattern: pattern.to_owned(),
-                cause: format!("Does not start with '{GTS_PREFIX}'"),
-            });
-        }
-
-        if p.matches('*').count() > 1 {
-            return Err(GtsError::Wildcard {
-                pattern: pattern.to_owned(),
-                cause: "The wildcard '*' token is allowed only once".to_owned(),
-            });
-        }
-
-        if p.contains('*') && !p.ends_with(".*") && !p.ends_with("~*") {
-            return Err(GtsError::Wildcard {
-                pattern: pattern.to_owned(),
-                cause: "The wildcard '*' token is allowed only at the end of the pattern"
-                    .to_owned(),
-            });
-        }
-
-        // Try to parse as GtsID
-        let gts_id = GtsID::new(p).map_err(|e| GtsError::Wildcard {
-            pattern: pattern.to_owned(),
-            cause: e.to_string(),
-        })?;
-
-        Ok(GtsWildcard {
-            id: gts_id.id,
-            gts_id_segments: gts_id.gts_id_segments,
-        })
-    }
-}
-
-impl fmt::Display for GtsWildcard {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.id)
-    }
-}
-
-impl FromStr for GtsWildcard {
-    type Err = GtsError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::new(s)
-    }
-}
-
-impl AsRef<str> for GtsWildcard {
-    fn as_ref(&self) -> &str {
-        &self.id
-    }
-}
+pub use gts_id::{
+    GTS_PREFIX, GtsId, GtsIdError, GtsIdPattern, GtsIdPatternSegment, GtsIdSegment,
+    GtsIdSegmentParts, GtsUuidTail,
+};
 
 /// A type-safe wrapper for GTS entity identifiers.
 ///
 /// `GtsEntityId` wraps a fully-formed GTS entity ID string (e.g.,
-/// `gts.x.core.events.topic.v1~vendor.app.orders.v1.0`). It can be used as a map key,
-/// compared for equality, hashed, and serialized/deserialized.
+/// `gts.x.core.events.topic.v1~vendor.app.orders.v1.0`). It is crate-private
+/// plumbing for the schema-aware wrappers ([`GtsTypeId`], [`GtsInstanceId`]) and
+/// performs no validation itself — validation lives in their `try_new`
+/// constructors.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct GtsEntityId(String);
+pub(crate) struct GtsEntityId(String);
 
 impl GtsEntityId {
-    /// Creates a new GTS entity ID from a string.
-    /// Must be private as it's used by `GtsInstanceId::new()` or `GtsEntityId::new()`.
-    #[must_use]
+    /// Creates a new GTS entity ID from a string, without validation.
     fn new(id: &str) -> Self {
         Self(id.to_owned())
     }
 
     /// Returns the underlying string representation of the entity ID.
-    #[must_use]
     fn into_string(self) -> String {
         self.0
     }
@@ -505,11 +53,9 @@ impl AsRef<str> for GtsEntityId {
     }
 }
 
-impl From<GtsEntityId> for String {
-    fn from(id: GtsEntityId) -> Self {
-        id.0
-    }
-}
+/// URI-compatible prefix for GTS identifiers in JSON Schema `$id` field (e.g., `gts://gts.x.y.z...`).
+/// This is ONLY used for JSON Schema serialization/deserialization, not for GTS ID parsing.
+pub const GTS_URI_PREFIX: &str = "gts://";
 
 /// A type-safe wrapper for GTS instance identifiers.
 ///
@@ -543,7 +89,7 @@ impl<'de> serde::Deserialize<'de> for GtsInstanceId {
         D: serde::Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        Ok(GtsInstanceId(GtsEntityId(s)))
+        GtsInstanceId::try_new(&s).map_err(serde::de::Error::custom)
     }
 }
 
@@ -587,7 +133,7 @@ impl GtsInstanceId {
     ///
     /// # Example
     /// ```
-    /// use gts::gts::GtsInstanceId;
+    /// use gts::GtsInstanceId;
     ///
     /// let schema = GtsInstanceId::json_schema_value();
     /// assert_eq!(schema["type"], "string");
@@ -620,6 +166,46 @@ impl GtsInstanceId {
         Self(GtsEntityId::new(&format!("{schema_id}{segment}")))
     }
 
+    /// Creates a new GTS instance ID from a fully-formed string, validating
+    /// that it is a well-formed *instance* identifier.
+    ///
+    /// Unlike the infallible [`GtsInstanceId::new`], this constructor enforces
+    /// the instance/type discrimination via the type system rather than relying
+    /// on downstream `ends_with('~')` string checks. The string is first parsed
+    /// and structurally validated via [`GtsId::try_new`], then classified:
+    ///
+    /// * it must parse as a valid GTS identifier, and
+    /// * it must **not** be a type id (a trailing `~` denotes a type id).
+    ///
+    /// A successfully parsed instance id is always chained with at least one
+    /// type segment (single-segment instance ids are rejected by [`GtsId::try_new`]),
+    /// so it necessarily contains `~`.
+    ///
+    /// # Errors
+    /// Returns the underlying [`GtsIdError`] if the string fails GTS ID
+    /// validation, or [`GtsIdError`] if it is a (trailing-`~`) type id.
+    ///
+    /// # Example
+    /// ```
+    /// use gts::GtsInstanceId;
+    ///
+    /// assert!(GtsInstanceId::try_new("gts.x.core.events.event.v1~a.b.c.d.v1.0").is_ok());
+    /// // Trailing '~' is a type id, not an instance id:
+    /// assert!(GtsInstanceId::try_new("gts.x.core.events.event.v1~").is_err());
+    /// // A bare single-segment id is not a chained instance id:
+    /// assert!(GtsInstanceId::try_new("gts.x.core.events.event.v1").is_err());
+    /// ```
+    pub fn try_new(instance_id: &str) -> Result<Self, GtsIdError> {
+        let parsed = GtsId::try_new(instance_id)?;
+        if parsed.is_type() {
+            return Err(GtsIdError::new(
+                instance_id,
+                "GTS instance IDs must not end with '~' (a trailing '~' denotes a type id)",
+            ));
+        }
+        Ok(Self(GtsEntityId::new(parsed.as_ref())))
+    }
+
     /// Returns the underlying string representation of the instance ID.
     #[must_use]
     pub fn into_string(self) -> String {
@@ -641,7 +227,7 @@ impl AsRef<str> for GtsInstanceId {
 
 impl From<GtsInstanceId> for String {
     fn from(id: GtsInstanceId) -> Self {
-        id.0.into()
+        id.0.into_string()
     }
 }
 
@@ -680,7 +266,7 @@ impl PartialEq<String> for GtsInstanceId {
 /// # Example
 ///
 /// ```
-/// use gts::gts::GtsTypeId;
+/// use gts::GtsTypeId;
 ///
 /// let id = GtsTypeId::new("gts.x.core.events.topic.v1~vendor.app.orders.v1.0~");
 /// assert_eq!(id.as_ref(), "gts.x.core.events.topic.v1~vendor.app.orders.v1.0~");
@@ -707,7 +293,7 @@ impl<'de> serde::Deserialize<'de> for GtsTypeId {
         D: serde::Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        Ok(GtsTypeId(GtsEntityId(s)))
+        GtsTypeId::try_new(&s).map_err(serde::de::Error::custom)
     }
 }
 
@@ -751,7 +337,7 @@ impl GtsTypeId {
     ///
     /// # Example
     /// ```
-    /// use gts::gts::GtsTypeId;
+    /// use gts::GtsTypeId;
     ///
     /// let schema = GtsTypeId::json_schema_value();
     /// assert_eq!(schema["type"], "string");
@@ -783,6 +369,37 @@ impl GtsTypeId {
         Self(GtsEntityId::new(type_id))
     }
 
+    /// Creates a new GTS type ID from a string, validating that it is a
+    /// well-formed *type* identifier.
+    ///
+    /// Unlike the infallible [`GtsTypeId::new`], this constructor enforces the
+    /// type/instance discrimination via the type system rather than relying on
+    /// downstream `ends_with('~')` string checks. The string is first parsed and
+    /// structurally validated via [`GtsId::try_new`], then classified:
+    ///
+    /// * it must parse as a valid GTS identifier, and
+    /// * it must be a type id (i.e. end with `~`).
+    ///
+    /// # Errors
+    /// Returns the underlying [`GtsIdError`] if the string fails GTS ID
+    /// validation, or [`GtsIdError`] if it is an instance id (no trailing `~`).
+    ///
+    /// # Example
+    /// ```
+    /// use gts::GtsTypeId;
+    ///
+    /// assert!(GtsTypeId::try_new("gts.x.core.events.event.v1~").is_ok());
+    /// // An instance id (no trailing '~') is not a type id:
+    /// assert!(GtsTypeId::try_new("gts.x.core.events.event.v1~a.b.c.d.v1.0").is_err());
+    /// ```
+    pub fn try_new(type_id: &str) -> Result<Self, GtsIdError> {
+        let parsed = GtsId::try_new(type_id)?;
+        if !parsed.is_type() {
+            return Err(GtsIdError::new(type_id, "GTS type IDs must end with '~'"));
+        }
+        Ok(Self(GtsEntityId::new(parsed.as_ref())))
+    }
+
     /// Returns the underlying string representation of the type ID.
     #[must_use]
     pub fn into_string(self) -> String {
@@ -804,7 +421,7 @@ impl AsRef<str> for GtsTypeId {
 
 impl From<GtsTypeId> for String {
     fn from(id: GtsTypeId) -> Self {
-        id.0.into()
+        id.0.into_string()
     }
 }
 
@@ -840,581 +457,60 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_gts_id_valid() {
-        let id = GtsID::new("gts.x.core.events.event.v1~").expect("test");
-        assert_eq!(id.id, "gts.x.core.events.event.v1~");
-        assert!(id.is_type());
-        assert_eq!(id.gts_id_segments.len(), 1);
-    }
-
-    #[test]
-    fn test_gts_id_with_minor_version() {
-        let id = GtsID::new("gts.x.core.events.event.v1.2~").expect("test");
-        assert_eq!(id.id, "gts.x.core.events.event.v1.2~");
-        assert!(id.is_type());
-        let seg = &id.gts_id_segments[0];
-        assert_eq!(seg.vendor, "x");
-        assert_eq!(seg.package, "core");
-        assert_eq!(seg.namespace, "events");
-        assert_eq!(seg.type_name, "event");
-        assert_eq!(seg.ver_major, 1);
-        assert_eq!(seg.ver_minor, Some(2));
-    }
-
-    #[test]
-    fn test_gts_id_instance() {
-        let id = GtsID::new("gts.x.core.events.event.v1~a.b.c.d.v1.0").expect("test");
-        assert_eq!(id.id, "gts.x.core.events.event.v1~a.b.c.d.v1.0");
-        assert!(!id.is_type());
-    }
-
-    #[test]
-    fn test_gts_id_invalid_uppercase() {
-        let result = GtsID::new("gts.X.core.events.event.v1~");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_gts_id_invalid_no_prefix() {
-        let result = GtsID::new("x.core.events.event.v1~");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_gts_id_invalid_hyphen() {
-        let result = GtsID::new("gts.x-vendor.core.events.event.v1~");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_gts_wildcard_simple() {
-        let pattern = GtsWildcard::new("gts.x.core.events.*").expect("test");
-        let id = GtsID::new("gts.x.core.events.event.v1~").expect("test");
-        assert!(id.wildcard_match(&pattern));
-    }
-
-    #[test]
-    fn test_gts_wildcard_no_match() {
-        let pattern = GtsWildcard::new("gts.x.core.events.*").expect("test");
-        let id = GtsID::new("gts.y.core.events.event.v1~").expect("test");
-        assert!(!id.wildcard_match(&pattern));
-    }
-
-    #[test]
-    fn test_gts_wildcard_type_suffix() {
-        // Wildcard after ~ should match type IDs
-        let pattern = GtsWildcard::new("gts.x.core.events.*").expect("test");
-        let id = GtsID::new("gts.x.core.events.event.v1~").expect("test");
-        assert!(id.wildcard_match(&pattern));
-    }
-
-    #[test]
-    fn test_uuid_generation() {
-        let id = GtsID::new("gts.x.core.events.event.v1~").expect("test");
-        let uuid1 = id.to_uuid();
-        let uuid2 = id.to_uuid();
-        // UUIDs should be deterministic
-        assert_eq!(uuid1, uuid2);
-        assert!(!uuid1.to_string().is_empty());
-    }
-
-    #[test]
-    fn test_uuid_different_ids() {
-        let id1 = GtsID::new("gts.x.core.events.event.v1~").expect("test");
-        let id2 = GtsID::new("gts.x.core.events.event.v2~").expect("test");
-        assert_ne!(id1.to_uuid(), id2.to_uuid());
-    }
-
-    #[test]
-    fn test_get_type_id() {
-        // get_type_id is for chained IDs - returns None for single segment
-        let id = GtsID::new("gts.x.core.events.event.v1~").expect("test");
-        let type_id = id.get_type_id();
-        assert!(type_id.is_none());
-
-        // For chained IDs, it returns the base type
-        let chained =
-            GtsID::new("gts.x.core.events.type.v1~vendor.app._.custom.v1~").expect("test");
-        let base_type = chained.get_type_id();
-        assert!(base_type.is_some());
-        assert_eq!(base_type.expect("test"), "gts.x.core.events.type.v1~");
-    }
-
-    #[test]
-    fn test_split_at_path() {
-        let (gts, path) =
-            GtsID::split_at_path("gts.x.core.events.event.v1~@field.subfield").expect("test");
-        assert_eq!(gts, "gts.x.core.events.event.v1~");
-        assert_eq!(path, Some("field.subfield".to_owned()));
-    }
-
-    #[test]
-    fn test_split_at_path_no_path() {
-        let (gts, path) = GtsID::split_at_path("gts.x.core.events.event.v1~").expect("test");
-        assert_eq!(gts, "gts.x.core.events.event.v1~");
-        assert_eq!(path, None);
-    }
-
-    #[test]
-    fn test_split_at_path_empty_path_error() {
-        let result = GtsID::split_at_path("gts.x.core.events.event.v1~@");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_is_valid() {
-        assert!(GtsID::is_valid("gts.x.core.events.event.v1~"));
-        assert!(!GtsID::is_valid("invalid"));
-        assert!(!GtsID::is_valid("gts.X.core.events.event.v1~"));
-    }
-
-    #[test]
-    fn test_version_flexibility_in_matching() {
-        // Pattern without minor version should match any minor version
-        let pattern = GtsWildcard::new("gts.x.core.events.event.v1~").expect("test");
-        let id_no_minor = GtsID::new("gts.x.core.events.event.v1~").expect("test");
-        let id_with_minor = GtsID::new("gts.x.core.events.event.v1.0~").expect("test");
-
-        assert!(id_no_minor.wildcard_match(&pattern));
-        assert!(id_with_minor.wildcard_match(&pattern));
-    }
-
-    #[test]
-    fn test_chained_identifiers() {
-        let id =
-            GtsID::new("gts.x.core.events.type.v1~vendor.app._.custom_event.v1~").expect("test");
-        assert_eq!(id.gts_id_segments.len(), 2);
-        assert_eq!(id.gts_id_segments[0].vendor, "x");
-        assert_eq!(id.gts_id_segments[1].vendor, "vendor");
-    }
-
-    #[test]
-    fn test_gts_id_segment_validation() {
-        // Test invalid segment with special characters
-        let result = GtsIdSegment::new(0, 0, "invalid-segment");
-        assert!(result.is_err());
-
-        // Test valid segment
-        let result = GtsIdSegment::new(0, 0, "x.core.events.event.v1");
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_gts_id_with_underscore() {
-        // Underscores are allowed in namespace
-        let id = GtsID::new("gts.x.core._.event.v1~").expect("test");
-        assert_eq!(id.gts_id_segments[0].namespace, "_");
-    }
-
-    #[test]
-    fn test_gts_wildcard_exact_match() {
-        let pattern = GtsWildcard::new("gts.x.core.events.event.v1~").expect("test");
-        let id = GtsID::new("gts.x.core.events.event.v1~").expect("test");
-        assert!(id.wildcard_match(&pattern));
-    }
-
-    #[test]
-    fn test_gts_wildcard_version_mismatch() {
-        let pattern = GtsWildcard::new("gts.x.core.events.event.v2~").expect("test");
-        let id = GtsID::new("gts.x.core.events.event.v1~").expect("test");
-        assert!(!id.wildcard_match(&pattern));
-    }
-
-    #[test]
-    fn test_gts_wildcard_with_minor_version() {
-        let pattern = GtsWildcard::new("gts.x.core.events.event.v1.0~").expect("test");
-        let id = GtsID::new("gts.x.core.events.event.v1.0~").expect("test");
-        assert!(id.wildcard_match(&pattern));
-    }
-
-    #[test]
-    fn test_gts_wildcard_invalid_pattern() {
-        let result = GtsWildcard::new("invalid");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_gts_id_invalid_version_format() {
-        let result = GtsID::new("gts.x.core.events.event.vX~");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_gts_id_missing_segments() {
-        let result = GtsID::new("gts.x.core~");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_gts_id_empty_segment() {
-        let result = GtsID::new("gts.x..events.event.v1~");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_gts_wildcard_multiple_wildcards_error() {
-        let result = GtsWildcard::new("gts.*.*.*.*");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_split_at_path_multiple_at_signs() {
-        // Should only split at first @
-        let (gts, path) =
-            GtsID::split_at_path("gts.x.core.events.event.v1~@field@subfield").expect("test");
-        assert_eq!(gts, "gts.x.core.events.event.v1~");
-        assert_eq!(path, Some("field@subfield".to_owned()));
-    }
-
-    #[test]
-    fn test_gts_wildcard_instance_match() {
-        let pattern = GtsWildcard::new("gts.x.core.events.*").expect("test");
-        let id = GtsID::new("gts.x.core.events.event.v1~a.b.c.d.v1.0").expect("test");
-        assert!(id.wildcard_match(&pattern));
-    }
-
-    #[test]
-    fn test_gts_id_whitespace_trimming() {
-        let id = GtsID::new("  gts.x.core.events.event.v1~  ").expect("test");
-        assert_eq!(id.id, "gts.x.core.events.event.v1~");
-    }
-
-    #[test]
-    fn test_gts_wildcard_whitespace_trimming() {
-        let pattern = GtsWildcard::new("  gts.x.core.events.*  ").expect("test");
-        assert_eq!(pattern.id, "gts.x.core.events.*");
-    }
-
-    #[test]
-    fn test_gts_id_long_chain() {
-        let id = GtsID::new("gts.a.b.c.d.v1~e.f.g.h.v2~i.j.k.l.v3~").expect("test");
-        assert_eq!(id.gts_id_segments.len(), 3);
-    }
-
-    #[test]
-    fn test_gts_wildcard_only_at_end() {
-        // Wildcard in middle should fail
-        let result1 = GtsWildcard::new("gts.*.core.events.event.v1~");
-        assert!(result1.is_err());
-
-        // Wildcard at end should work
-        let pattern2 = GtsWildcard::new("gts.x.core.events.*").expect("test");
-        let id2 = GtsID::new("gts.x.core.events.event.v1~").expect("test");
-        assert!(id2.wildcard_match(&pattern2));
-    }
-
-    #[test]
-    fn test_gts_id_version_without_minor() {
-        let id = GtsID::new("gts.x.core.events.event.v1~").expect("test");
-        assert_eq!(id.gts_id_segments[0].ver_major, 1);
-        assert_eq!(id.gts_id_segments[0].ver_minor, None);
-    }
-
-    #[test]
-    fn test_gts_id_version_with_large_numbers() {
-        let id = GtsID::new("gts.x.core.events.event.v99.999~").expect("test");
-        assert_eq!(id.gts_id_segments[0].ver_major, 99);
-        assert_eq!(id.gts_id_segments[0].ver_minor, Some(999));
-    }
-
-    #[test]
-    fn test_gts_wildcard_no_wildcard_different_vendor() {
-        let pattern = GtsWildcard::new("gts.x.core.events.event.v1~").expect("test");
-        let id = GtsID::new("gts.y.core.events.event.v1~").expect("test");
-        assert!(!id.wildcard_match(&pattern));
-    }
-
-    #[test]
-    fn test_gts_id_invalid_double_tilde() {
-        let result = GtsID::new("gts.x.core.events.event.v1~~");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_split_at_path_with_hash() {
-        // Hash is not a separator, should be part of the ID
-        let (gts, path) = GtsID::split_at_path("gts.x.core.events.event.v1~#field").expect("test");
-        assert_eq!(gts, "gts.x.core.events.event.v1~#field");
-        assert_eq!(path, None);
-    }
-
-    #[test]
-    fn test_gts_id_display_trait() {
-        let id = GtsID::new("gts.x.core.events.event.v1~").expect("test");
-        assert_eq!(format!("{id}"), "gts.x.core.events.event.v1~");
-    }
-
-    #[test]
-    fn test_gts_id_from_str_trait() {
-        let id: GtsID = "gts.x.core.events.event.v1~".parse().expect("test");
-        assert_eq!(id.id, "gts.x.core.events.event.v1~");
-    }
-
-    #[test]
-    fn test_gts_id_as_ref_trait() {
-        let id = GtsID::new("gts.x.core.events.event.v1~").expect("test");
-        let s: &str = id.as_ref();
-        assert_eq!(s, "gts.x.core.events.event.v1~");
-    }
-
-    #[test]
-    fn test_gts_wildcard_display_trait() {
-        let pattern = GtsWildcard::new("gts.x.core.events.*").expect("test");
-        assert_eq!(format!("{pattern}"), "gts.x.core.events.*");
-    }
-
-    #[test]
-    fn test_gts_wildcard_from_str_trait() {
-        let pattern: GtsWildcard = "gts.x.core.events.*".parse().expect("test");
-        assert_eq!(pattern.id, "gts.x.core.events.*");
-    }
-
-    #[test]
-    fn test_gts_wildcard_as_ref_trait() {
-        let pattern = GtsWildcard::new("gts.x.core.events.*").expect("test");
-        let s: &str = pattern.as_ref();
-        assert_eq!(s, "gts.x.core.events.*");
-    }
-
-    #[test]
-    fn test_gts_id_new_with_uri_prefix() {
-        // Should reject gts:// prefix
-        assert!(GtsID::new("gts://x.core.v1~").is_err());
-    }
-
-    #[test]
-    fn test_gts_id_minimum_segments() {
-        // Too few segments
-        assert!(GtsID::new("gts~").is_err());
-        assert!(GtsID::new("gts.x~").is_err());
-        assert!(GtsID::new("gts.x.pkg~").is_err());
-        assert!(GtsID::new("gts.x.pkg.ns~").is_err());
-
-        // Minimum valid (vendor.package.namespace.type.version)
-        assert!(GtsID::new("gts.x.pkg.ns.type.v1~").is_ok());
-    }
-
-    #[test]
-    fn test_gts_id_invalid_characters() {
-        assert!(GtsID::new("gts.x.test!.v1~").is_err());
-        assert!(GtsID::new("gts.x.te$t.v1~").is_err());
-        assert!(GtsID::new("gts.x.te st.v1~").is_err());
-    }
-
-    #[test]
-    fn test_gts_id_uppercase_rejected() {
-        assert!(GtsID::new("gts.x.Test.v1~").is_err());
-        assert!(GtsID::new("gts.X.test.v1~").is_err());
-    }
-
-    #[test]
-    fn test_gts_id_hyphen_rejected() {
-        assert!(GtsID::new("gts.x.test-name.v1~").is_err());
-    }
-
-    #[test]
-    fn test_gts_id_digit_start_segment() {
-        // Digits at start of segment
-        assert!(GtsID::new("gts.x.9test.v1~").is_err());
-    }
-
-    #[test]
-    fn test_gts_id_with_numbers_midword() {
-        // Numbers in middle of segment are OK
-        assert!(GtsID::new("gts.x.test2name.ns.type.v1~").is_ok());
-        assert!(GtsID::new("gts.x.pkg.item3.type.v1~").is_ok());
-    }
-
-    #[test]
-    fn test_gts_wildcard_type_suffix_match() {
-        // Wildcard after type suffix
-        let pattern = GtsWildcard::new("gts.x.pkg.ns.type.v1~*").expect("test");
-        let id1 = GtsID::new("gts.x.pkg.ns.type.v1~a.b.c.child.v1~").expect("test");
-        let id2 = GtsID::new("gts.x.pkg.ns.type.v2~a.b.c.child.v1~").expect("test");
-        assert!(id1.wildcard_match(&pattern));
-        assert!(!id2.wildcard_match(&pattern));
-    }
-
-    #[test]
-    fn test_split_at_path_valid_json_pointer() {
-        let (gts, path) = GtsID::split_at_path("gts.x.test.v1~@/properties/field").expect("test");
-        assert_eq!(gts, "gts.x.test.v1~");
-        assert_eq!(path, Some("/properties/field".to_owned()));
-    }
-
-    #[test]
-    fn test_gts_id_segment_start_underscore() {
-        // Underscore at start is invalid
-        assert!(GtsID::new("gts.x._private.event.v1~").is_err());
-    }
-
-    #[test]
-    fn test_gts_id_multi_digit_versions() {
-        // Multi-digit version numbers
-        assert!(GtsID::new("gts.x.pkg.ns.event.v10~").is_ok());
-        assert!(GtsID::new("gts.x.pkg.ns.event.v1.20~").is_ok());
-    }
-
-    #[test]
-    fn test_gts_segment_too_many_tildes() {
-        // Multiple tildes together (invalid segment)
-        let seg = GtsIdSegment::new(1, 0, "x.pkg.ns.type.v1~~");
-        assert!(seg.is_err());
-        if let Err(e) = seg {
-            assert!(e.to_string().contains("Too many '~' characters"));
-        }
-    }
-
-    #[test]
-    fn test_gts_segment_tilde_not_at_end() {
-        // Tilde in middle of segment (not at end)
-        let seg = GtsIdSegment::new(1, 0, "x.pkg~mid.ns.type.v1");
-        assert!(seg.is_err());
-        if let Err(e) = seg {
-            assert!(e.to_string().contains("'~' must be at the end"));
-        }
-    }
-
-    #[test]
-    fn test_gts_segment_too_many_tokens() {
-        // More than 6 tokens in a segment
-        let seg = GtsIdSegment::new(1, 0, "x.pkg.ns.type.v1.2.extra~");
-        assert!(seg.is_err());
-        if let Err(e) = seg {
-            assert!(e.to_string().contains("Too many tokens"));
-        }
-    }
-
-    #[test]
-    fn test_gts_segment_version_without_v_prefix() {
-        // Version without 'v' prefix
-        let seg = GtsIdSegment::new(1, 0, "x.pkg.ns.type.1~");
-        assert!(seg.is_err());
-        if let Err(e) = seg {
-            assert!(e.to_string().contains("Major version must start with 'v'"));
-        }
-    }
-
-    #[test]
-    fn test_gts_segment_version_leading_zeros() {
-        // Version with leading zeros (should fail because "01" != "1")
-        let seg = GtsIdSegment::new(1, 0, "x.pkg.ns.type.v01~");
-        assert!(seg.is_err());
-        if let Err(e) = seg {
-            assert!(e.to_string().contains("Major version must be an integer"));
-        }
-    }
-
-    #[test]
-    fn test_gts_wildcard_at_various_positions() {
-        // Wildcard at vendor position
-        let result = GtsWildcard::new("gts.*");
-        assert!(result.is_ok());
-
-        // Wildcard at package position
-        let result = GtsWildcard::new("gts.x.*");
-        assert!(result.is_ok());
-
-        // Wildcard at namespace position
-        let result = GtsWildcard::new("gts.x.pkg.*");
-        assert!(result.is_ok());
-
-        // Wildcard at type position
-        let result = GtsWildcard::new("gts.x.pkg.ns.*");
-        assert!(result.is_ok());
-
-        // Wildcard at version position
-        let result = GtsWildcard::new("gts.x.pkg.ns.type.*");
-        assert!(result.is_ok());
-    }
-
-    // ---- overlaps ----
-
-    #[test]
-    fn test_overlaps_broad_and_narrow() {
-        let broad = GtsWildcard::new("gts.x.core.srr.resource.v1~*").expect("test");
-        let narrow = GtsWildcard::new("gts.x.core.srr.resource.v1~acme.*").expect("test");
-        assert!(broad.overlaps(&narrow));
-        assert!(narrow.overlaps(&broad)); // symmetric
-    }
-
-    #[test]
-    fn test_overlaps_disjoint_types() {
-        let a = GtsWildcard::new("gts.x.core.srr.resource.v1~*").expect("test");
-        let b = GtsWildcard::new("gts.x.core.other.resource.v1~*").expect("test");
-        assert!(!a.overlaps(&b));
-        assert!(!b.overlaps(&a));
-    }
-
-    #[test]
-    fn test_overlaps_same_pattern() {
-        let a = GtsWildcard::new("gts.x.core.srr.resource.v1~*").expect("test");
-        let b = GtsWildcard::new("gts.x.core.srr.resource.v1~*").expect("test");
-        assert!(a.overlaps(&b));
-    }
-
-    #[test]
-    fn test_overlaps_exact_vs_wildcard() {
-        let exact =
-            GtsWildcard::new("gts.x.core.srr.resource.v1~acme.crm._.contact.v1~").expect("test");
-        let broad = GtsWildcard::new("gts.x.core.srr.resource.v1~*").expect("test");
-        assert!(exact.overlaps(&broad));
-        assert!(broad.overlaps(&exact));
-    }
-
-    #[test]
-    fn test_overlaps_tilde_star_chain() {
-        // "~*" pattern: any chained type under the base
-        let base = GtsWildcard::new("gts.x.core.srr.resource.v1~*").expect("test");
-        let sub = GtsWildcard::new("gts.x.core.srr.resource.v1~acme.crm.*").expect("test");
-        assert!(base.overlaps(&sub));
-    }
-
-    // ---- is_subset_of ----
-
-    #[test]
-    fn test_subset_narrow_is_subset_of_broad() {
-        let broad = GtsWildcard::new("gts.x.core.srr.resource.v1~*").expect("test");
-        let narrow = GtsWildcard::new("gts.x.core.srr.resource.v1~acme.*").expect("test");
-        assert!(narrow.is_subset_of(&broad));
-        assert!(!broad.is_subset_of(&narrow));
-    }
-
-    #[test]
-    fn test_subset_identical_patterns() {
-        let a = GtsWildcard::new("gts.x.core.srr.resource.v1~*").expect("test");
-        let b = GtsWildcard::new("gts.x.core.srr.resource.v1~*").expect("test");
-        assert!(a.is_subset_of(&b)); // identical ⊆ identical
-        assert!(b.is_subset_of(&a));
-    }
-
-    #[test]
-    fn test_subset_disjoint_not_subset() {
-        let a = GtsWildcard::new("gts.x.core.srr.resource.v1~*").expect("test");
-        let b = GtsWildcard::new("gts.x.core.other.resource.v1~*").expect("test");
-        assert!(!a.is_subset_of(&b));
-        assert!(!b.is_subset_of(&a));
-    }
-
-    #[test]
-    fn test_subset_exact_is_subset_of_wildcard() {
-        let exact =
-            GtsWildcard::new("gts.x.core.srr.resource.v1~acme.crm._.contact.v1~").expect("test");
-        let broad = GtsWildcard::new("gts.x.core.srr.resource.v1~*").expect("test");
-        assert!(exact.is_subset_of(&broad));
-        assert!(!broad.is_subset_of(&exact));
-    }
-
-    #[test]
-    fn test_subset_three_levels() {
-        let l1 = GtsWildcard::new("gts.x.core.srr.resource.v1~*").expect("test");
-        let l2 = GtsWildcard::new("gts.x.core.srr.resource.v1~acme.*").expect("test");
-        let l3 = GtsWildcard::new("gts.x.core.srr.resource.v1~acme.crm.*").expect("test");
-        assert!(l3.is_subset_of(&l2));
-        assert!(l3.is_subset_of(&l1));
-        assert!(l2.is_subset_of(&l1));
-        assert!(!l1.is_subset_of(&l2));
-        assert!(!l1.is_subset_of(&l3));
-        assert!(!l2.is_subset_of(&l3));
+    fn test_type_id_try_new_accepts_type_rejects_instance() {
+        // A trailing-'~' type id is accepted.
+        let id = GtsTypeId::try_new("gts.x.core.events.event.v1~").expect("test");
+        assert_eq!(id.as_ref(), "gts.x.core.events.event.v1~");
+
+        // A valid instance id (no trailing '~') is classified out.
+        let err = GtsTypeId::try_new("gts.x.core.events.event.v1~a.b.c.d.v1.0")
+            .expect_err("must reject instance id");
+        assert!(err.to_string().contains("must end with '~'"));
+
+        // A wholly invalid CTI is rejected by GtsId::try_new before classification.
+        assert!(GtsTypeId::try_new("not a valid cti~").is_err());
+    }
+
+    #[test]
+    fn test_instance_id_try_new_accepts_instance_rejects_type() {
+        // A chained, non-type id is accepted.
+        let id = GtsInstanceId::try_new("gts.x.core.events.event.v1~a.b.c.d.v1.0").expect("test");
+        assert_eq!(id.as_ref(), "gts.x.core.events.event.v1~a.b.c.d.v1.0");
+
+        // A valid type id (trailing '~') is classified out.
+        let err =
+            GtsInstanceId::try_new("gts.x.core.events.event.v1~").expect_err("must reject type id");
+        assert!(err.to_string().contains("must not end with '~'"));
+
+        // A wholly invalid CTI is rejected by GtsId::try_new before classification.
+        assert!(GtsInstanceId::try_new("not a valid cti").is_err());
+    }
+
+    #[test]
+    fn test_deserialize_routes_through_validated_constructors() {
+        // Deserialization must reuse the validating `try_new` constructors, not
+        // the infallible internal newtype. Valid ids round-trip.
+        let instance: GtsInstanceId =
+            serde_json::from_str("\"gts.x.core.events.event.v1~a.b.c.d.v1.0\"").expect("valid");
+        assert_eq!(instance.as_ref(), "gts.x.core.events.event.v1~a.b.c.d.v1.0");
+
+        let type_id: GtsTypeId =
+            serde_json::from_str("\"gts.x.core.events.event.v1~\"").expect("valid");
+        assert_eq!(type_id.as_ref(), "gts.x.core.events.event.v1~");
+
+        // Structurally invalid strings are rejected during deserialization.
+        assert!(serde_json::from_str::<GtsInstanceId>("\"not a valid cti\"").is_err());
+        assert!(serde_json::from_str::<GtsTypeId>("\"not a valid cti~\"").is_err());
+
+        // A type id no longer deserializes as an instance id, and vice versa.
+        assert!(
+            serde_json::from_str::<GtsInstanceId>("\"gts.x.core.events.event.v1~\"").is_err(),
+            "a trailing-'~' type id must not deserialize as an instance id"
+        );
+        assert!(
+            serde_json::from_str::<GtsTypeId>("\"gts.x.core.events.event.v1~a.b.c.d.v1.0\"")
+                .is_err(),
+            "a non-'~' instance id must not deserialize as a type id"
+        );
     }
 }

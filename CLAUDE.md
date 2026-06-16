@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AI Agent Guidance
 
-Guidance for Claude Code when working in this repository.
+Guidance for AI Agents when working in this repository.
 
 ## Project Overview
 
