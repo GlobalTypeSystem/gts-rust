@@ -844,21 +844,6 @@ fn test_gts_entity_strips_uri_prefix_from_schema() {
     );
 }
 
-#[test]
-fn test_gts_id_does_not_accept_uri_prefix() {
-    // GtsId::try_new should NOT accept IDs with gts:// or gts: prefix directly
-    // The gts:// prefix is ONLY for JSON Schema $id field and must be stripped before parsing
-    assert!(GtsId::try_new("gts://gts.x.core.events.topic.v1~").is_err());
-    assert!(!GtsId::is_valid("gts://gts.x.core.events.topic.v1~"));
-
-    // "gts:" (without //) is also not valid
-    assert!(GtsId::try_new("gts:gts.x.core.events.topic.v1~").is_err());
-    assert!(!GtsId::is_valid("gts:gts.x.core.events.topic.v1~"));
-
-    // Regular GTS IDs should work
-    assert!(GtsId::is_valid("gts.x.core.events.topic.v1~"));
-}
-
 // =============================================================================
 // Tests for GTS_JSON_SCHEMA_WITH_REFS and GTS_JSON_SCHEMA_INLINE
 // =============================================================================

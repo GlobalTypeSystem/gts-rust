@@ -92,7 +92,7 @@
 use serde_json::Value;
 use std::fmt;
 
-use crate::gts::GtsId;
+use crate::gts::{GtsId, GtsIdPattern};
 
 /// Error type for x-gts-ref validation failures
 #[derive(Debug, Clone)]
@@ -387,7 +387,7 @@ impl XGtsRefValidator {
         };
 
         // Validate against GTS pattern
-        self.validate_gts_pattern(value, &resolved_pattern, field_path)
+        self.validate_value_matches_gts_pattern(value, &resolved_pattern, field_path)
     }
 
     /// Validate an x-gts-ref pattern in a schema definition
@@ -397,9 +397,19 @@ impl XGtsRefValidator {
         field_path: &str,
         root_schema: &Value,
     ) -> Option<XGtsRefValidationError> {
-        // Case 1: Absolute GTS pattern
+        // Case 1: Absolute GTS pattern. A valid `x-gts-ref` literal is either a
+        // concrete GTS identifier or a trailing-`*` wildcard pattern; both forms
+        // are validated by the canonical pattern parser, which rejects malformed
+        // patterns such as `gts.x.*.events.*` (mid-string / multiple wildcards).
         if ref_pattern.starts_with("gts.") {
-            return self.validate_gts_id_or_pattern(ref_pattern, field_path);
+            return GtsIdPattern::try_new(ref_pattern).err().map(|e| {
+                XGtsRefValidationError::new(
+                    field_path.to_owned(),
+                    ref_pattern.to_owned(),
+                    ref_pattern.to_owned(),
+                    format!("Invalid GTS identifier: {ref_pattern}: {}", e.cause),
+                )
+            });
         }
 
         // Case 2: Relative reference
@@ -435,74 +445,32 @@ impl XGtsRefValidator {
         }
     }
 
-    /// Validate a GTS ID or pattern in schema definition
-    fn validate_gts_id_or_pattern(
-        &self,
-        pattern: &str,
-        field_path: &str,
-    ) -> Option<XGtsRefValidationError> {
-        // Valid wildcard
-        if pattern == "gts.*" {
-            return None;
-        }
-
-        // Wildcard pattern - validate prefix
-        if pattern.contains('*') {
-            let prefix = pattern.trim_end_matches('*');
-            if !prefix.starts_with("gts.") {
-                return Some(XGtsRefValidationError::new(
-                    field_path.to_owned(),
-                    pattern.to_owned(),
-                    pattern.to_owned(),
-                    format!("Invalid GTS wildcard pattern: {pattern}"),
-                ));
-            }
-            return None;
-        }
-
-        // Specific GTS ID
-        if !GtsId::is_valid(pattern) {
-            return Some(XGtsRefValidationError::new(
-                field_path.to_owned(),
-                pattern.to_owned(),
-                pattern.to_owned(),
-                format!("Invalid GTS identifier: {pattern}"),
-            ));
-        }
-
-        None
-    }
-
     /// Validate value matches a GTS pattern
-    fn validate_gts_pattern(
+    fn validate_value_matches_gts_pattern(
         &self,
         value: &str,
         pattern: &str,
         field_path: &str,
     ) -> Option<XGtsRefValidationError> {
-        // Validate it's a valid GTS ID
-        if !GtsId::is_valid(value) {
+        let Ok(id) = GtsId::try_new(value) else {
             return Some(XGtsRefValidationError::new(
                 field_path.to_owned(),
                 value.to_owned(),
                 pattern.to_owned(),
                 format!("Value '{value}' is not a valid GTS identifier"),
             ));
-        }
+        };
 
-        // Check pattern match
-        if pattern == "gts.*" {
-            // Any valid GTS ID matches
-        } else if let Some(prefix) = pattern.strip_suffix('*') {
-            if !value.starts_with(prefix) {
-                return Some(XGtsRefValidationError::new(
-                    field_path.to_owned(),
-                    value.to_owned(),
-                    pattern.to_owned(),
-                    format!("Value '{value}' does not match pattern '{pattern}'"),
-                ));
-            }
-        } else if !value.starts_with(pattern) {
+        let Ok(pat) = GtsIdPattern::try_new(pattern) else {
+            return Some(XGtsRefValidationError::new(
+                field_path.to_owned(),
+                value.to_owned(),
+                pattern.to_owned(),
+                format!("Invalid GTS pattern '{pattern}'"),
+            ));
+        };
+
+        if !id.matches_pattern(&pat) {
             return Some(XGtsRefValidationError::new(
                 field_path.to_owned(),
                 value.to_owned(),
@@ -510,9 +478,6 @@ impl XGtsRefValidator {
                 format!("Value '{value}' does not match pattern '{pattern}'"),
             ));
         }
-
-        // Note: We don't check if the entity exists in the store here
-        // to avoid borrowing issues. The store check can be done separately if needed.
 
         None
     }
@@ -579,11 +544,11 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_validate_gts_pattern_matching() {
+    fn test_validate_value_matches_gts_pattern_matching() {
         let validator = XGtsRefValidator::new();
 
         // Test exact match
-        let result = validator.validate_gts_pattern(
+        let result = validator.validate_value_matches_gts_pattern(
             "gts.x.core.events.topic.v1~",
             "gts.x.core.events.topic.v1~",
             "test_field",
@@ -591,12 +556,15 @@ mod tests {
         assert!(result.is_none(), "Exact match should succeed");
 
         // Test wildcard match
-        let result =
-            validator.validate_gts_pattern("gts.x.core.events.topic.v1~", "gts.*", "test_field");
+        let result = validator.validate_value_matches_gts_pattern(
+            "gts.x.core.events.topic.v1~",
+            "gts.*",
+            "test_field",
+        );
         assert!(result.is_none(), "Wildcard match should succeed");
 
         // Test prefix match
-        let result = validator.validate_gts_pattern(
+        let result = validator.validate_value_matches_gts_pattern(
             "gts.x.core.events.topic.v1~",
             "gts.x.core.*",
             "test_field",
@@ -604,7 +572,7 @@ mod tests {
         assert!(result.is_none(), "Prefix match should succeed");
 
         // Test mismatch
-        let result = validator.validate_gts_pattern(
+        let result = validator.validate_value_matches_gts_pattern(
             "gts.x.core.events.topic.v1~",
             "gts.y.core.*",
             "test_field",
@@ -766,11 +734,15 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_gts_pattern_failures() {
+    fn test_validate_value_matches_gts_pattern_failures() {
         let validator = XGtsRefValidator::new();
 
         // Test invalid GTS ID
-        let result = validator.validate_gts_pattern("not-a-valid-gts-id", "gts.*", "test_field");
+        let result = validator.validate_value_matches_gts_pattern(
+            "not-a-valid-gts-id",
+            "gts.*",
+            "test_field",
+        );
         assert!(result.is_some());
         assert!(
             result
@@ -780,55 +752,63 @@ mod tests {
         );
 
         // Test prefix no match
-        let result = validator.validate_gts_pattern("gts.a.b.c.d.v1~", "gts.x.y.*", "test_field");
+        let result = validator.validate_value_matches_gts_pattern(
+            "gts.a.b.c.d.v1~",
+            "gts.x.y.*",
+            "test_field",
+        );
         assert!(result.is_some());
         assert!(result.unwrap().reason.contains("does not match pattern"));
 
         // Test exact no match
-        let result =
-            validator.validate_gts_pattern("gts.a.b.c.d.v1~", "gts.x.y.z.w.v1~", "test_field");
+        let result = validator.validate_value_matches_gts_pattern(
+            "gts.a.b.c.d.v1~",
+            "gts.x.y.z.w.v1~",
+            "test_field",
+        );
         assert!(result.is_some());
     }
 
     #[test]
-    fn test_validate_gts_id_or_pattern() {
+    fn test_validate_ref_pattern_gts_literals() {
         let validator = XGtsRefValidator::new();
+        let no_root = json!({});
 
-        // Valid exact GTS ID
+        // Valid concrete id, bare wildcard, and prefix wildcard all pass.
+        for ok in ["gts.x.core.events.topic.v1~", "gts.*", "gts.x.core.*"] {
+            assert!(
+                validator
+                    .validate_ref_pattern(ok, "test_field", &no_root)
+                    .is_none(),
+                "expected '{ok}' to validate"
+            );
+        }
+
+        // Malformed wildcard patterns (mid-string / multiple wildcards) must be
+        // rejected — a naive `starts_with("gts.")` prefix check accepted these.
+        // The reason now carries the canonical parser's error text.
+        for bad in ["gts.x.*.events.*", "gts.*.*.*.*"] {
+            let result = validator.validate_ref_pattern(bad, "test_field", &no_root);
+            assert!(result.is_some(), "expected '{bad}' to be rejected");
+            assert!(!result.unwrap().reason.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_validate_value_matches_gts_pattern_minor_version_flexibility() {
+        let validator = XGtsRefValidator::new();
+        // A pattern pinned to a major version (no minor) must match a value that
+        // carries a specific minor — segment-aware matching honours this; a raw
+        // string prefix would reject it (`…v1.0~` does not start with `…v1~`).
         assert!(
             validator
-                .validate_gts_id_or_pattern("gts.x.core.events.topic.v1~", "test_field",)
+                .validate_value_matches_gts_pattern(
+                    "gts.x.core.events.event.v1.0~",
+                    "gts.x.core.events.event.v1~",
+                    "test_field",
+                )
                 .is_none()
         );
-
-        // Valid wildcard
-        assert!(
-            validator
-                .validate_gts_id_or_pattern("gts.*", "test_field")
-                .is_none()
-        );
-
-        // Valid prefix wildcard
-        assert!(
-            validator
-                .validate_gts_id_or_pattern("gts.x.core.*", "test_field")
-                .is_none()
-        );
-
-        // Invalid wildcard
-        let result = validator.validate_gts_id_or_pattern("invalid.*", "test_field");
-        assert!(result.is_some());
-        assert!(
-            result
-                .unwrap()
-                .reason
-                .contains("Invalid GTS wildcard pattern")
-        );
-
-        // Invalid ID
-        let result = validator.validate_gts_id_or_pattern("not-a-valid-id", "test_field");
-        assert!(result.is_some());
-        assert!(result.unwrap().reason.contains("Invalid GTS identifier"));
     }
 
     #[test]

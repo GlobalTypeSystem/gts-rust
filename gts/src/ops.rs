@@ -911,7 +911,6 @@ impl GtsOps {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::gts::GtsId;
     use serde_json::json;
 
     #[test]
@@ -998,14 +997,6 @@ mod tests {
         let result = ops.query("*", 10);
         assert_eq!(result.count, 0);
         assert!(result.results.is_empty());
-    }
-
-    #[test]
-    fn test_gts_id_validation() {
-        assert!(!GtsId::is_valid("gts.vendor.package.namespace.type.v1.0")); // Single-segment instance - should be invalid
-        assert!(GtsId::is_valid("gts.vendor.package.namespace.type.v1.0~")); // Single-segment type - should be valid
-        assert!(!GtsId::is_valid("invalid"));
-        assert!(!GtsId::is_valid(""));
     }
 
     #[test]

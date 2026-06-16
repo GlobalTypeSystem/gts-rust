@@ -215,10 +215,10 @@ impl GtsEntity {
         false
     }
 
-    /// Extract IDs for a schema entity.
-    /// - `gts_id`: from `$id` field (must be `gts://` URI with GTS ID)
-    /// - `type_id`: the parent schema (from `$schema` field or extracted from chain)
-    /// - `instance_id`: same as `gts_id` for schemas
+    /// Extract IDs for a schema entity (Type Schema).
+    /// - `gts_id`: from `$id` field (must be `gts://` URI with GTS Type Identifier)
+    /// - `type_id`: either the type itself (if standalone) or parent type (if chained)
+    /// - `instance_id`: same as the extracted GTS ID
     fn extract_type_ids(&mut self, cfg: &GtsConfig) {
         // Extract GTS ID from $id field
         if let Some(obj) = self.content.as_object() {
@@ -236,47 +236,22 @@ impl GtsEntity {
                 }
 
                 let normalized = trimmed.strip_prefix(GTS_URI_PREFIX).unwrap_or(trimmed);
-                if GtsId::is_valid(normalized) {
-                    self.gts_id = GtsId::try_new(normalized).ok();
+                if let Ok(gts_id) = GtsId::try_new(normalized) {
+                    self.gts_id = Some(gts_id);
                     self.instance_id = Some(normalized.to_owned());
                     self.selected_entity_field = Some("$id".to_owned());
                 }
             }
 
-            // For schemas, type_id is the $schema field value
-            // OR for GTS schemas with chains, it's the parent type
-            if let Some(schema_val) = obj.get("$schema")
-                && let Some(schema_str) = schema_val.as_str()
-            {
-                // Per spec: type_id MUST be a GTS Type Identifier or null and no
-                // longer falls back to a JSON Schema dialect URL. Only retain
-                // $schema values that parse as a GTS Type Identifier (chain
-                // ending in '~'); leave selected_type_id_field set either
-                // way so callers can see we looked at $schema.
-                if schema_str.ends_with('~') && GtsId::is_valid(schema_str) {
-                    self.type_id = Some(schema_str.to_owned());
-                }
-                self.selected_type_id_field = Some("$schema".to_owned());
-            }
-
-            // For chained GTS IDs, the parent schema is the type id formed by
-            // every segment except the last. `GtsId::get_type_id()` reconstructs
-            // it correctly by joining the raw segments — which already carry their
-            // trailing `~` — so it avoids the double-`~` a hand-rolled
-            // `join("~")` would produce for chains with two or more parents.
+            // For derived (chained) Type Schemas, extract the parent type
+            // (all segments except the last). For standalone Type Schemas
+            // (one segment), type_id remains None.
             if let Some(ref gts_id) = self.gts_id
+                && gts_id.segments().len() > 1
                 && let Some(parent_id) = gts_id.get_type_id()
             {
-                // Use parent from chain as type_id when current value isn't
-                // already a GTS Type Identifier (e.g. $schema held a JSON
-                // Schema dialect URL, or no $schema was present).
-                let already_gts_type_id = self
-                    .type_id
-                    .as_ref()
-                    .is_some_and(|s| s.ends_with('~') && GtsId::is_valid(s));
-                if !already_gts_type_id {
-                    self.type_id = Some(parent_id);
-                }
+                self.type_id = Some(parent_id);
+                self.selected_type_id_field = Some("$id".to_owned());
             }
         }
 
@@ -966,8 +941,9 @@ mod tests {
 
     #[test]
     fn test_json_entity_when_id_is_schema() {
+        // Type Schema must have $id field (with gts:// URI), not plain id field
         let content = json!({
-            "id": "gts.vendor.package.namespace.type.v1.0~",
+            "$id": "gts://gts.vendor.package.namespace.type.v1.0~",
             "$schema": "http://json-schema.org/draft-07/schema#"
         });
 
@@ -984,8 +960,11 @@ mod tests {
             None,
         );
 
-        // When entity ID itself is a schema, selected_type_id_field should be set to $schema
-        assert_eq!(entity.selected_type_id_field, Some("$schema".to_owned()));
+        // Presence of $schema field makes it a Type Schema
+        assert!(entity.is_schema);
+        assert!(entity.gts_id.is_some());
+        // Standalone Type Schema: type_id should be None (no parent type)
+        assert_eq!(entity.type_id, None);
     }
 
     // =============================================================================
