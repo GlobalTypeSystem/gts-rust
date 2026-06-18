@@ -3855,4 +3855,47 @@ mod tests {
             "Open trait schema (no additionalProperties:false) is not a valid standalone entity"
         );
     }
+
+    #[test]
+    fn test_op13_entity_traits_closedness_via_referenced_schema() {
+        // The closed trait surface comes through an allOf + $ref to another GTS
+        // type whose body carries `additionalProperties: false`. The allOf-merge
+        // must propagate `additionalProperties` so the standalone-entity check
+        // does not wrongly reject this valid closed referenced schema.
+        let mut ops = GtsOps::new(None, None, 0);
+        ops.store
+            .register_schema(
+                "gts.x.test13.refclosed.traitdef.v1~",
+                &json!({
+                    "$id": "gts://gts.x.test13.refclosed.traitdef.v1~",
+                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "type": "object",
+                    "properties": {"topicRef": {"type": "string"}},
+                    "additionalProperties": false
+                }),
+            )
+            .expect("register trait def");
+        ops.store
+            .register_schema(
+                "gts.x.test13.refclosed.base.v1~",
+                &json!({
+                    "$id": "gts://gts.x.test13.refclosed.base.v1~",
+                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "type": "object",
+                    "x-gts-traits-schema": {
+                        "type": "object",
+                        "allOf": [{"$ref": "gts://gts.x.test13.refclosed.traitdef.v1~"}]
+                    },
+                    "x-gts-traits": {"topicRef": "events"},
+                    "properties": {"id": {"type": "string"}}
+                }),
+            )
+            .expect("register base");
+
+        assert!(
+            ops.check_entity_traits("gts.x.test13.refclosed.base.v1~")
+                .is_ok(),
+            "closed trait schema reached via allOf + $ref must be accepted"
+        );
+    }
 }

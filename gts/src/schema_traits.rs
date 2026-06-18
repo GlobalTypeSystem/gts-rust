@@ -876,6 +876,34 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn test_trait_schema_integrity_rejects_non_object_non_boolean() {
+        // A resolved trait schema that is neither an object subschema nor a
+        // boolean (here, an array) must hit the dedicated error arm.
+        let schemas = vec![json!([1, 2])];
+        let err = validate_trait_schema_integrity(&schemas).unwrap_err();
+        assert!(
+            err.iter()
+                .any(|m| m.contains("must be an object subschema or a boolean")),
+            "expected the non-object/non-boolean arm, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_inline_local_pointers_ref_with_siblings_overlay() {
+        // `$ref` with sibling keywords: the pointer target is inlined and the
+        // sibling (`description`) is overlaid onto the result.
+        let root = json!({
+            "$defs": {"X": {"type": "string", "minLength": 1}}
+        });
+        let fragment = json!({"$ref": "#/$defs/X", "description": "extra"});
+        let inlined = inline_local_pointers(&fragment, &root);
+        assert_eq!(inlined["type"], json!("string"));
+        assert_eq!(inlined["minLength"], json!(1));
+        assert_eq!(inlined["description"], json!("extra"));
+        assert!(inlined.get("$ref").is_none());
+    }
+
+    #[test]
     fn test_no_traits_schema_passes() {
         let chain = vec![(
             "gts.x.test.base.v1~".to_owned(),

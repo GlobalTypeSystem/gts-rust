@@ -33,9 +33,7 @@ pub use schema::{
 };
 pub use schema_cast::{GtsEntityCastResult, SchemaCastError};
 pub use schema_narrow::{NarrowError, try_narrow};
+pub use schema_refs::{ExtractRefsError, extract_gts_refs};
 pub use schema_traits::{GtsTraitsSchema, inline_traits_schema_of};
-pub use store::{
-    GtsReader, GtsStore, GtsStoreQueryResult, ResolveSchemaRefsError, ResolvedTypeSchema,
-    StoreError,
-};
+pub use store::{GtsReader, GtsStore, GtsStoreQueryResult, ResolvedTypeSchema, StoreError};
 pub use x_gts_ref::{XGtsRefValidationError, XGtsRefValidator};

@@ -941,6 +941,32 @@ mod tests {
     }
 
     #[test]
+    fn test_chained_type_schema_derives_parent_type_id() {
+        // A derived (chained) Type Schema: type_id is the parent (all segments
+        // except the last) and is sourced from the `$id` field.
+        let content = json!({
+            "$id": "gts://gts.x.core.ns.base.v1~x.core._.derived.v1~",
+            "$schema": "http://json-schema.org/draft-07/schema#"
+        });
+
+        let cfg = GtsConfig::default();
+        let entity = GtsEntity::new(
+            None,
+            None,
+            &content,
+            Some(&cfg),
+            None,
+            false,
+            String::new(),
+            None,
+            None,
+        );
+
+        assert_eq!(entity.type_id, Some("gts.x.core.ns.base.v1~".to_owned()));
+        assert_eq!(entity.selected_type_id_field, Some("$id".to_owned()));
+    }
+
+    #[test]
     fn test_json_entity_when_id_is_schema() {
         // Type Schema must have $id field (with gts:// URI), not plain id field
         let content = json!({

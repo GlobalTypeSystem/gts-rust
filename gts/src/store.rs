@@ -1,13 +1,13 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::fmt;
 use std::sync::{Arc, RwLock};
 use thiserror::Error;
 
 use crate::entities::GtsEntity;
-use crate::gts::{GTS_URI_PREFIX, GtsId, GtsIdPattern};
+use crate::gts::{GTS_URI_PREFIX, GtsId, GtsIdError, GtsIdPattern};
 use crate::schema_cast::GtsEntityCastResult;
+use crate::schema_compat::merge_additional_properties_constraint;
 
 /// Custom retriever for resolving gts:// URI scheme references in JSON Schema validation
 struct GtsRetriever {
@@ -69,44 +69,23 @@ impl jsonschema::Retrieve for GtsRetriever {
 
 #[derive(Debug, Error)]
 pub enum StoreError {
-    #[error("JSON object with GTS ID '{0}' not found in store")]
-    ObjectNotFound(String),
-    #[error("JSON schema with GTS ID '{0}' not found in store")]
+    #[error("GTS instance with ID '{0}' not found in store")]
+    InstanceNotFound(String),
+    #[error("GTS type schema with ID '{0}' not found in store")]
     SchemaNotFound(String),
-    #[error("JSON entity with GTS ID '{0}' not found in store")]
-    EntityNotFound(String),
-    #[error("Can't determine JSON schema ID for instance with GTS ID '{0}'")]
-    SchemaForInstanceNotFound(String),
-    #[error(
-        "Cannot cast from schema ID '{0}'. The from_id must be an instance (not ending with '~')"
-    )]
-    CastFromSchemaNotAllowed(String),
-    #[error("Entity must have a valid gts_id")]
-    InvalidEntity,
-    #[error("Schema type_id must end with '~'")]
-    InvalidSchemaId,
+    #[error("Entity is invalid: {0}")]
+    InvalidEntity(String),
+    #[error("Invalid GTS type id: {0}")]
+    InvalidTypeId(GtsIdError),
     #[error("{0}")]
     ValidationError(String),
     #[error("Invalid $ref: {0}")]
     InvalidRef(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ResolveSchemaRefsError {
+    #[error("Circular $ref detected")]
     CircularRef,
+    #[error("Unresolved $ref(s): {}", .0.join(", "))]
     UnresolvedRefs(Vec<String>),
 }
-
-impl fmt::Display for ResolveSchemaRefsError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::CircularRef => write!(f, "circular $ref detected"),
-            Self::UnresolvedRefs(refs) => write!(f, "unresolved $ref(s): {}", refs.join(", ")),
-        }
-    }
-}
-
-impl std::error::Error for ResolveSchemaRefsError {}
 
 pub trait GtsReader: Send {
     fn iter(&mut self) -> Box<dyn Iterator<Item = GtsEntity> + '_>;
@@ -196,7 +175,9 @@ impl GtsStore {
     /// # Errors
     /// Returns `StoreError::InvalidEntity` if the entity has no effective ID.
     pub fn register(&mut self, entity: GtsEntity) -> Result<(), StoreError> {
-        let id = entity.effective_id().ok_or(StoreError::InvalidEntity)?;
+        let id = entity
+            .effective_id()
+            .ok_or_else(|| StoreError::InvalidEntity("Entity has no effective ID".to_owned()))?;
         self.by_id.insert(id, entity);
         Ok(())
     }
@@ -204,13 +185,15 @@ impl GtsStore {
     /// Registers a schema in the store.
     ///
     /// # Errors
-    /// Returns `StoreError::InvalidSchemaId` if the `type_id` doesn't end with '~'.
+    /// Returns `StoreError::InvalidTypeId` if `type_id` is not a valid GTS type id.
     pub fn register_schema(&mut self, type_id: &str, schema: &Value) -> Result<(), StoreError> {
-        if !type_id.ends_with('~') {
-            return Err(StoreError::InvalidSchemaId);
+        let gts_id = GtsId::try_new(type_id).map_err(StoreError::InvalidTypeId)?;
+        if !gts_id.is_type() {
+            return Err(StoreError::InvalidTypeId(GtsIdError::new(
+                type_id,
+                "GTS type IDs must end with '~'",
+            )));
         }
-
-        let gts_id = GtsId::try_new(type_id).map_err(|_| StoreError::InvalidSchemaId)?;
         let entity = GtsEntity::new(
             None,
             None,
@@ -243,15 +226,58 @@ impl GtsStore {
         None
     }
 
+    /// Fetches a schema entity by its type id.
+    ///
+    /// Validates that `type_id` is a well-formed GTS *type* id and that the
+    /// stored entity is actually a schema, so callers don't have to repeat the
+    /// id parse + `is_schema` checks.
+    ///
+    /// # Errors
+    /// Returns `StoreError::SchemaNotFound` if `type_id` is not a valid type id,
+    /// if no entity exists for it, or if the entity found is not a schema (e.g.
+    /// an instance happens to be registered under that id).
+    fn get_schema_entity(&mut self, type_id: &str) -> Result<&GtsEntity, StoreError> {
+        if let Err(e) = crate::GtsTypeId::try_new(type_id) {
+            return Err(StoreError::SchemaNotFound(format!("Invalid type id: {e}")));
+        }
+        match self.get(type_id) {
+            Some(entity) if entity.is_schema => Ok(entity),
+            Some(_) => Err(StoreError::SchemaNotFound(format!(
+                "Entity '{type_id}' is not a schema"
+            ))),
+            None => Err(StoreError::SchemaNotFound(type_id.to_owned())),
+        }
+    }
+
     /// Gets the content of a schema by its type ID.
     ///
     /// # Errors
-    /// Returns `StoreError::SchemaNotFound` if the schema is not found.
+    /// See [`Self::get_schema_entity`].
     pub fn get_schema_content(&mut self, type_id: &str) -> Result<Value, StoreError> {
-        if let Some(entity) = self.get(type_id) {
-            return Ok(entity.content.clone());
+        Ok(self.get_schema_entity(type_id)?.content.clone())
+    }
+
+    /// Fetches an instance entity by its id.
+    ///
+    /// Well-known instances parse as GTS ids and are keyed by their normalized
+    /// id; anonymous instances (UUIDs, file paths) are not valid GTS ids and are
+    /// keyed by their raw id, so an id that fails to parse is used verbatim
+    /// rather than rejected.
+    ///
+    /// # Errors
+    /// Returns `StoreError::InstanceNotFound` if no entity exists for the id.
+    fn get_instance_entity(&mut self, instance_id: &str) -> Result<GtsEntity, StoreError> {
+        let entity = self
+            .get(instance_id)
+            .cloned()
+            .ok_or_else(|| StoreError::InstanceNotFound(instance_id.to_owned()))?;
+        if entity.is_schema {
+            return Err(StoreError::InvalidEntity(format!(
+                "Entity '{instance_id}' is a schema, not an instance; \
+                 the id must be an instance (not ending with '~')"
+            )));
         }
-        Err(StoreError::SchemaNotFound(type_id.to_owned()))
+        Ok(entity)
     }
 
     pub fn items(&self) -> impl Iterator<Item = (&String, &GtsEntity)> {
@@ -307,13 +333,10 @@ impl GtsStore {
     /// manual aggregation across an `$id` chain is allowed.
     ///
     /// # Errors
-    /// Returns [`ResolveSchemaRefsError::UnresolvedRefs`] if any external
-    /// `$ref` cannot be resolved, or [`ResolveSchemaRefsError::CircularRef`]
-    /// if a circular `$ref` is detected.
-    pub fn resolve_schema_refs_checked(
-        &self,
-        schema: &Value,
-    ) -> Result<Value, ResolveSchemaRefsError> {
+    /// Returns [`StoreError::UnresolvedRefs`] if any external `$ref` cannot be
+    /// resolved, or [`StoreError::CircularRef`] if a circular `$ref` is
+    /// detected.
+    pub fn resolve_schema_refs_checked(&self, schema: &Value) -> Result<Value, StoreError> {
         let mut visited = std::collections::HashSet::new();
         let mut cycle_found = false;
         let mut unresolved_refs = Vec::new();
@@ -324,9 +347,9 @@ impl GtsStore {
             &mut unresolved_refs,
         );
         if cycle_found {
-            Err(ResolveSchemaRefsError::CircularRef)
+            Err(StoreError::CircularRef)
         } else if !unresolved_refs.is_empty() {
-            Err(ResolveSchemaRefsError::UnresolvedRefs(unresolved_refs))
+            Err(StoreError::UnresolvedRefs(unresolved_refs))
         } else {
             Ok(resolved)
         }
@@ -448,23 +471,30 @@ impl GtsStore {
                                 return resolved;
                             }
 
-                            // Otherwise, merge the resolved schema with other properties
-                            if let Value::Object(resolved_map) = resolved {
-                                let mut merged = resolved_map;
-                                for (k, v) in map {
-                                    if k != "$ref" {
-                                        merged.insert(
-                                            k.clone(),
-                                            self.resolve_schema_refs_inner(
-                                                v,
-                                                visited,
-                                                cycle_found,
-                                                unresolved_refs,
-                                            ),
-                                        );
+                            // Otherwise, merge the resolved schema with the
+                            // sibling keywords.
+                            match resolved {
+                                Value::Object(resolved_map) => {
+                                    let mut merged = resolved_map;
+                                    for (k, v) in map {
+                                        if k != "$ref" {
+                                            merged.insert(
+                                                k.clone(),
+                                                self.resolve_schema_refs_inner(
+                                                    v,
+                                                    visited,
+                                                    cycle_found,
+                                                    unresolved_refs,
+                                                ),
+                                            );
+                                        }
                                     }
+                                    return Value::Object(merged);
                                 }
-                                return Value::Object(merged);
+                                // Non-object target (e.g. a boolean schema via
+                                // a pointer fragment) with siblings: `$ref`
+                                // wins per JSON Schema precedence.
+                                other => return other,
                             }
                         }
                     }
@@ -499,6 +529,10 @@ impl GtsStore {
                     let mut resolved_all_of = Vec::new();
                     let mut merged_properties = serde_json::Map::new();
                     let mut merged_required: Vec<String> = Vec::new();
+                    // Closedness can live inside a referenced trait schema, so
+                    // carry `additionalProperties` out of the merged items
+                    // rather than dropping it.
+                    let mut merged_additional_properties: Option<Value> = None;
 
                     for item in all_of_array {
                         let resolved_item = self.resolve_schema_refs_inner(
@@ -532,6 +566,12 @@ impl GtsStore {
                                             }
                                         }
                                     }
+                                    if let Some(ap) = item_map.get("additionalProperties") {
+                                        merge_additional_properties_constraint(
+                                            &mut merged_additional_properties,
+                                            ap,
+                                        );
+                                    }
                                 }
                             }
                             _ => resolved_all_of.push(resolved_item),
@@ -552,6 +592,15 @@ impl GtsStore {
                         // Add merged properties and required fields
                         merged_schema
                             .insert("properties".to_owned(), Value::Object(merged_properties));
+                        if let Some(ap) = merged_schema.get("additionalProperties").cloned() {
+                            merge_additional_properties_constraint(
+                                &mut merged_additional_properties,
+                                &ap,
+                            );
+                        }
+                        if let Some(ap) = merged_additional_properties {
+                            merged_schema.insert("additionalProperties".to_owned(), ap);
+                        }
                         if !merged_required.is_empty() {
                             merged_schema.insert(
                                 "required".to_owned(),
@@ -634,46 +683,40 @@ impl GtsStore {
         }
     }
 
+    /// Collapses a slice of x-gts-ref validation errors into a single
+    /// `StoreError::ValidationError`, or `Ok(())` when there are none.
+    fn check_x_gts_ref_errors(
+        errors: &[crate::x_gts_ref::XGtsRefValidationError],
+    ) -> Result<(), StoreError> {
+        if errors.is_empty() {
+            return Ok(());
+        }
+        let messages: Vec<String> = errors
+            .iter()
+            .map(|err| {
+                if err.field_path.is_empty() {
+                    err.reason.clone()
+                } else {
+                    format!("{}: {}", err.field_path, err.reason)
+                }
+            })
+            .collect();
+        Err(StoreError::ValidationError(format!(
+            "x-gts-ref validation failed: {}",
+            messages.join("; ")
+        )))
+    }
+
     fn validate_schema_x_gts_refs(&mut self, gts_id: &str) -> Result<(), StoreError> {
-        if !gts_id.ends_with('~') {
-            return Err(StoreError::SchemaNotFound(format!(
-                "ID '{gts_id}' is not a schema (must end with '~')"
-            )));
-        }
-
-        let schema_entity = self
-            .get(gts_id)
-            .ok_or_else(|| StoreError::SchemaNotFound(gts_id.to_owned()))?;
-
-        if !schema_entity.is_schema {
-            return Err(StoreError::SchemaNotFound(format!(
-                "Entity '{gts_id}' is not a schema"
-            )));
-        }
+        let schema_content = self.get_schema_content(gts_id)?;
 
         tracing::info!("Validating schema x-gts-ref fields for {}", gts_id);
 
         // Validate x-gts-ref constraints in the schema
         let validator = crate::x_gts_ref::XGtsRefValidator::new();
-        let x_gts_ref_errors = validator.validate_schema(&schema_entity.content, "", None);
+        let x_gts_ref_errors = validator.validate_schema(&schema_content, "", None);
 
-        if !x_gts_ref_errors.is_empty() {
-            let error_messages: Vec<String> = x_gts_ref_errors
-                .iter()
-                .map(|err| {
-                    if err.field_path.is_empty() {
-                        err.reason.clone()
-                    } else {
-                        format!("{}: {}", err.field_path, err.reason)
-                    }
-                })
-                .collect();
-            let error_message =
-                format!("x-gts-ref validation failed: {}", error_messages.join("; "));
-            return Err(StoreError::ValidationError(error_message));
-        }
-
-        Ok(())
+        Self::check_x_gts_ref_errors(&x_gts_ref_errors)
     }
 
     /// Validates all `$ref` values in a schema.
@@ -772,23 +815,7 @@ impl GtsStore {
     /// # Errors
     /// Returns `StoreError` if validation fails.
     pub fn validate_schema(&mut self, gts_id: &str) -> Result<(), StoreError> {
-        if !gts_id.ends_with('~') {
-            return Err(StoreError::SchemaNotFound(format!(
-                "ID '{gts_id}' is not a schema (must end with '~')"
-            )));
-        }
-
-        let schema_entity = self
-            .get(gts_id)
-            .ok_or_else(|| StoreError::SchemaNotFound(gts_id.to_owned()))?;
-
-        if !schema_entity.is_schema {
-            return Err(StoreError::SchemaNotFound(format!(
-                "Entity '{gts_id}' is not a schema"
-            )));
-        }
-
-        let schema_content = schema_entity.content.clone();
+        let schema_content = self.get_schema_content(gts_id)?;
         if !schema_content.is_object() {
             return Err(StoreError::SchemaNotFound(format!(
                 "Schema '{gts_id}' content must be a dictionary"
@@ -1087,6 +1114,11 @@ impl GtsStore {
     /// Uncached: a consumer that calls this repeatedly for the same `type_id`
     /// should cache the result (safe forever — versioned ids are immutable).
     ///
+    /// External-consumer convenience that bundles validation with resolution
+    /// (and meta-validates the inlined body). [`crate::ops::GtsOps`] keeps the
+    /// granular validators for stage-specific error context; keep the two paths
+    /// in sync when changing validation semantics.
+    ///
     /// # Errors
     /// `StoreError::ValidationError` if any validation stage fails or a
     /// dependency is missing from the store; `StoreError::SchemaNotFound` if the
@@ -1188,22 +1220,7 @@ impl GtsStore {
 
         let xref = crate::x_gts_ref::XGtsRefValidator::new();
         let xref_errors = xref.validate_instance(payload, &resolved_schema, "");
-        if !xref_errors.is_empty() {
-            let msgs: Vec<String> = xref_errors
-                .iter()
-                .map(|e| {
-                    if e.field_path.is_empty() {
-                        e.reason.clone()
-                    } else {
-                        format!("{}: {}", e.field_path, e.reason)
-                    }
-                })
-                .collect();
-            return Err(StoreError::ValidationError(format!(
-                "x-gts-ref validation failed: {}",
-                msgs.join("; ")
-            )));
-        }
+        Self::check_x_gts_ref_errors(&xref_errors)?;
 
         Ok(())
     }
@@ -1213,23 +1230,14 @@ impl GtsStore {
     /// # Errors
     /// Returns `StoreError` if validation fails.
     pub fn validate_instance(&mut self, instance_id: &str) -> Result<(), StoreError> {
-        // Try to parse as GTS ID first (for well-known instances)
-        // If that fails, use the instance_id directly (for anonymous instances with UUIDs)
-        let lookup_id = if let Ok(gid) = GtsId::try_new(instance_id) {
-            gid.id().to_owned()
-        } else {
-            instance_id.to_owned()
-        };
-
-        let obj = self
-            .get(&lookup_id)
-            .ok_or_else(|| StoreError::ObjectNotFound(instance_id.to_owned()))?
-            .clone();
+        let obj = self.get_instance_entity(instance_id)?;
 
         let type_id = obj
             .type_id
             .as_ref()
-            .ok_or_else(|| StoreError::SchemaForInstanceNotFound(lookup_id.clone()))?
+            .ok_or_else(|| {
+                StoreError::InvalidEntity(format!("Instance '{instance_id}' has no type_id"))
+            })?
             .clone();
 
         let schema = self.get_schema_content(&type_id)?;
@@ -1297,21 +1305,7 @@ impl GtsStore {
         let validator = crate::x_gts_ref::XGtsRefValidator::new();
         let x_gts_ref_errors = validator.validate_instance(&obj.content, &schema, "");
 
-        if !x_gts_ref_errors.is_empty() {
-            let error_messages: Vec<String> = x_gts_ref_errors
-                .iter()
-                .map(|err| {
-                    if err.field_path.is_empty() {
-                        err.reason.clone()
-                    } else {
-                        format!("{}: {}", err.field_path, err.reason)
-                    }
-                })
-                .collect();
-            let error_message =
-                format!("x-gts-ref validation failed: {}", error_messages.join("; "));
-            return Err(StoreError::ValidationError(error_message));
-        }
+        Self::check_x_gts_ref_errors(&x_gts_ref_errors)?;
 
         Ok(())
     }
@@ -1322,50 +1316,23 @@ impl GtsStore {
     /// Returns `StoreError` if the cast fails.
     pub fn cast(
         &mut self,
-        from_id: &str,
+        instance_id: &str,
         target_type_id: &str,
     ) -> Result<GtsEntityCastResult, StoreError> {
-        let from_entity = self
-            .get(from_id)
-            .ok_or_else(|| StoreError::EntityNotFound(from_id.to_owned()))?
-            .clone();
+        let instance = self.get_instance_entity(instance_id)?;
+        let instance_type_id = instance.type_id.clone().ok_or_else(|| {
+            StoreError::InvalidEntity(format!("Instance '{instance_id}' has no type_id"))
+        })?;
+        let from_schema = self.get_schema_entity(&instance_type_id)?.clone();
 
-        if from_entity.is_schema {
-            return Err(StoreError::CastFromSchemaNotAllowed(from_id.to_owned()));
-        }
-
-        let to_schema = self
-            .get(target_type_id)
-            .ok_or_else(|| StoreError::ObjectNotFound(target_type_id.to_owned()))?
-            .clone();
-
-        // Get the source schema
-        let (from_schema, _from_type_id) = if from_entity.is_schema {
-            let id = from_entity
-                .gts_id
-                .as_ref()
-                .ok_or(StoreError::InvalidEntity)?
-                .id()
-                .to_owned();
-            (from_entity.clone(), id)
-        } else {
-            let type_id = from_entity
-                .type_id
-                .as_ref()
-                .ok_or_else(|| StoreError::SchemaForInstanceNotFound(from_id.to_owned()))?;
-            let schema = self
-                .get(type_id)
-                .ok_or_else(|| StoreError::ObjectNotFound(type_id.clone()))?
-                .clone();
-            (schema, type_id.clone())
-        };
+        let target_schema = self.get_schema_entity(target_type_id)?.clone();
 
         // Create a resolver to handle $ref in schemas
         // TODO: Implement custom resolver
         let resolver = None;
 
-        from_entity
-            .cast(&to_schema, &from_schema, resolver)
+        instance
+            .cast(&target_schema, &from_schema, resolver)
             .map_err(|e| StoreError::SchemaNotFound(e.to_string()))
     }
 

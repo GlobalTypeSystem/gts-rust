@@ -2,7 +2,15 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 
 use crate::gts::{GTS_URI_PREFIX, GtsTypeId};
-use crate::store::StoreError;
+
+/// Failure modes of [`extract_gts_refs`]. Store-independent, like the module.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ExtractRefsError {
+    #[error("'{0}' must reference a GTS type id (a valid identifier ending with '~')")]
+    InvalidRef(String),
+    #[error("schema nests deeper than the maximum scan depth of {0}")]
+    TooDeep(usize),
+}
 
 /// Direct external type references of a **raw** schema - the `$ref`
 /// dependency edges of this node, store-independent and pure.
@@ -23,8 +31,10 @@ use crate::store::StoreError;
 /// the id, not from content.
 ///
 /// # Errors
-/// `StoreError::InvalidRef` if an external `$ref` is not a valid GTS type id.
-pub fn extract_gts_refs(schema: &Value) -> Result<BTreeSet<String>, StoreError> {
+/// [`ExtractRefsError::InvalidRef`] if an external `$ref` is not a valid GTS
+/// type id; [`ExtractRefsError::TooDeep`] if the schema nests past the scan cap
+/// (a deeper ref could not be validated).
+pub fn extract_gts_refs(schema: &Value) -> Result<BTreeSet<String>, ExtractRefsError> {
     let mut refs = BTreeSet::new();
     collect_gts_refs(schema, 0, &mut refs)?;
     Ok(refs)
@@ -34,10 +44,10 @@ fn collect_gts_refs(
     value: &Value,
     depth: usize,
     out: &mut BTreeSet<String>,
-) -> Result<(), StoreError> {
+) -> Result<(), ExtractRefsError> {
     const MAX_REF_SCAN_DEPTH: usize = 64;
     if depth > MAX_REF_SCAN_DEPTH {
-        return Ok(());
+        return Err(ExtractRefsError::TooDeep(MAX_REF_SCAN_DEPTH));
     }
 
     match value {
@@ -48,9 +58,7 @@ fn collect_gts_refs(
                 let canonical = ref_uri.strip_prefix(GTS_URI_PREFIX).unwrap_or(ref_uri);
                 let id = canonical.split_once('#').map_or(canonical, |(id, _)| id);
                 if GtsTypeId::try_new(id).is_err() {
-                    return Err(StoreError::InvalidRef(format!(
-                        "'{ref_uri}' must reference a GTS type id (a valid identifier ending with '~')"
-                    )));
+                    return Err(ExtractRefsError::InvalidRef(ref_uri.clone()));
                 }
                 out.insert(id.to_owned());
             }
@@ -135,7 +143,7 @@ mod tests {
         });
         assert!(matches!(
             extract_gts_refs(&instance_ref),
-            Err(StoreError::InvalidRef(_))
+            Err(ExtractRefsError::InvalidRef(_))
         ));
 
         let garbage_ref = json!({
@@ -144,7 +152,56 @@ mod tests {
         });
         assert!(matches!(
             extract_gts_refs(&garbage_ref),
-            Err(StoreError::InvalidRef(_))
+            Err(ExtractRefsError::InvalidRef(_))
         ));
+    }
+
+    #[test]
+    fn extract_gts_refs_rejects_too_deep() {
+        // Nesting past the scan cap must error rather than silently pass.
+        let mut schema = json!({"type": "object"});
+        for _ in 0..70 {
+            schema = json!({"properties": {"nested": schema}});
+        }
+        assert_eq!(
+            extract_gts_refs(&schema),
+            Err(ExtractRefsError::TooDeep(64))
+        );
+    }
+
+    #[test]
+    fn extract_gts_refs_found_in_arrays() {
+        // Refs appearing directly as array elements must be collected.
+        let schema = json!({
+            "oneOf": [
+                {"$ref": "gts://gts.x.dep.ns.one.v1~"},
+                {"$ref": "gts.x.dep.ns.two.v1~"}
+            ]
+        });
+        let refs = extract_gts_refs(&schema).unwrap();
+        let expected: BTreeSet<String> = ["gts.x.dep.ns.one.v1~", "gts.x.dep.ns.two.v1~"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        assert_eq!(refs, expected);
+    }
+
+    #[test]
+    fn extract_gts_refs_empty_fragment_normalizes_to_id() {
+        // A trailing empty fragment (`#`) is stripped to the canonical id.
+        let schema = json!({"$ref": "gts://gts.x.dep.ns.a.v1~#"});
+        let refs = extract_gts_refs(&schema).unwrap();
+        assert_eq!(refs, BTreeSet::from(["gts.x.dep.ns.a.v1~".to_owned()]));
+    }
+
+    #[test]
+    fn extract_gts_refs_internal_pointer_only_excluded() {
+        // A schema with only internal `#/...` pointers has no external edges.
+        let schema = json!({
+            "type": "object",
+            "properties": {"a": {"$ref": "#/$defs/Local"}},
+            "$defs": {"Local": {"type": "string"}}
+        });
+        assert!(extract_gts_refs(&schema).unwrap().is_empty());
     }
 }

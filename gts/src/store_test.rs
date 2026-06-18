@@ -104,8 +104,8 @@ fn test_gts_store_register_schema_invalid_id() {
 
     assert!(result.is_err());
     match result {
-        Err(StoreError::InvalidSchemaId) => {}
-        _ => panic!("Expected InvalidSchemaId error"),
+        Err(StoreError::InvalidTypeId(_)) => {}
+        _ => panic!("Expected InvalidTypeId error"),
     }
 }
 
@@ -131,12 +131,12 @@ fn test_gts_store_get_schema_content() {
 #[test]
 fn test_gts_store_get_schema_content_not_found() {
     let mut store = GtsStore::new();
-    let result = store.get_schema_content("nonexistent~");
+    let result = store.get_schema_content("gts.vendor.package.namespace.type.v1.0~");
     assert!(result.is_err());
 
     match result {
         Err(StoreError::SchemaNotFound(id)) => {
-            assert_eq!(id, "nonexistent~");
+            assert_eq!(id, "gts.vendor.package.namespace.type.v1.0~");
         }
         _ => panic!("Expected SchemaNotFound error"),
     }
@@ -272,16 +272,13 @@ fn test_gts_store_query_with_limit() {
 
 #[test]
 fn test_store_error_display() {
-    let error = StoreError::ObjectNotFound("test_id".to_owned());
+    let error = StoreError::InstanceNotFound("test_id".to_owned());
     assert!(error.to_string().contains("test_id"));
 
     let error = StoreError::SchemaNotFound("schema_id".to_owned());
     assert!(error.to_string().contains("schema_id"));
 
-    let error = StoreError::EntityNotFound("entity_id".to_owned());
-    assert!(error.to_string().contains("entity_id"));
-
-    let error = StoreError::SchemaForInstanceNotFound("instance_id".to_owned());
+    let error = StoreError::InvalidEntity("instance_id".to_owned());
     assert!(error.to_string().contains("instance_id"));
 }
 
@@ -1032,10 +1029,10 @@ fn test_gts_store_query_result_structure() {
 
 #[test]
 fn test_gts_store_error_variants() {
-    let err1 = StoreError::InvalidEntity;
+    let err1 = StoreError::InvalidEntity("bad entity".to_owned());
     assert!(!err1.to_string().is_empty());
 
-    let err2 = StoreError::InvalidSchemaId;
+    let err2 = StoreError::InvalidTypeId(GtsIdError::new("bad", "not a type id"));
     assert!(!err2.to_string().is_empty());
 }
 
@@ -1809,7 +1806,7 @@ fn test_gts_store_validate_with_unresolvable_ref() {
         result
             .unwrap_err()
             .to_string()
-            .contains("unresolved $ref(s): gts://gts.vendor.package.namespace.nonexistent.v1.0~")
+            .contains("Unresolved $ref(s): gts://gts.vendor.package.namespace.nonexistent.v1.0~")
     );
 }
 
@@ -1939,7 +1936,7 @@ fn test_gts_store_resolve_schema_refs_with_unresolvable_and_properties() {
         result
             .unwrap_err()
             .to_string()
-            .contains("unresolved $ref(s): gts://gts.vendor.package.namespace.nonexistent.v1.0~")
+            .contains("Unresolved $ref(s): gts://gts.vendor.package.namespace.nonexistent.v1.0~")
     );
 }
 
@@ -2662,8 +2659,7 @@ fn test_validate_schema_x_gts_refs_non_schema_id() {
     assert!(result.is_err());
     match result {
         Err(StoreError::SchemaNotFound(msg)) => {
-            assert!(msg.contains("is not a schema"));
-            assert!(msg.contains("must end with '~'"));
+            assert!(msg.contains("Invalid type id"));
         }
         _ => panic!("Expected SchemaNotFound error"),
     }
@@ -2762,8 +2758,7 @@ fn test_validate_schema_non_schema_id() {
     assert!(result.is_err());
     match result {
         Err(StoreError::SchemaNotFound(msg)) => {
-            assert!(msg.contains("is not a schema"));
-            assert!(msg.contains("must end with '~'"));
+            assert!(msg.contains("Invalid type id"));
         }
         _ => panic!("Expected SchemaNotFound error"),
     }
@@ -3032,10 +3027,10 @@ fn test_cast_missing_schema_for_instance() {
 
     assert!(result.is_err());
     match result {
-        Err(StoreError::SchemaForInstanceNotFound(id)) => {
-            assert_eq!(id, "gts.vendor.package.namespace.type.v1.0");
+        Err(StoreError::InvalidEntity(msg)) => {
+            assert!(msg.contains("gts.vendor.package.namespace.type.v1.0"));
         }
-        _ => panic!("Expected SchemaForInstanceNotFound error"),
+        _ => panic!("Expected InvalidEntity error"),
     }
 }
 
@@ -3506,7 +3501,7 @@ fn test_op12_property_disabled_fails() {
 }
 
 #[test]
-fn test_op12_derived_loosens_additional_properties_to_true() {
+fn test_op12_direct_derived_loosens_additional_properties_to_true() {
     let mut store = GtsStore::new();
 
     // Base schema with additionalProperties: false
@@ -3523,14 +3518,14 @@ fn test_op12_derived_loosens_additional_properties_to_true() {
         .register_schema("gts.x.test.addl.closed.v1~", &base)
         .expect("register base");
 
-    // Derived schema that sets additionalProperties: true (loosening)
+    // Direct derived schema that sets additionalProperties: true (loosening)
     let derived = json!({
         "$id": "gts://gts.x.test.addl.closed.v1~x.test._.open.v1~",
         "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
-        "allOf": [
-            {"$ref": "gts://gts.x.test.addl.closed.v1~"}
-        ],
+        "properties": {
+            "id": {"type": "string"}
+        },
         "additionalProperties": true
     });
     store
@@ -3541,6 +3536,50 @@ fn test_op12_derived_loosens_additional_properties_to_true() {
     assert!(
         result.is_err(),
         "Loosening additionalProperties from false to true should fail"
+    );
+}
+
+#[test]
+fn test_op12_allof_overlay_additional_properties_true_stays_closed() {
+    let mut store = GtsStore::new();
+
+    let base = json!({
+        "$id": "gts://gts.x.test.addl.closed3.v1~",
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+            "id": {"type": "string"}
+        },
+        "additionalProperties": false
+    });
+    store
+        .register_schema("gts.x.test.addl.closed3.v1~", &base)
+        .expect("register base");
+
+    let derived = json!({
+        "$id": "gts://gts.x.test.addl.closed3.v1~x.test._.overlay.v1~",
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "allOf": [
+            {"$ref": "gts://gts.x.test.addl.closed3.v1~"},
+            {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"}
+                },
+                "additionalProperties": true
+            }
+        ]
+    });
+    store
+        .register_schema("gts.x.test.addl.closed3.v1~x.test._.overlay.v1~", &derived)
+        .expect("register derived");
+
+    let result = store.validate_schema_chain("gts.x.test.addl.closed3.v1~x.test._.overlay.v1~");
+    assert!(
+        result.is_ok(),
+        "additionalProperties: true in an allOf overlay does not loosen \
+         a closed base branch. Got: {result:?}"
     );
 }
 
@@ -4108,12 +4147,11 @@ fn test_store_resolve_schema_refs_checked_errors_on_unresolved_gts_uri_ref() {
         .resolve_schema_refs_checked(&schema)
         .expect_err("missing external ref should fail checked resolution");
 
-    assert_eq!(
-        err,
-        ResolveSchemaRefsError::UnresolvedRefs(vec![
-            "gts://gts.x.core.events.missing.v1~".to_owned()
-        ])
-    );
+    assert!(matches!(
+        &err,
+        StoreError::UnresolvedRefs(refs)
+            if refs == &["gts://gts.x.core.events.missing.v1~".to_owned()]
+    ));
 }
 
 #[test]
@@ -4144,10 +4182,11 @@ fn test_store_resolve_schema_refs_uses_exact_gts_uri_lookup_without_minor_fallba
     let err = store
         .resolve_schema_refs_checked(&schema)
         .expect_err("checked resolution should reject the unresolved v1~ ref");
-    assert_eq!(
-        err,
-        ResolveSchemaRefsError::UnresolvedRefs(vec!["gts://gts.x.core.events.type.v1~".to_owned()])
-    );
+    assert!(matches!(
+        &err,
+        StoreError::UnresolvedRefs(refs)
+            if refs == &["gts://gts.x.core.events.type.v1~".to_owned()]
+    ));
 }
 
 #[test]
@@ -4240,9 +4279,9 @@ fn test_store_build_schema_graph_with_nonexistent_id() {
 
 #[test]
 fn test_store_error_debug_display() {
-    let err = StoreError::EntityNotFound("test_id".to_owned());
+    let err = StoreError::InstanceNotFound("test_id".to_owned());
     let debug_str = format!("{err:?}");
-    assert!(debug_str.contains("EntityNotFound"));
+    assert!(debug_str.contains("InstanceNotFound"));
 
     let display_str = format!("{err}");
     assert!(display_str.contains("test_id"));
@@ -4251,10 +4290,10 @@ fn test_store_error_debug_display() {
 #[test]
 fn test_store_error_variants() {
     // Test various error types exist and can be formatted
-    let err1 = StoreError::InvalidSchemaId;
-    assert!(format!("{err1}").contains('~'));
+    let err1 = StoreError::InvalidTypeId(GtsIdError::new("bad", "not a type id"));
+    assert!(format!("{err1}").contains("Invalid GTS type id"));
 
-    let err2 = StoreError::InvalidEntity;
+    let err2 = StoreError::InvalidEntity("bad".to_owned());
     assert!(format!("{err2:?}").contains("InvalidEntity"));
 
     let err3 = StoreError::ValidationError("test error".to_owned());
@@ -4267,6 +4306,7 @@ fn test_store_get_schema_content_returns_copy() {
     let type_id = "gts.test.package.namespace.copy.v1~";
     let schema = json!({
         "$id": format!("gts://{type_id}"),
+        "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
         "properties": {"field": {"type": "string"}}
     });
@@ -4440,7 +4480,7 @@ fn test_op13_circular_ref_does_not_hang() {
     let err = store
         .resolve_schema_refs_checked(&schema_a)
         .expect_err("checked resolution should reject circular refs");
-    assert_eq!(err, ResolveSchemaRefsError::CircularRef);
+    assert!(matches!(err, StoreError::CircularRef));
 }
 
 #[test]
@@ -5044,4 +5084,33 @@ fn test_validate_and_resolve_accepts_well_formed_gts_ref_schema() {
     store
         .validate_and_resolve_type_schema("gts.vendor.package.namespace.type.v1.0~")
         .expect("well-formed schema must validate and resolve");
+}
+
+#[test]
+fn test_resolve_schema_refs_pointer_to_boolean_with_siblings() {
+    // A gts:// $ref with a pointer fragment that resolves to a non-object
+    // (boolean) subschema, plus a sibling keyword. The ref resolves, so it must
+    // NOT be reported unresolved, and the resolved boolean must not be dropped.
+    let mut store = GtsStore::new();
+    let target_schema = json!({
+        "$id": "gts://gts.x.core.events.flag.v1~",
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "$defs": {"closed": false}
+    });
+    store
+        .register_schema("gts.x.core.events.flag.v1~", &target_schema)
+        .expect("register target schema");
+
+    let schema = json!({
+        "$ref": "gts://gts.x.core.events.flag.v1~#/$defs/closed",
+        "description": "extra"
+    });
+
+    let resolved = store
+        .resolve_schema_refs_checked(&schema)
+        .expect("resolved non-object ref with siblings must not be reported unresolved");
+
+    // Per JSON Schema $ref precedence, the resolved target wins.
+    assert_eq!(resolved, json!(false));
 }
