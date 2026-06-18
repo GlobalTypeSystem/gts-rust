@@ -950,7 +950,7 @@ fn test_schema_inline_inheritance_with_parent() {
     // Test base type inline resolution
     use gts::GtsStore;
 
-    let mut store = GtsStore::new(None);
+    let mut store = GtsStore::new();
     let base_schema = inheritance_tests::BaseEventV1::<()>::gts_schema_with_refs();
     store
         .register_schema(
@@ -980,7 +980,7 @@ fn test_schema_inline_inheritance_with_parent() {
 fn test_runtime_schema_inline_resolution() {
     use gts::GtsStore;
 
-    let mut store = GtsStore::new(None);
+    let mut store = GtsStore::new();
 
     // Load only base schema - multi-segment schemas are blocked from direct method access
     let base_schema = inheritance_tests::BaseEventV1::<()>::gts_schema_with_refs();
@@ -1048,7 +1048,7 @@ fn test_runtime_schema_inline_resolution() {
 fn test_runtime_schema_inline_resolution_single_segment() {
     use gts::GtsStore;
 
-    let mut store = GtsStore::new(None);
+    let mut store = GtsStore::new();
 
     // Test with a single-segment schema (no inheritance)
     let event_topic_schema: serde_json::Value =

@@ -10,8 +10,9 @@
 //!      via `allOf` into the *effective trait schema*.
 //!    - `x-gts-traits` objects → merge per RFC 7396 JSON Merge Patch into the
 //!      *effective traits object*.
-//! 3. Apply defaults from the effective trait schema to fill unresolved trait
-//!    properties (materialization step).
+//! 3. Materialize unresolved trait properties from the effective trait schema,
+//!    filling each absent property with its `const` (a locked value) or, failing
+//!    that, its `default`.
 //! 4. Validate the effective traits object against the effective trait schema
 //!    (completeness check runs only when the type is non-abstract — see
 //!    `store.rs::validate_schema_traits`).
@@ -21,8 +22,8 @@
 //! - Objects: deep-merge recursively (keys not restated by the descendant are
 //!   preserved from the ancestor).
 //! - Arrays: replace wholesale (no element-wise merge).
-//! - `null` at any depth deletes the key, after which `apply_defaults` may
-//!   re-substitute a default.
+//! - `null` at any depth deletes the key, after which `materialize_traits` may
+//!   re-substitute a `const` or `default`.
 //! - Locking publisher-controlled values is done via JSON Schema `const` in
 //!   `x-gts-traits-schema`; the registry carries no GTS-specific immutability
 //!   rule.
@@ -55,6 +56,73 @@ pub const X_GTS_TRAITS: &str = "x-gts-traits";
 /// Maximum recursion depth for traversing `allOf` nesting.
 /// Prevents stack overflow on deeply nested or maliciously crafted schemas.
 const MAX_RECURSION_DEPTH: usize = 64;
+
+/// Built trait validation artifacts plus the raw chain inputs they were built
+/// from. A single self-contained value: callers build it once (via
+/// [`build_effective_traits`] or `GtsStore::effective_traits`) and then both
+/// read the composed `schema`/`values` and run [`EffectiveTraits::validate`]
+/// off the same instance — no rebuild, no separate bookkeeping flags.
+pub(crate) struct EffectiveTraits {
+    /// Dialect-pinned, `allOf`-composed effective trait schema.
+    pub schema: Value,
+    /// Chain-merged (RFC 7396) and const/default-materialized trait values.
+    pub values: Value,
+    /// `$ref`-resolved `x-gts-traits-schema` subschemas, root → leaf — retained
+    /// for per-index integrity checks and the closed-entity check.
+    pub(crate) resolved_trait_schemas: Vec<Value>,
+    /// RFC 7396-merged `x-gts-traits` values across the chain (pre-defaults).
+    pub(crate) merged_traits: Value,
+}
+
+impl EffectiveTraits {
+    /// `true` when the chain contributed at least one `x-gts-traits-schema`.
+    fn has_schema(&self) -> bool {
+        !self.resolved_trait_schemas.is_empty()
+    }
+
+    /// `true` when the chain supplied at least one explicit `x-gts-traits` value.
+    fn has_explicit_values(&self) -> bool {
+        self.merged_traits
+            .as_object()
+            .is_some_and(|m| !m.is_empty())
+    }
+
+    /// Validate these built artifacts. Runs, in order: per-index integrity of
+    /// the collected subschemas (preserving indexed error messages), the
+    /// empty-chain and `false`-schema guards, then JSON Schema + `x-gts-ref`
+    /// value validation (with the required-trait completeness check when
+    /// `check_unresolved`).
+    ///
+    /// # Errors
+    /// Returns `Vec<String>` of error messages if any trait schema is malformed,
+    /// if traits are provided without a schema, if the schema resolves to
+    /// `false` with values present, or if values don't conform.
+    pub(crate) fn validate(&self, check_unresolved: bool) -> Result<(), Vec<String>> {
+        validate_trait_schema_integrity(&self.resolved_trait_schemas)?;
+
+        if !self.has_schema() {
+            if self.has_explicit_values() {
+                return Err(vec![format!(
+                    "{X_GTS_TRAITS} values provided but no {X_GTS_TRAITS_SCHEMA} is defined in the \
+                     inheritance chain"
+                )]);
+            }
+            return Ok(());
+        }
+
+        if effective_schema_is_false(&self.schema) {
+            if self.has_explicit_values() {
+                return Err(vec![format!(
+                    "{X_GTS_TRAITS_SCHEMA} resolves to `false` in the chain — \
+                     {X_GTS_TRAITS} values are prohibited"
+                )]);
+            }
+            return Ok(());
+        }
+
+        validate_trait_values(&self.schema, &self.values, check_unresolved)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Inline trait-schema construction
@@ -147,8 +215,8 @@ pub fn inline_traits_schema_of<T: schemars::JsonSchema>() -> Value {
 /// (not allOf-flattened) so that `x-gts-*` extension keys are preserved.
 ///
 /// This is the self-contained entry point used by unit tests.  The store
-/// integration uses [`validate_effective_traits`] directly after collecting
-/// and resolving trait schemas itself.
+/// integration builds an [`EffectiveTraits`] from its own chain walk and calls
+/// [`EffectiveTraits::validate`] on it.
 ///
 /// # Errors
 /// Returns `Vec<String>` of error messages if trait values don't conform to the
@@ -167,54 +235,17 @@ pub fn validate_traits_chain(chain_schemas: &[(String, Value)]) -> Result<(), Ve
     let dialect = chain_schemas
         .last()
         .and_then(|(_, content)| content.get("$schema").and_then(Value::as_str));
-    validate_effective_traits(&trait_schemas, &Value::Object(merged), true, dialect)
+    build_effective_traits(&trait_schemas, &Value::Object(merged), dialect).validate(true)
 }
 
-/// Validates trait values against the effective trait schema built from the
-/// given list of resolved trait schemas.
-///
-/// `resolved_trait_schemas` – `x-gts-traits-schema` values collected from the
-/// chain, with any `$ref` inside them already resolved.
-///
-/// `merged_traits` – shallow-merged `x-gts-traits` values (rightmost wins).
-///
-/// When `check_unresolved` is `true`, every *required* trait-schema property
-/// without a default must have a value in `merged_traits` (optional properties
-/// may be left unresolved, per README §9.7.5 / OP#13); set to `false` for
-/// intermediate schema validation where descendants may still supply values.
-///
-/// `dialect` is the host document's `$schema` URI (e.g.
-/// `http://json-schema.org/draft-07/schema#`). When `Some`, it pins the JSON
-/// Schema draft used to validate trait values so they are interpreted under the
-/// same dialect as the rest of the type schema — necessary because the inline
-/// trait fragment had its root-only `$schema` stripped when
-/// embedded. When `None`, validation falls back to the validator's automatic
-/// draft detection (Draft 2020-12 when no `$schema` is present), matching how
-/// instance and schema validation behave elsewhere in this crate. A GTS Type
-/// Schema always declares `$schema`, so the store path always passes `Some`.
+/// Validate each collected `x-gts-traits-schema` subschema before composition,
+/// preserving indexed error messages for malformed inputs. Run first by
+/// [`EffectiveTraits::validate`].
 ///
 /// # Errors
-/// Returns `Vec<String>` of error messages if trait values don't conform to the
-/// effective trait schema, if required traits are missing, or if traits exist
-/// without a trait schema in the chain.
-pub fn validate_effective_traits(
-    resolved_trait_schemas: &[Value],
-    merged_traits: &Value,
-    check_unresolved: bool,
-    dialect: Option<&str>,
-) -> Result<(), Vec<String>> {
-    let has_trait_values = merged_traits.as_object().is_some_and(|m| !m.is_empty());
-
-    if resolved_trait_schemas.is_empty() {
-        if has_trait_values {
-            return Err(vec![format!(
-                "{X_GTS_TRAITS} values provided but no {X_GTS_TRAITS_SCHEMA} is defined in the \
-                 inheritance chain"
-            )]);
-        }
-        return Ok(());
-    }
-
+/// Returns `Vec<String>` of error messages if any collected trait schema is not
+/// a JSON Schema object or boolean subschema.
+fn validate_trait_schema_integrity(resolved_trait_schemas: &[Value]) -> Result<(), Vec<String>> {
     // Each x-gts-traits-schema is a JSON Schema subschema. Accepted forms are
     // an object subschema, `true`, or `false`. Validate JSON Schema integrity
     // only for object-form subschemas; the boolean forms have well-defined
@@ -247,54 +278,66 @@ pub fn validate_effective_traits(
             }
         }
     }
+    Ok(())
+}
 
-    let mut effective_trait_schema = build_effective_trait_schema(resolved_trait_schemas);
+/// Build the dialect-pinned effective traits schema and the materialized
+/// effective-traits object from chain-collected inputs, returning a
+/// self-contained [`EffectiveTraits`] (the inputs are retained so the result
+/// can validate itself via [`EffectiveTraits::validate`] without a rebuild).
+///
+/// `resolved_trait_schemas` must already have any `$ref`s resolved. `dialect`
+/// is the host document's `$schema`, re-injected here because the inline trait
+/// fragment had its root-only `$schema` stripped when embedded; when `None`,
+/// the schema is left as-is so the validator detects/defaults the draft (Draft
+/// 2020-12), matching instance/schema validation elsewhere in this crate.
+pub(crate) fn build_effective_traits(
+    resolved_trait_schemas: &[Value],
+    merged_traits: &Value,
+    dialect: Option<&str>,
+) -> EffectiveTraits {
+    let mut effective_traits_schema = build_effective_traits_schema(resolved_trait_schemas);
 
-    // If any subschema in the chain is the boolean `false`, the effective
-    // schema is unsatisfiable. A type that carries no traits at all is still
-    // valid (`false` prohibits traits, not the existence of typed descendants).
-    // A type carrying any traits fails.
-    if effective_schema_is_false(&effective_trait_schema) {
-        if has_trait_values {
-            return Err(vec![format!(
-                "{X_GTS_TRAITS_SCHEMA} resolves to `false` in the chain — \
-                 {X_GTS_TRAITS} values are prohibited"
-            )]);
-        }
-        return Ok(());
-    }
-
-    // Pin the JSON Schema dialect to the host document's `$schema` so trait
-    // values validate under the same draft as the rest of the type schema
-    // (the dialect is set by `$schema`). The inline trait fragment had its
-    // root-only `$schema` stripped when embedded, so we (re)set it from
-    // the host here. When the caller supplies no dialect, we leave the schema as
-    // is and let the validator detect/default the draft (Draft 2020-12), matching
-    // instance/schema validation elsewhere in this crate.
     if let Some(dialect) = dialect
-        && let Some(obj) = effective_trait_schema.as_object_mut()
+        && let Some(obj) = effective_traits_schema.as_object_mut()
     {
         obj.insert("$schema".to_owned(), Value::String(dialect.to_owned()));
     }
 
-    let effective_traits = apply_defaults(&effective_trait_schema, merged_traits);
+    let values = materialize_traits(&effective_traits_schema, merged_traits);
+    EffectiveTraits {
+        schema: effective_traits_schema,
+        values,
+        resolved_trait_schemas: resolved_trait_schemas.to_vec(),
+        merged_traits: merged_traits.clone(),
+    }
+}
 
+/// Validate a default-filled trait values object against its composed schema:
+/// standard JSON Schema validation (plus the required-trait completeness check
+/// when `check_unresolved`) followed by GTS `x-gts-ref` enforcement, which the
+/// standard validator ignores as an unknown keyword.
+fn validate_trait_values(
+    effective_traits_schema: &Value,
+    effective_traits: &Value,
+    check_unresolved: bool,
+) -> Result<(), Vec<String>> {
     let mut errors = match validate_traits_against_schema(
-        &effective_trait_schema,
-        &effective_traits,
+        effective_traits_schema,
+        effective_traits,
         check_unresolved,
     ) {
         Ok(()) => Vec::new(),
         Err(e) => e,
     };
 
-    // Enforce `x-gts-ref` on trait values. The standard
-    // `jsonschema` validator ignores `x-gts-ref` as an unknown keyword, so a
-    // trait value that violates the declared GTS-prefix would otherwise slip
-    // through. Treat the effective trait-schema as the schema and the
-    // materialized effective traits as the instance.
+    // Enforce `x-gts-ref` on trait values. The standard `jsonschema` validator
+    // ignores `x-gts-ref` as an unknown keyword, so a trait value that violates
+    // the declared GTS-prefix would otherwise slip through. Treat the effective
+    // trait-schema as the schema and the materialized effective traits as the
+    // instance.
     let xref = crate::x_gts_ref::XGtsRefValidator::new();
-    for err in xref.validate_instance(&effective_traits, &effective_trait_schema, "") {
+    for err in xref.validate_instance(effective_traits, effective_traits_schema, "") {
         errors.push(format!("trait x-gts-ref: {err}"));
     }
 
@@ -336,6 +379,73 @@ fn effective_schema_is_false_recursive(schema: &Value, depth: usize) -> bool {
 // ---------------------------------------------------------------------------
 // Collection helpers (pub(crate) so the store can call them)
 // ---------------------------------------------------------------------------
+
+/// Inline JSON Pointer `$ref`s (`#/...`) inside a trait-schema fragment by
+/// resolving them against `root` — the host document the fragment was lifted
+/// from.
+///
+/// The extracted `x-gts-traits-schema` fragment carries no `$defs` of its own,
+/// so a root-relative pointer like `#/$defs/Retention` would dangle once the
+/// fragment is composed into the effective trait-schema's `allOf` (the document
+/// root there no longer holds those `$defs`). Per gts-spec §9.7.5, a `$ref`
+/// inside `x-gts-traits-schema` MUST resolve under standard JSON Schema rules,
+/// and a JSON Pointer fragment resolves against the host document — which is
+/// `root` here. Inlining at collection time, while `root` is still the document
+/// root, keeps the composed fragment self-contained.
+///
+/// Only pointers that actually resolve against `root` are inlined; anything
+/// else (notably `gts://` refs and the synthetic `#/$defs/GtsInstanceId` family
+/// that the macro emits and [`crate::store::GtsStore::resolve_schema_refs`]
+/// special-cases) is left untouched. Recursion is bounded by
+/// [`MAX_RECURSION_DEPTH`].
+pub(crate) fn inline_local_pointers(fragment: &Value, root: &Value) -> Value {
+    inline_local_pointers_recursive(fragment, root, 0)
+}
+
+fn inline_local_pointers_recursive(value: &Value, root: &Value, depth: usize) -> Value {
+    if depth >= MAX_RECURSION_DEPTH {
+        return value.clone();
+    }
+    match value {
+        Value::Object(map) => {
+            if let Some(Value::String(r)) = map.get("$ref")
+                && let Some(ptr) = r.strip_prefix("#/")
+                && let Some(target) = root.pointer(&format!("/{ptr}"))
+            {
+                // Resolve the target against the same root, then overlay any
+                // sibling keywords (JSON Schema `$ref`-with-siblings).
+                let mut resolved = inline_local_pointers_recursive(target, root, depth + 1);
+                if map.len() > 1
+                    && let Value::Object(resolved_map) = &mut resolved
+                {
+                    for (k, v) in map {
+                        if k != "$ref" {
+                            resolved_map.insert(
+                                k.clone(),
+                                inline_local_pointers_recursive(v, root, depth + 1),
+                            );
+                        }
+                    }
+                }
+                return resolved;
+            }
+            let mut out = serde_json::Map::with_capacity(map.len());
+            for (k, v) in map {
+                out.insert(
+                    k.clone(),
+                    inline_local_pointers_recursive(v, root, depth + 1),
+                );
+            }
+            Value::Object(out)
+        }
+        Value::Array(arr) => Value::Array(
+            arr.iter()
+                .map(|v| inline_local_pointers_recursive(v, root, depth + 1))
+                .collect(),
+        ),
+        _ => value.clone(),
+    }
+}
 
 /// Recursively search a schema value for `x-gts-traits-schema` entries.
 ///
@@ -417,7 +527,8 @@ fn collect_traits_recursive(
 /// - Objects merge recursively (keys not restated by `patch` are preserved).
 /// - `null` values **delete** the corresponding key from `target`; if the
 ///   target had no such key the null is a no-op (the key remains absent so
-///   `apply_defaults` can later substitute a `default` from the trait schema).
+///   `materialize_traits` can later substitute a `const`/`default` from the
+///   trait schema).
 ///
 /// This is the trait-merge primitive used to compose `x-gts-traits` along the
 /// `$id` chain (root → leaf).
@@ -474,7 +585,7 @@ fn merge_rfc7396_recursive(
 /// specification — authors should use `additionalProperties: false` only in the
 /// outermost (single) trait schema, or omit it in favour of explicit property
 /// lists.
-fn build_effective_trait_schema(schemas: &[Value]) -> Value {
+pub(crate) fn build_effective_traits_schema(schemas: &[Value]) -> Value {
     match schemas.len() {
         0 => Value::Object(serde_json::Map::new()),
         1 => schemas[0].clone(),
@@ -487,17 +598,29 @@ fn build_effective_trait_schema(schemas: &[Value]) -> Value {
     }
 }
 
-/// Apply JSON Schema `default` values from the effective trait schema to the
-/// merged traits object for any properties that are not yet present.
+/// Materialize trait values from the effective trait schema onto the merged
+/// traits object, filling any property that is not yet present.
 ///
-/// Handles nested object properties recursively: if a trait property is an object
-/// type with its own `properties` and `default` values, those are applied to the
-/// corresponding nested object in the traits.
-fn apply_defaults(trait_schema: &Value, traits: &Value) -> Value {
-    apply_defaults_recursive(trait_schema, traits, 0)
+/// Resolution precedence for an absent property is **`const` → `default`**: a
+/// `const` locks the value (it is the only value the schema accepts, so the
+/// effective value is fully determined even when the chain never restates it),
+/// and `default` fills the rest. A property already supplied by the chain is
+/// left as-is — a value that conflicts with a `const`/enum is caught by the
+/// later JSON Schema validation, which gives a clearer error than silently
+/// overwriting it here.
+///
+/// Handles nested object properties recursively: if a present trait property is
+/// an object type with its own `properties`, nested `const`/`default` values
+/// are materialized into the corresponding nested object.
+fn materialize_traits(trait_schema: &Value, traits: &Value) -> Value {
+    materialize_traits_recursive(trait_schema, traits, 0)
 }
 
-fn apply_defaults_recursive(trait_schema: &Value, traits: &Value, depth: usize) -> Value {
+/// Per-property materialization view: (most-derived declaration, nearest
+/// `const`, nearest `default`).
+type PropResolution = (Value, Option<Value>, Option<Value>);
+
+fn materialize_traits_recursive(trait_schema: &Value, traits: &Value, depth: usize) -> Value {
     if depth >= MAX_RECURSION_DEPTH {
         return traits.clone();
     }
@@ -507,32 +630,65 @@ fn apply_defaults_recursive(trait_schema: &Value, traits: &Value, depth: usize) 
         _ => serde_json::Map::new(),
     };
 
-    // Collect properties from the trait schema (may be in top-level or allOf)
-    let props = collect_all_properties(trait_schema);
+    // All property declarations along the chain, in root→leaf order. The same
+    // property may appear in several `allOf` branches — an ancestor declaring it
+    // plus a descendant narrowing it.
+    let mut all_props: Vec<(String, Value)> = Vec::new();
+    collect_props_recursive(trait_schema, &mut all_props, 0);
 
-    for (prop_name, prop_schema) in &props {
-        if let Some(prop_obj) = prop_schema.as_object() {
-            if !result.contains_key(prop_name.as_str()) {
-                // Property is absent — apply top-level default if present
-                if let Some(default_val) = prop_obj.get("default") {
-                    result.insert(prop_name.clone(), default_val.clone());
-                }
-            } else if prop_obj.get("type") == Some(&Value::String("object".to_owned()))
-                && prop_obj.contains_key("properties")
-            {
-                // Property is present and is an object type with sub-properties —
-                // recurse to apply nested defaults.  If the input value is a
-                // non-object (e.g. a string where the schema expects an object),
-                // the recursion will produce a defaulted object that replaces the
-                // original value; JSON Schema validation will catch the type
-                // mismatch later, so this is intentional.
-                let nested = apply_defaults_recursive(
-                    prop_schema,
-                    result.get(prop_name.as_str()).unwrap_or(&Value::Null),
-                    depth + 1,
-                );
-                result.insert(prop_name.clone(), nested);
+    // Resolve each property once. `const`/`default` are taken from the *nearest*
+    // (most-derived) declaration that carries them — scanning leaf→root — because
+    // `default` does not participate in narrowing, so an ancestor default ripples
+    // to descendants even when a descendant redeclares the property without one
+    // (gts-spec §9.7.2, ADR-0003). The most-derived declaration also drives the
+    // "recurse into nested object" decision.
+    let mut order: Vec<String> = Vec::new();
+    let mut resolved: std::collections::HashMap<String, PropResolution> =
+        std::collections::HashMap::new();
+    for (name, sch) in all_props.iter().rev() {
+        let obj = sch.as_object();
+        let entry = resolved.entry(name.clone()).or_insert_with(|| {
+            order.push(name.clone());
+            (sch.clone(), None, None)
+        });
+        if entry.1.is_none()
+            && let Some(const_val) = obj.and_then(|o| o.get("const"))
+        {
+            entry.1 = Some(const_val.clone());
+        }
+        if entry.2.is_none()
+            && let Some(default_val) = obj.and_then(|o| o.get("default"))
+        {
+            entry.2 = Some(default_val.clone());
+        }
+    }
+
+    for name in &order {
+        let (prop_schema, nearest_const, nearest_default) = &resolved[name];
+        if !result.contains_key(name.as_str()) {
+            // Property is absent — a `const` locks the value (highest priority),
+            // otherwise fall back to the nearest `default` up the chain.
+            if let Some(const_val) = nearest_const {
+                result.insert(name.clone(), const_val.clone());
+            } else if let Some(default_val) = nearest_default {
+                result.insert(name.clone(), default_val.clone());
             }
+        } else if prop_schema.as_object().is_some_and(|o| {
+            o.get("type") == Some(&Value::String("object".to_owned()))
+                && o.contains_key("properties")
+        }) {
+            // Property is present and is an object type with sub-properties —
+            // recurse to materialize nested const/default values.  If the input
+            // value is a non-object (e.g. a string where the schema expects an
+            // object), the recursion will produce a materialized object that
+            // replaces the original value; JSON Schema validation will catch the
+            // type mismatch later, so this is intentional.
+            let nested = materialize_traits_recursive(
+                prop_schema,
+                result.get(name.as_str()).unwrap_or(&Value::Null),
+                depth + 1,
+            );
+            result.insert(name.clone(), nested);
         }
     }
 
@@ -679,11 +835,14 @@ fn validate_traits_against_schema(
 
         let has_value = traits_obj.is_some_and(|m| m.contains_key(prop_name.as_str()));
 
-        let has_default = prop_schema
+        // A `const` fully determines the value (materialized by
+        // `materialize_traits`), so it resolves the property just like a
+        // `default` does.
+        let has_default_or_const = prop_schema
             .as_object()
-            .is_some_and(|m| m.contains_key("default"));
+            .is_some_and(|m| m.contains_key("default") || m.contains_key("const"));
 
-        if !has_value && !has_default {
+        if !has_value && !has_default_or_const {
             let expected_type = prop_schema
                 .as_object()
                 .and_then(|m| m.get("type"))
@@ -691,10 +850,10 @@ fn validate_traits_against_schema(
                 .unwrap_or("any");
             errors.push(format!(
                 "trait property '{prop_name}' (type: {expected_type}) is not resolved: \
-                 no value provided and no default defined in the trait schema. \
+                 no value provided and no default or const defined in the trait schema. \
                  All traits must be resolved (via a {X_GTS_TRAITS} value in the chain \
-                 or a `default` in the trait schema) on non-abstract types; otherwise \
-                 mark the type abstract (x-gts-abstract: true)"
+                 or a `default`/`const` in the trait schema) on non-abstract types; \
+                 otherwise mark the type abstract (x-gts-abstract: true)"
             ));
         }
     }
@@ -816,6 +975,106 @@ mod tests {
             ),
         ];
         assert!(validate_traits_chain(&chain).is_ok());
+    }
+
+    #[test]
+    fn test_const_only_required_trait_resolves_and_materializes() {
+        // A required trait whose schema pins a `const` (no default, no explicit
+        // x-gts-traits value) must (a) be materialized into the effective traits
+        // and (b) pass completeness — its value is fully determined by the lock.
+        let schemas = vec![json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "channel": {"type": "string", "const": "audit"}
+            },
+            "required": ["channel"]
+        })];
+        let traits = build_effective_traits(
+            &schemas,
+            &json!({}),
+            Some("http://json-schema.org/draft-07/schema#"),
+        );
+        assert_eq!(
+            traits.values["channel"], "audit",
+            "const must be materialized into effective traits values"
+        );
+        assert!(
+            traits.validate(true).is_ok(),
+            "a const-locked required trait is fully resolved: {:?}",
+            traits.validate(true)
+        );
+    }
+
+    #[test]
+    fn test_const_takes_priority_over_default_in_materialization() {
+        let schemas = vec![json!({
+            "type": "object",
+            "properties": {
+                "mode": {"type": "string", "const": "locked", "default": "open"}
+            }
+        })];
+        let traits = build_effective_traits(&schemas, &json!({}), None);
+        assert_eq!(
+            traits.values["mode"], "locked",
+            "const wins over default when the value is absent"
+        );
+    }
+
+    #[test]
+    fn test_explicit_value_conflicting_with_const_fails() {
+        // An explicit x-gts-traits value is kept as-is (not silently overwritten
+        // by const); JSON Schema validation then reports the conflict.
+        let chain = vec![(
+            "base~".to_owned(),
+            json!({"$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "x-gts-traits-schema": {
+                    "type": "object",
+                    "properties": {"channel": {"type": "string", "const": "audit"}}
+                },
+                "x-gts-traits": {"channel": "events"}
+            }),
+        )];
+        let err = validate_traits_chain(&chain).unwrap_err();
+        assert!(
+            !err.is_empty(),
+            "explicit value conflicting with const must fail validation"
+        );
+    }
+
+    #[test]
+    fn test_ancestor_default_ripples_when_descendant_redeclares_without_default() {
+        // base declares `retention` with a default; a descendant narrows the same
+        // property in its own trait-schema but omits the default. Per gts-spec
+        // §9.7.2 / ADR-0003 the ancestor default does not participate in narrowing
+        // and still ripples down — it must be materialized (nearest existing
+        // default wins), not shadowed by the bare redeclaration.
+        let schemas = vec![
+            json!({
+                "type": "object",
+                "properties": {"retention": {"type": "string", "default": "P30D"}},
+                "required": ["retention"]
+            }),
+            json!({
+                "type": "object",
+                "properties": {"retention": {"type": "string"}}
+            }),
+        ];
+        let traits = build_effective_traits(
+            &schemas,
+            &json!({}),
+            Some("http://json-schema.org/draft-07/schema#"),
+        );
+        assert_eq!(
+            traits.values["retention"], "P30D",
+            "ancestor default must ripple when a descendant redeclares without a default"
+        );
+        assert!(
+            traits.validate(true).is_ok(),
+            "the rippled default resolves the required trait: {:?}",
+            traits.validate(true)
+        );
     }
 
     #[test]
@@ -1607,8 +1866,8 @@ mod tests {
             }
         });
 
-        let effective = build_effective_trait_schema(&[base_ts, mid_ts, leaf_ts]);
-        let materialized = apply_defaults(&effective, &Value::Object(serde_json::Map::new()));
+        let effective = build_effective_traits_schema(&[base_ts, mid_ts, leaf_ts]);
+        let materialized = materialize_traits(&effective, &Value::Object(serde_json::Map::new()));
 
         let retention = materialized
             .as_object()
@@ -1645,10 +1904,10 @@ mod tests {
             }
         });
 
-        let effective = build_effective_trait_schema(&[base_ts, mid_ts, leaf_ts]);
+        let effective = build_effective_traits_schema(&[base_ts, mid_ts, leaf_ts]);
         let mut merged = serde_json::Map::new();
         merged.insert("retention".to_owned(), Value::String("P42D".to_owned()));
-        let materialized = apply_defaults(&effective, &Value::Object(merged));
+        let materialized = materialize_traits(&effective, &Value::Object(merged));
 
         let retention = materialized
             .as_object()
@@ -1695,8 +1954,8 @@ mod tests {
             "null patch should remove the key from merged"
         );
 
-        let effective = build_effective_trait_schema(&[base_ts, leaf_ts]);
-        let materialized = apply_defaults(&effective, &Value::Object(merged));
+        let effective = build_effective_traits_schema(&[base_ts, leaf_ts]);
+        let materialized = materialize_traits(&effective, &Value::Object(merged));
 
         let retention = materialized
             .as_object()
@@ -1707,6 +1966,79 @@ mod tests {
             retention, "P365D",
             "after null delete, materialization must use the leaf-most default; got {retention}"
         );
+    }
+
+    #[test]
+    fn test_build_effective_traits_materializes_and_pins_dialect() {
+        let ts = json!({
+            "type": "object",
+            "properties": { "retention": {"type": "string", "default": "P30D"} }
+        });
+        let merged = json!({});
+        let traits = super::build_effective_traits(
+            std::slice::from_ref(&ts),
+            &merged,
+            Some("http://json-schema.org/draft-07/schema#"),
+        );
+        assert_eq!(
+            traits.schema["$schema"],
+            "http://json-schema.org/draft-07/schema#"
+        );
+        assert_eq!(traits.values["retention"], "P30D"); // default materialized
+    }
+
+    #[test]
+    fn test_validate_trait_values_flags_x_gts_ref_violation() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "topicRef": {"type": "string", "x-gts-ref": "gts.x.core.events.topic.v1~"}
+            }
+        });
+        // A value that does not match the required gts prefix must be reported,
+        // even though the standard jsonschema validator ignores x-gts-ref.
+        let values = json!({ "topicRef": "not-a-gts-id" });
+        let res = super::validate_trait_values(&schema, &values, false);
+        assert!(
+            res.is_err(),
+            "x-gts-ref violation should be reported: {res:?}"
+        );
+    }
+
+    #[test]
+    fn test_inline_local_pointers_resolves_against_root() {
+        let root = json!({
+            "$defs": { "Retention": {"type": "string", "enum": ["P30D"]} },
+            "x-gts-traits-schema": {
+                "type": "object",
+                "properties": { "retention": {"$ref": "#/$defs/Retention"} }
+            }
+        });
+        let fragment = &root["x-gts-traits-schema"];
+        let inlined = super::inline_local_pointers(fragment, &root);
+        let retention = &inlined["properties"]["retention"];
+        assert!(
+            retention.get("$ref").is_none(),
+            "local pointer must be inlined: {retention}"
+        );
+        assert_eq!(retention["enum"], json!(["P30D"]));
+    }
+
+    #[test]
+    fn test_inline_local_pointers_leaves_unresolvable_and_gts_refs_untouched() {
+        let root = json!({ "type": "object" }); // no $defs
+        // A `gts://` ref and an unresolvable `#/...` pointer are both left as-is
+        // (the former is handled later by resolve_schema_refs_checked; the
+        // latter has no target in `root`).
+        let fragment = json!({
+            "allOf": [
+                {"$ref": "gts://gts.x.a.b.v1~"},
+                {"$ref": "#/$defs/Missing"}
+            ]
+        });
+        let inlined = super::inline_local_pointers(&fragment, &root);
+        assert_eq!(inlined["allOf"][0]["$ref"], "gts://gts.x.a.b.v1~");
+        assert_eq!(inlined["allOf"][1]["$ref"], "#/$defs/Missing");
     }
 }
 

@@ -543,7 +543,7 @@ mod tests {
 
     #[test]
     fn test_final_reject_derived_schema() {
-        let mut store = GtsStore::new(None);
+        let mut store = GtsStore::new();
         reg_schema(
             &mut store,
             json!({
@@ -574,7 +574,7 @@ mod tests {
 
     #[test]
     fn test_final_allow_well_known_instance() {
-        let mut store = GtsStore::new(None);
+        let mut store = GtsStore::new();
         reg_schema(
             &mut store,
             json!({
@@ -605,7 +605,7 @@ mod tests {
 
     #[test]
     fn test_final_mid_chain() {
-        let mut store = GtsStore::new(None);
+        let mut store = GtsStore::new();
         reg_schema(
             &mut store,
             json!({
@@ -651,7 +651,7 @@ mod tests {
 
     #[test]
     fn test_final_sibling_unaffected() {
-        let mut store = GtsStore::new(None);
+        let mut store = GtsStore::new();
         reg_schema(
             &mut store,
             json!({
@@ -693,7 +693,7 @@ mod tests {
 
     #[test]
     fn test_final_false_is_noop() {
-        let mut store = GtsStore::new(None);
+        let mut store = GtsStore::new();
         reg_schema(
             &mut store,
             json!({
@@ -728,7 +728,7 @@ mod tests {
 
     #[test]
     fn test_abstract_reject_direct_instance() {
-        let mut store = GtsStore::new(None);
+        let mut store = GtsStore::new();
         reg_schema(
             &mut store,
             json!({
@@ -757,7 +757,7 @@ mod tests {
 
     #[test]
     fn test_abstract_allow_derived_schema() {
-        let mut store = GtsStore::new(None);
+        let mut store = GtsStore::new();
         reg_schema(
             &mut store,
             json!({
@@ -790,7 +790,7 @@ mod tests {
 
     #[test]
     fn test_abstract_allow_instance_of_concrete_derived() {
-        let mut store = GtsStore::new(None);
+        let mut store = GtsStore::new();
         reg_schema(
             &mut store,
             json!({
@@ -835,7 +835,7 @@ mod tests {
 
     #[test]
     fn test_abstract_chain_of_abstracts() {
-        let mut store = GtsStore::new(None);
+        let mut store = GtsStore::new();
         reg_schema(
             &mut store,
             json!({
@@ -900,7 +900,7 @@ mod tests {
 
     #[test]
     fn test_abstract_false_is_noop() {
-        let mut store = GtsStore::new(None);
+        let mut store = GtsStore::new();
         reg_schema(
             &mut store,
             json!({
@@ -929,7 +929,7 @@ mod tests {
 
     #[test]
     fn test_abstract_base_final_derived() {
-        let mut store = GtsStore::new(None);
+        let mut store = GtsStore::new();
         reg_schema(
             &mut store,
             json!({
