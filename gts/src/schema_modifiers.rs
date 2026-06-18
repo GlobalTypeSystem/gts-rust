@@ -122,6 +122,27 @@ pub fn validate_trait_placement(content: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate every GTS extension keyword carried by a *schema* document — both
+/// format and placement:
+/// - `x-gts-final` / `x-gts-abstract`: boolean, mutually exclusive, top-level
+///   only ([`validate_schema_modifiers`]);
+/// - `x-gts-traits` / `x-gts-traits-schema`: top-level only
+///   ([`validate_trait_placement`]).
+///
+/// Pure structural check on raw content (no `$ref` resolution), so it is the
+/// natural companion to ref validation: both gate a schema before any
+/// resolution or cross-schema work. The single entry point used by both the
+/// ingest path and [`crate::store::GtsStore::validate_schema`].
+///
+/// # Errors
+/// Returns the human-readable reason the first malformed or misplaced keyword
+/// fails.
+pub fn validate_gts_keywords(content: &Value) -> Result<(), String> {
+    validate_schema_modifiers(content)?;
+    validate_trait_placement(content)?;
+    Ok(())
+}
+
 /// Check that schema-only keywords (`x-gts-final`, `x-gts-abstract`,
 /// `x-gts-traits-schema`, `x-gts-traits`) do not appear anywhere in instance
 /// content. Per GTS spec § 9.7.1 and § 9.11.1 these annotations are only
@@ -543,7 +564,7 @@ mod tests {
 
     #[test]
     fn test_final_reject_derived_schema() {
-        let mut store = GtsStore::new(None);
+        let mut store = GtsStore::new();
         reg_schema(
             &mut store,
             json!({
@@ -574,7 +595,7 @@ mod tests {
 
     #[test]
     fn test_final_allow_well_known_instance() {
-        let mut store = GtsStore::new(None);
+        let mut store = GtsStore::new();
         reg_schema(
             &mut store,
             json!({
@@ -605,7 +626,7 @@ mod tests {
 
     #[test]
     fn test_final_mid_chain() {
-        let mut store = GtsStore::new(None);
+        let mut store = GtsStore::new();
         reg_schema(
             &mut store,
             json!({
@@ -651,7 +672,7 @@ mod tests {
 
     #[test]
     fn test_final_sibling_unaffected() {
-        let mut store = GtsStore::new(None);
+        let mut store = GtsStore::new();
         reg_schema(
             &mut store,
             json!({
@@ -693,7 +714,7 @@ mod tests {
 
     #[test]
     fn test_final_false_is_noop() {
-        let mut store = GtsStore::new(None);
+        let mut store = GtsStore::new();
         reg_schema(
             &mut store,
             json!({
@@ -728,7 +749,7 @@ mod tests {
 
     #[test]
     fn test_abstract_reject_direct_instance() {
-        let mut store = GtsStore::new(None);
+        let mut store = GtsStore::new();
         reg_schema(
             &mut store,
             json!({
@@ -757,7 +778,7 @@ mod tests {
 
     #[test]
     fn test_abstract_allow_derived_schema() {
-        let mut store = GtsStore::new(None);
+        let mut store = GtsStore::new();
         reg_schema(
             &mut store,
             json!({
@@ -790,7 +811,7 @@ mod tests {
 
     #[test]
     fn test_abstract_allow_instance_of_concrete_derived() {
-        let mut store = GtsStore::new(None);
+        let mut store = GtsStore::new();
         reg_schema(
             &mut store,
             json!({
@@ -835,7 +856,7 @@ mod tests {
 
     #[test]
     fn test_abstract_chain_of_abstracts() {
-        let mut store = GtsStore::new(None);
+        let mut store = GtsStore::new();
         reg_schema(
             &mut store,
             json!({
@@ -900,7 +921,7 @@ mod tests {
 
     #[test]
     fn test_abstract_false_is_noop() {
-        let mut store = GtsStore::new(None);
+        let mut store = GtsStore::new();
         reg_schema(
             &mut store,
             json!({
@@ -929,7 +950,7 @@ mod tests {
 
     #[test]
     fn test_abstract_base_final_derived() {
-        let mut store = GtsStore::new(None);
+        let mut store = GtsStore::new();
         reg_schema(
             &mut store,
             json!({

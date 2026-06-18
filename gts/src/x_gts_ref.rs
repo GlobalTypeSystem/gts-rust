@@ -416,13 +416,19 @@ impl XGtsRefValidator {
         if ref_pattern.starts_with('/') {
             match Self::resolve_pointer(root_schema, ref_pattern) {
                 Some(resolved) => {
-                    if !GtsId::is_valid(&resolved) {
+                    // The resolved target may be a concrete id or a trailing-`*`
+                    // wildcard pattern, exactly like the absolute branch above;
+                    // validate it through the canonical pattern parser so a
+                    // resolved wildcard (e.g. `gts.x.core.*`) is accepted here
+                    // just as a literal one is.
+                    if let Err(e) = GtsIdPattern::try_new(&resolved) {
                         return Some(XGtsRefValidationError::new(
                             field_path.to_owned(),
                             ref_pattern.to_owned(),
                             ref_pattern.to_owned(),
                             format!(
-                                "Resolved reference '{ref_pattern}' -> '{resolved}' is not a valid GTS identifier"
+                                "Resolved reference '{ref_pattern}' -> '{resolved}' is not a valid GTS identifier: {}",
+                                e.cause
                             ),
                         ));
                     }
@@ -616,6 +622,57 @@ mod tests {
 
         let errors = validator.validate_instance(&instance, &schema, "");
         assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_schema_relative_ref_resolving_to_wildcard() {
+        // A relative `x-gts-ref` that resolves to a wildcard pattern must be
+        // accepted, matching the absolute branch (which uses `GtsIdPattern`).
+        // Previously the resolved value was checked with `GtsId::is_valid`,
+        // which rejects wildcards and produced a spurious schema error.
+        let validator = XGtsRefValidator::new();
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "anchor": {
+                    "type": "string",
+                    "x-gts-ref": "gts.x.core.events.topic.*"
+                },
+                "relative": {
+                    "type": "string",
+                    "x-gts-ref": "/properties/anchor"
+                }
+            }
+        });
+
+        let errors = validator.validate_schema(&schema, "", None);
+        assert!(
+            errors.is_empty(),
+            "relative ref resolving to a wildcard must be accepted: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_schema_relative_ref_resolving_to_invalid_still_rejected() {
+        // The pattern parser must still reject a resolved value that is neither
+        // a concrete id nor a valid wildcard pattern.
+        let validator = XGtsRefValidator::new();
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "anchor": {"type": "string", "const": "not a gts id"},
+                "relative": {
+                    "type": "string",
+                    "x-gts-ref": "/properties/anchor/const"
+                }
+            }
+        });
+
+        let errors = validator.validate_schema(&schema, "", None);
+        assert!(
+            !errors.is_empty(),
+            "relative ref resolving to an invalid identifier must be rejected"
+        );
     }
 
     #[test]

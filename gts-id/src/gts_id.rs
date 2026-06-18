@@ -372,6 +372,10 @@ mod tests {
     fn test_gts_id_new_with_uri_prefix() {
         // Should reject gts:// prefix
         assert!(GtsId::try_new("gts://x.core.v1~").is_err());
+        // The `gts:` form without slashes is equally invalid.
+        assert!(GtsId::try_new("gts:x.core.v1~").is_err());
+        // is_valid must agree with try_new on the gts:// form.
+        assert!(!GtsId::is_valid("gts://x.core.v1~"));
     }
 
     #[test]

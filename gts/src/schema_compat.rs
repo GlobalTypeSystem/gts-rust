@@ -20,6 +20,27 @@ pub(crate) struct EffectiveSchema {
     pub additional_properties: Option<Value>,
 }
 
+/// Folds an `additionalProperties` value into an accumulator using a
+/// closedness-preserving lattice: `false` (closed) is strongest, an object
+/// (partial constraint) is in the middle, and `true` (open) is weakest.
+///
+/// This mirrors `allOf` composition, where the schema stays closed if **any**
+/// branch sets `additionalProperties: false`, so a permissive overlay can never
+/// loosen a closed base. Used both when flattening `allOf` during ref
+/// resolution and when extracting the effective schema for compatibility checks.
+pub(crate) fn merge_additional_properties_constraint(
+    current: &mut Option<Value>,
+    candidate: &Value,
+) {
+    match (current.as_ref(), candidate) {
+        (Some(Value::Bool(false)), _) => {}
+        (_, Value::Bool(false)) => *current = Some(Value::Bool(false)),
+        (None | Some(Value::Bool(true)), _) => *current = Some(candidate.clone()),
+        (Some(_), Value::Bool(true)) => {}
+        (Some(_), _) => *current = Some(candidate.clone()),
+    }
+}
+
 /// Extracts the effective schema properties, required fields, and
 /// `additionalProperties` from a fully-resolved JSON Schema value.
 ///
@@ -51,7 +72,7 @@ pub(crate) fn extract_effective_schema(schema: &Value) -> EffectiveSchema {
 
         // additionalProperties
         if let Some(ap) = map.get("additionalProperties") {
-            eff.additional_properties = Some(ap.clone());
+            merge_additional_properties_constraint(&mut eff.additional_properties, ap);
         }
 
         // allOf – merge from all items (for schemas that weren't fully flattened)
@@ -60,8 +81,8 @@ pub(crate) fn extract_effective_schema(schema: &Value) -> EffectiveSchema {
                 let item_eff = extract_effective_schema(item);
                 eff.properties.extend(item_eff.properties);
                 eff.required.extend(item_eff.required);
-                if item_eff.additional_properties.is_some() {
-                    eff.additional_properties = item_eff.additional_properties;
+                if let Some(ap) = item_eff.additional_properties {
+                    merge_additional_properties_constraint(&mut eff.additional_properties, &ap);
                 }
             }
         }
@@ -115,16 +136,14 @@ pub(crate) fn validate_schema_compatibility(
         }
     }
 
-    // Check if derived loosens additionalProperties constraint.
+    // Check if a direct derived schema loosens additionalProperties constraint.
     //
     // Derived "loosens" only when it *explicitly* declares a permissive
-    // `additionalProperties` at its own root. Omitting the keyword is
-    // **not** loosening when derived is composed as
-    // `allOf: [{$ref: closed_base}, overlay]`: across JSON Schema
-    // dialects, `additionalProperties` only inspects sibling
-    // `properties` at the same level — but the base's
-    // `additionalProperties: false` still applies to the same instance
-    // via `$ref`/`allOf` composition, so the contract is inherited.
+    // `additionalProperties` without a closed constraint surviving through
+    // allOf composition. Omitting the keyword, or composing a permissive
+    // overlay with a closed base, is **not** loosening: across JSON Schema
+    // dialects, the base's `additionalProperties: false` still applies to
+    // the same instance via `$ref`/`allOf` composition.
     //
     // The per-property loop above already catches the only structurally
     // dangerous case (derived adds a new top-level property that base
@@ -594,6 +613,28 @@ mod tests {
         assert!(eff.required.contains("y"));
     }
 
+    #[test]
+    fn test_extract_allof_additional_properties_false_wins_over_true() {
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": true,
+            "allOf": [
+                {
+                    "type": "object",
+                    "properties": {"a": {"type": "string"}},
+                    "additionalProperties": false
+                },
+                {
+                    "type": "object",
+                    "properties": {"a": {"type": "string"}},
+                    "additionalProperties": true
+                }
+            ]
+        });
+        let eff = extract_effective_schema(&schema);
+        assert_eq!(eff.additional_properties, Some(Value::Bool(false)));
+    }
+
     // -- validate_schema_compatibility ------------------------------------
 
     #[test]
@@ -751,9 +792,8 @@ mod tests {
 
     #[test]
     fn test_additional_properties_explicit_true_still_loosens() {
-        // Explicit `additionalProperties: true` at derived root *is*
-        // loosening even with allOf+$ref to a closed base, because the
-        // derived author actively asserts a permissive root.
+        // A direct derived schema that has no inherited closed branch and
+        // explicitly says `additionalProperties: true` loosens a closed base.
         let base = extract_effective_schema(&json!({
             "type": "object",
             "properties": {"a": {"type": "string"}},

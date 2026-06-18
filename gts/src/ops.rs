@@ -201,10 +201,14 @@ impl GtsOps {
     #[must_use]
     pub fn new(path: Option<Vec<String>>, config: Option<String>, verbose: usize) -> Self {
         let cfg = Self::load_config(config);
-        let reader: Option<Box<dyn crate::store::GtsReader>> = path.as_ref().map(|p| {
-            Box::new(GtsFileReader::new(p, Some(cfg.clone()))) as Box<dyn crate::store::GtsReader>
-        });
-        let store = GtsStore::new(reader);
+        let store = match path.as_ref() {
+            Some(p) => {
+                let reader = Box::new(GtsFileReader::new(p, Some(cfg.clone())))
+                    as Box<dyn crate::store::GtsReader>;
+                GtsStore::with_reader(reader)
+            }
+            None => GtsStore::new(),
+        };
 
         GtsOps {
             verbose,
@@ -271,7 +275,7 @@ impl GtsOps {
         self.path = Some(path.to_vec());
         let reader = Box::new(GtsFileReader::new(path, Some(self.cfg.clone())))
             as Box<dyn crate::store::GtsReader>;
-        self.store = GtsStore::new(Some(reader));
+        self.store = GtsStore::with_reader(reader);
     }
 
     fn get_details(&mut self, entity: &GtsEntity) -> String {
@@ -343,10 +347,11 @@ impl GtsOps {
             };
         }
 
-        // Validate schema modifiers (x-gts-final, x-gts-abstract): types,
-        // mutual exclusion, and that they appear only at the schema top level.
+        // Validate GTS extension keywords (x-gts-final/x-gts-abstract format and
+        // mutual exclusion; x-gts-traits/x-gts-traits-schema placement) — raw
+        // structural check enforced at every ingest, regardless of `validate`.
         if entity.is_schema
-            && let Err(e) = crate::schema_modifiers::validate_schema_modifiers(&entity.content)
+            && let Err(e) = crate::schema_modifiers::validate_gts_keywords(&entity.content)
         {
             return GtsAddEntityResult {
                 ok: false,
@@ -357,66 +362,32 @@ impl GtsOps {
             };
         }
 
-        // Validate trait keyword placement (x-gts-traits, x-gts-traits-schema):
-        // these are type-level keywords and MUST appear only at the schema top
-        // level — nesting them inside a subschema is rejected (GTS spec §9.7.1/§9.11).
-        if entity.is_schema
-            && let Err(e) = crate::schema_modifiers::validate_trait_placement(&entity.content)
-        {
-            return GtsAddEntityResult {
-                ok: false,
-                id: String::new(),
-                type_id: None,
-                is_type_schema: entity.is_schema,
-                error: e,
+        // Validate schemas. Without `validate` we only check `$ref`/`x-gts-ref`
+        // structure — no dependency resolution, so forward-reference batches can
+        // be registered before their targets exist. With `validate` we run the
+        // full pipeline (refs, chain, resolve, meta-compile, traits) via
+        // `validate_schema`, discarding the resolved artifacts.
+        if entity.is_schema {
+            let validation = if validate {
+                self.store.validate_schema(&entity_id).map(|_| ())
+            } else {
+                self.store.validate_schema_refs(&entity_id)
             };
-        }
-
-        // Always validate schemas
-        if entity.is_schema
-            && let Err(e) = self.store.validate_schema(&entity_id)
-        {
-            return GtsAddEntityResult {
-                ok: false,
-                id: String::new(),
-                type_id: None,
-                is_type_schema: entity.is_schema,
-                error: format!(
-                    "Schema validation failed: {e}\n{}",
-                    self.get_details(&entity)
-                ),
-            };
-        }
-
-        // If validation is requested, run full chain/traits validation for schemas
-        // and instance validation for instances.
-        if validate && entity.is_schema {
-            if let Err(e) = self.store.validate_schema_chain(&entity_id) {
+            if let Err(e) = validation {
                 return GtsAddEntityResult {
                     ok: false,
                     id: String::new(),
                     type_id: None,
                     is_type_schema: entity.is_schema,
                     error: format!(
-                        "Schema chain validation failed: {e}\n{}",
-                        self.get_details(&entity)
-                    ),
-                };
-            }
-            if let Err(e) = self.store.validate_schema_traits(&entity_id) {
-                return GtsAddEntityResult {
-                    ok: false,
-                    id: String::new(),
-                    type_id: None,
-                    is_type_schema: entity.is_schema,
-                    error: format!(
-                        "Schema traits validation failed: {e}\n{}",
+                        "Schema validation failed: {e}\n{}",
                         self.get_details(&entity)
                     ),
                 };
             }
         }
 
+        // Instance validation when requested.
         if validate && !entity.is_schema {
             if let Err(e) = crate::schema_modifiers::validate_instance_modifiers(&entity.content) {
                 return GtsAddEntityResult {
@@ -662,27 +633,11 @@ impl GtsOps {
     }
 
     pub fn validate_schema(&mut self, gts_id: &str) -> GtsValidationResult {
-        // First run basic schema validation (meta-schema, refs, etc.)
-        if let Err(e) = self.store.validate_schema(gts_id) {
-            return GtsValidationResult {
-                id: gts_id.to_owned(),
-                ok: false,
-                error: e.to_string(),
-            };
-        }
-
-        // Then run schema-vs-schema chain validation (OP#12)
-        if let Err(e) = self.store.validate_schema_chain(gts_id) {
-            return GtsValidationResult {
-                id: gts_id.to_owned(),
-                ok: false,
-                error: e.to_string(),
-            };
-        }
-
-        // Then run schema traits validation (OP#13)
-        match self.store.validate_schema_traits(gts_id) {
-            Ok(()) => GtsValidationResult {
+        // Full pipeline lives in `GtsStore::validate_schema` (refs → chain →
+        // resolve → meta-compile → traits); we only need pass/fail here, so the
+        // resolved artifacts are discarded.
+        match self.store.validate_schema(gts_id) {
+            Ok(_) => GtsValidationResult {
                 id: gts_id.to_owned(),
                 ok: true,
                 error: String::new(),
@@ -695,25 +650,77 @@ impl GtsOps {
         }
     }
 
+    /// OP#13 **entity-level** check for `/validate-entity`, stricter than the
+    /// `/validate-type-schema` conformance run (`GtsStore::validate_schema`).
+    /// A GTS Type Schema is a valid standalone entity only if, on top of trait
+    /// conformance:
+    ///
+    /// 1. every `x-gts-traits-schema` in the chain is **closed**
+    ///    (`additionalProperties: false`) — an open trait surface means the type
+    ///    is designed to be extended, not deployed standalone; and
+    /// 2. if any trait-schema is declared, concrete `x-gts-traits` values are
+    ///    actually provided somewhere in the chain.
+    ///
+    /// Abstract types are exempt (templates — descendants close the surface).
+    /// This delta is pinned by the gts-spec conformance suite (the
+    /// `/validate-entity`-only failure cases); the store stays the trait
+    /// resolution/conformance engine and this entity policy lives in ops.
+    ///
+    /// # Errors
+    /// Returns the human-readable reason the type is not a valid standalone
+    /// entity (or a trait-resolution error from the store).
+    fn check_entity_traits(&mut self, gts_id: &str) -> Result<(), String> {
+        // Abstract types are templates — exempt from the standalone-entity check.
+        if self
+            .store
+            .get(gts_id)
+            .is_some_and(|e| GtsStore::content_is_abstract(&e.content))
+        {
+            return Ok(());
+        }
+
+        let traits = self
+            .store
+            .effective_traits(gts_id)
+            .map_err(|e| e.to_string())?;
+
+        if traits.resolved_trait_schemas.is_empty() {
+            return Ok(());
+        }
+
+        // If trait schemas exist but no trait values are provided, the entity
+        // is incomplete.
+        if traits
+            .merged_traits
+            .as_object()
+            .is_none_or(serde_json::Map::is_empty)
+        {
+            return Err(
+                "Entity defines x-gts-traits-schema but no x-gts-traits values are provided"
+                    .to_owned(),
+            );
+        }
+
+        // Each trait schema must be closed (additionalProperties: false).
+        for ts in &traits.resolved_trait_schemas {
+            if let Some(obj) = ts.as_object()
+                && obj.get("additionalProperties") != Some(&Value::Bool(false))
+            {
+                return Err("Entity trait schema must set additionalProperties: false \
+                     to be a valid standalone entity"
+                    .to_owned());
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn validate_entity(&mut self, gts_id: &str) -> GtsEntityValidationResult {
         if gts_id.ends_with('~') {
-            // Validate schema modifiers (x-gts-final, x-gts-abstract): types,
-            // mutual exclusion, and top-level placement.
+            // Validate GTS extension keywords (x-gts-final/x-gts-abstract format
+            // and mutual exclusion; x-gts-traits/x-gts-traits-schema placement).
             if let Some(entity) = self.store.get(gts_id)
-                && let Err(e) = crate::schema_modifiers::validate_schema_modifiers(&entity.content)
-            {
-                return GtsEntityValidationResult {
-                    id: gts_id.to_owned(),
-                    ok: false,
-                    entity_type: "schema".to_owned(),
-                    error: e,
-                };
-            }
-
-            // Validate trait keyword placement (x-gts-traits,
-            // x-gts-traits-schema) — top-level only (GTS spec §9.7.1/§9.11).
-            if let Some(entity) = self.store.get(gts_id)
-                && let Err(e) = crate::schema_modifiers::validate_trait_placement(&entity.content)
+                && let Err(e) = crate::schema_modifiers::validate_gts_keywords(&entity.content)
             {
                 return GtsEntityValidationResult {
                     id: gts_id.to_owned(),
@@ -733,16 +740,15 @@ impl GtsOps {
                 };
             }
 
-            // Entity validation requires trait schemas to be "closed" — i.e.
-            // the effective trait schema must set `additionalProperties: false`.
-            // An open trait schema means the entity is designed to be extended
-            // and is not a valid standalone entity.
-            if let Err(e) = self.store.validate_entity_traits(gts_id) {
+            // Beyond type-schema validation, a standalone entity must have a
+            // closed, resolved trait surface (pinned by the conformance suite's
+            // /validate-entity cases).
+            if let Err(e) = self.check_entity_traits(gts_id) {
                 return GtsEntityValidationResult {
                     id: gts_id.to_owned(),
                     ok: false,
                     entity_type: "schema".to_owned(),
-                    error: e.to_string(),
+                    error: e,
                 };
             }
 
@@ -3696,5 +3702,138 @@ mod tests {
         assert!(result.content.is_some(), "Content should be present");
         assert_eq!(result.id, "gts.test.get.entity.success.v1~");
         assert!(result.is_type_schema);
+    }
+
+    #[test]
+    fn test_op13_entity_traits_abstract_base_skips_completeness() {
+        // gts-spec §9.7.5 / §9.11.4 (ADR-0003): a type marked `x-gts-abstract: true`
+        // is exempt from the entity-level check. It may declare an
+        // `x-gts-traits-schema` without resolving any `x-gts-traits` values —
+        // concrete descendants close the required traits.
+        let mut ops = GtsOps::new(None, None, 0);
+        ops.store
+            .register_schema(
+                "gts.x.test13.abs.base.v1~",
+                &json!({
+                    "$id": "gts://gts.x.test13.abs.base.v1~",
+                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "type": "object",
+                    "x-gts-abstract": true,
+                    "x-gts-traits-schema": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {"topicRef": {"type": "string"}}
+                    },
+                    "properties": {"id": {"type": "string"}}
+                }),
+            )
+            .expect("register abstract base");
+
+        assert!(
+            ops.check_entity_traits("gts.x.test13.abs.base.v1~").is_ok(),
+            "Abstract base must be exempt from the entity-level check"
+        );
+    }
+
+    #[test]
+    fn test_op13_entity_traits_non_abstract_base_without_values_fails() {
+        // A non-abstract type that declares a trait schema but supplies no
+        // `x-gts-traits` values anywhere in its chain is not a standalone entity.
+        let mut ops = GtsOps::new(None, None, 0);
+        ops.store
+            .register_schema(
+                "gts.x.test13.conc.base.v1~",
+                &json!({
+                    "$id": "gts://gts.x.test13.conc.base.v1~",
+                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "type": "object",
+                    "x-gts-traits-schema": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {"topicRef": {"type": "string"}}
+                    },
+                    "properties": {"id": {"type": "string"}}
+                }),
+            )
+            .expect("register concrete base");
+
+        assert!(
+            ops.check_entity_traits("gts.x.test13.conc.base.v1~")
+                .is_err(),
+            "Non-abstract base with no trait values must fail the entity check"
+        );
+    }
+
+    #[test]
+    fn test_op13_entity_traits_open_schema_not_standalone() {
+        // A trait schema that is not closed (no `additionalProperties: false`)
+        // signals the type is designed to be extended, not deployed standalone —
+        // even when concrete trait values are supplied.
+        let mut ops = GtsOps::new(None, None, 0);
+        ops.store
+            .register_schema(
+                "gts.x.test13.open.base.v1~",
+                &json!({
+                    "$id": "gts://gts.x.test13.open.base.v1~",
+                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "type": "object",
+                    "x-gts-traits-schema": {
+                        "type": "object",
+                        "properties": {"topicRef": {"type": "string"}}
+                    },
+                    "x-gts-traits": {"topicRef": "events"},
+                    "properties": {"id": {"type": "string"}}
+                }),
+            )
+            .expect("register open base");
+
+        assert!(
+            ops.check_entity_traits("gts.x.test13.open.base.v1~")
+                .is_err(),
+            "Open trait schema (no additionalProperties:false) is not a valid standalone entity"
+        );
+    }
+
+    #[test]
+    fn test_op13_entity_traits_closedness_via_referenced_schema() {
+        // The closed trait surface comes through an allOf + $ref to another GTS
+        // type whose body carries `additionalProperties: false`. The allOf-merge
+        // must propagate `additionalProperties` so the standalone-entity check
+        // does not wrongly reject this valid closed referenced schema.
+        let mut ops = GtsOps::new(None, None, 0);
+        ops.store
+            .register_schema(
+                "gts.x.test13.refclosed.traitdef.v1~",
+                &json!({
+                    "$id": "gts://gts.x.test13.refclosed.traitdef.v1~",
+                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "type": "object",
+                    "properties": {"topicRef": {"type": "string"}},
+                    "additionalProperties": false
+                }),
+            )
+            .expect("register trait def");
+        ops.store
+            .register_schema(
+                "gts.x.test13.refclosed.base.v1~",
+                &json!({
+                    "$id": "gts://gts.x.test13.refclosed.base.v1~",
+                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "type": "object",
+                    "x-gts-traits-schema": {
+                        "type": "object",
+                        "allOf": [{"$ref": "gts://gts.x.test13.refclosed.traitdef.v1~"}]
+                    },
+                    "x-gts-traits": {"topicRef": "events"},
+                    "properties": {"id": {"type": "string"}}
+                }),
+            )
+            .expect("register base");
+
+        assert!(
+            ops.check_entity_traits("gts.x.test13.refclosed.base.v1~")
+                .is_ok(),
+            "closed trait schema reached via allOf + $ref must be accepted"
+        );
     }
 }

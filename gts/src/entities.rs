@@ -217,7 +217,8 @@ impl GtsEntity {
 
     /// Extract IDs for a schema entity (Type Schema).
     /// - `gts_id`: from `$id` field (must be `gts://` URI with GTS Type Identifier)
-    /// - `type_id`: either the type itself (if standalone) or parent type (if chained)
+    /// - `type_id`: the parent type for a chained (derived) schema; `None` for a
+    ///   standalone (single-segment) Type Schema
     /// - `instance_id`: same as the extracted GTS ID
     fn extract_type_ids(&mut self, cfg: &GtsConfig) {
         // Extract GTS ID from $id field
@@ -937,6 +938,32 @@ mod tests {
         );
 
         assert!(entity.selected_type_id_field.is_some());
+    }
+
+    #[test]
+    fn test_chained_type_schema_derives_parent_type_id() {
+        // A derived (chained) Type Schema: type_id is the parent (all segments
+        // except the last) and is sourced from the `$id` field.
+        let content = json!({
+            "$id": "gts://gts.x.core.ns.base.v1~x.core._.derived.v1~",
+            "$schema": "http://json-schema.org/draft-07/schema#"
+        });
+
+        let cfg = GtsConfig::default();
+        let entity = GtsEntity::new(
+            None,
+            None,
+            &content,
+            Some(&cfg),
+            None,
+            false,
+            String::new(),
+            None,
+            None,
+        );
+
+        assert_eq!(entity.type_id, Some("gts.x.core.ns.base.v1~".to_owned()));
+        assert_eq!(entity.selected_type_id_field, Some("$id".to_owned()));
     }
 
     #[test]

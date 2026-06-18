@@ -8,6 +8,7 @@ pub mod schema_cast;
 pub mod schema_compat;
 pub mod schema_modifiers;
 pub mod schema_narrow;
+pub mod schema_refs;
 pub mod schema_traits;
 pub mod store;
 #[doc(hidden)]
@@ -32,6 +33,7 @@ pub use schema::{
 };
 pub use schema_cast::{GtsEntityCastResult, SchemaCastError};
 pub use schema_narrow::{NarrowError, try_narrow};
+pub use schema_refs::{ExtractRefsError, InvalidRefReason, extract_gts_refs};
 pub use schema_traits::{GtsTraitsSchema, inline_traits_schema_of};
-pub use store::{GtsReader, GtsStore, GtsStoreQueryResult, StoreError};
+pub use store::{GtsReader, GtsStore, GtsStoreQueryResult, ResolvedType, StoreError};
 pub use x_gts_ref::{XGtsRefValidationError, XGtsRefValidator};
