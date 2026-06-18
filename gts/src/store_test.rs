@@ -4894,3 +4894,154 @@ fn test_trait_schema_cross_doc_fragment_ref_does_not_break_validation() {
         "ancestor enum constraint must still be enforced"
     );
 }
+
+#[test]
+fn test_validate_schema_accepts_gts_ref_with_pointer_fragment() {
+    // A GTS `$ref` carrying a JSON Pointer fragment (e.g. selecting a
+    // sub-schema of the target) is supported by the resolver and by
+    // `extract_gts_refs`; `validate_schema` must accept it too rather than
+    // rejecting the whole `id#fragment` string as an invalid type id.
+    let mut store = GtsStore::new();
+
+    store
+        .register_schema(
+            "gts.vendor.package.namespace.base.v1.0~",
+            &json!({
+                "$id": "gts://gts.vendor.package.namespace.base.v1.0~",
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "properties": {"name": {"type": "string"}}
+            }),
+        )
+        .expect("register base");
+
+    store
+        .register_schema(
+            "gts.vendor.package.namespace.type.v1.0~",
+            &json!({
+                "$id": "gts://gts.vendor.package.namespace.type.v1.0~",
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "properties": {
+                    "inner": {
+                        "$ref": "gts://gts.vendor.package.namespace.base.v1.0~#/properties/name"
+                    }
+                }
+            }),
+        )
+        .expect("register type");
+
+    store
+        .validate_schema("gts.vendor.package.namespace.type.v1.0~")
+        .expect("fragment $ref must validate");
+}
+
+#[test]
+fn test_validate_schema_rejects_gts_ref_with_non_pointer_fragment() {
+    // Only an empty fragment or a `/`-prefixed JSON Pointer is supported; a
+    // bare anchor fragment the resolver cannot dereference must be rejected.
+    let mut store = GtsStore::new();
+    store
+        .register_schema(
+            "gts.vendor.package.namespace.type.v1.0~",
+            &json!({
+                "$id": "gts://gts.vendor.package.namespace.type.v1.0~",
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "properties": {
+                    "inner": {
+                        "$ref": "gts://gts.vendor.package.namespace.base.v1.0~#anchor"
+                    }
+                }
+            }),
+        )
+        .expect("register type");
+
+    assert!(matches!(
+        store.validate_schema("gts.vendor.package.namespace.type.v1.0~"),
+        Err(StoreError::InvalidRef(_))
+    ));
+}
+
+#[test]
+fn test_validate_and_resolve_meta_validates_resolved_schema() {
+    // `validate_schema` skips jsonschema compilation when raw `gts://` refs are
+    // present, so a structurally malformed body slips past registration-time
+    // checks. `validate_and_resolve_type_schema` must compile the fully-resolved
+    // schema and reject it.
+    let mut store = GtsStore::new();
+
+    store
+        .register_schema(
+            "gts.vendor.package.namespace.dep.v1.0~",
+            &json!({
+                "$id": "gts://gts.vendor.package.namespace.dep.v1.0~",
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "properties": {"d": {"type": "string"}}
+            }),
+        )
+        .expect("register dep");
+
+    // `"type": 123` is invalid per the JSON Schema meta-schema.
+    let malformed = json!({
+        "$id": "gts://gts.vendor.package.namespace.type.v1.0~",
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+            "ref": {"$ref": "gts://gts.vendor.package.namespace.dep.v1.0~"},
+            "bad": {"type": 123}
+        }
+    });
+    store
+        .register_schema("gts.vendor.package.namespace.type.v1.0~", &malformed)
+        .expect("register type");
+
+    // Registration-time validation skips compilation because of the gts:// ref.
+    store
+        .validate_schema("gts.vendor.package.namespace.type.v1.0~")
+        .expect("validate_schema skips compilation for gts:// schemas");
+
+    // But the single-pass API now compiles the resolved schema and rejects it.
+    assert!(matches!(
+        store.validate_and_resolve_type_schema("gts.vendor.package.namespace.type.v1.0~"),
+        Err(StoreError::ValidationError(_))
+    ));
+}
+
+#[test]
+fn test_validate_and_resolve_accepts_well_formed_gts_ref_schema() {
+    // The added meta-validation must not reject a structurally valid schema
+    // whose only `gts://` dependency is registered.
+    let mut store = GtsStore::new();
+
+    store
+        .register_schema(
+            "gts.vendor.package.namespace.dep.v1.0~",
+            &json!({
+                "$id": "gts://gts.vendor.package.namespace.dep.v1.0~",
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "properties": {"d": {"type": "string"}}
+            }),
+        )
+        .expect("register dep");
+
+    store
+        .register_schema(
+            "gts.vendor.package.namespace.type.v1.0~",
+            &json!({
+                "$id": "gts://gts.vendor.package.namespace.type.v1.0~",
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "properties": {
+                    "ref": {"$ref": "gts://gts.vendor.package.namespace.dep.v1.0~"}
+                }
+            }),
+        )
+        .expect("register type");
+
+    store
+        .validate_and_resolve_type_schema("gts.vendor.package.namespace.type.v1.0~")
+        .expect("well-formed schema must validate and resolve");
+}

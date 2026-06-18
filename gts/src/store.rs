@@ -128,7 +128,9 @@ pub struct GtsStoreQueryResult {
 /// A pure value computed from store contents — the library holds **no cache**
 /// of these. Because schemas are append-only by versioned id (a new version is
 /// a new `type_id`), a `ResolvedType` is safe for a *consumer* to cache forever
-/// keyed by `type_id`.
+/// keyed by `type_id`. Note this relies on callers honoring id immutability:
+/// `register_schema` does not itself reject re-registering an existing id, so a
+/// consumer that overwrites ids in place must invalidate its own cache.
 #[derive(Debug, Clone)]
 pub struct ResolvedTypeSchema {
     /// Type body with all `#/` and `gts://` `$ref`s inlined.
@@ -705,10 +707,30 @@ impl GtsStore {
                     // and then fail later during retrieval. Require a type id up
                     // front via `GtsTypeId::try_new` (valid GTS id ending in `~`).
                     else if let Some(gts_id) = ref_uri.strip_prefix(GTS_URI_PREFIX) {
-                        if crate::GtsTypeId::try_new(gts_id).is_err() {
+                        // A GTS `$ref` may carry a JSON Pointer fragment that
+                        // selects a sub-schema of the target document (e.g.
+                        // `gts://...~#/x-gts-traits-schema`). Validate the id
+                        // portion as a type id and require any fragment to be
+                        // empty or a `/`-prefixed JSON Pointer - the exact shapes
+                        // `resolve_schema_refs_inner` is able to dereference.
+                        let (id_part, fragment) = match gts_id.split_once('#') {
+                            Some((id, frag)) => (id, Some(frag)),
+                            None => (gts_id, None),
+                        };
+                        if crate::GtsTypeId::try_new(id_part).is_err() {
                             return Err(StoreError::InvalidRef(format!(
                                 "at '{current_path}': '{ref_uri}' must reference a GTS type id \
-                                 (a valid identifier ending with '~'), got '{gts_id}'"
+                                 (a valid identifier ending with '~'), got '{id_part}'"
+                            )));
+                        }
+                        if let Some(frag) = fragment
+                            && !frag.is_empty()
+                            && !frag.starts_with('/')
+                        {
+                            return Err(StoreError::InvalidRef(format!(
+                                "at '{current_path}': '{ref_uri}' has an unsupported fragment \
+                                 '#{frag}'; only an empty fragment or a '/'-prefixed JSON Pointer \
+                                 is allowed"
                             )));
                         }
                     }
@@ -1080,6 +1102,22 @@ impl GtsStore {
         let resolved_schema = self
             .resolve_schema_refs_checked(&content)
             .map_err(|e| StoreError::ValidationError(format!("Schema '{type_id}' has {e}")))?;
+
+        // Meta-validate the fully-resolved schema. `validate_schema` skips
+        // jsonschema compilation whenever raw `gts://` refs are present (forward
+        // references may be unregistered at registration time); now that every
+        // dependency is inlined we can compile the structure that registration
+        // deferred and catch malformed schema bodies outside the refs.
+        let mut schema_for_validation = Self::remove_x_gts_ref_fields(&resolved_schema);
+        if let Value::Object(ref mut map) = schema_for_validation {
+            map.remove("$id");
+            map.remove("$schema");
+        }
+        jsonschema::validator_for(&schema_for_validation).map_err(|e| {
+            StoreError::ValidationError(format!(
+                "JSON Schema validation failed for '{type_id}': {e}"
+            ))
+        })?;
 
         // Abstract types still produce artifacts but skip the completeness check.
         let is_abstract = Self::content_is_abstract(&content);

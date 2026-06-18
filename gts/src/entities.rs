@@ -217,7 +217,8 @@ impl GtsEntity {
 
     /// Extract IDs for a schema entity (Type Schema).
     /// - `gts_id`: from `$id` field (must be `gts://` URI with GTS Type Identifier)
-    /// - `type_id`: either the type itself (if standalone) or parent type (if chained)
+    /// - `type_id`: the parent type for a chained (derived) schema; `None` for a
+    ///   standalone (single-segment) Type Schema
     /// - `instance_id`: same as the extracted GTS ID
     fn extract_type_ids(&mut self, cfg: &GtsConfig) {
         // Extract GTS ID from $id field
