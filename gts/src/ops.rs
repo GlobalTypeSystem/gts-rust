@@ -703,15 +703,11 @@ impl GtsOps {
             );
         }
 
-        // Each trait schema must be closed: an object with
-        // `additionalProperties: false`. A boolean schema is not closed and must
-        // be rejected, not silently skipped by an `as_object()` guard.
+        // Each trait schema must be closed: `additionalProperties: false` at the
+        // top level or within any `allOf` branch. A boolean schema is not closed
+        // and must be rejected, not silently skipped by an `as_object()` guard.
         for ts in &traits.resolved_trait_schemas {
-            let closed = matches!(
-                ts.as_object(),
-                Some(obj) if obj.get("additionalProperties") == Some(&Value::Bool(false))
-            );
-            if !closed {
+            if !Self::trait_schema_is_closed(ts) {
                 return Err("Entity trait schema must set additionalProperties: false \
                      to be a valid standalone entity"
                     .to_owned());
@@ -719,6 +715,33 @@ impl GtsOps {
         }
 
         Ok(())
+    }
+
+    /// `true` when a resolved trait schema closes its surface with
+    /// `additionalProperties: false` — at the top level or in any `allOf` branch
+    /// (the resolver preserves `allOf`, so closedness reached via
+    /// `allOf: [{$ref closed_type}]` lives inside a branch).
+    fn trait_schema_is_closed(schema: &Value) -> bool {
+        Self::trait_schema_is_closed_rec(schema, 0)
+    }
+
+    fn trait_schema_is_closed_rec(schema: &Value, depth: usize) -> bool {
+        // Bound recursion to guard against a pathological `allOf` nesting.
+        const MAX_DEPTH: usize = 64;
+        if depth >= MAX_DEPTH {
+            return false;
+        }
+        let Some(obj) = schema.as_object() else {
+            return false;
+        };
+        if obj.get("additionalProperties") == Some(&Value::Bool(false)) {
+            return true;
+        }
+        matches!(
+            obj.get("allOf"),
+            Some(Value::Array(branches))
+                if branches.iter().any(|b| Self::trait_schema_is_closed_rec(b, depth + 1))
+        )
     }
 
     pub fn validate_entity(&mut self, gts_id: &str) -> GtsEntityValidationResult {
@@ -3803,9 +3826,10 @@ mod tests {
     #[test]
     fn test_op13_entity_traits_closedness_via_referenced_schema() {
         // The closed trait surface comes through an allOf + $ref to another GTS
-        // type whose body carries `additionalProperties: false`. The allOf-merge
-        // must propagate `additionalProperties` so the standalone-entity check
-        // does not wrongly reject this valid closed referenced schema.
+        // type whose body carries `additionalProperties: false`. The resolver
+        // preserves the `allOf` (inlining the `$ref` in place), so the
+        // standalone-entity closedness check must see through `allOf` branches
+        // rather than expecting a flattened top-level `additionalProperties`.
         let mut ops = GtsOps::new(None, None, 0);
         ops.store
             .register_schema(
@@ -3840,6 +3864,73 @@ mod tests {
             ops.check_entity_traits("gts.x.test13.refclosed.base.v1~")
                 .is_ok(),
             "closed trait schema reached via allOf + $ref must be accepted"
+        );
+    }
+
+    #[test]
+    fn test_op13_entity_traits_boolean_schema_rejected() {
+        // A boolean `x-gts-traits-schema` (here `true`) carries no
+        // `additionalProperties: false`, so it is not closed and must be
+        // rejected — not silently skipped by the `as_object()` guard in
+        // `trait_schema_is_closed_rec`.
+        let mut ops = GtsOps::new(None, None, 0);
+        ops.store
+            .register_schema(
+                "gts.x.test13.boolean.base.v1~",
+                &json!({
+                    "$id": "gts://gts.x.test13.boolean.base.v1~",
+                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "type": "object",
+                    "x-gts-traits-schema": true,
+                    "x-gts-traits": {"topicRef": "events"},
+                    "properties": {"id": {"type": "string"}}
+                }),
+            )
+            .expect("register boolean-trait base");
+
+        let err = ops
+            .check_entity_traits("gts.x.test13.boolean.base.v1~")
+            .expect_err("a boolean trait schema is not closed and must be rejected");
+        assert!(
+            err.contains("additionalProperties"),
+            "error must explain the closedness requirement, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_entity_reports_trait_failure() {
+        // The public `validate_entity` path must surface a `check_entity_traits`
+        // failure as `ok: false` with the explanatory error — not just return
+        // `ok: true` for the happy path. An open trait schema (no
+        // `additionalProperties: false`) with concrete trait values passes
+        // type-schema validation but is not a valid standalone entity.
+        let mut ops = GtsOps::new(None, None, 0);
+        ops.store
+            .register_schema(
+                "gts.x.test13.validate.open.v1~",
+                &json!({
+                    "$id": "gts://gts.x.test13.validate.open.v1~",
+                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "type": "object",
+                    "x-gts-traits-schema": {
+                        "type": "object",
+                        "properties": {"topicRef": {"type": "string"}}
+                    },
+                    "x-gts-traits": {"topicRef": "events"},
+                    "properties": {"id": {"type": "string"}}
+                }),
+            )
+            .expect("register open base");
+
+        let result = ops.validate_entity("gts.x.test13.validate.open.v1~");
+        assert!(
+            !result.ok,
+            "an open trait schema must fail validate_entity, got ok=true"
+        );
+        assert!(
+            result.error.contains("additionalProperties"),
+            "validate_entity must surface the closedness error, got: {}",
+            result.error
         );
     }
 }

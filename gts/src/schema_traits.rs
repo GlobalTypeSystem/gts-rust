@@ -776,6 +776,32 @@ fn collect_required_recursive(
     }
 }
 
+/// Return a clone of `schema` with every `required` constraint removed from the
+/// root object and from each `allOf` branch — mirroring [`collect_all_required`]'s
+/// traversal. Used for abstract-type trait validation, where required-trait
+/// completeness is deferred to descendants but the declared types of *provided*
+/// trait values must still be enforced.
+fn schema_without_required(schema: &Value) -> Value {
+    let mut out = schema.clone();
+    strip_required_recursive(&mut out, 0);
+    out
+}
+
+fn strip_required_recursive(schema: &mut Value, depth: usize) {
+    if depth >= MAX_RECURSION_DEPTH {
+        return;
+    }
+    let Some(obj) = schema.as_object_mut() else {
+        return;
+    };
+    obj.remove("required");
+    if let Some(Value::Array(all_of)) = obj.get_mut("allOf") {
+        for item in all_of {
+            strip_required_recursive(item, depth + 1);
+        }
+    }
+}
+
 /// Validate the effective traits object against the effective trait schema.
 ///
 /// Uses the `jsonschema` crate for standard JSON Schema validation.  This
@@ -792,8 +818,22 @@ fn validate_traits_against_schema(
 ) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
 
+    // For abstract types (`check_unresolved == false`) required-trait
+    // completeness is deferred to descendants, so a missing required trait must
+    // not fail here. Standard JSON Schema enforces `required` regardless of the
+    // completeness loop below, so strip `required` from the validation schema in
+    // that case — the type/enum/etc. constraints on values that ARE present
+    // still apply.
+    let stripped;
+    let validation_schema: &Value = if check_unresolved {
+        trait_schema
+    } else {
+        stripped = schema_without_required(trait_schema);
+        &stripped
+    };
+
     // Standard JSON Schema validation of the traits object
-    match jsonschema::validator_for(trait_schema) {
+    match jsonschema::validator_for(validation_schema) {
         Ok(validator) => {
             for error in validator.iter_errors(effective_traits) {
                 errors.push(format!("trait validation: {error}"));

@@ -101,6 +101,11 @@ fn classify_ref(ref_uri: &str) -> Result<RefKind<'_>, InvalidRefReason> {
 /// NOT include the `$id`-chain parent - that edge is derived structurally from
 /// the id, not from content.
 ///
+/// This is the **canonical, strict** ref definition for validation/resolution.
+/// The lenient `GtsEntity` walkers (`extract_gts_ids_with_paths`,
+/// `extract_ref_strings_with_paths`) feed the dependency graph / display
+/// instead and intentionally diverge — they must not be conflated with this.
+///
 /// # Errors
 /// [`ExtractRefsError::InvalidRef`] if a `$ref` is not a valid GTS reference
 /// (see [`InvalidRefReason`]); [`ExtractRefsError::TooDeep`] if the schema nests past

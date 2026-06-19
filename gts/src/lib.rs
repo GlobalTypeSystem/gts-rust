@@ -9,6 +9,7 @@ pub mod schema_compat;
 pub mod schema_modifiers;
 pub mod schema_narrow;
 pub mod schema_refs;
+pub mod schema_resolver;
 pub mod schema_traits;
 pub mod store;
 #[doc(hidden)]

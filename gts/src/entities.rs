@@ -493,6 +493,10 @@ impl GtsEntity {
         result
     }
 
+    /// Lenient, path-tracking discovery of every GTS-id-shaped string (not just
+    /// `$ref`s) for the dependency graph / display ([`Self::gts_refs`]).
+    /// Deliberately broader and non-failing — NOT the canonical resolvable-ref
+    /// definition ([`crate::schema_refs::extract_gts_refs`]); the two diverge.
     fn extract_gts_ids_with_paths(&self) -> Vec<GtsRef> {
         let mut found = Vec::new();
 
@@ -516,6 +520,11 @@ impl GtsEntity {
         Self::deduplicate_by_id_and_path(found)
     }
 
+    /// Lenient, path-tracking collection of every `$ref` literal (external
+    /// `gts://` refs normalized + local `#/...` pointers) for display
+    /// ([`Self::schema_refs`]). Looser and non-failing, like
+    /// [`Self::extract_gts_ids_with_paths`] — not the canonical
+    /// [`crate::schema_refs::extract_gts_refs`] used for validation/resolution.
     fn extract_ref_strings_with_paths(&self) -> Vec<GtsRef> {
         let mut refs = Vec::new();
 
@@ -1575,5 +1584,47 @@ mod tests {
         );
         assert!(entity.instance_id.is_none());
         assert!(entity.gts_id.is_none());
+    }
+
+    #[test]
+    fn test_schema_with_instance_style_id_is_not_keyed_as_type() {
+        // A Type Schema must be keyed by a *type* id (ending in `~`). A schema
+        // whose `$id` parses as a valid GTS id but is *instance-style* (no
+        // trailing `~`) must hit the `is_type()` guard in `extract_type_ids`
+        // and NOT be adopted as the entity's type id — otherwise an
+        // instance-keyed `$id` would masquerade as a type.
+        let content = json!({
+            "$id": "gts://gts.vendor.package.namespace.type.v1.0~a.b.c.d.v1",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object"
+        });
+
+        let cfg = GtsConfig::default();
+        let entity = GtsEntity::new(
+            None,
+            None,
+            &content,
+            Some(&cfg),
+            None,
+            true,
+            String::new(),
+            None,
+            None,
+        );
+
+        assert!(entity.is_schema, "the $schema field makes this a schema");
+        assert!(
+            entity.gts_id.is_none(),
+            "an instance-style $id must not be adopted as a type id"
+        );
+        assert_ne!(
+            entity.selected_entity_field.as_deref(),
+            Some("$id"),
+            "the instance-style $id must not be selected as the entity id"
+        );
+        assert!(
+            entity.effective_id().is_none(),
+            "the schema must not be keyed by an instance-style $id"
+        );
     }
 }
