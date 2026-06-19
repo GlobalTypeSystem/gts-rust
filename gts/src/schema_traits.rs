@@ -673,16 +673,16 @@ fn materialize_traits_recursive(trait_schema: &Value, traits: &Value, depth: usi
             } else if let Some(default_val) = nearest_default {
                 result.insert(name.clone(), default_val.clone());
             }
-        } else if prop_schema.as_object().is_some_and(|o| {
-            o.get("type") == Some(&Value::String("object".to_owned()))
-                && o.contains_key("properties")
-        }) {
-            // Property is present and is an object type with sub-properties —
-            // recurse to materialize nested const/default values.  If the input
-            // value is a non-object (e.g. a string where the schema expects an
-            // object), the recursion will produce a materialized object that
-            // replaces the original value; JSON Schema validation will catch the
-            // type mismatch later, so this is intentional.
+        } else if result.get(name.as_str()).is_some_and(Value::is_object)
+            && prop_schema.as_object().is_some_and(|o| {
+                o.get("type") == Some(&Value::String("object".to_owned()))
+                    && o.contains_key("properties")
+            })
+        {
+            // Present value is an object and the schema declares an object with
+            // sub-properties — recurse to materialize nested const/default. We
+            // skip recursion for a non-object value so a freshly materialized
+            // object doesn't mask the type error from later validation.
             let nested = materialize_traits_recursive(
                 prop_schema,
                 result.get(name.as_str()).unwrap_or(&Value::Null),

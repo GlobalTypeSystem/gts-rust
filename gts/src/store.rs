@@ -469,14 +469,16 @@ impl GtsStore {
                                 return resolved;
                             }
 
-                            // Otherwise, merge the resolved schema with the
-                            // sibling keywords.
+                            // Otherwise combine the resolved schema with the
+                            // siblings via `allOf`. A last-wins merge would let a
+                            // sibling drop or loosen the target's constraints
+                            // (e.g. `required`, `additionalProperties`).
                             match resolved {
                                 Value::Object(resolved_map) => {
-                                    let mut merged = resolved_map;
+                                    let mut siblings = serde_json::Map::new();
                                     for (k, v) in map {
                                         if k != "$ref" {
-                                            merged.insert(
+                                            siblings.insert(
                                                 k.clone(),
                                                 self.resolve_schema_refs_inner(
                                                     v,
@@ -487,6 +489,17 @@ impl GtsStore {
                                             );
                                         }
                                     }
+                                    if siblings.is_empty() {
+                                        return Value::Object(resolved_map);
+                                    }
+                                    let mut merged = serde_json::Map::new();
+                                    merged.insert(
+                                        "allOf".to_owned(),
+                                        Value::Array(vec![
+                                            Value::Object(resolved_map),
+                                            Value::Object(siblings),
+                                        ]),
+                                    );
                                     return Value::Object(merged);
                                 }
                                 // Non-object target (e.g. a boolean schema via

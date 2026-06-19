@@ -148,6 +148,11 @@ fn collect_gts_refs(
                 if key == "$ref" {
                     continue; // already classified above
                 }
+                // Data-valued keywords carry instance data, not subschemas, so a
+                // `$ref` nested inside them is literal data, not a dependency edge.
+                if matches!(key.as_str(), "const" | "default" | "examples" | "enum") {
+                    continue;
+                }
                 let nested = if path.is_empty() {
                     key.clone()
                 } else {
@@ -224,6 +229,26 @@ mod tests {
             "x-gts-traits-schema": {"type": "object"}
         });
         assert!(extract_gts_refs(&schema).unwrap().is_empty());
+    }
+
+    #[test]
+    fn extract_gts_refs_ignores_data_valued_keywords() {
+        // A `$ref` inside `const`/`default`/`examples`/`enum` is data, not a
+        // dependency edge, so it must not be classified even when malformed.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "a": {"const": {"$ref": "not-a-schema-ref"}},
+                "b": {"default": {"nested": {"$ref": "also-not-a-ref"}}},
+                "c": {"enum": [{"$ref": "still-data"}]},
+                "d": {"examples": [{"$ref": "example-data"}]},
+                // A real schema ref alongside the data must still be found.
+                "e": {"$ref": "gts://gts.x.dep.ns.real.v1~"}
+            }
+        });
+        let refs = extract_gts_refs(&schema).unwrap();
+        let expected: BTreeSet<String> = ["gts.x.dep.ns.real.v1~".to_owned()].into_iter().collect();
+        assert_eq!(refs, expected);
     }
 
     #[test]

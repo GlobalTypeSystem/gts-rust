@@ -238,6 +238,10 @@ impl GtsEntity {
 
                 let normalized = trimmed.strip_prefix(GTS_URI_PREFIX).unwrap_or(trimmed);
                 if let Ok(gts_id) = GtsId::try_new(normalized) {
+                    // A Type Schema must be keyed by a type id (ending in `~`).
+                    if !gts_id.is_type() {
+                        return;
+                    }
                     self.gts_id = Some(gts_id);
                     self.instance_id = Some(normalized.to_owned());
                     self.selected_entity_field = Some("$id".to_owned());

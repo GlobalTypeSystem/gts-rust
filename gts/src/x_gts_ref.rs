@@ -499,6 +499,17 @@ impl XGtsRefValidator {
     /// Note: For `/$id` references, the `gts://` prefix is stripped from the value
     /// as per GTS specification (relative self-reference should match the $id without the prefix).
     fn resolve_pointer(schema: &Value, pointer: &str) -> Option<String> {
+        Self::resolve_pointer_inner(schema, pointer, 0)
+    }
+
+    /// Depth-guarded pointer resolution: relative `x-gts-ref` hops recurse here,
+    /// and a self-referential chain would overflow the stack without the cap.
+    fn resolve_pointer_inner(schema: &Value, pointer: &str, depth: usize) -> Option<String> {
+        const MAX_POINTER_DEPTH: usize = 64;
+        if depth > MAX_POINTER_DEPTH {
+            return None;
+        }
+
         let path = pointer.trim_start_matches('/');
         if path.is_empty() {
             return None;
@@ -525,7 +536,7 @@ impl XGtsRefValidator {
             && let Some(ref_str) = ref_value.as_str()
         {
             if ref_str.starts_with('/') {
-                return Self::resolve_pointer(schema, ref_str);
+                return Self::resolve_pointer_inner(schema, ref_str, depth + 1);
             }
             return Some(ref_str.to_owned());
         }
@@ -1045,6 +1056,32 @@ mod tests {
         assert_eq!(
             XGtsRefValidator::resolve_pointer(&schema, "/type"),
             Some("gts.x.another._.type.v1~".to_owned())
+        );
+    }
+
+    #[test]
+    fn test_resolve_pointer_self_cycle_terminates() {
+        // A cyclic relative x-gts-ref must terminate with None, not overflow.
+        let schema = json!({
+            "properties": {
+                "a": { "x-gts-ref": "/properties/a" }
+            }
+        });
+        assert_eq!(
+            XGtsRefValidator::resolve_pointer(&schema, "/properties/a"),
+            None
+        );
+
+        // Two-node cycle: a -> b -> a.
+        let schema = json!({
+            "properties": {
+                "a": { "x-gts-ref": "/properties/b" },
+                "b": { "x-gts-ref": "/properties/a" }
+            }
+        });
+        assert_eq!(
+            XGtsRefValidator::resolve_pointer(&schema, "/properties/a"),
+            None
         );
     }
 

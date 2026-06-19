@@ -333,7 +333,24 @@ impl GtsOps {
             };
         };
 
-        // Register the entity first
+        // Validate GTS extension keywords (x-gts-final/x-gts-abstract format and
+        // mutual exclusion; x-gts-traits/x-gts-traits-schema placement) — raw
+        // structural check enforced at every ingest, regardless of `validate`.
+        // Pure check, so run it before `register` to avoid leaving a malformed
+        // schema in the store.
+        if entity.is_schema
+            && let Err(e) = crate::schema_modifiers::validate_gts_keywords(&entity.content)
+        {
+            return GtsAddEntityResult {
+                ok: false,
+                id: String::new(),
+                type_id: None,
+                is_type_schema: entity.is_schema,
+                error: e,
+            };
+        }
+
+        // Register the entity
         if let Err(e) = self.store.register(entity.clone()) {
             return GtsAddEntityResult {
                 ok: false,
@@ -344,21 +361,6 @@ impl GtsOps {
                     "Unable to register entity: {e}\n{}",
                     self.get_details(&entity)
                 ),
-            };
-        }
-
-        // Validate GTS extension keywords (x-gts-final/x-gts-abstract format and
-        // mutual exclusion; x-gts-traits/x-gts-traits-schema placement) — raw
-        // structural check enforced at every ingest, regardless of `validate`.
-        if entity.is_schema
-            && let Err(e) = crate::schema_modifiers::validate_gts_keywords(&entity.content)
-        {
-            return GtsAddEntityResult {
-                ok: false,
-                id: String::new(),
-                type_id: None,
-                is_type_schema: entity.is_schema,
-                error: e,
             };
         }
 
@@ -701,11 +703,15 @@ impl GtsOps {
             );
         }
 
-        // Each trait schema must be closed (additionalProperties: false).
+        // Each trait schema must be closed: an object with
+        // `additionalProperties: false`. A boolean schema is not closed and must
+        // be rejected, not silently skipped by an `as_object()` guard.
         for ts in &traits.resolved_trait_schemas {
-            if let Some(obj) = ts.as_object()
-                && obj.get("additionalProperties") != Some(&Value::Bool(false))
-            {
+            let closed = matches!(
+                ts.as_object(),
+                Some(obj) if obj.get("additionalProperties") == Some(&Value::Bool(false))
+            );
+            if !closed {
                 return Err("Entity trait schema must set additionalProperties: false \
                      to be a valid standalone entity"
                     .to_owned());
