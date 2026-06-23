@@ -443,7 +443,7 @@ mod tests {
         );
 
         // Test INLINE resolves $refs using store (only for base type)
-        let mut store = GtsStore::new(None);
+        let mut store = GtsStore::new();
         store
             .register_schema(BaseEventV1::<()>::gts_type_id().as_ref(), &base_schema)
             .unwrap();
