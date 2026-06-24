@@ -960,8 +960,9 @@ fn test_schema_inline_inheritance_with_parent() {
         .unwrap();
 
     // Base type can use inline resolution
-    let inlined =
-        store.resolve_schema_refs(&inheritance_tests::BaseEventV1::<()>::gts_schema_with_refs());
+    let inlined = store
+        .resolve_schema_refs(&inheritance_tests::BaseEventV1::<()>::gts_schema_with_refs())
+        .expect("base schema refs should resolve");
     assert!(
         inlined.get("properties").is_some(),
         "Inlined schema should have properties"
@@ -990,7 +991,9 @@ fn test_runtime_schema_inline_resolution() {
         .unwrap();
 
     // Generate the inlined schema using runtime resolution (only for base type)
-    let inlined = store.resolve_schema_refs(&base_schema);
+    let inlined = store
+        .resolve_schema_refs(&base_schema)
+        .expect("base schema refs should resolve");
     let inlined_str = inlined.to_string();
 
     // Verify that no external $ref references remain (only internal schema refs should remain)
@@ -1058,7 +1061,9 @@ fn test_runtime_schema_inline_resolution_single_segment() {
         .unwrap();
 
     // Generate the inlined schema
-    let inlined = store.resolve_schema_refs(&EventTopicV1::gts_schema_with_refs());
+    let inlined = store
+        .resolve_schema_refs(&EventTopicV1::gts_schema_with_refs())
+        .expect("event topic schema refs should resolve");
 
     // For single-segment schemas, the result should be essentially the same
     assert_eq!(inlined["$id"], "gts://gts.x.core.events.topic.v1~");

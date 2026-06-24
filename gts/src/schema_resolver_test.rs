@@ -1,8 +1,8 @@
 //! Unit tests for [`SchemaResolver`]. They drive the resolver directly against
 //! a tiny in-memory [`SchemaProvider`] mock (`MapProvider`) — no `GtsStore`
-//! involved — so they exercise `SchemaResolver::resolve` / `try_resolve` in
-//! isolation. End-to-end coverage of the `GtsStore` wrappers and provider
-//! lookup semantics lives in `store_test.rs`.
+//! involved — so they exercise `SchemaResolver::try_resolve` in isolation.
+//! End-to-end coverage of the `GtsStore` wrapper and provider lookup semantics
+//! lives in `store_test.rs`.
 
 use std::collections::HashMap;
 
@@ -37,12 +37,9 @@ impl SchemaProvider for MapProvider {
 // By-value `json!(...)` literals read cleaner at the call sites.
 #[allow(clippy::needless_pass_by_value)]
 fn resolve(provider: &MapProvider, schema: Value) -> Value {
-    SchemaResolver::new(provider).resolve(&schema)
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn try_resolve(provider: &MapProvider, schema: Value) -> Result<Value, StoreError> {
-    SchemaResolver::new(provider).try_resolve(&schema)
+    SchemaResolver::new(provider)
+        .resolve(&schema)
+        .expect("schema should resolve")
 }
 
 #[test]
@@ -458,34 +455,10 @@ fn test_resolve_ref_with_object_siblings_composes_into_allof() {
 }
 
 #[test]
-fn test_resolve_keeps_unresolved_bare_ref() {
+fn test_resolve_errors_on_unresolved_ref() {
     let p = MapProvider::new();
-    let schema = json!({"$ref": "gts://gts.x.core.events.missing.v1~"});
-    assert_eq!(resolve(&p, schema.clone()), schema);
-}
-
-#[test]
-fn test_resolve_keeps_unresolved_ref_with_siblings() {
-    let p = MapProvider::new();
-    let schema = json!({
-        "type": "object",
-        "properties": {
-            "event": {
-                "$ref": "gts://gts.x.core.events.missing.v1~",
-                "description": "missing dependency must not be dropped"
-            }
-        }
-    });
-    let resolved = resolve(&p, schema.clone());
-    assert_eq!(resolved, schema);
-}
-
-#[test]
-fn test_try_resolve_errors_on_unresolved_ref() {
-    let p = MapProvider::new();
-    let err = try_resolve(
-        &p,
-        json!({
+    let err = SchemaResolver::new(&p)
+        .resolve(&json!({
             "type": "object",
             "properties": {
                 "event": {
@@ -493,9 +466,8 @@ fn test_try_resolve_errors_on_unresolved_ref() {
                     "description": "strict mode should reject this"
                 }
             }
-        }),
-    )
-    .expect_err("missing external ref should fail checked resolution");
+        }))
+        .expect_err("missing external ref should fail checked resolution");
 
     assert!(matches!(
         &err,
@@ -505,7 +477,7 @@ fn test_try_resolve_errors_on_unresolved_ref() {
 }
 
 #[test]
-fn test_try_resolve_allows_duplicate_ref_in_allof() {
+fn test_resolve_allows_duplicate_ref_in_allof() {
     // Redundant manual aggregation (the same $ref appearing more than once in an
     // allOf composition) uses DFS-path cycle detection, so independent duplicate
     // $refs are not flagged as cycles.
@@ -527,7 +499,7 @@ fn test_try_resolve_allows_duplicate_ref_in_allof() {
         ]
     });
 
-    assert!(try_resolve(&p, schema.clone()).is_ok());
+    assert!(SchemaResolver::new(&p).resolve(&schema.clone()).is_ok());
     assert!(resolve(&p, schema).is_object());
 }
 
@@ -546,22 +518,19 @@ fn test_resolve_pointer_to_boolean_with_siblings() {
         }),
     );
 
-    let resolved = try_resolve(
-        &p,
-        json!({
+    let resolved = SchemaResolver::new(&p)
+        .resolve(&json!({
             "$ref": "gts://gts.x.core.events.flag.v1~#/$defs/closed",
             "description": "extra"
-        }),
-    )
-    .expect("resolved non-object ref with siblings must not be reported unresolved");
+        }))
+        .expect("resolved non-object ref with siblings must not be reported unresolved");
 
     assert_eq!(resolved, json!(false));
 }
 
 #[test]
 fn test_resolve_circular_ref_does_not_hang() {
-    // A refs B, B refs A. Lenient resolve must terminate; checked resolution
-    // reports the cycle.
+    // A refs B, B refs A. Strict resolution must terminate and report the cycle.
     let p = MapProvider::new()
         .with(
             "gts.x.test.circ.a.v1~",
@@ -591,9 +560,10 @@ fn test_resolve_circular_ref_does_not_hang() {
         "properties": {"id": {"type": "string"}}
     });
 
-    assert!(resolve(&p, schema.clone()).is_object());
     assert!(matches!(
-        try_resolve(&p, schema).expect_err("circular ref must fail checked resolution"),
+        SchemaResolver::new(&p)
+            .resolve(&schema)
+            .expect_err("circular ref must fail checked resolution"),
         StoreError::CircularRef
     ));
 }

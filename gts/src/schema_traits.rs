@@ -395,9 +395,8 @@ fn effective_schema_is_false_recursive(schema: &Value, depth: usize) -> bool {
 ///
 /// Only pointers that actually resolve against `root` are inlined; anything
 /// else (notably `gts://` refs and the synthetic `#/$defs/GtsInstanceId` family
-/// that the macro emits and [`crate::store::GtsStore::resolve_schema_refs`]
-/// special-cases) is left untouched. Recursion is bounded by
-/// [`MAX_RECURSION_DEPTH`].
+/// that schema resolution special-cases) is left untouched. Recursion is
+/// bounded by [`MAX_RECURSION_DEPTH`].
 pub(crate) fn inline_local_pointers(fragment: &Value, root: &Value) -> Value {
     inline_local_pointers_recursive(fragment, root, 0)
 }

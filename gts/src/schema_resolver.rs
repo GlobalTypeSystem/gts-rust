@@ -7,7 +7,7 @@
 //!
 //! [`SchemaResolver`] depends only on the narrow [`SchemaProvider`] lookup, not
 //! on `GtsStore` directly; the store implements `SchemaProvider` and exposes
-//! `resolve_schema_refs`/`try_resolve_schema_refs` as thin wrappers.
+//! `try_resolve_schema_refs` as a thin wrapper.
 
 use serde_json::Value;
 
@@ -36,17 +36,6 @@ impl<'a> SchemaResolver<'a> {
         Self { provider }
     }
 
-    /// Best-effort `$ref` resolution: resolvable `gts://` `$ref`s are replaced
-    /// with the referenced schema content; external refs that cannot be
-    /// resolved are preserved in the returned value rather than removed.
-    #[allow(dead_code)]
-    pub(crate) fn resolve(&self, schema: &Value) -> Value {
-        let mut visited = std::collections::HashSet::new();
-        let mut cycle_found = false;
-        let mut unresolved_refs = Vec::new();
-        self.resolve_inner(schema, &mut visited, &mut cycle_found, &mut unresolved_refs)
-    }
-
     /// Strict `$ref` resolution that returns an error if any external `$ref`
     /// cannot be resolved or a circular `$ref` is detected.
     ///
@@ -61,7 +50,7 @@ impl<'a> SchemaResolver<'a> {
     /// Returns [`StoreError::UnresolvedRefs`] if any external `$ref` cannot be
     /// resolved, or [`StoreError::CircularRef`] if a circular `$ref` is
     /// detected.
-    pub(crate) fn try_resolve(&self, schema: &Value) -> Result<Value, StoreError> {
+    pub(crate) fn resolve(&self, schema: &Value) -> Result<Value, StoreError> {
         let mut visited = std::collections::HashSet::new();
         let mut cycle_found = false;
         let mut unresolved_refs = Vec::new();

@@ -5413,39 +5413,17 @@ fn test_validate_and_resolve_accepts_well_formed_gts_ref_schema() {
 }
 
 // ---------------------------------------------------------------------------
-// `GtsStore` `$ref`-resolution wrappers (`resolve_schema_refs` /
-// `try_resolve_schema_refs`) and the store-as-`SchemaProvider` integration.
+// `GtsStore` `$ref`-resolution wrapper (`try_resolve_schema_refs`) and the
+// store-as-`SchemaProvider` integration.
 // Resolver semantics themselves are unit-tested in `schema_resolver_test.rs`;
 // these are smoke/integration tests for the store-level surface.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn test_resolve_schema_refs_wrapper_smoke() {
-    let mut store = GtsStore::new();
-    store
-        .register_schema(
-            "gts.x.core.events.type.v1~",
-            &json!({
-                "$id": "gts://gts.x.core.events.type.v1~",
-                "$schema": "http://json-schema.org/draft-07/schema#",
-                "type": "object",
-                "properties": {"id": {"type": "string"}}
-            }),
-        )
-        .expect("register target");
-
-    let resolved = store.resolve_schema_refs(&json!({"$ref": "gts://gts.x.core.events.type.v1~"}));
-    assert_eq!(
-        resolved,
-        json!({"type": "object", "properties": {"id": {"type": "string"}}})
-    );
-}
-
-#[test]
-fn test_try_resolve_schema_refs_wrapper_smoke() {
     let store = GtsStore::new();
     let err = store
-        .try_resolve_schema_refs(&json!({"$ref": "gts://gts.x.core.events.missing.v1~"}))
+        .resolve_schema_refs(&json!({"$ref": "gts://gts.x.core.events.missing.v1~"}))
         .expect_err("unresolved external ref must fail checked resolution");
     assert!(matches!(
         &err,
@@ -5472,14 +5450,8 @@ fn test_resolve_schema_refs_uses_exact_gts_uri_lookup_without_minor_fallback() {
         .expect("register target schema");
 
     let schema = json!({"$ref": "gts://gts.x.core.events.type.v1~"});
-    assert_eq!(
-        store.resolve_schema_refs(&schema),
-        schema,
-        "v1~ must not resolve against a stored v1.0~ schema"
-    );
-
     let err = store
-        .try_resolve_schema_refs(&schema)
+        .resolve_schema_refs(&schema)
         .expect_err("checked resolution should reject the unresolved v1~ ref");
     assert!(matches!(
         &err,

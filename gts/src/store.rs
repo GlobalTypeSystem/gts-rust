@@ -243,22 +243,13 @@ impl GtsStore {
         self.by_id.iter()
     }
 
-    /// Best-effort `$ref` resolution for a JSON Schema: resolvable `gts://`
-    /// `$ref`s are inlined, unresolved external refs are left intact. See
-    /// [`crate::schema_resolver::SchemaResolver`].
-    #[must_use]
-    #[allow(dead_code)]
-    pub(crate) fn resolve_schema_refs(&self, schema: &Value) -> Value {
-        crate::schema_resolver::SchemaResolver::new(self).resolve(schema)
-    }
-
     /// Strict `$ref` resolution that errors on an unresolved external `$ref` or
     /// a circular `$ref`.
     ///
     /// # Errors
     /// [`StoreError::UnresolvedRefs`] or [`StoreError::CircularRef`].
-    pub fn try_resolve_schema_refs(&self, schema: &Value) -> Result<Value, StoreError> {
-        crate::schema_resolver::SchemaResolver::new(self).try_resolve(schema)
+    pub fn resolve_schema_refs(&self, schema: &Value) -> Result<Value, StoreError> {
+        crate::schema_resolver::SchemaResolver::new(self).resolve(schema)
     }
 
     fn remove_x_gts_ref_fields(schema: &Value) -> Value {
@@ -459,13 +450,11 @@ impl GtsStore {
             })?;
 
             let base_resolved = self
-                .try_resolve_schema_refs(&base_content)
+                .resolve_schema_refs(&base_content)
                 .map_err(|e| StoreError::ValidationError(format!("Schema '{base_id}' has {e}")))?;
-            let derived_resolved = self
-                .try_resolve_schema_refs(&derived_content)
-                .map_err(|e| {
-                    StoreError::ValidationError(format!("Schema '{derived_id}' has {e}"))
-                })?;
+            let derived_resolved = self.resolve_schema_refs(&derived_content).map_err(|e| {
+                StoreError::ValidationError(format!("Schema '{derived_id}' has {e}"))
+            })?;
 
             // Extract effective schemas and compare via schema_compat module
             let base_eff = crate::schema_compat::extract_effective_schema(&base_resolved);
@@ -514,8 +503,8 @@ impl GtsStore {
     /// `type_id` by walking its `$id` chain (root → leaf).
     ///
     /// Collects `x-gts-traits-schema` subschemas and `x-gts-traits` values from
-    /// each level's **raw** content (before `resolve_schema_refs` flattens
-    /// `allOf` and drops the `x-gts-*` extension keys), inlines JSON Pointer
+    /// each level's **raw** content (before `$ref` resolution inlines external
+    /// schemas and drops the `x-gts-*` extension keys), inlines JSON Pointer
     /// `$ref`s against their host document, resolves any `gts://` `$ref`s inside
     /// the collected subschemas, RFC 7396-merges the values (descendant
     /// last-wins for scalars/arrays, recursive merge for objects, `null` deletes
@@ -573,7 +562,7 @@ impl GtsStore {
 
         let mut resolved_trait_schemas: Vec<Value> = Vec::with_capacity(trait_schemas.len());
         for ts in &trait_schemas {
-            let resolved = self.try_resolve_schema_refs(ts).map_err(|e| {
+            let resolved = self.resolve_schema_refs(ts).map_err(|e| {
                 StoreError::ValidationError(format!("Schema '{type_id}' trait schema has {e}"))
             })?;
             resolved_trait_schemas.push(resolved);
@@ -649,7 +638,7 @@ impl GtsStore {
 
         // Resolve schema references
         let resolved_schema = self
-            .try_resolve_schema_refs(&content)
+            .resolve_schema_refs(&content)
             .map_err(|e| StoreError::ValidationError(format!("Schema '{type_id}' has {e}")))?;
 
         // Meta-validate the fully-resolved schema. Registration only checks
@@ -712,7 +701,7 @@ impl GtsStore {
         // schema-level metadata (§9.7) and never appear in instances, so the
         // effective-traits build is deliberately skipped here.
         let resolved_schema = self
-            .try_resolve_schema_refs(&content)
+            .resolve_schema_refs(&content)
             .map_err(|e| StoreError::ValidationError(format!("Schema '{type_id}' has {e}")))?;
 
         // Strip x-gts-ref before compiling; try_resolve_schema_refs has already
