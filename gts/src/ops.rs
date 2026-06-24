@@ -12,8 +12,8 @@ use crate::schema_cast::GtsEntityCastResult;
 use crate::store::{GtsStore, GtsStoreQueryResult};
 
 /// `is_schema` is `Some(true)` for schema/type IDs (ending with `~`),
-/// `Some(false)` for instance IDs, and `None` when the input couldn't be
-/// parsed (unknown).
+/// `Some(false)` for instance IDs and wildcard patterns that match instances,
+/// and `None` when the input couldn't be parsed (unknown).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GtsIdValidationResult {
     pub id: String,
@@ -391,18 +391,6 @@ impl GtsOps {
 
         // Instance validation when requested.
         if validate && !entity.is_schema {
-            if let Err(e) = crate::schema_modifiers::validate_instance_modifiers(&entity.content) {
-                return GtsAddEntityResult {
-                    ok: false,
-                    id: String::new(),
-                    type_id: None,
-                    is_type_schema: entity.is_schema,
-                    error: format!(
-                        "Instance validation failed: {e}\n{}",
-                        self.get_details(&entity)
-                    ),
-                };
-            }
             if let Err(e) = self.store.validate_instance(&entity_id) {
                 return GtsAddEntityResult {
                     ok: false,
@@ -473,11 +461,11 @@ impl GtsOps {
             // - '*' must be at end (ending with '.*' or '~*')
             // - No '*' in the middle of segments
             match GtsIdPattern::try_new(gts_id) {
-                Ok(w) => GtsIdValidationResult {
+                Ok(_) => GtsIdValidationResult {
                     id: gts_id.to_owned(),
                     valid: true,
                     error: String::new(),
-                    is_type: Some(w.pattern().ends_with('~')),
+                    is_type: Some(false),
                     is_wildcard: true,
                 },
                 Err(e) => GtsIdValidationResult {
@@ -516,13 +504,12 @@ impl GtsOps {
             match GtsIdPattern::try_new(gts_id) {
                 Ok(w) => {
                     let segments = w.segments().iter().map(GtsIdSegmentInfo::from).collect();
-
                     GtsIdParseResult {
                         id: gts_id.to_owned(),
                         ok: true,
                         segments,
                         error: String::new(),
-                        is_type: Some(w.pattern().ends_with('~')),
+                        is_type: Some(false),
                         is_wildcard: true,
                     }
                 }
@@ -653,57 +640,29 @@ impl GtsOps {
     }
 
     pub fn validate_entity(&mut self, gts_id: &str) -> GtsEntityValidationResult {
-        if gts_id.ends_with('~') {
-            // Validate GTS extension keywords (x-gts-final/x-gts-abstract format
-            // and mutual exclusion; x-gts-traits/x-gts-traits-schema placement).
-            if let Some(entity) = self.store.get(gts_id)
-                && let Err(e) = crate::schema_modifiers::validate_gts_keywords(&entity.content)
-            {
-                return GtsEntityValidationResult {
-                    id: gts_id.to_owned(),
-                    ok: false,
-                    entity_type: "schema".to_owned(),
-                    error: e,
-                };
-            }
-
-            let result = self.validate_schema(gts_id);
-            if !result.ok {
-                return GtsEntityValidationResult {
-                    id: result.id,
-                    ok: false,
-                    entity_type: "schema".to_owned(),
-                    error: result.error,
-                };
-            }
-
-            GtsEntityValidationResult {
-                id: result.id,
-                ok: true,
-                entity_type: "schema".to_owned(),
-                error: String::new(),
-            }
+        let parsed_id = GtsId::try_new(gts_id);
+        if parsed_id.is_err() {
+            return GtsEntityValidationResult {
+                id: gts_id.to_owned(),
+                ok: false,
+                error: parsed_id.unwrap_err().to_string(),
+                entity_type: String::new(),
+            };
+        }
+        let result: GtsValidationResult;
+        let entity_type: String;
+        if parsed_id.unwrap().is_type() {
+            result = self.validate_schema(gts_id);
+            entity_type = "schema".to_owned();
         } else {
-            // Check that schema-only keywords do not appear in instance content.
-            if let Some(entity) = self.store.get(gts_id)
-                && let Err(e) =
-                    crate::schema_modifiers::validate_instance_modifiers(&entity.content)
-            {
-                return GtsEntityValidationResult {
-                    id: gts_id.to_owned(),
-                    ok: false,
-                    entity_type: "instance".to_owned(),
-                    error: e,
-                };
-            }
-
-            let result = self.validate_instance(gts_id);
-            GtsEntityValidationResult {
-                id: result.id,
-                ok: result.ok,
-                entity_type: "instance".to_owned(),
-                error: result.error,
-            }
+            result = self.validate_instance(gts_id);
+            entity_type = "instance".to_owned();
+        }
+        GtsEntityValidationResult {
+            id: result.id,
+            ok: result.ok,
+            error: result.error,
+            entity_type,
         }
     }
 
@@ -865,7 +824,6 @@ mod tests {
     fn test_validate_id_schema() {
         let result = GtsOps::validate_id("gts.vendor.package.namespace.type.v1.0~");
         assert!(result.valid);
-        assert!(result.id.ends_with('~'));
     }
 
     #[test]
@@ -3316,106 +3274,6 @@ mod tests {
         assert!(
             result.error.contains("Instance validation failed"),
             "Error should mention instance validation failure, got: {}",
-            result.error
-        );
-    }
-
-    #[test]
-    fn test_add_entity_validate_rejects_instance_with_schema_only_keyword() {
-        // Registration with validate=true MUST reject an instance whose body
-        // contains schema-only keywords (x-gts-final / x-gts-abstract /
-        // x-gts-traits-schema / x-gts-traits).
-        let mut ops = GtsOps::new(None, None, 0);
-
-        let schema = json!({
-            "$id": "gts://gts.x.testkw.host.thing.v1~",
-            "$schema": "http://json-schema.org/draft-07/schema#",
-            "type": "object",
-            "properties": {"name": {"type": "string"}},
-            "required": ["name"],
-        });
-        assert!(ops.add_entity(&schema, false).ok);
-
-        let bad_instance = json!({
-            "id": "gts.x.testkw.host.thing.v1~x.testkw._.item.v1",
-            "name": "leak",
-            "x-gts-final": true,
-        });
-        let result = ops.add_entity(&bad_instance, true);
-        assert!(
-            !result.ok,
-            "instance with schema-only keyword must be rejected"
-        );
-        assert!(
-            result.error.contains("x-gts-final"),
-            "error should name the offending keyword, got: {}",
-            result.error
-        );
-    }
-
-    #[test]
-    fn test_add_entity_validate_rejects_instance_with_traits_keyword() {
-        // Per GTS spec § 9.7.1, x-gts-traits is a schema-only keyword and MUST
-        // be rejected when present in an instance body.
-        let mut ops = GtsOps::new(None, None, 0);
-
-        let schema = json!({
-            "$id": "gts://gts.x.testtrkw.host.thing.v1~",
-            "$schema": "http://json-schema.org/draft-07/schema#",
-            "type": "object",
-            "properties": {"name": {"type": "string"}},
-            "required": ["name"],
-        });
-        assert!(ops.add_entity(&schema, false).ok);
-
-        let bad_instance = json!({
-            "id": "gts.x.testtrkw.host.thing.v1~x.testtrkw._.item.v1",
-            "name": "leak",
-            "x-gts-traits": {"retention": "P30D"},
-        });
-        let result = ops.add_entity(&bad_instance, true);
-        assert!(
-            !result.ok,
-            "instance with x-gts-traits keyword must be rejected"
-        );
-        assert!(
-            result.error.contains("x-gts-traits"),
-            "error should name the offending keyword, got: {}",
-            result.error
-        );
-    }
-
-    #[test]
-    fn test_add_entity_validate_rejects_instance_with_traits_schema_keyword() {
-        // Per GTS spec § 9.7.1, x-gts-traits-schema is a schema-only keyword
-        // and MUST be rejected when present in an instance body.
-        let mut ops = GtsOps::new(None, None, 0);
-
-        let schema = json!({
-            "$id": "gts://gts.x.testtskw.host.thing.v1~",
-            "$schema": "http://json-schema.org/draft-07/schema#",
-            "type": "object",
-            "properties": {"name": {"type": "string"}},
-            "required": ["name"],
-        });
-        assert!(ops.add_entity(&schema, false).ok);
-
-        let bad_instance = json!({
-            "id": "gts.x.testtskw.host.thing.v1~x.testtskw._.item.v1",
-            "name": "leak",
-            "x-gts-traits-schema": {
-                "type": "object",
-                "properties": {"retention": {"type": "string"}},
-            },
-        });
-        let result = ops.add_entity(&bad_instance, true);
-        assert!(
-            !result.ok,
-            "instance with x-gts-traits-schema keyword must be rejected"
-        );
-        assert!(
-            result.error.contains("x-gts-traits-schema"),
-            "error should name the offending keyword, got: {}",
             result.error
         );
     }
