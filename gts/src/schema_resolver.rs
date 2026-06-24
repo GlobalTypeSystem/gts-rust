@@ -38,8 +38,8 @@ impl<'a> SchemaResolver<'a> {
 
     /// Best-effort `$ref` resolution: resolvable `gts://` `$ref`s are replaced
     /// with the referenced schema content; external refs that cannot be
-    /// resolved are preserved in the returned value rather than removed. Use
-    /// [`Self::try_resolve`] when unresolved refs must be treated as an error.
+    /// resolved are preserved in the returned value rather than removed.
+    #[allow(dead_code)]
     pub(crate) fn resolve(&self, schema: &Value) -> Value {
         let mut visited = std::collections::HashSet::new();
         let mut cycle_found = false;
@@ -47,7 +47,7 @@ impl<'a> SchemaResolver<'a> {
         self.resolve_inner(schema, &mut visited, &mut cycle_found, &mut unresolved_refs)
     }
 
-    /// Like [`Self::resolve`] but returns an error if any external `$ref`
+    /// Strict `$ref` resolution that returns an error if any external `$ref`
     /// cannot be resolved or a circular `$ref` is detected.
     ///
     /// Uses DFS-path cycle detection: a `$ref` target is held in the seen-set

@@ -1,70 +1,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
 use thiserror::Error;
 
 use crate::entities::GtsEntity;
-use crate::gts::{GTS_URI_PREFIX, GtsId, GtsIdError, GtsIdPattern};
+use crate::gts::{GtsId, GtsIdError, GtsIdPattern};
 use crate::schema_cast::GtsEntityCastResult;
-
-/// Custom retriever for resolving gts:// URI scheme references in JSON Schema validation
-struct GtsRetriever {
-    store: Arc<RwLock<HashMap<String, Value>>>,
-}
-
-impl GtsRetriever {
-    fn new(store_map: &HashMap<String, GtsEntity>) -> Self {
-        let mut schemas = HashMap::new();
-
-        // Pre-populate with all schemas from the store
-        for (id, entity) in store_map {
-            if entity.is_schema {
-                // Store with gts:// URI format
-                let uri = format!("{GTS_URI_PREFIX}{id}");
-                schemas.insert(uri, entity.content.clone());
-            }
-        }
-
-        Self {
-            store: Arc::new(RwLock::new(schemas)),
-        }
-    }
-}
-
-impl jsonschema::Retrieve for GtsRetriever {
-    #[allow(clippy::cognitive_complexity)]
-    fn retrieve(
-        &self,
-        uri: &jsonschema::Uri<String>,
-    ) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
-        let uri_str = uri.as_str();
-
-        tracing::debug!("GtsRetriever: Attempting to retrieve URI: {uri_str}");
-
-        // Only handle gts:// URIs
-        if !uri_str.starts_with(GTS_URI_PREFIX) {
-            tracing::warn!("GtsRetriever: Unknown scheme for URI: {uri_str}");
-            return Err(format!("Unknown scheme for URI: {uri_str}").into());
-        }
-
-        let store = self.store.read().map_err(|e| format!("Lock error: {e}"))?;
-
-        tracing::debug!("GtsRetriever: Store contains {} schemas", store.len());
-
-        if let Some(schema) = store.get(uri_str) {
-            tracing::debug!("GtsRetriever: Successfully retrieved schema for {uri_str}");
-            Ok(schema.clone())
-        } else {
-            tracing::warn!("GtsRetriever: Schema not found: {uri_str}");
-            tracing::debug!(
-                "GtsRetriever: Available URIs: {:?}",
-                store.keys().collect::<Vec<_>>()
-            );
-            Err(format!("Schema not found: {uri_str}").into())
-        }
-    }
-}
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -306,12 +247,13 @@ impl GtsStore {
     /// `$ref`s are inlined, unresolved external refs are left intact. See
     /// [`crate::schema_resolver::SchemaResolver`].
     #[must_use]
-    pub fn resolve_schema_refs(&self, schema: &Value) -> Value {
+    #[allow(dead_code)]
+    pub(crate) fn resolve_schema_refs(&self, schema: &Value) -> Value {
         crate::schema_resolver::SchemaResolver::new(self).resolve(schema)
     }
 
-    /// Like [`Self::resolve_schema_refs`] but errors on an unresolved external
-    /// `$ref` or a circular `$ref`.
+    /// Strict `$ref` resolution that errors on an unresolved external `$ref` or
+    /// a circular `$ref`.
     ///
     /// # Errors
     /// [`StoreError::UnresolvedRefs`] or [`StoreError::CircularRef`].
@@ -773,12 +715,10 @@ impl GtsStore {
             .try_resolve_schema_refs(&content)
             .map_err(|e| StoreError::ValidationError(format!("Schema '{type_id}' has {e}")))?;
 
-        // Strip x-gts-ref before compiling (unknown keyword to jsonschema); keep
-        // a retriever for any residual gts:// refs, mirroring validate_instance.
+        // Strip x-gts-ref before compiling; try_resolve_schema_refs has already
+        // inlined all resolvable external gts:// refs or returned an error.
         let schema_for_validation = Self::remove_x_gts_ref_fields(&resolved_schema);
-        let retriever = GtsRetriever::new(&self.by_id);
         let validator = jsonschema::options()
-            .with_retriever(retriever)
             .build(&schema_for_validation)
             .map_err(|e| {
                 StoreError::ValidationError(format!("Invalid schema for '{type_id}': {e}"))
