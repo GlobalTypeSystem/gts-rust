@@ -499,7 +499,7 @@ fn test_resolve_allows_duplicate_ref_in_allof() {
         ]
     });
 
-    assert!(SchemaResolver::new(&p).resolve(&schema.clone()).is_ok());
+    assert!(SchemaResolver::new(&p).resolve(&schema).is_ok());
     assert!(resolve(&p, schema).is_object());
 }
 

@@ -390,19 +390,20 @@ impl GtsOps {
         }
 
         // Instance validation when requested.
-        if validate && !entity.is_schema {
-            if let Err(e) = self.store.validate_instance(&entity_id) {
-                return GtsAddEntityResult {
-                    ok: false,
-                    id: String::new(),
-                    type_id: None,
-                    is_type_schema: entity.is_schema,
-                    error: format!(
-                        "Instance validation failed: {e}\n{}",
-                        self.get_details(&entity)
-                    ),
-                };
-            }
+        if validate
+            && !entity.is_schema
+            && let Err(e) = self.store.validate_instance(&entity_id)
+        {
+            return GtsAddEntityResult {
+                ok: false,
+                id: String::new(),
+                type_id: None,
+                is_type_schema: entity.is_schema,
+                error: format!(
+                    "Instance validation failed: {e}\n{}",
+                    self.get_details(&entity)
+                ),
+            };
         }
 
         // println!("submitted: {}", self.get_content_pretty(&entity));
@@ -640,32 +641,31 @@ impl GtsOps {
     }
 
     pub fn validate_entity(&mut self, gts_id: &str) -> GtsEntityValidationResult {
-        let parsed_id = GtsId::try_new(gts_id);
-        if parsed_id.is_err() {
-            return GtsEntityValidationResult {
-                id: gts_id.to_owned(),
-                ok: false,
-                error: parsed_id.unwrap_err().to_string(),
-                entity_type: String::new(),
-            };
-        }
-        let result: GtsValidationResult;
-        let entity_type: String;
-        if parsed_id.unwrap().is_type() {
-            result = self.validate_schema(gts_id);
-            entity_type = "schema".to_owned();
+        let parsed_id = match GtsId::try_new(gts_id) {
+            Ok(parsed_id) => parsed_id,
+            Err(e) => {
+                return GtsEntityValidationResult {
+                    id: gts_id.to_owned(),
+                    ok: false,
+                    entity_type: String::new(),
+                    error: e.to_string(),
+                };
+            }
+        };
+
+        let (result, entity_type) = if parsed_id.is_type() {
+            (self.validate_schema(gts_id), "schema".to_owned())
         } else {
-            result = self.validate_instance(gts_id);
-            entity_type = "instance".to_owned();
-        }
+            (self.validate_instance(gts_id), "instance".to_owned())
+        };
+
         GtsEntityValidationResult {
             id: result.id,
             ok: result.ok,
-            error: result.error,
             entity_type,
+            error: result.error,
         }
     }
-
     pub fn schema_graph(&mut self, gts_id: &str) -> GtsSchemaGraphResult {
         let graph = self.store.build_schema_graph(gts_id);
         GtsSchemaGraphResult { graph }

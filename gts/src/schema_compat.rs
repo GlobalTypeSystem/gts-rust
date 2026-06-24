@@ -13,6 +13,8 @@
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
+const MAX_RECURSION_DEPTH: usize = 64;
+
 /// Represents the effective (flattened) schema used for compatibility comparison.
 pub(crate) struct EffectiveSchema {
     pub properties: HashMap<String, Value>,
@@ -91,7 +93,31 @@ pub(crate) fn extract_effective_schema(schema: &Value) -> EffectiveSchema {
     eff
 }
 
-/// Validates that a derived schema is compatible with its base schema.
+/// Validates that a derived JSON Schema value is compatible with its base.
+///
+/// This is the high-level compatibility entry point. It combines the flattened
+/// effective-schema comparison with raw-branch checks that need `allOf`
+/// ownership information.
+pub(crate) fn validate_schema_compatibility(
+    base_schema: &Value,
+    derived_schema: &Value,
+    base_id: &str,
+    derived_id: &str,
+) -> Vec<String> {
+    let base = extract_effective_schema(base_schema);
+    let derived = extract_effective_schema(derived_schema);
+
+    let mut errors = validate_effective_schema_compatibility(&base, &derived, base_id, derived_id);
+    errors.extend(validate_closed_descendant_branches(
+        base_schema,
+        derived_schema,
+        base_id,
+        derived_id,
+    ));
+    errors
+}
+
+/// Validates that a derived effective schema is compatible with its base.
 ///
 /// Rules checked:
 /// - Derived cannot add properties if base has `additionalProperties: false`
@@ -104,9 +130,9 @@ pub(crate) fn extract_effective_schema(schema: &Value) -> EffectiveSchema {
 /// - Derived cannot remove fields from `required`
 /// - Derived cannot change array `items` type
 ///
-/// Returns an empty `Vec` when the schemas are compatible, otherwise a list of
-/// human-readable error descriptions.
-pub(crate) fn validate_schema_compatibility(
+/// Returns an empty `Vec` when the effective schemas are compatible, otherwise
+/// a list of human-readable error descriptions.
+pub(crate) fn validate_effective_schema_compatibility(
     base: &EffectiveSchema,
     derived: &EffectiveSchema,
     base_id: &str,
@@ -165,6 +191,122 @@ pub(crate) fn validate_schema_compatibility(
     check_required_removal(base, derived, base_id, derived_id, &mut errors);
 
     errors
+}
+
+/// Validates branch-scoped `additionalProperties: false` in a descendant schema.
+///
+/// Flattened compatibility catches closed ancestors that reject new descendant
+/// properties, but it cannot see the inverse `allOf` hazard: a descendant
+/// branch can set `additionalProperties: false` without restating an ancestor
+/// property at the same object path, making that ancestor property unusable in
+/// the composed schema. This walks the raw/resolved descendant branches so that
+/// branch ownership is preserved.
+pub(crate) fn validate_closed_descendant_branches(
+    ancestor_schema: &Value,
+    descendant_schema: &Value,
+    ancestor_label: &str,
+    descendant_label: &str,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    collect_closed_descendant_branch_errors(
+        ancestor_schema,
+        descendant_schema,
+        "",
+        0,
+        ancestor_label,
+        descendant_label,
+        &mut errors,
+    );
+    errors
+}
+
+fn collect_closed_descendant_branch_errors(
+    ancestor_schema: &Value,
+    descendant_schema: &Value,
+    path: &str,
+    depth: usize,
+    ancestor_label: &str,
+    descendant_label: &str,
+    errors: &mut Vec<String>,
+) {
+    if depth >= MAX_RECURSION_DEPTH {
+        return;
+    }
+
+    let ancestor = extract_effective_schema(ancestor_schema);
+    let Some(descendant_obj) = descendant_schema.as_object() else {
+        return;
+    };
+    let descendant_props = descendant_obj.get("properties").and_then(Value::as_object);
+
+    if descendant_obj.get("additionalProperties") == Some(&Value::Bool(false)) {
+        let mut orphaned: Vec<&str> = ancestor
+            .properties
+            .keys()
+            .filter(|name| !descendant_props.is_some_and(|props| props.contains_key(name.as_str())))
+            .map(String::as_str)
+            .collect();
+        orphaned.sort_unstable();
+        for name in orphaned {
+            let property_path = join_schema_path(path, name);
+            errors.push(format!(
+                "property '{property_path}': descendant schema '{descendant_label}' sets \
+                 additionalProperties: false but does not restate property defined in \
+                 ancestor '{ancestor_label}', making it unusable under allOf composition"
+            ));
+        }
+    }
+
+    if let Some(props) = descendant_props {
+        let mut common: Vec<&str> = props
+            .keys()
+            .filter(|name| ancestor.properties.contains_key(name.as_str()))
+            .map(String::as_str)
+            .collect();
+        common.sort_unstable();
+
+        for name in common {
+            let Some(ancestor_prop) = ancestor.properties.get(name) else {
+                continue;
+            };
+            let Some(descendant_prop) = props.get(name) else {
+                continue;
+            };
+
+            let next_path = join_schema_path(path, name);
+            collect_closed_descendant_branch_errors(
+                ancestor_prop,
+                descendant_prop,
+                &next_path,
+                depth + 1,
+                ancestor_label,
+                descendant_label,
+                errors,
+            );
+        }
+    }
+
+    if let Some(Value::Array(all_of)) = descendant_obj.get("allOf") {
+        for item in all_of {
+            collect_closed_descendant_branch_errors(
+                ancestor_schema,
+                item,
+                path,
+                depth + 1,
+                ancestor_label,
+                descendant_label,
+                errors,
+            );
+        }
+    }
+}
+
+fn join_schema_path(prefix: &str, name: &str) -> String {
+    if prefix.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{prefix}.{name}")
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -247,8 +389,12 @@ fn compare_property_constraints(
         let base_nested = extract_effective_schema(base_prop);
         let derived_nested = extract_effective_schema(derived_prop);
 
-        let nested_errors =
-            validate_schema_compatibility(&base_nested, &derived_nested, "base", "derived");
+        let nested_errors = validate_effective_schema_compatibility(
+            &base_nested,
+            &derived_nested,
+            "base",
+            "derived",
+        );
         for err in nested_errors {
             errors.push(format!("in nested object '{prop_name}': {err}"));
         }
@@ -639,128 +785,168 @@ mod tests {
 
     #[test]
     fn test_compatible_tightening() {
-        let base = extract_effective_schema(&json!({
+        let base = json!({
             "type": "object",
             "properties": {
                 "v": {"type": "string", "maxLength": 100}
             }
-        }));
-        let derived = extract_effective_schema(&json!({
+        });
+        let derived = json!({
             "type": "object",
             "properties": {
                 "v": {"type": "string", "maxLength": 50}
             }
-        }));
+        });
         let errs = validate_schema_compatibility(&base, &derived, "base~", "derived~");
         assert!(errs.is_empty(), "tightening should be ok: {errs:?}");
     }
 
     #[test]
     fn test_incompatible_loosening_max_length() {
-        let base = extract_effective_schema(&json!({
+        let base = json!({
             "type": "object",
             "properties": {
                 "v": {"type": "string", "maxLength": 100}
             }
-        }));
-        let derived = extract_effective_schema(&json!({
+        });
+        let derived = json!({
             "type": "object",
             "properties": {
                 "v": {"type": "string", "maxLength": 200}
             }
-        }));
+        });
         let errs = validate_schema_compatibility(&base, &derived, "base~", "derived~");
         assert!(!errs.is_empty());
     }
 
     #[test]
     fn test_incompatible_loosening_maximum() {
-        let base = extract_effective_schema(&json!({
+        let base = json!({
             "type": "object",
             "properties": {
                 "n": {"type": "integer", "maximum": 100}
             }
-        }));
-        let derived = extract_effective_schema(&json!({
+        });
+        let derived = json!({
             "type": "object",
             "properties": {
                 "n": {"type": "integer", "maximum": 200}
             }
-        }));
+        });
         let errs = validate_schema_compatibility(&base, &derived, "b", "d");
         assert!(!errs.is_empty());
     }
 
     #[test]
     fn test_incompatible_loosening_minimum() {
-        let base = extract_effective_schema(&json!({
+        let base = json!({
             "type": "object",
             "properties": {
                 "n": {"type": "integer", "minimum": 10}
             }
-        }));
-        let derived = extract_effective_schema(&json!({
+        });
+        let derived = json!({
             "type": "object",
             "properties": {
                 "n": {"type": "integer", "minimum": 5}
             }
-        }));
+        });
         let errs = validate_schema_compatibility(&base, &derived, "b", "d");
         assert!(!errs.is_empty());
     }
 
     #[test]
     fn test_enum_expansion_fails() {
-        let base = extract_effective_schema(&json!({
+        let base = json!({
             "type": "object",
             "properties": {
                 "s": {"type": "string", "enum": ["a", "b"]}
             }
-        }));
-        let derived = extract_effective_schema(&json!({
+        });
+        let derived = json!({
             "type": "object",
             "properties": {
                 "s": {"type": "string", "enum": ["a", "b", "c"]}
             }
-        }));
+        });
         let errs = validate_schema_compatibility(&base, &derived, "b", "d");
         assert!(!errs.is_empty());
     }
 
     #[test]
     fn test_enum_subset_ok() {
-        let base = extract_effective_schema(&json!({
+        let base = json!({
             "type": "object",
             "properties": {
                 "s": {"type": "string", "enum": ["a", "b", "c"]}
             }
-        }));
-        let derived = extract_effective_schema(&json!({
+        });
+        let derived = json!({
             "type": "object",
             "properties": {
                 "s": {"type": "string", "enum": ["a"]}
             }
-        }));
+        });
         let errs = validate_schema_compatibility(&base, &derived, "b", "d");
         assert!(errs.is_empty(), "{errs:?}");
     }
 
     #[test]
     fn test_additional_properties_false_blocks_new_prop() {
-        let base = extract_effective_schema(&json!({
+        let base = json!({
             "type": "object",
             "properties": {"a": {"type": "string"}},
             "additionalProperties": false
-        }));
-        let derived = extract_effective_schema(&json!({
+        });
+        let derived = json!({
             "type": "object",
             "properties": {
                 "a": {"type": "string"},
                 "b": {"type": "string"}
             }
-        }));
+        });
         let errs = validate_schema_compatibility(&base, &derived, "b", "d");
         assert!(!errs.is_empty());
+    }
+
+    #[test]
+    fn test_value_compatibility_catches_closed_descendant_branch_orphan() {
+        let base = json!({
+            "type": "object",
+            "properties": {
+                "routing": {
+                    "type": "object",
+                    "properties": {
+                        "source": {"type": "string"}
+                    }
+                }
+            }
+        });
+        let derived = json!({
+            "type": "object",
+            "allOf": [
+                base,
+                {
+                    "type": "object",
+                    "properties": {
+                        "routing": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                                "target": {"type": "string"}
+                            }
+                        }
+                    }
+                }
+            ]
+        });
+
+        let errs = validate_schema_compatibility(&base, &derived, "base", "derived");
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("routing.source") && e.contains("additionalProperties")),
+            "closed descendant branch should not orphan an ancestor property: {errs:?}"
+        );
     }
 
     #[test]
@@ -774,15 +960,15 @@ mod tests {
         // Per JSON Schema allOf composition, the base's
         // `additionalProperties: false` is inherited via $ref, so this
         // shape is **not** loosening and OP#12 must not flag it.
-        let base = extract_effective_schema(&json!({
+        let base = json!({
             "type": "object",
             "properties": {"a": {"type": "string"}},
             "additionalProperties": false
-        }));
-        let derived = extract_effective_schema(&json!({
+        });
+        let derived = json!({
             "type": "object",
             "properties": {"a": {"type": "string"}}
-        }));
+        });
         let errs = validate_schema_compatibility(&base, &derived, "b", "d");
         assert!(
             errs.is_empty(),
@@ -794,16 +980,16 @@ mod tests {
     fn test_additional_properties_explicit_true_still_loosens() {
         // A direct derived schema that has no inherited closed branch and
         // explicitly says `additionalProperties: true` loosens a closed base.
-        let base = extract_effective_schema(&json!({
+        let base = json!({
             "type": "object",
             "properties": {"a": {"type": "string"}},
             "additionalProperties": false
-        }));
-        let derived = extract_effective_schema(&json!({
+        });
+        let derived = json!({
             "type": "object",
             "properties": {"a": {"type": "string"}},
             "additionalProperties": true
-        }));
+        });
         let errs = validate_schema_compatibility(&base, &derived, "b", "d");
         assert!(
             errs.iter()
@@ -814,42 +1000,39 @@ mod tests {
 
     #[test]
     fn test_open_base_allows_new_prop() {
-        let base = extract_effective_schema(&json!({
+        let base = json!({
             "type": "object",
             "properties": {"a": {"type": "string"}}
-        }));
-        let derived = extract_effective_schema(&json!({
+        });
+        let derived = json!({
             "type": "object",
             "properties": {
                 "a": {"type": "string"},
                 "b": {"type": "string"}
             }
-        }));
+        });
         let errs = validate_schema_compatibility(&base, &derived, "b", "d");
         assert!(errs.is_empty(), "{errs:?}");
     }
 
     #[test]
     fn test_property_disabled_fails() {
-        let base = extract_effective_schema(&json!({
+        let base = json!({
             "type": "object",
             "required": ["x"],
             "properties": {"x": {"type": "string"}}
-        }));
-        let mut derived_props = HashMap::new();
-        derived_props.insert("x".to_owned(), Value::Bool(false));
-        let derived = EffectiveSchema {
-            properties: derived_props,
-            required: HashSet::new(),
-            additional_properties: None,
-        };
+        });
+        let derived = json!({
+            "type": "object",
+            "properties": {"x": false}
+        });
         let errs = validate_schema_compatibility(&base, &derived, "b", "d");
         assert!(!errs.is_empty());
     }
 
     #[test]
     fn test_nested_object_loosening_caught() {
-        let base = extract_effective_schema(&json!({
+        let base = json!({
             "type": "object",
             "properties": {
                 "inner": {
@@ -859,8 +1042,8 @@ mod tests {
                     }
                 }
             }
-        }));
-        let derived = extract_effective_schema(&json!({
+        });
+        let derived = json!({
             "type": "object",
             "properties": {
                 "inner": {
@@ -870,7 +1053,7 @@ mod tests {
                     }
                 }
             }
-        }));
+        });
         let errs = validate_schema_compatibility(&base, &derived, "b", "d");
         assert!(!errs.is_empty());
     }
@@ -879,24 +1062,18 @@ mod tests {
     fn test_boolean_true_schema_loosens_constrained_property() {
         // Derived replaces a constrained property with boolean `true` schema
         // (which accepts anything), silently loosening the contract.
-        let base = EffectiveSchema {
-            properties: {
-                let mut m = HashMap::new();
-                m.insert("age".to_owned(), json!({"type": "integer", "maximum": 120}));
-                m
-            },
-            required: HashSet::new(),
-            additional_properties: None,
-        };
-        let derived = EffectiveSchema {
-            properties: {
-                let mut m = HashMap::new();
-                m.insert("age".to_owned(), Value::Bool(true));
-                m
-            },
-            required: HashSet::new(),
-            additional_properties: None,
-        };
+        let base = json!({
+            "type": "object",
+            "properties": {
+                "age": {"type": "integer", "maximum": 120}
+            }
+        });
+        let derived = json!({
+            "type": "object",
+            "properties": {
+                "age": true
+            }
+        });
         let errs = validate_schema_compatibility(&base, &derived, "b", "d");
         assert!(
             !errs.is_empty(),
@@ -905,33 +1082,21 @@ mod tests {
     }
 
     #[test]
-    fn test_boolean_true_schema_ok_when_base_unconstrained() {
-        // If base property is also unconstrained (no special keywords),
-        // derived using boolean true is not loosening anything meaningful.
-        let base = EffectiveSchema {
-            properties: {
-                let mut m = HashMap::new();
-                m.insert("name".to_owned(), json!({"type": "string"}));
-                m
-            },
-            required: HashSet::new(),
-            additional_properties: None,
-        };
-        let derived = EffectiveSchema {
-            properties: {
-                let mut m = HashMap::new();
-                m.insert("name".to_owned(), Value::Bool(true));
-                m
-            },
-            required: HashSet::new(),
-            additional_properties: None,
-        };
+    fn test_boolean_true_schema_loosens_typed_property() {
+        // A boolean `true` derived property removes the base type constraint.
+        let base = json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"}
+            }
+        });
+        let derived = json!({
+            "type": "object",
+            "properties": {
+                "name": true
+            }
+        });
         let errs = validate_schema_compatibility(&base, &derived, "b", "d");
-        // Base only has "type" constraint. Boolean true does remove that.
-        // However, dropping type information is still loosening.
-        // For unconstrained base (no type even), this would be OK.
-        // Currently this WILL flag because type in base exists but derived is not an object.
-        // This behavior is acceptable – boolean true schemas should not appear in valid GTS.
         assert!(
             !errs.is_empty(),
             "Boolean true schema replaces typed property - should flag"
@@ -942,18 +1107,18 @@ mod tests {
     fn test_enum_tightening_allows_omitting_bounds() {
         // Derived introduces enum, which is strictly tighter than maxLength.
         // Omitting maxLength when adding enum is NOT loosening.
-        let base = extract_effective_schema(&json!({
+        let base = json!({
             "type": "object",
             "properties": {
                 "tier": {"type": "string", "maxLength": 100}
             }
-        }));
-        let derived = extract_effective_schema(&json!({
+        });
+        let derived = json!({
             "type": "object",
             "properties": {
                 "tier": {"type": "string", "enum": ["gold", "platinum"]}
             }
-        }));
+        });
         let errs = validate_schema_compatibility(&base, &derived, "b", "d");
         assert!(
             errs.is_empty(),
@@ -965,18 +1130,18 @@ mod tests {
     fn test_const_tightening_allows_omitting_bounds_and_pattern() {
         // Derived introduces const, which is the tightest possible constraint.
         // Omitting bounds and pattern when adding const is NOT loosening.
-        let base = extract_effective_schema(&json!({
+        let base = json!({
             "type": "object",
             "properties": {
                 "v": {"type": "string", "maxLength": 100, "pattern": "^[a-z]+$"}
             }
-        }));
-        let derived = extract_effective_schema(&json!({
+        });
+        let derived = json!({
             "type": "object",
             "properties": {
                 "v": {"type": "string", "const": "hello"}
             }
-        }));
+        });
         let errs = validate_schema_compatibility(&base, &derived, "b", "d");
         assert!(
             errs.is_empty(),
@@ -987,18 +1152,18 @@ mod tests {
     #[test]
     fn test_enum_tightening_allows_omitting_numeric_bounds() {
         // Derived introduces enum for an integer property, omitting min/max.
-        let base = extract_effective_schema(&json!({
+        let base = json!({
             "type": "object",
             "properties": {
                 "priority": {"type": "integer", "minimum": 0, "maximum": 100}
             }
-        }));
-        let derived = extract_effective_schema(&json!({
+        });
+        let derived = json!({
             "type": "object",
             "properties": {
                 "priority": {"type": "integer", "enum": [1, 5, 10]}
             }
-        }));
+        });
         let errs = validate_schema_compatibility(&base, &derived, "b", "d");
         assert!(
             errs.is_empty(),
@@ -1009,18 +1174,18 @@ mod tests {
     #[test]
     fn test_omitting_bounds_without_enum_or_const_still_fails() {
         // Derived omits maxLength without adding enum or const — still loosening.
-        let base = extract_effective_schema(&json!({
+        let base = json!({
             "type": "object",
             "properties": {
                 "code": {"type": "string", "maxLength": 100}
             }
-        }));
-        let derived = extract_effective_schema(&json!({
+        });
+        let derived = json!({
             "type": "object",
             "properties": {
                 "code": {"type": "string"}
             }
-        }));
+        });
         let errs = validate_schema_compatibility(&base, &derived, "b", "d");
         assert!(
             !errs.is_empty(),
@@ -1031,27 +1196,27 @@ mod tests {
     #[test]
     fn test_derived_const_must_be_in_base_enum() {
         // Base has enum, derived narrows to const — but const value must be in base enum.
-        let base = extract_effective_schema(&json!({
+        let base = json!({
             "type": "object",
             "properties": {
                 "status": {"type": "string", "enum": ["active", "inactive"]}
             }
-        }));
-        let derived_ok = extract_effective_schema(&json!({
+        });
+        let derived_ok = json!({
             "type": "object",
             "properties": {
                 "status": {"type": "string", "const": "active"}
             }
-        }));
+        });
         let errs = validate_schema_compatibility(&base, &derived_ok, "b", "d");
         assert!(errs.is_empty(), "const in base enum should be ok: {errs:?}");
 
-        let derived_bad = extract_effective_schema(&json!({
+        let derived_bad = json!({
             "type": "object",
             "properties": {
                 "status": {"type": "string", "const": "deleted"}
             }
-        }));
+        });
         let errs = validate_schema_compatibility(&base, &derived_bad, "b", "d");
         assert!(!errs.is_empty(), "const NOT in base enum should fail");
     }
@@ -1059,18 +1224,18 @@ mod tests {
     #[test]
     fn test_const_violates_minimum() {
         // Base has minimum 42, derived sets const 32 — must fail.
-        let base = extract_effective_schema(&json!({
+        let base = json!({
             "type": "object",
             "properties": {
                 "score": {"type": "integer", "minimum": 42}
             }
-        }));
-        let derived = extract_effective_schema(&json!({
+        });
+        let derived = json!({
             "type": "object",
             "properties": {
                 "score": {"type": "integer", "const": 32}
             }
-        }));
+        });
         let errs = validate_schema_compatibility(&base, &derived, "base~", "derived~");
         assert!(
             !errs.is_empty(),
@@ -1086,18 +1251,18 @@ mod tests {
     #[test]
     fn test_const_satisfies_minimum() {
         // Base has minimum 42, derived sets const 50 — should pass.
-        let base = extract_effective_schema(&json!({
+        let base = json!({
             "type": "object",
             "properties": {
                 "score": {"type": "integer", "minimum": 42}
             }
-        }));
-        let derived = extract_effective_schema(&json!({
+        });
+        let derived = json!({
             "type": "object",
             "properties": {
                 "score": {"type": "integer", "const": 50}
             }
-        }));
+        });
         let errs = validate_schema_compatibility(&base, &derived, "base~", "derived~");
         assert!(
             errs.is_empty(),
@@ -1108,18 +1273,18 @@ mod tests {
     #[test]
     fn test_enum_value_violates_maximum() {
         // Base has maximum 100, derived enum includes 200 — must fail.
-        let base = extract_effective_schema(&json!({
+        let base = json!({
             "type": "object",
             "properties": {
                 "score": {"type": "integer", "maximum": 100}
             }
-        }));
-        let derived = extract_effective_schema(&json!({
+        });
+        let derived = json!({
             "type": "object",
             "properties": {
                 "score": {"type": "integer", "enum": [10, 50, 200]}
             }
-        }));
+        });
         let errs = validate_schema_compatibility(&base, &derived, "base~", "derived~");
         assert!(
             !errs.is_empty(),
@@ -1130,18 +1295,18 @@ mod tests {
     #[test]
     fn test_enum_values_within_bounds() {
         // Base has minimum 10 and maximum 100, all enum values within range — should pass.
-        let base = extract_effective_schema(&json!({
+        let base = json!({
             "type": "object",
             "properties": {
                 "score": {"type": "integer", "minimum": 10, "maximum": 100}
             }
-        }));
-        let derived = extract_effective_schema(&json!({
+        });
+        let derived = json!({
             "type": "object",
             "properties": {
                 "score": {"type": "integer", "enum": [10, 50, 100]}
             }
-        }));
+        });
         let errs = validate_schema_compatibility(&base, &derived, "base~", "derived~");
         assert!(
             errs.is_empty(),
@@ -1152,18 +1317,18 @@ mod tests {
     #[test]
     fn test_const_string_violates_max_length() {
         // Base has maxLength 5, derived const is "toolong" (7 chars) — must fail.
-        let base = extract_effective_schema(&json!({
+        let base = json!({
             "type": "object",
             "properties": {
                 "code": {"type": "string", "maxLength": 5}
             }
-        }));
-        let derived = extract_effective_schema(&json!({
+        });
+        let derived = json!({
             "type": "object",
             "properties": {
                 "code": {"type": "string", "const": "toolong"}
             }
-        }));
+        });
         let errs = validate_schema_compatibility(&base, &derived, "base~", "derived~");
         assert!(
             !errs.is_empty(),

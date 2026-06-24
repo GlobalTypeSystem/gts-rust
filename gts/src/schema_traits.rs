@@ -99,6 +99,7 @@ impl EffectiveTraits {
     /// `false` with values present, or if values don't conform.
     pub(crate) fn validate(&self, check_unresolved: bool) -> Result<(), Vec<String>> {
         validate_trait_schema_integrity(&self.resolved_trait_schemas)?;
+        validate_trait_schema_compatibility(&self.resolved_trait_schemas)?;
 
         if !self.has_schema() {
             if self.has_explicit_values() {
@@ -279,6 +280,53 @@ fn validate_trait_schema_integrity(resolved_trait_schemas: &[Value]) -> Result<(
         }
     }
     Ok(())
+}
+
+/// Validate that each descendant trait-schema contribution remains compatible
+/// with the effective ancestor trait-schema prefix.
+///
+/// Chain aggregation via `allOf` means values that satisfy the descendant's
+/// effective trait-schema also satisfy every ancestor branch. This check catches
+/// structural incompatibilities early, even when an abstract type provides no
+/// concrete `x-gts-traits` values for JSON Schema validation to exercise.
+fn validate_trait_schema_compatibility(
+    resolved_trait_schemas: &[Value],
+) -> Result<(), Vec<String>> {
+    let mut errors = Vec::new();
+
+    for i in 1..resolved_trait_schemas.len() {
+        let ancestor_schema = build_effective_traits_schema(&resolved_trait_schemas[..i]);
+        let descendant_schema = build_effective_traits_schema(&resolved_trait_schemas[..=i]);
+
+        let ancestor = crate::schema_compat::extract_effective_schema(&ancestor_schema);
+        let descendant = crate::schema_compat::extract_effective_schema(&descendant_schema);
+        let pair_errors = crate::schema_compat::validate_effective_schema_compatibility(
+            &ancestor,
+            &descendant,
+            "ancestor trait schema",
+            "descendant trait schema",
+        );
+
+        errors.extend(pair_errors.into_iter().map(|err| {
+            format!("x-gts-traits-schema[{i}] is incompatible with ancestor trait schema: {err}")
+        }));
+
+        let branch_errors = crate::schema_compat::validate_closed_descendant_branches(
+            &ancestor_schema,
+            &resolved_trait_schemas[i],
+            "ancestor trait schema",
+            "descendant trait schema",
+        );
+        errors.extend(branch_errors.into_iter().map(|err| {
+            format!("x-gts-traits-schema[{i}] is incompatible with ancestor trait schema: {err}")
+        }));
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
 }
 
 /// Build the dialect-pinned effective traits schema and the materialized
@@ -1265,6 +1313,269 @@ mod tests {
             err.iter()
                 .any(|e| e.contains("additional") || e.contains("unknownTrait")),
             "unknown property should fail: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_closed_ancestor_blocks_descendant_trait_schema_property_without_values() {
+        let schemas = vec![
+            json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "retention": {"type": "string"}
+                }
+            }),
+            json!({
+                "type": "object",
+                "properties": {
+                    "topicRef": {"type": "string"}
+                }
+            }),
+        ];
+
+        let traits = build_effective_traits(&schemas, &json!({}), None);
+        let err = traits
+            .validate(false)
+            .expect_err("abstract types must still reject incompatible trait schemas");
+        assert!(
+            err.iter()
+                .any(|e| e.contains("topicRef") || e.contains("additionalProperties")),
+            "closed ancestor should reject descendant trait property: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_trait_schema_type_conflict_fails_without_values() {
+        let schemas = vec![
+            json!({
+                "type": "object",
+                "properties": {
+                    "retention": {"type": "string"}
+                }
+            }),
+            json!({
+                "type": "object",
+                "properties": {
+                    "retention": {"type": "integer"}
+                }
+            }),
+        ];
+
+        let traits = build_effective_traits(&schemas, &json!({}), None);
+        let err = traits
+            .validate(false)
+            .expect_err("trait schema conflicts must fail without concrete values");
+        assert!(
+            err.iter()
+                .any(|e| e.contains("retention") && e.contains("type")),
+            "type conflict should be reported: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_abstract_valid_narrowing_trait_schema_passes_without_values() {
+        // Guard against over-rejection: genuine narrowing (open string → enum
+        // subset) plus a new optional property under an open ancestor must pass.
+        let schemas = vec![
+            json!({
+                "type": "object",
+                "properties": {"priority": {"type": "string"}}
+            }),
+            json!({
+                "type": "object",
+                "properties": {
+                    "priority": {"type": "string", "enum": ["low", "high"]},
+                    "note": {"type": "string"}
+                }
+            }),
+        ];
+
+        let traits = build_effective_traits(&schemas, &json!({}), None);
+        assert!(
+            traits.validate(false).is_ok(),
+            "valid narrowing must pass without values: {:?}",
+            traits.validate(false)
+        );
+    }
+
+    #[test]
+    fn test_descendant_closed_trait_schema_orphans_ancestor_property_fails() {
+        // Closed descendant that drops an ancestor property orphans it under
+        // allOf; must fail even with no values present.
+        let schemas = vec![
+            json!({
+                "type": "object",
+                "properties": {"retention": {"type": "string"}}
+            }),
+            json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {"topicRef": {"type": "string"}}
+            }),
+        ];
+
+        let traits = build_effective_traits(&schemas, &json!({}), None);
+        let err = traits
+            .validate(false)
+            .expect_err("a closed descendant orphaning an ancestor trait must fail");
+        assert!(
+            err.iter()
+                .any(|e| e.contains("retention") && e.contains("additionalProperties")),
+            "orphaned ancestor property should be reported: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_descendant_closed_trait_schema_restating_ancestor_property_passes() {
+        // Escape hatch: closing the surface but restating the ancestor property
+        // keeps it usable, so it must pass.
+        let schemas = vec![
+            json!({
+                "type": "object",
+                "properties": {"retention": {"type": "string"}}
+            }),
+            json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "retention": {"type": "string"},
+                    "topicRef": {"type": "string"}
+                }
+            }),
+        ];
+
+        let traits = build_effective_traits(&schemas, &json!({}), None);
+        assert!(
+            traits.validate(false).is_ok(),
+            "restating the ancestor property keeps it usable: {:?}",
+            traits.validate(false)
+        );
+    }
+
+    #[test]
+    fn test_descendant_nested_closed_trait_schema_orphans_ancestor_property_fails() {
+        let schemas = vec![
+            json!({
+                "type": "object",
+                "properties": {
+                    "routing": {
+                        "type": "object",
+                        "properties": {
+                            "source": {"type": "string"}
+                        }
+                    }
+                }
+            }),
+            json!({
+                "type": "object",
+                "properties": {
+                    "routing": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "target": {"type": "string"}
+                        }
+                    }
+                }
+            }),
+        ];
+
+        let traits = build_effective_traits(&schemas, &json!({}), None);
+        let err = traits
+            .validate(false)
+            .expect_err("a closed nested descendant orphaning an ancestor trait must fail");
+        assert!(
+            err.iter()
+                .any(|e| { e.contains("routing.source") && e.contains("additionalProperties") }),
+            "orphaned nested ancestor property should be reported: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_descendant_nested_closed_trait_schema_restating_ancestor_property_passes() {
+        let schemas = vec![
+            json!({
+                "type": "object",
+                "properties": {
+                    "routing": {
+                        "type": "object",
+                        "properties": {
+                            "source": {"type": "string"}
+                        }
+                    }
+                }
+            }),
+            json!({
+                "type": "object",
+                "properties": {
+                    "routing": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "source": {"type": "string"},
+                            "target": {"type": "string"}
+                        }
+                    }
+                }
+            }),
+        ];
+
+        let traits = build_effective_traits(&schemas, &json!({}), None);
+        assert!(
+            traits.validate(false).is_ok(),
+            "restating the nested ancestor property keeps it usable: {:?}",
+            traits.validate(false)
+        );
+    }
+
+    #[test]
+    fn test_descendant_nested_allof_closed_branch_orphans_ancestor_property_fails() {
+        let schemas = vec![
+            json!({
+                "type": "object",
+                "properties": {
+                    "routing": {
+                        "type": "object",
+                        "properties": {
+                            "source": {"type": "string"}
+                        }
+                    }
+                }
+            }),
+            json!({
+                "type": "object",
+                "properties": {
+                    "routing": {
+                        "type": "object",
+                        "allOf": [
+                            {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                    "target": {"type": "string"}
+                                }
+                            },
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "source": {"type": "string"}
+                                }
+                            }
+                        ]
+                    }
+                }
+            }),
+        ];
+
+        let traits = build_effective_traits(&schemas, &json!({}), None);
+        let err = traits
+            .validate(false)
+            .expect_err("a closed allOf branch orphaning an ancestor trait must fail");
+        assert!(
+            err.iter()
+                .any(|e| { e.contains("routing.source") && e.contains("additionalProperties") }),
+            "orphaned nested allOf ancestor property should be reported: {err:?}"
         );
     }
 

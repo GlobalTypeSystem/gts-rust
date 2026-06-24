@@ -456,13 +456,9 @@ impl GtsStore {
                 StoreError::ValidationError(format!("Schema '{derived_id}' has {e}"))
             })?;
 
-            // Extract effective schemas and compare via schema_compat module
-            let base_eff = crate::schema_compat::extract_effective_schema(&base_resolved);
-            let derived_eff = crate::schema_compat::extract_effective_schema(&derived_resolved);
-
             let errors = crate::schema_compat::validate_schema_compatibility(
-                &base_eff,
-                &derived_eff,
+                &base_resolved,
+                &derived_resolved,
                 &base_id,
                 &derived_id,
             );
