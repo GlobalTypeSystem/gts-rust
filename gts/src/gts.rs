@@ -15,8 +15,8 @@
 use std::fmt;
 
 pub use gts_id::{
-    GTS_PREFIX, GtsId, GtsIdError, GtsIdPattern, GtsIdPatternSegment, GtsIdSegment,
-    GtsIdSegmentParts, GtsUuidTail,
+    DEFAULT_GTS_ID_PREFIX, GTS_ID_MAX_LENGTH, GTS_ID_PREFIX, GTS_ID_PREFIX_ENV, GtsId, GtsIdError,
+    GtsIdPattern, GtsIdPatternSegment, GtsIdSegment, GtsIdSegmentParts, GtsUuidTail,
 };
 
 /// A type-safe wrapper for GTS entity identifiers.
@@ -55,7 +55,7 @@ impl AsRef<str> for GtsEntityId {
 
 /// URI-compatible prefix for GTS identifiers in JSON Schema `$id` field (e.g., `gts://gts.x.y.z...`).
 /// This is ONLY used for JSON Schema serialization/deserialization, not for GTS ID parsing.
-pub const GTS_URI_PREFIX: &str = "gts://";
+pub const GTS_ID_URI_PREFIX: &str = "gts://";
 
 /// A type-safe wrapper for GTS instance identifiers.
 ///
@@ -138,7 +138,7 @@ impl GtsInstanceId {
     /// let schema = GtsInstanceId::json_schema_value();
     /// assert_eq!(schema["type"], "string");
     /// assert_eq!(schema["format"], "gts-instance-id");
-    /// assert_eq!(schema["x-gts-ref"], "gts.*");
+    /// assert_eq!(schema["x-gts-ref"], format!("{}*", gts::GTS_ID_PREFIX));
     /// ```
     #[must_use]
     pub fn json_schema_value() -> serde_json::Value {
@@ -147,7 +147,7 @@ impl GtsInstanceId {
             "format": "gts-instance-id",
             "title": "GTS Instance ID",
             "description": "GTS instance identifier",
-            "x-gts-ref": "gts.*"
+            "x-gts-ref": format!("{GTS_ID_PREFIX}*")
         })
     }
 
@@ -342,7 +342,7 @@ impl GtsTypeId {
     /// let schema = GtsTypeId::json_schema_value();
     /// assert_eq!(schema["type"], "string");
     /// assert_eq!(schema["format"], "gts-type-id");
-    /// assert_eq!(schema["x-gts-ref"], "gts.*");
+    /// assert_eq!(schema["x-gts-ref"], format!("{}*", gts::GTS_ID_PREFIX));
     /// ```
     #[must_use]
     pub fn json_schema_value() -> serde_json::Value {
@@ -351,7 +351,7 @@ impl GtsTypeId {
             "format": "gts-type-id",
             "title": "GTS Type ID",
             "description": "GTS type identifier",
-            "x-gts-ref": "gts.*"
+            "x-gts-ref": format!("{GTS_ID_PREFIX}*")
         })
     }
 
@@ -512,5 +512,12 @@ mod tests {
                 .is_err(),
             "a non-'~' instance id must not deserialize as a type id"
         );
+    }
+
+    #[test]
+    fn test_json_schema_values_use_configured_id_prefix() {
+        let expected = format!("{GTS_ID_PREFIX}*");
+        assert_eq!(GtsInstanceId::json_schema_value()["x-gts-ref"], expected);
+        assert_eq!(GtsTypeId::json_schema_value()["x-gts-ref"], expected);
     }
 }

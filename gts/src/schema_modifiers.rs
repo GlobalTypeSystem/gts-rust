@@ -407,11 +407,14 @@ mod tests {
     fn reg_schema(store: &mut GtsStore, content: Value) {
         // Ensure $id has gts:// prefix for entity detection
         let content = if let Some(id) = content.get("$id").and_then(|v| v.as_str()) {
-            if id.starts_with("gts://") {
+            if id.starts_with(crate::GTS_ID_URI_PREFIX) {
                 content
             } else {
                 let mut c = content.as_object().unwrap().clone();
-                c.insert("$id".to_owned(), json!(format!("gts://{id}")));
+                c.insert(
+                    "$id".to_owned(),
+                    json!(format!("{}{id}", crate::GTS_ID_URI_PREFIX)),
+                );
                 Value::Object(c)
             }
         } else {

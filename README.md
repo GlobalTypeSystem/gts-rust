@@ -930,7 +930,9 @@ GTS identifiers follow this format:
 gts.<vendor>.<package>.<namespace>.<type>.v<MAJOR>[.<MINOR>][~]
 ```
 
-- **Prefix**: Always starts with `gts.`
+- **Prefix**: Always starts with `gts.` (configurable at compile time via the
+  `GTS_ID_PREFIX` environment variable — see
+  [gts-id/README.md](gts-id/README.md#configurable-identifier-prefix))
 - **Vendor**: Organization or vendor code
 - **Package**: Module or application name
 - **Namespace**: Category within the package

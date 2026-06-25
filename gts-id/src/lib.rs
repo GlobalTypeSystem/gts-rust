@@ -9,9 +9,11 @@ mod gts_id;
 mod gts_id_pattern;
 mod gts_id_segment;
 pub(crate) mod parse;
+pub(crate) mod prefix;
 
 pub use error::{GtsIdError, GtsIdSegmentError};
 pub use gts_id::GtsId;
 pub use gts_id_pattern::GtsIdPattern;
 pub use gts_id_segment::{GtsIdPatternSegment, GtsIdSegment, GtsIdSegmentParts, GtsUuidTail};
-pub use parse::{GTS_MAX_LENGTH, GTS_PREFIX};
+pub use parse::GTS_ID_MAX_LENGTH;
+pub use prefix::{DEFAULT_GTS_ID_PREFIX, GTS_ID_PREFIX, GTS_ID_PREFIX_ENV};

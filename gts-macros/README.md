@@ -746,6 +746,58 @@ Examples:
 - `gts.x.core.iam.user.v1~` - IAM user schema
 - `gts.x.commerce.orders.order.v1.0~` - Order schema with minor version
 
+### The `gts_id!` helper macro
+
+The `gts_id!` macro prepends the configured GTS ID prefix
+(`gts.` by default, overridable via `GTS_ID_PREFIX` at compile time — see
+[`gts-id/README.md`](../gts-id/README.md#configurable-identifier-prefix))
+to a prefix-less suffix, producing a `&'static str` literal:
+
+```rust
+use gts_macros::gts_id;
+
+// With the default prefix "gts.":
+let id: &str = gts_id!("x.core.events.topic.v1~");
+assert_eq!(id, "gts.x.core.events.topic.v1~");
+```
+
+This avoids hard-coding the prefix at every call site. When the prefix is
+overridden at compile time, the same code automatically uses the new prefix.
+
+#### Marker form inside other macros
+
+`gts_id!("...")` is also recognized as a **marker** inside the `type_id` /
+`schema_id` / `id` arguments of `#[struct_to_gts_schema]`, `gts_instance!`,
+and `gts_instance_raw!`. The macros intercept it syntactically and prepend
+the configured prefix themselves (the compiler does not expand macros
+inside another macro's input):
+
+```rust
+use gts_macros::{struct_to_gts_schema, gts_id, gts_instance};
+
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = true,
+    type_id = gts_id!("x.core.events.topic.v1~"),  // ← prefix-less
+    description = "Topic type",
+    properties = "id,name"
+)]
+pub struct TopicV1 {
+    pub id: gts::GtsInstanceId,
+    pub name: String,
+}
+
+// Inside gts_instance!:
+let t: TopicV1 = gts_instance!(TopicV1 {
+    id: gts_id!("x.core.events.topic.v1~vendor.app.orders.created.v1"),
+    name: "orders".to_owned(),
+});
+```
+
+Both the marker form `gts_id!("...")` and the full literal form
+`"gts.x.core.events.topic.v1~..."` are accepted for backward compatibility.
+Qualified paths such as `gts_macros::gts_id!("...")` are also recognized.
+
 ---
 
 ## Complete Example

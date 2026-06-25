@@ -5,6 +5,8 @@
 
 use serde_json::Value;
 
+use crate::GTS_ID_URI_PREFIX;
+
 /// The JSON Schema **draft-07** dialect URI that GTS Type Schemas declare via
 /// `$schema`. Single source of truth for the value emitted by the schema
 /// generators (the `struct_to_gts_schema` macro, the CLI generator).
@@ -491,12 +493,12 @@ pub fn build_gts_allof_schema(
     required: &[&str],
 ) -> Value {
     serde_json::json!({
-        "$id": format!("gts://{}", innermost_type_id),
+        "$id": format!("{GTS_ID_URI_PREFIX}{}", innermost_type_id),
         "$schema": "http://json-schema.org/draft-07/schema#",
         "title": title,
         "type": "object",
         "allOf": [
-            { "$ref": format!("gts://{}", base_type_id) },
+            { "$ref": format!("{GTS_ID_URI_PREFIX}{}", base_type_id) },
             {
                 "type": "object",
                 "properties": own_properties,

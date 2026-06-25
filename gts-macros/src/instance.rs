@@ -33,13 +33,14 @@
 //! [`expand_gts_instance`] and [`expand_gts_instance_raw`] here.
 
 use crate::ID_FIELD_NAMES;
+use gts_id::GTS_ID_PREFIX;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{
-    Attribute, Expr, ExprLit, ExprStruct, FieldValue, GenericArgument, Ident, Lit, LitStr, Path,
-    PathArguments, Token, Type, parse2,
+    Attribute, Expr, ExprStruct, FieldValue, GenericArgument, Ident, LitStr, Path, PathArguments,
+    Token, Type, parse2,
 };
 
 /// Validate an `instance_id` literal against the full GTS spec via the
@@ -181,7 +182,9 @@ impl Parse for TypedInstanceArgs {
         let instance: ExprStruct = input.parse().map_err(|e| {
             syn::Error::new(
                 e.span(),
-                "expected a struct literal: `StructPath { id: \"gts...\", ...other fields... }`",
+                format!(
+                    "expected a struct literal: `StructPath {{ id: \"{GTS_ID_PREFIX}...\", ...other fields... }}`"
+                ),
             )
         })?;
         if !input.is_empty() {
@@ -226,19 +229,17 @@ fn extract_id_field(instance: &ExprStruct) -> syn::Result<(usize, Ident, LitStr)
                 ),
             ));
         }
-        let Expr::Lit(ExprLit {
-            lit: Lit::Str(lit_str),
-            ..
-        }) = &field.expr
-        else {
-            return Err(syn::Error::new_spanned(
+        let lit_str = crate::id_arg::gts_id_lit_from_expr(&field.expr).map_err(|_| {
+            syn::Error::new_spanned(
                 &field.expr,
                 format!(
-                    "`{name}:` must be a string literal containing the full GTS instance id (e.g. \"gts.acme.core.events.topic.v1~vendor.app.x.v1\")"
+                    "`{name}:` must be a string literal containing the full GTS instance id \
+                     (e.g. \"{GTS_ID_PREFIX}acme.core.events.topic.v1~vendor.app.x.v1\") or the \
+                     prefix-less marker `gts_id!(\"...\")`"
                 ),
-            ));
-        };
-        found = Some((idx, ident.clone(), lit_str.clone()));
+            )
+        })?;
+        found = Some((idx, ident.clone(), lit_str));
     }
 
     found.ok_or_else(|| {
@@ -431,12 +432,18 @@ impl Parse for RawInstanceArgs {
                 err.combine(syn::Error::new_spanned(prev, "first `\"id\"` key was here"));
                 return Err(err);
             }
-            let id_lit: LitStr = parse2(entry.value.clone()).map_err(|_| {
+            let bad_id = || {
                 syn::Error::new_spanned(
                     &entry.value,
-                    "`\"id\"` must be a string literal containing the full GTS instance id (e.g. \"gts.acme.core.events.topic.v1~vendor.app.x.v1\")",
+                    format!(
+                        "`\"id\"` must be a string literal containing the full GTS instance id \
+                         (e.g. \"{GTS_ID_PREFIX}acme.core.events.topic.v1~vendor.app.x.v1\") or the \
+                         prefix-less marker `gts_id!(\"...\")`"
+                    ),
                 )
-            })?;
+            };
+            let id_expr: Expr = parse2(entry.value.clone()).map_err(|_| bad_id())?;
+            let id_lit = crate::id_arg::gts_id_lit_from_expr(&id_expr).map_err(|_| bad_id())?;
             found_id = Some(id_lit);
         }
 

@@ -97,7 +97,8 @@ pub fn write_human(report: &ValidationReport, writer: &mut dyn Write) -> anyhow:
             if has_parse_error {
                 writeln!(
                     writer,
-                    "    - Schema IDs must end with ~ (e.g., gts.x.core.type.v1~)"
+                    "    - Schema IDs must end with ~ (e.g., {}x.core.type.v1~)",
+                    gts::GTS_ID_PREFIX
                 )?;
                 writeln!(
                     writer,

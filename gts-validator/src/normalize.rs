@@ -4,9 +4,11 @@
 //! before passing candidates to the validator. It handles:
 //! - Trimming whitespace
 //! - Stripping surrounding quotes
-//! - Stripping `gts://` URI prefix
+//! - Stripping the `gts://` URI prefix
 //! - Rejecting URI fragments (#) and query strings (?)
-//! - Verifying the `gts.` prefix
+//! - Verifying the configured GTS identifier prefix ([`GTS_ID_PREFIX`])
+
+use gts::{GTS_ID_PREFIX, GTS_ID_URI_PREFIX};
 
 /// Result of normalizing a raw candidate string.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,7 +43,7 @@ pub fn normalize_candidate(raw: &str) -> Result<NormalizedCandidate, String> {
         trimmed = &trimmed[1..trimmed.len() - 1];
     }
 
-    let gts_id = if let Some(stripped) = trimmed.strip_prefix("gts://") {
+    let gts_id = if let Some(stripped) = trimmed.strip_prefix(GTS_ID_URI_PREFIX) {
         // Reject URI fragments and query strings — spec section 9.1 says
         // remainder must be a plain GTS identifier
         if stripped.contains('#') || stripped.contains('?') {
@@ -54,8 +56,8 @@ pub fn normalize_candidate(raw: &str) -> Result<NormalizedCandidate, String> {
         trimmed.to_owned()
     };
 
-    if !gts_id.starts_with("gts.") {
-        return Err(format!("Does not start with 'gts.': '{raw}'"));
+    if !gts_id.starts_with(GTS_ID_PREFIX) {
+        return Err(format!("Does not start with '{GTS_ID_PREFIX}': '{raw}'"));
     }
 
     Ok(NormalizedCandidate {

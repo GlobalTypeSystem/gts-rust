@@ -28,7 +28,7 @@ pub enum Priority {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.test.traits.priority.v1~",
+    type_id = gts_id!("x.test.traits.priority.v1~"),
     description = "Reusable priority trait with an open payload slot",
     properties = "id,label,priority,payload"
 )]
@@ -44,7 +44,7 @@ pub struct PriorityTraitV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = PriorityTraitV1,
-    type_id = "gts.x.test.traits.priority.v1~x.test.urgent.detail.v1~",
+    type_id = gts_id!("x.test.traits.priority.v1~x.test.urgent.detail.v1~"),
     description = "Priority trait specifying the payload slot",
     properties = "category"
 )]
@@ -58,7 +58,7 @@ pub struct UrgentDetailTraitV1 {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.test.golden.refchain.v1~",
+    type_id = gts_id!("x.test.golden.refchain.v1~"),
     description = "Base host referencing the base priority trait type",
     properties = "id,payload",
     traits_schema = PriorityTraitV1::<()>,
@@ -76,7 +76,7 @@ pub struct RefBaseV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = RefBaseV1,
-    type_id = "gts.x.test.golden.refchain.v1~x.test.urgent.event.v1~",
+    type_id = gts_id!("x.test.golden.refchain.v1~x.test.urgent.event.v1~"),
     description = "Derived host referencing the derived priority trait type",
     properties = "order_id",
     traits_schema = UrgentDetailTraitV1,

@@ -1,6 +1,7 @@
 // Proc macros run at compile time, so panics become compile errors
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use gts_id::GTS_ID_PREFIX;
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{
@@ -324,7 +325,7 @@ fn validate_version_match(struct_ident: &syn::Ident, type_id: &str) -> syn::Resu
             format!(
                 "struct_to_gts_schema: Struct '{struct_name}' has version suffix '{}' but \
                  cannot extract version from type_id '{type_id}'. \
-                 Expected format with version like 'gts.x.foo.v1~' or 'gts.x.foo.v1.0~'",
+                 Expected format with version like '{GTS_ID_PREFIX}x.foo.v1~' or '{GTS_ID_PREFIX}x.foo.v1.0~'",
                 sv.to_struct_suffix()
             ),
         )),
@@ -333,7 +334,7 @@ fn validate_version_match(struct_ident: &syn::Ident, type_id: &str) -> syn::Resu
             format!(
                 "struct_to_gts_schema: Both struct name and type_id must have a version. \
                  Struct '{struct_name}' has no version suffix (e.g., V1) and type_id '{type_id}' \
-                 has no version (e.g., v1~). Add version to both (e.g., '{struct_name}V1' with 'gts.x.foo.v1~')"
+                 has no version (e.g., v1~). Add version to both (e.g., '{struct_name}V1' with '{GTS_ID_PREFIX}x.foo.v1~')"
             ),
         )),
     }
@@ -701,7 +702,9 @@ impl Parse for GtsSchemaArgs {
                              `schema_id`, not both",
                         ));
                     }
-                    let value: LitStr = input.parse()?;
+                    // Accepts a full id string literal or the prefix-less
+                    // `gts_id!("...")` marker form.
+                    let value = id_arg::parse_gts_id_arg(input)?;
                     let id = value.value();
                     // Schema-specific check: must end with ~
                     if !id.ends_with('~') {
@@ -2278,7 +2281,30 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
 // points must live at the crate root (Rust restriction), so they are
 // thin shims here that delegate into the module.
 
+mod id_arg;
 mod instance;
+
+/// Construct a full GTS identifier string from a prefix-less suffix.
+///
+/// `gts_id!("x.core.events.topic.v1~")` expands to a `&'static str` literal
+/// equal to `concat!(GTS_ID_PREFIX, "x.core.events.topic.v1~")` — i.e. the
+/// configured prefix (`gts.` by default, overridable via the `GTS_ID_PREFIX`
+/// environment variable) followed by the given suffix.
+///
+/// The same `gts_id!("...")` form is also recognized as a marker inside the
+/// `type_id`/`id` arguments of [`struct_to_gts_schema`], [`gts_instance!`], and
+/// [`gts_instance_raw!`], so identifiers can be written prefix-free everywhere.
+///
+/// ```ignore
+/// let id: &str = gts_macros::gts_id!("acme.core.events.topic.v1~ven.app.x.v1");
+/// // With the default prefix: "gts.acme.core.events.topic.v1~ven.app.x.v1"
+/// ```
+#[proc_macro]
+pub fn gts_id(input: TokenStream) -> TokenStream {
+    let suffix = parse_macro_input!(input as LitStr);
+    let full = id_arg::build_prefixed_lit(&suffix);
+    quote!(#full).into()
+}
 
 /// Typed GTS instance.
 ///

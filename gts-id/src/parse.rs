@@ -5,25 +5,22 @@
 //! them) from the raw string. Callers that only care about validity simply
 //! inspect the `Result` and discard the parsed value.
 
-use crate::{GtsIdError, GtsIdPatternSegment, GtsIdSegment};
-
-/// The required prefix for all GTS identifiers.
-pub const GTS_PREFIX: &str = "gts.";
+use crate::{GTS_ID_PREFIX, GtsIdError, GtsIdPatternSegment, GtsIdSegment};
 
 /// Maximum allowed length for a GTS identifier string.
-pub const GTS_MAX_LENGTH: usize = 1024;
+pub const GTS_ID_MAX_LENGTH: usize = 1024;
 
 /// Expected format string for segment error messages.
 ///
-/// Segment #1 shows the `gts.` prefix because the user writes
-/// `gts.vendor.package...`; segments #2+ omit it because they
+/// Segment #1 shows the configured prefix because the user writes
+/// `<prefix>vendor.package...`; segments #2+ omit it because they
 /// come after a `~` delimiter.
 #[must_use]
-pub fn expected_format(segment_num: usize) -> &'static str {
+pub fn expected_format(segment_num: usize) -> String {
     if segment_num == 1 {
-        "gts.vendor.package.namespace.type.vMAJOR[.MINOR]"
+        format!("{GTS_ID_PREFIX}vendor.package.namespace.type.vMAJOR[.MINOR]")
     } else {
-        "vendor.package.namespace.type.vMAJOR[.MINOR]"
+        "vendor.package.namespace.type.vMAJOR[.MINOR]".to_owned()
     }
 }
 
@@ -80,10 +77,10 @@ fn split_raw_segments(
     id: &str,
     allow_wildcards: bool,
 ) -> Result<(Vec<String>, Option<String>), GtsIdError> {
-    if !id.starts_with(GTS_PREFIX) {
+    if !id.starts_with(GTS_ID_PREFIX) {
         return Err(GtsIdError::new(
             id,
-            format!("must start with '{GTS_PREFIX}'"),
+            format!("must start with '{GTS_ID_PREFIX}'"),
         ));
     }
 
@@ -91,10 +88,10 @@ fn split_raw_segments(
         return Err(GtsIdError::new(id, "must be lowercase"));
     }
 
-    if id.len() > GTS_MAX_LENGTH {
+    if id.len() > GTS_ID_MAX_LENGTH {
         return Err(GtsIdError::new(
             id,
-            format!("too long ({} chars, max {GTS_MAX_LENGTH})", id.len()),
+            format!("too long ({} chars, max {GTS_ID_MAX_LENGTH})", id.len()),
         ));
     }
 
@@ -114,7 +111,7 @@ fn split_raw_segments(
         }
     }
 
-    let remainder = &id[GTS_PREFIX.len()..];
+    let remainder = &id[GTS_ID_PREFIX.len()..];
     let tilde_parts: Vec<&str> = remainder.split('~').collect();
 
     // Detect combined anonymous instance: last tilde-part is a UUID.
@@ -193,7 +190,7 @@ pub fn parse_id(id: &str) -> Result<Vec<GtsIdSegment>, GtsIdError> {
     let (segments_raw, uuid_tail) = split_raw_segments(id, false)?;
 
     let mut segments = Vec::new();
-    let mut offset = GTS_PREFIX.len();
+    let mut offset = GTS_ID_PREFIX.len();
     for (i, seg) in segments_raw.iter().enumerate() {
         let parsed = GtsIdSegment::parse(i + 1, seg)
             .map_err(|cause| GtsIdError::new(id, cause).with_segment(i + 1, offset, seg.clone()))?;
@@ -228,7 +225,7 @@ pub fn parse_pattern(id: &str) -> Result<Vec<GtsIdPatternSegment>, GtsIdError> {
     let (segments_raw, uuid_tail) = split_raw_segments(id, true)?;
 
     let mut segments = Vec::new();
-    let mut offset = GTS_PREFIX.len();
+    let mut offset = GTS_ID_PREFIX.len();
     for (i, seg) in segments_raw.iter().enumerate() {
         let parsed = GtsIdPatternSegment::parse(i + 1, seg)
             .map_err(|cause| GtsIdError::new(id, cause).with_segment(i + 1, offset, seg.clone()))?;
@@ -256,6 +253,12 @@ pub fn parse_pattern(id: &str) -> Result<Vec<GtsIdPatternSegment>, GtsIdError> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// Prepend the configured prefix to a suffix, yielding a full GTS id string
+    /// for use in tests. This keeps tests prefix-aware without hardcoding "gts.".
+    fn gts_id(suffix: &str) -> String {
+        format!("{GTS_ID_PREFIX}{suffix}")
+    }
 
     // ---- is_valid_segment_token ----
 
@@ -301,7 +304,7 @@ mod tests {
 
     #[test]
     fn test_valid_gts_id() {
-        let segments = parse_id("gts.x.core.events.event.v1~").unwrap();
+        let segments = parse_id(&gts_id("x.core.events.event.v1~")).unwrap();
         assert_eq!(segments.len(), 1);
         assert_eq!(segments[0].vendor(), "x");
         assert!(segments[0].is_type());
@@ -309,7 +312,10 @@ mod tests {
 
     #[test]
     fn test_valid_gts_id_chained() {
-        let segments = parse_id("gts.x.core.events.type.v1~vendor.app._.custom_event.v1~").unwrap();
+        let segments = parse_id(&gts_id(
+            "x.core.events.type.v1~vendor.app._.custom_event.v1~",
+        ))
+        .unwrap();
         assert_eq!(segments.len(), 2);
         assert_eq!(segments[0].vendor(), "x");
         assert_eq!(segments[1].vendor(), "vendor");
@@ -319,32 +325,38 @@ mod tests {
     fn test_gts_id_missing_prefix() {
         let err = parse_id("x.core.events.event.v1~").unwrap_err();
         assert!(err.segment.is_none(), "expected id-level error, got: {err}");
-        assert!(err.cause.contains("must start with 'gts.'"), "got: {err}");
+        assert!(
+            err.cause
+                .contains(&format!("must start with '{GTS_ID_PREFIX}'")),
+            "got: {err}"
+        );
     }
 
     #[test]
     fn test_gts_id_uppercase() {
-        let err = parse_id("gts.X.core.events.event.v1~").unwrap_err();
+        let err = parse_id(&gts_id("X.core.events.event.v1~")).unwrap_err();
         assert!(err.segment.is_none(), "expected id-level error, got: {err}");
         assert!(err.cause.contains("lowercase"), "got: {err}");
     }
 
     #[test]
     fn test_gts_id_hyphen() {
-        let err = parse_id("gts.x-vendor.core.events.event.v1~").unwrap_err();
+        let err = parse_id(&gts_id("x-vendor.core.events.event.v1~")).unwrap_err();
         assert!(err.segment.is_none(), "expected id-level error, got: {err}");
         assert!(err.cause.contains("'-'"), "got: {err}");
     }
 
     #[test]
     fn test_gts_id_segment_error_carries_num_and_offset() {
-        let err =
-            parse_id("gts.x.core.modkit.plugin.v1~x.core.license_enforcer.integration.plugin.v1~")
-                .unwrap_err();
+        let err = parse_id(&gts_id(
+            "x.core.modkit.plugin.v1~x.core.license_enforcer.integration.plugin.v1~",
+        ))
+        .unwrap_err();
         let seg = err.segment.as_ref().expect("expected segment-level error");
         assert_eq!(seg.num, 2);
-        // offset = "gts.".len() + "x.core.modkit.plugin.v1~".len() = 4 + 24 = 28
-        assert_eq!(seg.offset, 28);
+        // offset = prefix.len() + "x.core.modkit.plugin.v1~".len()
+        let expected_offset = GTS_ID_PREFIX.len() + "x.core.modkit.plugin.v1~".len();
+        assert_eq!(seg.offset, expected_offset);
         assert!(
             err.cause.contains("Too many name tokens before version"),
             "got: {err}"
@@ -353,7 +365,7 @@ mod tests {
 
     #[test]
     fn test_gts_id_instance_no_tilde_end() {
-        let segments = parse_id("gts.x.core.events.event.v1~a.b.c.d.v1.0").unwrap();
+        let segments = parse_id(&gts_id("x.core.events.event.v1~a.b.c.d.v1.0")).unwrap();
         assert_eq!(segments.len(), 2);
         assert!(segments[0].is_type());
         assert!(!segments[1].is_type());
@@ -361,20 +373,24 @@ mod tests {
 
     #[test]
     fn test_gts_id_double_tilde_rejected() {
-        let err = parse_id("gts.x.test1.events.type.v1.0~~").unwrap_err();
+        let err = parse_id(&gts_id("x.test1.events.type.v1.0~~")).unwrap_err();
         assert!(err.segment.is_none(), "expected id-level error, got: {err}");
         assert!(err.cause.contains("empty segment"), "got: {err}");
     }
 
     #[test]
     fn test_gts_id_parser_expects_trimmed_input() {
-        let err = parse_id("  gts.x.core.events.event.v1~  ").unwrap_err();
-        assert!(err.cause.contains("must start with 'gts.'"), "got: {err}");
+        let err = parse_id(&format!("  {}  ", gts_id("x.core.events.event.v1~"))).unwrap_err();
+        assert!(
+            err.cause
+                .contains(&format!("must start with '{GTS_ID_PREFIX}'")),
+            "got: {err}"
+        );
     }
 
     #[test]
     fn test_gts_id_trimmed_input() {
-        let segments = parse_id("gts.x.core.events.event.v1~").unwrap();
+        let segments = parse_id(&gts_id("x.core.events.event.v1~")).unwrap();
         assert_eq!(segments.len(), 1);
     }
 
@@ -400,7 +416,7 @@ mod tests {
 
     #[test]
     fn test_combined_anonymous_instance_valid() {
-        let segments = parse_id("gts.x.core.events.type.v1~x.commerce.orders.order_placed.v1.0~7a1d2f34-5678-49ab-9012-abcdef123456")
+        let segments = parse_id(&gts_id("x.core.events.type.v1~x.commerce.orders.order_placed.v1.0~7a1d2f34-5678-49ab-9012-abcdef123456"))
         .unwrap();
         assert_eq!(segments.len(), 3);
         assert!(segments[0].is_type());
@@ -412,8 +428,10 @@ mod tests {
 
     #[test]
     fn test_combined_anonymous_instance_single_prefix_valid() {
-        let segments =
-            parse_id("gts.x.core.events.type.v1~7a1d2f34-5678-49ab-9012-abcdef123456").unwrap();
+        let segments = parse_id(&gts_id(
+            "x.core.events.type.v1~7a1d2f34-5678-49ab-9012-abcdef123456",
+        ))
+        .unwrap();
         assert_eq!(segments.len(), 2);
         assert!(segments[0].is_type());
         assert!(segments[1].uuid_tail().is_some());
@@ -421,7 +439,7 @@ mod tests {
 
     #[test]
     fn test_combined_anonymous_instance_hyphen_in_segments_rejected() {
-        let err = parse_id("gts.x-vendor.core.events.type.v1~x.commerce.orders.order_placed.v1.0~7a1d2f34-5678-49ab-9012-abcdef123456")
+        let err = parse_id(&gts_id("x-vendor.core.events.type.v1~x.commerce.orders.order_placed.v1.0~7a1d2f34-5678-49ab-9012-abcdef123456"))
         .unwrap_err();
         assert!(err.segment.is_none(), "expected id-level error, got: {err}");
         assert!(err.cause.contains("'-'"), "got: {err}");
@@ -432,14 +450,18 @@ mod tests {
         // A bare UUID with no GTS prefix is not a valid GTS ID
         let err = parse_id("7a1d2f34-5678-49ab-9012-abcdef123456").unwrap_err();
         assert!(err.segment.is_none(), "expected id-level error, got: {err}");
-        assert!(err.cause.contains("must start with 'gts.'"), "got: {err}");
+        assert!(
+            err.cause
+                .contains(&format!("must start with '{GTS_ID_PREFIX}'")),
+            "got: {err}"
+        );
     }
 
     #[test]
     fn test_uuid_tail_without_preceding_tilde_rejected() {
         // UUID as the only segment (no preceding ~) must be rejected
-        // "gts." + UUID has no tilde_parts.len() >= 2
-        let err = parse_id("gts.7a1d2f34-5678-49ab-9012-abcdef123456").unwrap_err();
+        // prefix + UUID has no tilde_parts.len() >= 2
+        let err = parse_id(&gts_id("7a1d2f34-5678-49ab-9012-abcdef123456")).unwrap_err();
         assert!(err.segment.is_none(), "expected id-level error, got: {err}");
         assert!(err.cause.contains("'-'"), "got: {err}");
     }
@@ -449,15 +471,15 @@ mod tests {
     #[test]
     fn test_single_segment_instance_rejected() {
         // A lone instance segment (no '~', not a wildcard) is prohibited by #37.
-        let err = parse_id("gts.x.pkg.ns.type.v1.0").unwrap_err();
+        let err = parse_id(&gts_id("x.pkg.ns.type.v1.0")).unwrap_err();
         assert!(err.segment.is_none(), "expected id-level error, got: {err}");
         assert!(err.cause.contains("Single-segment instance"), "got: {err}");
     }
 
     #[test]
     fn test_single_segment_wildcard_allowed() {
-        // Wildcards are exempt from #37, so "gts.a.b.*" is accepted.
-        let segments = parse_pattern("gts.a.b.*").unwrap();
+        // Wildcards are exempt from #37, so "prefix.a.b.*" is accepted.
+        let segments = parse_pattern(&gts_id("a.b.*")).unwrap();
         assert_eq!(segments.len(), 1);
         assert!(segments[0].is_wildcard());
     }
@@ -466,14 +488,14 @@ mod tests {
 
     #[test]
     fn test_parse_pattern_multistar_rejected() {
-        let err = parse_pattern("gts.*.*.*.*").unwrap_err();
+        let err = parse_pattern(&gts_id("*.*.*.*")).unwrap_err();
         assert!(err.segment.is_none(), "expected id-level error, got: {err}");
         assert!(err.cause.contains("only once"), "got: {err}");
     }
 
     #[test]
     fn test_parse_pattern_star_not_at_end_rejected() {
-        let err = parse_pattern("gts.*.core.events.event.v1~").unwrap_err();
+        let err = parse_pattern(&gts_id("*.core.events.event.v1~")).unwrap_err();
         assert!(err.segment.is_none(), "expected id-level error, got: {err}");
         assert!(err.cause.contains("only at the end"), "got: {err}");
     }
@@ -482,7 +504,7 @@ mod tests {
     fn test_parse_pattern_version_wildcard_accepted() {
         // `v*` ends the string with `*`, so the structural gate admits it; the
         // segment parser turns it into a single wildcard segment.
-        let segments = parse_pattern("gts.x.llm.chat.message.v*").unwrap();
+        let segments = parse_pattern(&gts_id("x.llm.chat.message.v*")).unwrap();
         assert_eq!(segments.len(), 1);
         assert!(segments[0].is_wildcard());
     }
@@ -491,7 +513,7 @@ mod tests {
     fn test_parse_pattern_star_then_tilde_rejected() {
         // `…*~` does not end with `*`, so the gate rejects it id-level rather
         // than the segment parser silently stripping the trailing `~`.
-        let err = parse_pattern("gts.x.llm.chat.message.v1.*~").unwrap_err();
+        let err = parse_pattern(&gts_id("x.llm.chat.message.v1.*~")).unwrap_err();
         assert!(err.segment.is_none(), "expected id-level error, got: {err}");
         assert!(err.cause.contains("only at the end"), "got: {err}");
     }
@@ -500,7 +522,7 @@ mod tests {
     fn test_parse_pattern_midchain_wildcard_rejected() {
         // A wildcard that is the final token of a non-final chain segment is only
         // catchable structurally — the per-segment parser sees it as valid.
-        let err = parse_pattern("gts.x.*~a.b.c.d.v1~").unwrap_err();
+        let err = parse_pattern(&gts_id("x.*~a.b.c.d.v1~")).unwrap_err();
         assert!(err.segment.is_none(), "expected id-level error, got: {err}");
         assert!(err.cause.contains("only at the end"), "got: {err}");
     }
@@ -509,7 +531,7 @@ mod tests {
     fn test_parse_pattern_wildcard_rules_off_without_flag() {
         // With wildcards disabled, '*' is just an invalid segment token,
         // reported as a segment-level error.
-        let err = parse_id("gts.*.*.*.*").unwrap_err();
+        let err = parse_id(&gts_id("*.*.*.*")).unwrap_err();
         assert!(
             err.segment.is_some(),
             "expected segment-level error, got: {err}"

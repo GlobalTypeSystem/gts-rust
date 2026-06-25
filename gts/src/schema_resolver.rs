@@ -11,7 +11,7 @@
 
 use serde_json::Value;
 
-use crate::gts::GTS_URI_PREFIX;
+use crate::gts::GTS_ID_URI_PREFIX;
 use crate::store::StoreError;
 
 /// Read-only schema lookup the resolver needs from its host.
@@ -144,7 +144,7 @@ impl<'a> SchemaResolver<'a> {
                     }
 
                     // Normalize the ref: strip gts:// prefix to get canonical GTS ID
-                    let canonical_ref = ref_uri.strip_prefix(GTS_URI_PREFIX).unwrap_or(ref_uri);
+                    let canonical_ref = ref_uri.strip_prefix(GTS_ID_URI_PREFIX).unwrap_or(ref_uri);
                     let (lookup_ref, pointer_fragment) =
                         if let Some((id, fragment)) = canonical_ref.split_once('#') {
                             let pointer = if fragment.is_empty() {
