@@ -230,6 +230,11 @@ fn collect_closed_descendant_branch_errors(
     errors: &mut Vec<String>,
 ) {
     if depth >= MAX_RECURSION_DEPTH {
+        errors.push(format!(
+            "schema compatibility check exceeded maximum nesting depth of \
+             {MAX_RECURSION_DEPTH} at '{path}' between ancestor '{ancestor_label}' \
+             and descendant '{descendant_label}'"
+        ));
         return;
     }
 
@@ -946,6 +951,32 @@ mod tests {
             errs.iter()
                 .any(|e| e.contains("routing.source") && e.contains("additionalProperties")),
             "closed descendant branch should not orphan an ancestor property: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn test_closed_descendant_branch_fails_when_depth_guard_is_hit() {
+        fn nested_object(depth: usize) -> Value {
+            let mut schema = json!({"type": "object", "properties": {}});
+            for _ in 0..depth {
+                schema = json!({
+                    "type": "object",
+                    "properties": {
+                        "child": schema
+                    }
+                });
+            }
+            schema
+        }
+
+        let base = nested_object(MAX_RECURSION_DEPTH);
+        let derived = nested_object(MAX_RECURSION_DEPTH);
+
+        let errs = validate_closed_descendant_branches(&base, &derived, "base", "derived");
+        assert!(
+            errs.iter()
+                .any(|err| err.contains("exceeded maximum nesting depth")),
+            "depth guard should fail closed instead of silently accepting: {errs:?}"
         );
     }
 

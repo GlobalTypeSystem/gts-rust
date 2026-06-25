@@ -7,7 +7,7 @@
 //!
 //! [`SchemaResolver`] depends only on the narrow [`SchemaProvider`] lookup, not
 //! on `GtsStore` directly; the store implements `SchemaProvider` and exposes
-//! `try_resolve_schema_refs` as a thin wrapper.
+//! `resolve_schema_refs` as a thin wrapper.
 
 use serde_json::Value;
 

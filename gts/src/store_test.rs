@@ -5770,7 +5770,7 @@ fn test_validate_and_resolve_accepts_well_formed_gts_ref_schema() {
 }
 
 // ---------------------------------------------------------------------------
-// `GtsStore` `$ref`-resolution wrapper (`try_resolve_schema_refs`) and the
+// `GtsStore` `$ref`-resolution wrapper (`resolve_schema_refs`) and the
 // store-as-`SchemaProvider` integration.
 // Resolver semantics themselves are unit-tested in `schema_resolver_test.rs`;
 // these are smoke/integration tests for the store-level surface.

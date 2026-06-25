@@ -1,6 +1,6 @@
 //! Unit tests for [`SchemaResolver`]. They drive the resolver directly against
 //! a tiny in-memory [`SchemaProvider`] mock (`MapProvider`) — no `GtsStore`
-//! involved — so they exercise `SchemaResolver::try_resolve` in isolation.
+//! involved — so they exercise `SchemaResolver::resolve` in isolation.
 //! End-to-end coverage of the `GtsStore` wrapper and provider lookup semantics
 //! lives in `store_test.rs`.
 

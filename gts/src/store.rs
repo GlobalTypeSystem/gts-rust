@@ -700,7 +700,7 @@ impl GtsStore {
             .resolve_schema_refs(&content)
             .map_err(|e| StoreError::ValidationError(format!("Schema '{type_id}' has {e}")))?;
 
-        // Strip x-gts-ref before compiling; try_resolve_schema_refs has already
+        // Strip x-gts-ref before compiling; resolve_schema_refs has already
         // inlined all resolvable external gts:// refs or returned an error.
         let schema_for_validation = Self::remove_x_gts_ref_fields(&resolved_schema);
         let validator = jsonschema::options()
