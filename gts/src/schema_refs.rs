@@ -64,8 +64,8 @@ fn classify_ref(ref_uri: &str) -> Result<RefKind<'_>, InvalidRefReason> {
     // A GTS `$ref` may carry a JSON Pointer fragment selecting a sub-schema of
     // the target document (e.g. `gts://...~#/x-gts-traits-schema`). Validate the
     // id portion as a type id and require any fragment to be empty or a
-    // `/`-prefixed JSON Pointer - the exact shapes `resolve_schema_refs_inner`
-    // is able to dereference.
+    // `/`-prefixed JSON Pointer - the exact shapes `SchemaResolver` is able to
+    // dereference.
     let (id, fragment) = match rest.split_once('#') {
         Some((id, frag)) => (id, Some(frag)),
         None => (rest, None),

@@ -448,7 +448,9 @@ mod tests {
             .register_schema(BaseEventV1::<()>::gts_type_id().as_ref(), &base_schema)
             .unwrap();
 
-        let base_inline = store.resolve_schema_refs(&BaseEventV1::<()>::gts_schema_with_refs());
+        let base_inline = store
+            .resolve_schema_refs(&BaseEventV1::<()>::gts_schema_with_refs())
+            .expect("base schema refs should resolve");
 
         // Base has no $refs to resolve, so inline should be same as with_refs
         assert!(

@@ -3511,6 +3511,62 @@ fn test_op12_derived_omits_additional_properties_inherits_closedness() {
 }
 
 #[test]
+fn test_op12_descendant_nested_closed_schema_orphans_ancestor_property() {
+    let mut store = GtsStore::new();
+
+    let base = json!({
+        "$id": "gts://gts.x.test12.nested_orphan.event.v1~",
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+            "routing": {
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string"}
+                }
+            }
+        }
+    });
+    store
+        .register_schema("gts.x.test12.nested_orphan.event.v1~", &base)
+        .expect("register base");
+
+    let derived = json!({
+        "$id": "gts://gts.x.test12.nested_orphan.event.v1~x.test12._.child.v1~",
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "allOf": [
+            {"$ref": "gts://gts.x.test12.nested_orphan.event.v1~"},
+            {
+                "type": "object",
+                "properties": {
+                    "routing": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "target": {"type": "string"}
+                        }
+                    }
+                }
+            }
+        ]
+    });
+    store
+        .register_schema(
+            "gts.x.test12.nested_orphan.event.v1~x.test12._.child.v1~",
+            &derived,
+        )
+        .expect("register derived");
+
+    let result =
+        store.validate_schema_chain("gts.x.test12.nested_orphan.event.v1~x.test12._.child.v1~");
+    assert!(
+        result.is_err(),
+        "closed nested derived branch should not orphan ancestor routing.source: {result:?}"
+    );
+}
+
+#[test]
 fn test_op12_derived_omits_const() {
     let mut store = GtsStore::new();
     let base = json!({
@@ -5196,6 +5252,307 @@ fn test_op13_abstract_rejects_wrong_typed_trait_value() {
 }
 
 #[test]
+fn test_op13_abstract_rejects_incompatible_trait_schema_without_values() {
+    // Abstract types may defer required trait values, but their own
+    // x-gts-traits-schema contribution must still be compatible with ancestors.
+    // This catches schema conflicts even when there are no materialized values
+    // for JSON Schema validation to exercise.
+    let mut store = GtsStore::new();
+    let base = "gts.x.abst.tr.incomp.v1~";
+    let child = "gts.x.abst.tr.incomp.v1~x.abst._.child.v1~";
+
+    register_chain_schema(
+        &mut store,
+        base,
+        json!({
+            "x-gts-abstract": true,
+            "x-gts-traits-schema": {
+                "type": "object",
+                "properties": {"retention": {"type": "string"}}
+            }
+        }),
+    );
+    register_chain_schema(
+        &mut store,
+        child,
+        json!({
+            "x-gts-abstract": true,
+            "x-gts-traits-schema": {
+                "type": "object",
+                "properties": {"retention": {"type": "integer"}}
+            }
+        }),
+    );
+
+    let err = store.validate_schema(child).unwrap_err();
+    assert!(
+        format!("{err}").contains("x-gts-traits-schema") && format!("{err}").contains("retention"),
+        "abstract child must reject incompatible trait schema without values: {err}"
+    );
+}
+
+#[test]
+fn test_op13_abstract_closed_trait_schema_blocks_new_schema_property_without_values() {
+    let mut store = GtsStore::new();
+    let base = "gts.x.abst.tr.closed.v1~";
+    let child = "gts.x.abst.tr.closed.v1~x.abst._.child.v1~";
+
+    register_chain_schema(
+        &mut store,
+        base,
+        json!({
+            "x-gts-abstract": true,
+            "x-gts-traits-schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {"retention": {"type": "string"}}
+            }
+        }),
+    );
+    register_chain_schema(
+        &mut store,
+        child,
+        json!({
+            "x-gts-abstract": true,
+            "x-gts-traits-schema": {
+                "type": "object",
+                "properties": {"topicRef": {"type": "string"}}
+            }
+        }),
+    );
+
+    let err = store.validate_schema(child).unwrap_err();
+    assert!(
+        format!("{err}").contains("topicRef") || format!("{err}").contains("additionalProperties"),
+        "closed ancestor trait schema must block new descendant property without values: {err}"
+    );
+}
+
+#[test]
+fn test_op13_abstract_descendant_closed_trait_schema_orphans_ancestor_property() {
+    // A descendant x-gts-traits-schema with additionalProperties:false that
+    // drops an ancestor trait orphans it under allOf; must fail even though the
+    // abstract child provides no values.
+    let mut store = GtsStore::new();
+    let base = "gts.x.abst.tr.orphan.v1~";
+    let child = "gts.x.abst.tr.orphan.v1~x.abst._.child.v1~";
+
+    register_chain_schema(
+        &mut store,
+        base,
+        json!({
+            "x-gts-abstract": true,
+            "x-gts-traits-schema": {
+                "type": "object",
+                "properties": {"retention": {"type": "string"}}
+            }
+        }),
+    );
+    register_chain_schema(
+        &mut store,
+        child,
+        json!({
+            "x-gts-abstract": true,
+            "x-gts-traits-schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {"topicRef": {"type": "string"}}
+            }
+        }),
+    );
+
+    let err = store.validate_schema(child).unwrap_err();
+    assert!(
+        format!("{err}").contains("retention") && format!("{err}").contains("additionalProperties"),
+        "closed descendant trait schema must not orphan an ancestor trait: {err}"
+    );
+}
+
+#[test]
+fn test_op13_abstract_descendant_closed_trait_schema_restating_ancestor_ok() {
+    // Escape hatch: a closed descendant that restates the ancestor trait keeps
+    // it usable and must validate.
+    let mut store = GtsStore::new();
+    let base = "gts.x.abst.tr.restate.v1~";
+    let child = "gts.x.abst.tr.restate.v1~x.abst._.child.v1~";
+
+    register_chain_schema(
+        &mut store,
+        base,
+        json!({
+            "x-gts-abstract": true,
+            "x-gts-traits-schema": {
+                "type": "object",
+                "properties": {"retention": {"type": "string"}}
+            }
+        }),
+    );
+    register_chain_schema(
+        &mut store,
+        child,
+        json!({
+            "x-gts-abstract": true,
+            "x-gts-traits-schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "retention": {"type": "string"},
+                    "topicRef": {"type": "string"}
+                }
+            }
+        }),
+    );
+
+    assert!(
+        store.validate_schema(child).is_ok(),
+        "restating the ancestor trait under a closed descendant must pass"
+    );
+}
+
+#[test]
+fn test_op13_abstract_descendant_nested_closed_trait_schema_orphans_ancestor_property() {
+    let mut store = GtsStore::new();
+    let base = "gts.x.abst.tr.nested_orphan.v1~";
+    let child = "gts.x.abst.tr.nested_orphan.v1~x.abst._.child.v1~";
+
+    register_chain_schema(
+        &mut store,
+        base,
+        json!({
+            "x-gts-abstract": true,
+            "x-gts-traits-schema": {
+                "type": "object",
+                "properties": {
+                    "routing": {
+                        "type": "object",
+                        "properties": {
+                            "source": {"type": "string"}
+                        }
+                    }
+                }
+            }
+        }),
+    );
+    register_chain_schema(
+        &mut store,
+        child,
+        json!({
+            "x-gts-abstract": true,
+            "x-gts-traits-schema": {
+                "type": "object",
+                "properties": {
+                    "routing": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "target": {"type": "string"}
+                        }
+                    }
+                }
+            }
+        }),
+    );
+
+    let err = store.validate_schema(child).unwrap_err();
+    assert!(
+        format!("{err}").contains("routing.source")
+            && format!("{err}").contains("additionalProperties"),
+        "closed nested descendant trait schema must not orphan an ancestor trait: {err}"
+    );
+}
+
+#[test]
+fn test_op13_abstract_descendant_nested_closed_trait_schema_restating_ancestor_ok() {
+    let mut store = GtsStore::new();
+    let base = "gts.x.abst.tr.nested_restate.v1~";
+    let child = "gts.x.abst.tr.nested_restate.v1~x.abst._.child.v1~";
+
+    register_chain_schema(
+        &mut store,
+        base,
+        json!({
+            "x-gts-abstract": true,
+            "x-gts-traits-schema": {
+                "type": "object",
+                "properties": {
+                    "routing": {
+                        "type": "object",
+                        "properties": {
+                            "source": {"type": "string"}
+                        }
+                    }
+                }
+            }
+        }),
+    );
+    register_chain_schema(
+        &mut store,
+        child,
+        json!({
+            "x-gts-abstract": true,
+            "x-gts-traits-schema": {
+                "type": "object",
+                "properties": {
+                    "routing": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "source": {"type": "string"},
+                            "target": {"type": "string"}
+                        }
+                    }
+                }
+            }
+        }),
+    );
+
+    assert!(
+        store.validate_schema(child).is_ok(),
+        "restating the nested ancestor trait under a closed descendant must pass"
+    );
+}
+
+#[test]
+fn test_op13_abstract_descendant_valid_narrowing_trait_schema_ok() {
+    // Guard against over-rejection: an abstract descendant narrowing an ancestor
+    // trait (open string -> enum subset) plus a new optional property must pass.
+    let mut store = GtsStore::new();
+    let base = "gts.x.abst.tr.narrow.v1~";
+    let child = "gts.x.abst.tr.narrow.v1~x.abst._.child.v1~";
+
+    register_chain_schema(
+        &mut store,
+        base,
+        json!({
+            "x-gts-abstract": true,
+            "x-gts-traits-schema": {
+                "type": "object",
+                "properties": {"priority": {"type": "string"}}
+            }
+        }),
+    );
+    register_chain_schema(
+        &mut store,
+        child,
+        json!({
+            "x-gts-abstract": true,
+            "x-gts-traits-schema": {
+                "type": "object",
+                "properties": {
+                    "priority": {"type": "string", "enum": ["low", "high"]},
+                    "note": {"type": "string"}
+                }
+            }
+        }),
+    );
+
+    assert!(
+        store.validate_schema(child).is_ok(),
+        "valid abstract narrowing must pass without values"
+    );
+}
+
+#[test]
 fn test_op13_abstract_skips_required_completeness() {
     // A required trait with no default and no value is allowed on an abstract
     // type: a derived type may supply it later, so completeness is deferred.
@@ -5413,39 +5770,17 @@ fn test_validate_and_resolve_accepts_well_formed_gts_ref_schema() {
 }
 
 // ---------------------------------------------------------------------------
-// `GtsStore` `$ref`-resolution wrappers (`resolve_schema_refs` /
-// `try_resolve_schema_refs`) and the store-as-`SchemaProvider` integration.
+// `GtsStore` `$ref`-resolution wrapper (`resolve_schema_refs`) and the
+// store-as-`SchemaProvider` integration.
 // Resolver semantics themselves are unit-tested in `schema_resolver_test.rs`;
 // these are smoke/integration tests for the store-level surface.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn test_resolve_schema_refs_wrapper_smoke() {
-    let mut store = GtsStore::new();
-    store
-        .register_schema(
-            "gts.x.core.events.type.v1~",
-            &json!({
-                "$id": "gts://gts.x.core.events.type.v1~",
-                "$schema": "http://json-schema.org/draft-07/schema#",
-                "type": "object",
-                "properties": {"id": {"type": "string"}}
-            }),
-        )
-        .expect("register target");
-
-    let resolved = store.resolve_schema_refs(&json!({"$ref": "gts://gts.x.core.events.type.v1~"}));
-    assert_eq!(
-        resolved,
-        json!({"type": "object", "properties": {"id": {"type": "string"}}})
-    );
-}
-
-#[test]
-fn test_try_resolve_schema_refs_wrapper_smoke() {
     let store = GtsStore::new();
     let err = store
-        .try_resolve_schema_refs(&json!({"$ref": "gts://gts.x.core.events.missing.v1~"}))
+        .resolve_schema_refs(&json!({"$ref": "gts://gts.x.core.events.missing.v1~"}))
         .expect_err("unresolved external ref must fail checked resolution");
     assert!(matches!(
         &err,
@@ -5472,14 +5807,8 @@ fn test_resolve_schema_refs_uses_exact_gts_uri_lookup_without_minor_fallback() {
         .expect("register target schema");
 
     let schema = json!({"$ref": "gts://gts.x.core.events.type.v1~"});
-    assert_eq!(
-        store.resolve_schema_refs(&schema),
-        schema,
-        "v1~ must not resolve against a stored v1.0~ schema"
-    );
-
     let err = store
-        .try_resolve_schema_refs(&schema)
+        .resolve_schema_refs(&schema)
         .expect_err("checked resolution should reject the unresolved v1~ ref");
     assert!(matches!(
         &err,
