@@ -529,6 +529,232 @@ fn test_resolve_pointer_to_boolean_with_siblings() {
 }
 
 #[test]
+fn test_resolve_remote_pointer_fragment_resolves_local_refs_against_remote_root() {
+    // A fragment selected from a remote GTS document can contain local refs that
+    // are scoped to that remote document root. The inlined fragment must not
+    // keep a dangling `#/$defs/...` pointer after the root `$defs` is dropped.
+    let p = MapProvider::new().with(
+        "gts.x.core.events.named.v1~",
+        json!({
+            "$id": "gts://gts.x.core.events.named.v1~",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "$defs": {"Name": {"type": "string"}},
+            "properties": {
+                "name": {"$ref": "#/$defs/Name"}
+            }
+        }),
+    );
+
+    let resolved = SchemaResolver::new(&p)
+        .resolve(&json!({"$ref": "gts://gts.x.core.events.named.v1~#/properties/name"}))
+        .expect("remote pointer fragment should resolve");
+
+    assert_eq!(resolved, json!({"type": "string"}));
+}
+
+#[test]
+fn test_resolve_remote_fragment_uses_remote_root_not_caller_root() {
+    // Regression guard: the same `#/$defs/Name` path exists in both the caller
+    // schema and the remote document, but with different types. The fragment's
+    // local ref must resolve against the *remote* root, not the caller's root.
+    let p = MapProvider::new().with(
+        "gts.x.core.events.named.v1~",
+        json!({
+            "$id": "gts://gts.x.core.events.named.v1~",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "$defs": {"Name": {"type": "string"}},
+            "properties": {
+                "name": {"$ref": "#/$defs/Name"}
+            }
+        }),
+    );
+
+    let schema = json!({
+        "$defs": {"Name": {"type": "integer"}},
+        "properties": {
+            "test": {"$ref": "gts://gts.x.core.events.named.v1~#/properties/name"}
+        }
+    });
+
+    let resolved = SchemaResolver::new(&p)
+        .resolve(&schema)
+        .expect("remote pointer fragment should resolve");
+
+    assert_eq!(
+        resolved,
+        json!({
+            "$defs": {"Name": {"type": "integer"}},
+            "properties": {
+                "test": {"type": "string"}
+            }
+        })
+    );
+}
+
+#[test]
+fn test_resolve_remote_fragment_missing_local_ref_errors() {
+    // A remote fragment contains a local ref whose target does not exist in the
+    // remote document root. Strict resolution must report it as unresolved.
+    let p = MapProvider::new().with(
+        "gts.x.core.events.broken.v1~",
+        json!({
+            "$id": "gts://gts.x.core.events.broken.v1~",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "$defs": {"Other": {"type": "string"}},
+            "properties": {
+                "name": {"$ref": "#/$defs/Missing"}
+            }
+        }),
+    );
+
+    let err = SchemaResolver::new(&p)
+        .resolve(&json!({"$ref": "gts://gts.x.core.events.broken.v1~#/properties/name"}))
+        .expect_err("missing local ref in remote fragment should fail");
+
+    assert!(matches!(
+        &err,
+        StoreError::UnresolvedRefs(refs) if refs == &["#/$defs/Missing".to_owned()]
+    ));
+}
+
+#[test]
+fn test_resolve_nested_remote_fragments_resolve_local_refs_against_correct_root() {
+    // Remote doc A's fragment contains a gts:// ref to remote doc B, and B's
+    // fragment contains a local #/$defs/... ref. The local ref must resolve
+    // against B's root, not A's or the caller's.
+    let p = MapProvider::new()
+        .with(
+            "gts.x.core.events.outer.v1~",
+            json!({
+                "$id": "gts://gts.x.core.events.outer.v1~",
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "properties": {
+                    "inner": {"$ref": "gts://gts.x.core.events.inner.v1~#/properties/value"}
+                }
+            }),
+        )
+        .with(
+            "gts.x.core.events.inner.v1~",
+            json!({
+                "$id": "gts://gts.x.core.events.inner.v1~",
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "$defs": {"Value": {"type": "boolean"}},
+                "properties": {
+                    "value": {"$ref": "#/$defs/Value"}
+                }
+            }),
+        );
+
+    let resolved = SchemaResolver::new(&p)
+        .resolve(&json!({"$ref": "gts://gts.x.core.events.outer.v1~#/properties/inner"}))
+        .expect("nested remote fragments should resolve");
+
+    assert_eq!(resolved, json!({"type": "boolean"}));
+}
+
+#[test]
+fn test_resolve_remote_fragment_siblings_resolve_against_caller_root() {
+    // A $ref to a remote fragment has siblings that contain local refs. The
+    // fragment's local refs resolve against the remote root, but the siblings'
+    // local refs must resolve against the caller's root.
+    let p = MapProvider::new().with(
+        "gts.x.core.events.remote.v1~",
+        json!({
+            "$id": "gts://gts.x.core.events.remote.v1~",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "$defs": {"Shared": {"type": "string"}},
+            "properties": {
+                "name": {"$ref": "#/$defs/Shared"}
+            }
+        }),
+    );
+
+    let schema = json!({
+        "$defs": {"Shared": {"type": "integer"}},
+        "properties": {
+            "combined": {
+                "$ref": "gts://gts.x.core.events.remote.v1~#/properties/name",
+                "properties": {
+                    "local": {"$ref": "#/$defs/Shared"}
+                }
+            }
+        }
+    });
+
+    let resolved = SchemaResolver::new(&p)
+        .resolve(&schema)
+        .expect("remote fragment with siblings should resolve");
+
+    assert_eq!(
+        resolved,
+        json!({
+            "$defs": {"Shared": {"type": "integer"}},
+            "properties": {
+                "combined": {
+                    "allOf": [
+                        {"type": "string"},
+                        {"properties": {"local": {"type": "integer"}}}
+                    ]
+                }
+            }
+        })
+    );
+}
+
+#[test]
+fn test_resolve_root_self_ref_is_circular() {
+    // `$ref: "#"` is a JSON Pointer to the document root. Since the root
+    // contains the ref itself, inlining is inherently recursive and must be
+    // detected as a cycle — NOT reported as an unresolved external ref (which
+    // was the bug before `#` was handled as a local pointer).
+    let p = MapProvider::new();
+
+    let schema = json!({
+        "$id": "gts://gts.x.test.self.v1~",
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+            "id": {"type": "string"},
+            "self_ref": {"$ref": "#"}
+        }
+    });
+
+    assert!(matches!(
+        SchemaResolver::new(&p)
+            .resolve(&schema)
+            .expect_err("root self-ref must be detected as circular"),
+        StoreError::CircularRef
+    ));
+}
+
+#[test]
+fn test_resolve_root_self_ref_with_siblings_is_circular() {
+    // `$ref: "#"` with siblings is still circular — the root contains the
+    // ref, so inlining recurses. Cycle detection must fire, not UnresolvedRefs.
+    let p = MapProvider::new();
+
+    let schema = json!({
+        "$id": "gts://gts.x.test.self2.v1~",
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+            "id": {"type": "string"},
+            "wrapped": {
+                "$ref": "#",
+                "properties": {"extra": {"type": "boolean"}}
+            }
+        }
+    });
+
+    assert!(matches!(
+        SchemaResolver::new(&p)
+            .resolve(&schema)
+            .expect_err("root self-ref with siblings must be circular"),
+        StoreError::CircularRef
+    ));
+}
+
+#[test]
 fn test_resolve_circular_ref_does_not_hang() {
     // A refs B, B refs A. Strict resolution must terminate and report the cycle.
     let p = MapProvider::new()

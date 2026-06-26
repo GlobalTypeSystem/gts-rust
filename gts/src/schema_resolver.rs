@@ -36,8 +36,9 @@ impl<'a> SchemaResolver<'a> {
         Self { provider }
     }
 
-    /// Strict `$ref` resolution that returns an error if any external `$ref`
-    /// cannot be resolved or a circular `$ref` is detected.
+    /// Strict `$ref` resolution that returns an error if any supported local
+    /// JSON Pointer or external GTS `$ref` cannot be resolved, or a circular
+    /// `$ref` is detected.
     ///
     /// Uses DFS-path cycle detection: a `$ref` target is held in the seen-set
     /// only while its resolution is in progress on the current DFS stack and
@@ -47,15 +48,20 @@ impl<'a> SchemaResolver<'a> {
     /// aggregation across an `$id` chain is allowed.
     ///
     /// # Errors
-    /// Returns [`StoreError::UnresolvedRefs`] if any external `$ref` cannot be
-    /// resolved, or [`StoreError::CircularRef`] if a circular `$ref` is
-    /// detected.
+    /// Returns [`StoreError::UnresolvedRefs`] if any supported local JSON
+    /// Pointer or external GTS `$ref` cannot be resolved, or
+    /// [`StoreError::CircularRef`] if a circular `$ref` is detected.
     pub(crate) fn resolve(&self, schema: &Value) -> Result<Value, StoreError> {
         let mut visited = std::collections::HashSet::new();
         let mut cycle_found = false;
         let mut unresolved_refs = Vec::new();
-        let resolved =
-            self.resolve_inner(schema, &mut visited, &mut cycle_found, &mut unresolved_refs);
+        let resolved = self.resolve_inner(
+            schema,
+            schema,
+            &mut visited,
+            &mut cycle_found,
+            &mut unresolved_refs,
+        );
         if cycle_found {
             Err(StoreError::CircularRef)
         } else if !unresolved_refs.is_empty() {
@@ -69,6 +75,7 @@ impl<'a> SchemaResolver<'a> {
     fn resolve_inner(
         &self,
         schema: &Value,
+        local_root: &Value,
         visited: &mut std::collections::HashSet<String>,
         cycle_found: &mut bool,
         unresolved_refs: &mut Vec<String>,
@@ -86,13 +93,49 @@ impl<'a> SchemaResolver<'a> {
                         "#/$defs/GtsTypeId" | "#/$defs/GtsSchemaId" => {
                             return crate::GtsTypeId::json_schema_value();
                         }
-                        s if s.starts_with("#/") => {
-                            // Other internal references - keep as-is
+                        s if s == "#" || s.starts_with("#/") => {
+                            if let Some(pointer) = ref_uri.strip_prefix('#') {
+                                let local_ref_key =
+                                    format!("local:{:p}:{ref_uri}", std::ptr::from_ref(local_root));
+                                if visited.contains(&local_ref_key) {
+                                    *cycle_found = true;
+                                    return Value::Object(map.clone());
+                                }
+                                if let Some(target) = local_root.pointer(pointer) {
+                                    visited.insert(local_ref_key.clone());
+                                    let resolved = self.resolve_inner(
+                                        target,
+                                        local_root,
+                                        visited,
+                                        cycle_found,
+                                        unresolved_refs,
+                                    );
+                                    visited.remove(&local_ref_key);
+                                    return self.resolved_ref_with_siblings(
+                                        map,
+                                        resolved,
+                                        local_root,
+                                        visited,
+                                        cycle_found,
+                                        unresolved_refs,
+                                    );
+                                }
+                                unresolved_refs.push(ref_uri.clone());
+                            }
+
+                            // Unsupported or missing internal references are
+                            // kept in the lenient output after being reported.
                             let mut new_map = serde_json::Map::new();
                             for (k, v) in map {
                                 new_map.insert(
                                     k.clone(),
-                                    self.resolve_inner(v, visited, cycle_found, unresolved_refs),
+                                    self.resolve_inner(
+                                        v,
+                                        local_root,
+                                        visited,
+                                        cycle_found,
+                                        unresolved_refs,
+                                    ),
                                 );
                             }
                             return Value::Object(new_map);
@@ -129,7 +172,13 @@ impl<'a> SchemaResolver<'a> {
                                 if k == "$ref" {
                                     v.clone()
                                 } else {
-                                    self.resolve_inner(v, visited, cycle_found, unresolved_refs)
+                                    self.resolve_inner(
+                                        v,
+                                        local_root,
+                                        visited,
+                                        cycle_found,
+                                        unresolved_refs,
+                                    )
                                 },
                             );
                         }
@@ -151,6 +200,7 @@ impl<'a> SchemaResolver<'a> {
                             // Recursively resolve refs in the referenced schema
                             let mut resolved = self.resolve_inner(
                                 target_content,
+                                content,
                                 visited,
                                 cycle_found,
                                 unresolved_refs,
@@ -173,49 +223,14 @@ impl<'a> SchemaResolver<'a> {
                                 resolved_map.remove(crate::schema_traits::X_GTS_TRAITS_SCHEMA);
                             }
 
-                            // If the original object has only $ref, return the resolved schema
-                            if map.len() == 1 {
-                                return resolved;
-                            }
-
-                            // Otherwise combine the resolved schema with the
-                            // siblings via `allOf`. A last-wins merge would let a
-                            // sibling drop or loosen the target's constraints
-                            // (e.g. `required`, `additionalProperties`).
-                            match resolved {
-                                Value::Object(resolved_map) => {
-                                    let mut siblings = serde_json::Map::new();
-                                    for (k, v) in map {
-                                        if k != "$ref" {
-                                            siblings.insert(
-                                                k.clone(),
-                                                self.resolve_inner(
-                                                    v,
-                                                    visited,
-                                                    cycle_found,
-                                                    unresolved_refs,
-                                                ),
-                                            );
-                                        }
-                                    }
-                                    if siblings.is_empty() {
-                                        return Value::Object(resolved_map);
-                                    }
-                                    let mut merged = serde_json::Map::new();
-                                    merged.insert(
-                                        "allOf".to_owned(),
-                                        Value::Array(vec![
-                                            Value::Object(resolved_map),
-                                            Value::Object(siblings),
-                                        ]),
-                                    );
-                                    return Value::Object(merged);
-                                }
-                                // Non-object target (e.g. a boolean schema via
-                                // a pointer fragment) with siblings: `$ref`
-                                // wins per JSON Schema precedence.
-                                other => return other,
-                            }
+                            return self.resolved_ref_with_siblings(
+                                map,
+                                resolved,
+                                local_root,
+                                visited,
+                                cycle_found,
+                                unresolved_refs,
+                            );
                         }
                     }
                     if !ref_uri.starts_with('#') {
@@ -232,7 +247,13 @@ impl<'a> SchemaResolver<'a> {
                             if k == "$ref" {
                                 v.clone()
                             } else {
-                                self.resolve_inner(v, visited, cycle_found, unresolved_refs)
+                                self.resolve_inner(
+                                    v,
+                                    local_root,
+                                    visited,
+                                    cycle_found,
+                                    unresolved_refs,
+                                )
                             },
                         );
                     }
@@ -252,17 +273,69 @@ impl<'a> SchemaResolver<'a> {
                 for (k, v) in map {
                     new_map.insert(
                         k.clone(),
-                        self.resolve_inner(v, visited, cycle_found, unresolved_refs),
+                        self.resolve_inner(v, local_root, visited, cycle_found, unresolved_refs),
                     );
                 }
                 Value::Object(new_map)
             }
             Value::Array(arr) => Value::Array(
                 arr.iter()
-                    .map(|v| self.resolve_inner(v, visited, cycle_found, unresolved_refs))
+                    .map(|v| {
+                        self.resolve_inner(v, local_root, visited, cycle_found, unresolved_refs)
+                    })
                     .collect(),
             ),
             _ => schema.clone(),
+        }
+    }
+
+    fn resolved_ref_with_siblings(
+        &self,
+        map: &serde_json::Map<String, Value>,
+        resolved: Value,
+        local_root: &Value,
+        visited: &mut std::collections::HashSet<String>,
+        cycle_found: &mut bool,
+        unresolved_refs: &mut Vec<String>,
+    ) -> Value {
+        // If the original object has only $ref, return the resolved schema.
+        if map.len() == 1 {
+            return resolved;
+        }
+
+        // Otherwise combine the resolved schema with the siblings via `allOf`.
+        // A last-wins merge would let a sibling drop or loosen the target's
+        // constraints (e.g. `required`, `additionalProperties`).
+        match resolved {
+            Value::Object(resolved_map) => {
+                let mut siblings = serde_json::Map::new();
+                for (k, v) in map {
+                    if k != "$ref" {
+                        siblings.insert(
+                            k.clone(),
+                            self.resolve_inner(
+                                v,
+                                local_root,
+                                visited,
+                                cycle_found,
+                                unresolved_refs,
+                            ),
+                        );
+                    }
+                }
+                if siblings.is_empty() {
+                    return Value::Object(resolved_map);
+                }
+                let mut merged = serde_json::Map::new();
+                merged.insert(
+                    "allOf".to_owned(),
+                    Value::Array(vec![Value::Object(resolved_map), Value::Object(siblings)]),
+                );
+                Value::Object(merged)
+            }
+            // Non-object target (e.g. a boolean schema via a pointer fragment)
+            // with siblings: `$ref` wins per JSON Schema precedence.
+            other => other,
         }
     }
 }

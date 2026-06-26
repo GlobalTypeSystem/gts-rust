@@ -243,8 +243,8 @@ impl GtsStore {
         self.by_id.iter()
     }
 
-    /// Strict `$ref` resolution that errors on an unresolved external `$ref` or
-    /// a circular `$ref`.
+    /// Strict `$ref` resolution that errors on an unresolved supported local
+    /// JSON Pointer or external GTS `$ref`, or a circular `$ref`.
     ///
     /// # Errors
     /// [`StoreError::UnresolvedRefs`] or [`StoreError::CircularRef`].
