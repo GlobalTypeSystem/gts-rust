@@ -98,11 +98,12 @@ impl GtsId {
             .collect()
     }
 
-    /// Generate a deterministic UUID v5 from this GTS ID.
+    /// Return this GTS ID's UUID.
     ///
-    /// The UUID is derived from the validated identifier string under a fixed
-    /// GTS namespace, so it is stable across processes and runs: the same ID
-    /// always maps to the same UUID.
+    /// If the identifier already has a UUID tail, that UUID is returned directly.
+    /// Otherwise the UUID is derived from the validated identifier string under
+    /// a fixed GTS namespace, so it is stable across processes and runs: the
+    /// same ID always maps to the same UUID.
     ///
     /// Requires the `uuid` feature.
     #[cfg(feature = "uuid")]
@@ -113,6 +114,10 @@ impl GtsId {
         /// UUID v5 namespace for deterministic GTS identifier UUIDs.
         static GTS_NS: LazyLock<uuid::Uuid> =
             LazyLock::new(|| uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, b"gts"));
+
+        if let Some(uuid) = self.segments.last().and_then(GtsIdSegment::uuid) {
+            return uuid;
+        }
 
         uuid::Uuid::new_v5(&GTS_NS, self.id.as_bytes())
     }
@@ -612,5 +617,31 @@ mod tests {
         let id1 = GtsId::try_new(&gts_id("x.core.events.event.v1~")).expect("test");
         let id2 = GtsId::try_new(&gts_id("x.core.events.event.v2~")).expect("test");
         assert_ne!(id1.to_uuid(), id2.to_uuid());
+    }
+
+    #[cfg(feature = "uuid")]
+    #[test]
+    fn test_to_uuid_returns_uuid_tail() {
+        const UUID_TAIL: &str = "7a1d2f34-5678-49ab-9012-abcdef123456";
+        let id =
+            GtsId::try_new(&gts_id(&format!("x.core.events.event.v1~{UUID_TAIL}"))).expect("test");
+        assert_eq!(
+            id.to_uuid(),
+            uuid::Uuid::parse_str(UUID_TAIL).expect("uuid")
+        );
+    }
+
+    #[cfg(feature = "uuid")]
+    #[test]
+    fn test_to_uuid_returns_uuid_tail_after_chained_type() {
+        const UUID_TAIL: &str = "446ef7e5-1a27-4abf-a7c4-f336505c7aa0";
+        let id = GtsId::try_new(&gts_id(&format!(
+            "x.core.events.event.v1~acme.orders.events.order.v1~{UUID_TAIL}"
+        )))
+        .expect("test");
+        assert_eq!(
+            id.to_uuid(),
+            uuid::Uuid::parse_str(UUID_TAIL).expect("uuid")
+        );
     }
 }
