@@ -6,12 +6,14 @@
 // `x-gts-traits-schema`, so the leaf's values are an instance of that shape.
 
 use gts::{GtsInstanceId, GtsSchema};
-use gts_macros::{struct_to_gts_schema, GtsTraitsSchema};
+use gts_macros::{gts_id, struct_to_gts_schema, GtsTraitsSchema};
 use schemars::JsonSchema;
+
+const TOPIC_REF: &str = gts_id!("x.core.events.topic.v1~");
 
 #[derive(JsonSchema, serde::Serialize, GtsTraitsSchema)]
 pub struct OrderTraits {
-    #[schemars(extend("x-gts-ref" = "gts.x.core.events.topic.v1~"))]
+    #[schemars(extend("x-gts-ref" = TOPIC_REF))]
     pub topic_ref: String,
     pub retention: String,
     pub indexed: bool,
@@ -40,7 +42,7 @@ pub struct LitEventV1<P> {
     description = "Leaf resolving every trait via a struct literal",
     properties = "order_id",
     traits = OrderTraits {
-        topic_ref: "gts.x.core.events.topic.v1~x.test._.orders.v1".to_owned(),
+        topic_ref: gts_id!("x.core.events.topic.v1~x.test._.orders.v1").to_owned(),
         retention: "P90D".to_owned(),
         indexed: true,
         partition_count: 8,

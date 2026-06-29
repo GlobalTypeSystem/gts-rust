@@ -8,13 +8,13 @@
 #![allow(deprecated, clippy::unwrap_used)]
 
 use gts::{GtsInstanceId, GtsSchema};
-use gts_macros::struct_to_gts_schema;
+use gts_macros::{gts_id, struct_to_gts_schema};
 
 #[derive(Debug, Clone)]
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.test.deprecated.alias.v1~",
+    schema_id = gts_id!("x.test.deprecated.alias.v1~"),
     description = "Verifies the deprecated `schema_id` alias still parses",
     properties = "id"
 )]
@@ -26,10 +26,10 @@ pub struct DeprecatedAliasV1 {
 fn deprecated_schema_id_alias_still_works() {
     assert_eq!(
         DeprecatedAliasV1::gts_schema_id().as_ref(),
-        "gts.x.test.deprecated.alias.v1~"
+        gts_id!("x.test.deprecated.alias.v1~")
     );
     assert_eq!(
         <DeprecatedAliasV1 as GtsSchema>::SCHEMA_ID,
-        "gts.x.test.deprecated.alias.v1~"
+        gts_id!("x.test.deprecated.alias.v1~")
     );
 }

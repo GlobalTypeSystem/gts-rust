@@ -8,16 +8,18 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use gts::{GtsInstanceId, GtsSchema};
-use gts_macros::{GtsTraitsSchema, struct_to_gts_schema};
+use gts_macros::{GtsTraitsSchema, gts_id, struct_to_gts_schema};
 use schemars::JsonSchema;
 
 fn default_retention() -> String {
     "P30D".to_owned()
 }
 
+const TOPIC_REF: &str = gts_id!("x.core.events.topic.v1~");
+
 #[derive(JsonSchema, serde::Serialize, GtsTraitsSchema)]
 pub struct EventTraits {
-    #[schemars(extend("x-gts-ref" = "gts.x.core.events.topic.v1~"))]
+    #[schemars(extend("x-gts-ref" = TOPIC_REF))]
     pub topic_ref: String,
     #[serde(default = "default_retention")]
     pub retention: String,
@@ -26,7 +28,7 @@ pub struct EventTraits {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.test.behav.event.v1~",
+    type_id = gts_id!("x.test.behav.event.v1~"),
     description = "Base event",
     properties = "id,payload",
     traits_schema = inline(EventTraits),
@@ -41,11 +43,11 @@ pub struct EventV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = EventV1,
-    type_id = "gts.x.test.behav.event.v1~x.test.order.placed.v1~",
+    type_id = gts_id!("x.test.behav.event.v1~x.test.order.placed.v1~"),
     description = "Order placed",
     properties = "order_id",
     traits = serde_json::json!({
-        "topic_ref": "gts.x.core.events.topic.v1~x.test._.orders.v1"
+        "topic_ref": gts_id!("x.core.events.topic.v1~x.test._.orders.v1")
     }),
     gts_final = true,
 )]
@@ -69,7 +71,7 @@ pub struct OrderPlacedV1 {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.test.behav.req.v1~",
+    type_id = gts_id!("x.test.behav.req.v1~"),
     description = "Non-abstract base with an unresolved required trait",
     properties = "id,payload",
     traits_schema = inline(EventTraits),
@@ -85,7 +87,7 @@ pub struct ReqV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.test.behav.absreq.v1~",
+    type_id = gts_id!("x.test.behav.absreq.v1~"),
     description = "Abstract base with a required trait and no values",
     properties = "id,payload",
     traits_schema = inline(EventTraits),
@@ -102,7 +104,7 @@ pub struct AbsReqV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = AbsReqV1,
-    type_id = "gts.x.test.behav.absreq.v1~x.test.absreq.leaf.v1~",
+    type_id = gts_id!("x.test.behav.absreq.v1~x.test.absreq.leaf.v1~"),
     description = "Concrete leaf leaving an inherited required trait unresolved",
     properties = "name",
 )]
@@ -125,7 +127,7 @@ pub struct RetentionInt {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.test.behav.compat.v1~",
+    type_id = gts_id!("x.test.behav.compat.v1~"),
     description = "Base declaring retention as a string trait",
     properties = "id,payload",
     traits_schema = inline(RetentionString),
@@ -143,7 +145,7 @@ pub struct CompatV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = CompatV1,
-    type_id = "gts.x.test.behav.compat.v1~x.test.compat.bad.v1~",
+    type_id = gts_id!("x.test.behav.compat.v1~x.test.compat.bad.v1~"),
     description = "Derived type whose trait schema contradicts the parent's",
     properties = "name",
     traits_schema = inline(RetentionInt),
@@ -166,7 +168,7 @@ pub struct IndexedTraits {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.test.behav.const.v1~",
+    type_id = gts_id!("x.test.behav.const.v1~"),
     description = "Base locking the indexed trait to true",
     properties = "id,payload",
     traits_schema = inline(IndexedTraits),
@@ -183,7 +185,7 @@ pub struct ConstBaseV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = ConstBaseV1,
-    type_id = "gts.x.test.behav.const.v1~x.test.const.bad.v1~",
+    type_id = gts_id!("x.test.behav.const.v1~x.test.const.bad.v1~"),
     description = "Leaf overriding a const-locked trait",
     properties = "name",
     traits = serde_json::json!({ "indexed": false }),
@@ -208,7 +210,7 @@ pub struct DefaultedTraits {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.test.behav.defmat.v1~",
+    type_id = gts_id!("x.test.behav.defmat.v1~"),
     description = "Concrete base relying on a trait default for completeness",
     properties = "id",
     traits_schema = inline(DefaultedTraits),
@@ -223,7 +225,7 @@ pub struct DefaultBaseV1 {
 #[derive(JsonSchema, serde::Serialize, GtsTraitsSchema)]
 #[schemars(extend("additionalProperties" = false))]
 pub struct ClosedTraits {
-    #[schemars(extend("x-gts-ref" = "gts.x.core.events.topic.v1~"))]
+    #[schemars(extend("x-gts-ref" = TOPIC_REF))]
     pub topic_ref: String,
 }
 
@@ -236,7 +238,7 @@ pub struct ExtraTraits {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.test.behav.closed.v1~",
+    type_id = gts_id!("x.test.behav.closed.v1~"),
     description = "Base with a closed trait surface",
     properties = "id,payload",
     traits_schema = inline(ClosedTraits),
@@ -254,12 +256,12 @@ pub struct ClosedBaseV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = ClosedBaseV1,
-    type_id = "gts.x.test.behav.closed.v1~x.test.extend.bad.v1~",
+    type_id = gts_id!("x.test.behav.closed.v1~x.test.extend.bad.v1~"),
     description = "Leaf extending a closed trait surface with a new property",
     properties = "name",
     traits_schema = inline(ExtraTraits),
     traits = serde_json::json!({
-        "topic_ref": "gts.x.core.events.topic.v1~x.test._.orders.v1",
+        "topic_ref": gts_id!("x.core.events.topic.v1~x.test._.orders.v1"),
         "extra": "nope"
     }),
 )]
@@ -286,7 +288,7 @@ pub struct NarrowPriorityTraits {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.test.behav.narrow.v1~",
+    type_id = gts_id!("x.test.behav.narrow.v1~"),
     description = "Base declaring an open-string priority trait",
     properties = "id,payload",
     traits_schema = inline(BasePriorityTraits),
@@ -304,7 +306,7 @@ pub struct NarrowBaseV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = NarrowBaseV1,
-    type_id = "gts.x.test.behav.narrow.v1~x.test.urgent.ok.v1~",
+    type_id = gts_id!("x.test.behav.narrow.v1~x.test.urgent.ok.v1~"),
     description = "Leaf narrowing priority and supplying a valid value",
     properties = "order_id",
     traits_schema = inline(NarrowPriorityTraits),
@@ -322,7 +324,7 @@ pub struct NarrowOkLeafV1 {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = NarrowBaseV1,
-    type_id = "gts.x.test.behav.narrow.v1~x.test.urgent.bad.v1~",
+    type_id = gts_id!("x.test.behav.narrow.v1~x.test.urgent.bad.v1~"),
     description = "Leaf narrowing priority but supplying an out-of-enum value",
     properties = "order_id",
     traits_schema = inline(NarrowPriorityTraits),
@@ -451,7 +453,7 @@ fn trait_accessors_return_the_declared_values() {
     let event_ts = json!({
         "type": "object",
         "properties": {
-            "topic_ref": { "type": "string", "x-gts-ref": "gts.x.core.events.topic.v1~" },
+            "topic_ref": { "type": "string", "x-gts-ref": gts_id!("x.core.events.topic.v1~") },
             "retention": { "type": "string", "default": "P30D" }
         },
         "required": ["topic_ref"]
@@ -466,7 +468,7 @@ fn trait_accessors_return_the_declared_values() {
     );
 
     // Leaf `OrderPlacedV1`: resolves `traits` values, declares no local schema.
-    let order_traits = json!({ "topic_ref": "gts.x.core.events.topic.v1~x.test._.orders.v1" });
+    let order_traits = json!({ "topic_ref": gts_id!("x.core.events.topic.v1~x.test._.orders.v1") });
     assert_eq!(OrderPlacedV1::gts_traits(), Some(order_traits.clone()));
     assert_eq!(OrderPlacedV1::gts_traits_schema(), None);
     assert_eq!(

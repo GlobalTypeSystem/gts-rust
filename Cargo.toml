@@ -17,7 +17,13 @@ members = [
     "gts-macros-cli",
     "gts-validator",
 ]
+exclude = ["gts-dylint"]
 resolver = "2"
+
+[workspace.metadata.dylint]
+libraries = [
+    { path = "gts-dylint" },
+]
 
 [workspace.lints.rust]
 deprecated = "deny"

@@ -10,7 +10,7 @@
 )]
 
 use gts::gts::GtsTypeId;
-use gts_macros::struct_to_gts_schema;
+use gts_macros::{gts_id, struct_to_gts_schema};
 use uuid::Uuid;
 
 /* ============================================================
@@ -20,7 +20,7 @@ Mixed validation tests - invalid ID fields but valid GTS Type fields
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.core.events.topic.v1~",
+    type_id = gts_id!("x.core.events.topic.v1~"),
     description = "Base topic type with invalid ID field but valid GTS Type field",
     properties = "id,r#type,name,description"
 )]
@@ -36,7 +36,7 @@ pub struct TopicV1MixedValidationV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.core.events.type.v1~",
+    type_id = gts_id!("x.core.events.type.v1~"),
     description = "Base event type with invalid ID field but valid GTS Type field",
     properties = "id,gts_type,name,description"
 )]
@@ -52,7 +52,7 @@ pub struct BaseEventV1MixedV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.core.events.schema.v1~",
+    type_id = gts_id!("x.core.events.schema.v1~"),
     description = "Base schema type with invalid ID fields but valid GTS Type field",
     properties = "gts_id,schema,name,description"
 )]
@@ -79,7 +79,7 @@ mod tests {
         // the GTS Type field has the correct type
         let topic = TopicV1MixedValidationV1::<()> {
             id: "invalid-id".to_string(),
-            r#type: GtsTypeId::new("gts.x.core.events.topic.v1~"),
+            r#type: GtsTypeId::new(gts_id!("x.core.events.topic.v1~")),
             name: "Test Topic".to_string(),
             description: Some("Test description".to_string()),
             config: (),
@@ -94,7 +94,7 @@ mod tests {
         // the GTS Type field has the correct type
         let event = BaseEventV1MixedV1::<()> {
             id: Uuid::new_v4(),
-            gts_type: GtsTypeId::new("gts.x.core.events.type.v1~"),
+            gts_type: GtsTypeId::new(gts_id!("x.core.events.type.v1~")),
             name: "Test Event".to_string(),
             description: Some("Test description".to_string()),
             payload: (),
@@ -109,7 +109,7 @@ mod tests {
         // the GTS Type field has the correct type
         let schema = BaseSchemaV1MixedV1::<()> {
             gts_id: "invalid-id".to_string(),
-            schema: GtsTypeId::new("gts.x.core.events.schema.v1~"),
+            schema: GtsTypeId::new(gts_id!("x.core.events.schema.v1~")),
             name: "Test Schema".to_string(),
             description: Some("Test description".to_string()),
             config: (),
@@ -125,19 +125,19 @@ mod tests {
             TopicV1MixedValidationV1::<()>::gts_type_id()
                 .clone()
                 .into_string(),
-            "gts.x.core.events.topic.v1~"
+            gts_id!("x.core.events.topic.v1~")
         );
         assert_eq!(
             BaseEventV1MixedV1::<()>::gts_type_id()
                 .clone()
                 .into_string(),
-            "gts.x.core.events.type.v1~"
+            gts_id!("x.core.events.type.v1~")
         );
         assert_eq!(
             BaseSchemaV1MixedV1::<()>::gts_type_id()
                 .clone()
                 .into_string(),
-            "gts.x.core.events.schema.v1~"
+            gts_id!("x.core.events.schema.v1~")
         );
     }
 
@@ -146,7 +146,7 @@ mod tests {
         // Test that serialization works correctly
         let topic = TopicV1MixedValidationV1::<()> {
             id: "test-id".to_string(),
-            r#type: GtsTypeId::new("gts.x.core.events.topic.v1~"),
+            r#type: GtsTypeId::new(gts_id!("x.core.events.topic.v1~")),
             name: "Test Topic".to_string(),
             description: Some("Test description".to_string()),
             config: (),
@@ -156,7 +156,7 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
 
         assert_eq!(parsed["id"], "test-id");
-        assert_eq!(parsed["type"], "gts.x.core.events.topic.v1~");
+        assert_eq!(parsed["type"], gts_id!("x.core.events.topic.v1~"));
         assert_eq!(parsed["name"], "Test Topic");
     }
 }

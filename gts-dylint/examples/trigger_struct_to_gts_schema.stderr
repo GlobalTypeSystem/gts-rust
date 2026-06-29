@@ -1,0 +1,10 @@
+error: hard-coded GTS ID prefix in string literal - use GTS_ID_PREFIX constant or the gts_id! macro instead
+  --> $DIR/trigger_struct_to_gts_schema.rs:11:15
+   |
+LL |     type_id = "gts.x.core.events.type.v1~",
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[deny(gts_id_hardcoded_prefix)]` on by default
+
+error: aborting due to 1 previous error
+

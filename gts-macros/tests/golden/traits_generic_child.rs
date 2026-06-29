@@ -6,12 +6,14 @@
 // generic param is the nested payload field carried forward down the chain.
 
 use gts::{GtsInstanceId, GtsSchema};
-use gts_macros::{struct_to_gts_schema, GtsTraitsSchema};
+use gts_macros::{gts_id, struct_to_gts_schema, GtsTraitsSchema};
 use schemars::JsonSchema;
+
+const TOPIC_REF: &str = gts_id!("x.core.events.topic.v1~");
 
 #[derive(JsonSchema, serde::Serialize, GtsTraitsSchema)]
 pub struct EventTraits {
-    #[schemars(extend("x-gts-ref" = "gts.x.core.events.topic.v1~"))]
+    #[schemars(extend("x-gts-ref" = TOPIC_REF))]
     pub topic_ref: String,
 }
 
@@ -37,7 +39,7 @@ pub struct EventV1<P> {
     description = "Still-generic abstract mid resolving the inherited topic trait",
     properties = "user_id,data",
     traits = serde_json::json!({
-        "topic_ref": "gts.x.core.events.topic.v1~x.test._.audit.v1"
+        "topic_ref": gts_id!("x.core.events.topic.v1~x.test._.audit.v1")
     }),
     gts_abstract = true,
 )]

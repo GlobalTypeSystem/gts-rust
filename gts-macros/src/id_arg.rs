@@ -32,9 +32,13 @@ fn is_prefix_macro_path(path: &Path) -> bool {
 }
 
 /// Build the full id literal from a suffix written inside `gts_id!("...")`,
-/// preserving the suffix literal's span for diagnostics.
+/// using a macro-definition span so lint passes can distinguish it from a
+/// user-written hardcoded prefixed literal.
 pub fn build_prefixed_lit(suffix: &LitStr) -> LitStr {
-    LitStr::new(&format!("{GTS_ID_PREFIX}{}", suffix.value()), suffix.span())
+    LitStr::new(
+        &format!("{GTS_ID_PREFIX}{}", suffix.value()),
+        proc_macro2::Span::mixed_site(),
+    )
 }
 
 /// Parse a GTS-id macro argument from a parse stream, accepting either a full

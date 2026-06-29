@@ -9,6 +9,7 @@
 //! `rerun-if-env-changed` so Cargo rebuilds when the variable changes.
 
 /// The default identifier prefix for all GTS identifiers.
+#[allow(unknown_lints, gts_id_hardcoded_prefix)]
 pub const DEFAULT_GTS_ID_PREFIX: &str = "gts.";
 
 /// Environment variable used to override the GTS identifier prefix at compile time.
