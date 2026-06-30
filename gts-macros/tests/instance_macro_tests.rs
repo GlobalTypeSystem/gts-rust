@@ -20,7 +20,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use gts::GtsInstanceId;
-use gts_macros::{gts_instance, gts_instance_raw, struct_to_gts_schema};
+use gts_macros::{gts_id, gts_instance, gts_instance_raw, struct_to_gts_schema};
 
 // ---------- Local test types ----------
 //
@@ -30,7 +30,7 @@ use gts_macros::{gts_instance, gts_instance_raw, struct_to_gts_schema};
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.acme.core.events.topic.v1~",
+    type_id = gts_id!("acme.core.events.topic.v1~"),
     description = "Test topic type used to exercise gts_instance!",
     properties = "id,name,retention"
 )]
@@ -49,7 +49,7 @@ pub struct TopicV1 {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.acme.core.test.base.v1~",
+    type_id = gts_id!("acme.core.test.base.v1~"),
     description = "Generic base type for chained-instance turbofish tests",
     properties = "id,payload"
 )]
@@ -62,7 +62,7 @@ pub struct BaseV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = BaseV1,
-    type_id = "gts.acme.core.test.base.v1~acme.core.test.leaf.v1~",
+    type_id = gts_id!("acme.core.test.base.v1~acme.core.test.leaf.v1~"),
     description = "Derived leaf for chained-instance turbofish tests",
     properties = "name"
 )]
@@ -83,7 +83,7 @@ pub struct LeafV1 {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.acme.core.test.l1.v1~",
+    type_id = gts_id!("acme.core.test.l1.v1~"),
     description = "Level-1 base for three-level chained-instance tests",
     properties = "id,payload"
 )]
@@ -96,7 +96,7 @@ pub struct L1OuterV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = L1OuterV1,
-    type_id = "gts.acme.core.test.l1.v1~acme.core.test.l2.v1~",
+    type_id = gts_id!("acme.core.test.l1.v1~acme.core.test.l2.v1~"),
     description = "Level-2 mid for three-level chained-instance tests",
     properties = "data"
 )]
@@ -108,7 +108,7 @@ pub struct L2MidV1<D> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = L2MidV1,
-    type_id = "gts.acme.core.test.l1.v1~acme.core.test.l2.v1~acme.core.test.l3.v1~",
+    type_id = gts_id!("acme.core.test.l1.v1~acme.core.test.l2.v1~acme.core.test.l3.v1~"),
     description = "Level-3 leaf for three-level chained-instance tests",
     properties = "value"
 )]
@@ -124,7 +124,7 @@ pub struct L3LeafV1 {
 #[test]
 fn typed_form_constructs_value_with_rewritten_id() {
     let t: TopicV1 = gts_instance!(TopicV1 {
-        id: "gts.acme.core.events.topic.v1~vendor.app.orders.created.v1",
+        id: gts_id!("acme.core.events.topic.v1~vendor.app.orders.created.v1"),
         name: "orders".to_owned(),
         retention: "P30D".to_owned(),
     });
@@ -133,14 +133,14 @@ fn typed_form_constructs_value_with_rewritten_id() {
     assert_eq!(t.retention, "P30D");
     assert_eq!(
         t.id.as_ref(),
-        "gts.acme.core.events.topic.v1~vendor.app.orders.created.v1"
+        gts_id!("acme.core.events.topic.v1~vendor.app.orders.created.v1")
     );
 }
 
 #[test]
 fn typed_form_serialises_with_id_field() {
     let t: TopicV1 = gts_instance!(TopicV1 {
-        id: "gts.acme.core.events.topic.v1~vendor.app.events.audit.v1",
+        id: gts_id!("acme.core.events.topic.v1~vendor.app.events.audit.v1"),
         name: "audit".to_owned(),
         retention: "P7D".to_owned(),
     });
@@ -148,7 +148,7 @@ fn typed_form_serialises_with_id_field() {
     let v = serde_json::to_value(&t).unwrap();
     assert_eq!(
         v["id"].as_str().unwrap(),
-        "gts.acme.core.events.topic.v1~vendor.app.events.audit.v1"
+        gts_id!("acme.core.events.topic.v1~vendor.app.events.audit.v1")
     );
     assert_eq!(v["name"].as_str().unwrap(), "audit");
 }
@@ -159,7 +159,7 @@ fn typed_form_chained_derives_target_from_turbofish() {
     // const-assert target is derived as `LeafV1` and the literal must
     // match `<LeafV1 as GtsSchema>::TYPE_ID` (the full chain prefix).
     let v: BaseV1<LeafV1> = gts_instance!(BaseV1::<LeafV1> {
-        id: "gts.acme.core.test.base.v1~acme.core.test.leaf.v1~vendor.app.things.example.v1",
+        id: gts_id!("acme.core.test.base.v1~acme.core.test.leaf.v1~vendor.app.things.example.v1"),
         payload: LeafV1 {
             name: "ex".to_owned()
         },
@@ -167,7 +167,7 @@ fn typed_form_chained_derives_target_from_turbofish() {
 
     assert_eq!(
         v.id.as_ref(),
-        "gts.acme.core.test.base.v1~acme.core.test.leaf.v1~vendor.app.things.example.v1"
+        gts_id!("acme.core.test.base.v1~acme.core.test.leaf.v1~vendor.app.things.example.v1")
     );
 }
 
@@ -180,7 +180,9 @@ fn typed_form_three_level_chain_picks_deepest_generic() {
     // also reject (its `TYPE_ID` is the L1~L2~ prefix, leaving the L3
     // segment in the suffix and tripping the no-tilde-in-segment check).
     let v: L1OuterV1<L2MidV1<L3LeafV1>> = gts_instance!(L1OuterV1::<L2MidV1<L3LeafV1>> {
-        id: "gts.acme.core.test.l1.v1~acme.core.test.l2.v1~acme.core.test.l3.v1~vendor.app.things.deep.v1",
+        id: gts_id!(
+            "acme.core.test.l1.v1~acme.core.test.l2.v1~acme.core.test.l3.v1~vendor.app.things.deep.v1"
+        ),
         payload: L2MidV1 {
             data: L3LeafV1 {
                 value: "deep".to_owned()
@@ -190,7 +192,9 @@ fn typed_form_three_level_chain_picks_deepest_generic() {
 
     assert_eq!(
         v.id.as_ref(),
-        "gts.acme.core.test.l1.v1~acme.core.test.l2.v1~acme.core.test.l3.v1~vendor.app.things.deep.v1"
+        gts_id!(
+            "acme.core.test.l1.v1~acme.core.test.l2.v1~acme.core.test.l3.v1~vendor.app.things.deep.v1"
+        )
     );
     assert_eq!(v.payload.data.value, "deep");
 }
@@ -200,13 +204,13 @@ fn typed_form_unit_param_keeps_carrier_as_target() {
     // `BaseV1::<()>` denotes a base-level instance — the descent stops on
     // `()` (no `TYPE_ID`) and the carrier is kept as the target.
     let v: BaseV1<()> = gts_instance!(BaseV1::<()> {
-        id: "gts.acme.core.test.base.v1~vendor.app.things.bare.v1",
+        id: gts_id!("acme.core.test.base.v1~vendor.app.things.bare.v1"),
         payload: (),
     });
 
     assert_eq!(
         v.id.as_ref(),
-        "gts.acme.core.test.base.v1~vendor.app.things.bare.v1"
+        gts_id!("acme.core.test.base.v1~vendor.app.things.bare.v1")
     );
 }
 
@@ -217,7 +221,7 @@ fn typed_form_unit_param_keeps_carrier_as_target() {
 gts_instance! {
     #[gts_static(ORDERS_TOPIC)]
     TopicV1 {
-        id: "gts.acme.core.events.topic.v1~vendor.app.orders.created.v1",
+        id: gts_id!("acme.core.events.topic.v1~vendor.app.orders.created.v1"),
         name: "orders".to_owned(),
         retention: "P30D".to_owned(),
     }
@@ -230,7 +234,7 @@ fn static_form_exposes_typed_static_value() {
     assert_eq!(t.retention, "P30D");
     assert_eq!(
         t.id.as_ref(),
-        "gts.acme.core.events.topic.v1~vendor.app.orders.created.v1"
+        gts_id!("acme.core.events.topic.v1~vendor.app.orders.created.v1")
     );
 }
 
@@ -247,7 +251,7 @@ fn static_form_static_is_lazy_and_stable() {
 gts_instance! {
     #[gts_static(EXAMPLE_LEAF)]
     BaseV1::<LeafV1> {
-        id: "gts.acme.core.test.base.v1~acme.core.test.leaf.v1~vendor.app.things.example.v1",
+        id: gts_id!("acme.core.test.base.v1~acme.core.test.leaf.v1~vendor.app.things.example.v1"),
         payload: LeafV1 { name: "ex".to_owned() },
     }
 }
@@ -257,7 +261,7 @@ fn static_form_chained_carrier_with_auto_derivation() {
     let v: &BaseV1<LeafV1> = &EXAMPLE_LEAF;
     assert_eq!(
         v.id.as_ref(),
-        "gts.acme.core.test.base.v1~acme.core.test.leaf.v1~vendor.app.things.example.v1"
+        gts_id!("acme.core.test.base.v1~acme.core.test.leaf.v1~vendor.app.things.example.v1")
     );
     assert_eq!(v.payload.name, "ex");
 }
@@ -269,14 +273,14 @@ fn static_form_chained_carrier_with_auto_derivation() {
 #[test]
 fn raw_form_constructs_json_value_with_validated_id() {
     let v: serde_json::Value = gts_instance_raw!({
-        "id": "gts.acme.core.events.topic.v1~vendor.app.events.audit.v1",
+        "id": gts_id!("acme.core.events.topic.v1~vendor.app.events.audit.v1"),
         "name": "audit",
         "description": "Audit log events"
     });
 
     assert_eq!(
         v["id"].as_str().unwrap(),
-        "gts.acme.core.events.topic.v1~vendor.app.events.audit.v1"
+        gts_id!("acme.core.events.topic.v1~vendor.app.events.audit.v1")
     );
     assert_eq!(v["name"].as_str().unwrap(), "audit");
     assert_eq!(v["description"].as_str().unwrap(), "Audit log events");
@@ -285,13 +289,13 @@ fn raw_form_constructs_json_value_with_validated_id() {
 #[test]
 fn raw_form_supports_chained_instance_ids() {
     let v: serde_json::Value = gts_instance_raw!({
-        "id": "gts.acme.core.test.base.v1~acme.core.test.leaf.v1~vendor.app.things.x.v1",
+        "id": gts_id!("acme.core.test.base.v1~acme.core.test.leaf.v1~vendor.app.things.x.v1"),
         "value": 42,
     });
 
     assert_eq!(
         v["id"].as_str().unwrap(),
-        "gts.acme.core.test.base.v1~acme.core.test.leaf.v1~vendor.app.things.x.v1"
+        gts_id!("acme.core.test.base.v1~acme.core.test.leaf.v1~vendor.app.things.x.v1")
     );
     assert_eq!(v["value"].as_i64().unwrap(), 42);
 }
@@ -301,14 +305,14 @@ fn raw_form_supports_nested_objects_and_arrays() {
     // Top-level `id` is the only key the macro inspects; nested objects
     // and arrays pass through to `json!` untouched.
     let v: serde_json::Value = gts_instance_raw!({
-        "id": "gts.acme.core.events.topic.v1~vendor.app.events.audit.v1",
+        "id": gts_id!("acme.core.events.topic.v1~vendor.app.events.audit.v1"),
         "tags": ["a", "b", "c"],
         "meta": { "id": "nested-not-touched", "count": 3 },
     });
 
     assert_eq!(
         v["id"].as_str().unwrap(),
-        "gts.acme.core.events.topic.v1~vendor.app.events.audit.v1"
+        gts_id!("acme.core.events.topic.v1~vendor.app.events.audit.v1")
     );
     assert_eq!(v["tags"][1].as_str().unwrap(), "b");
     assert_eq!(v["meta"]["id"].as_str().unwrap(), "nested-not-touched");
@@ -322,7 +326,7 @@ fn raw_form_supports_nested_objects_and_arrays() {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.acme.core.events.legacy_topic.v1~",
+    type_id = gts_id!("acme.core.events.legacy_topic.v1~"),
     description = "Legacy-style base struct using gts_id instead of id",
     properties = "gts_id,name"
 )]
@@ -337,14 +341,14 @@ fn typed_form_picks_up_gts_id_field_automatically() {
     // Schema struct uses `gts_id` instead of `id` — the macro picks
     // whichever reserved id-field name appears in the literal.
     let t: LegacyTopicV1 = gts_instance!(LegacyTopicV1 {
-        gts_id: "gts.acme.core.events.legacy_topic.v1~vendor.app.legacy.example.v1",
+        gts_id: gts_id!("acme.core.events.legacy_topic.v1~vendor.app.legacy.example.v1"),
         name: "legacy".to_owned(),
     });
 
     assert_eq!(t.name, "legacy");
     assert_eq!(
         t.gts_id.as_ref(),
-        "gts.acme.core.events.legacy_topic.v1~vendor.app.legacy.example.v1"
+        gts_id!("acme.core.events.legacy_topic.v1~vendor.app.legacy.example.v1")
     );
 }
 
@@ -354,7 +358,7 @@ fn typed_form_picks_up_gts_id_field_automatically() {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.acme.core.events.legacy_topic_camel.v1~",
+    type_id = gts_id!("acme.core.events.legacy_topic_camel.v1~"),
     description = "Legacy-style base struct using the gtsId camelCase alias",
     properties = "gtsId,name"
 )]
@@ -370,13 +374,68 @@ fn typed_form_picks_up_gtsid_camel_case_field_automatically() {
     // gtsId is the camelCase alias accepted alongside id / gts_id; the
     // macro should pick it up identically without any extra modifier.
     let t: LegacyTopicCamelV1 = gts_instance!(LegacyTopicCamelV1 {
-        gtsId: "gts.acme.core.events.legacy_topic_camel.v1~vendor.app.legacy.example.v1",
+        gtsId: gts_id!("acme.core.events.legacy_topic_camel.v1~vendor.app.legacy.example.v1"),
         name: "legacy".to_owned(),
     });
 
     assert_eq!(t.name, "legacy");
     assert_eq!(
         t.gtsId.as_ref(),
-        "gts.acme.core.events.legacy_topic_camel.v1~vendor.app.legacy.example.v1"
+        gts_id!("acme.core.events.legacy_topic_camel.v1~vendor.app.legacy.example.v1")
+    );
+}
+
+// =====================================================================
+//                     gts_id! marker / helper macro
+// =====================================================================
+
+#[test]
+fn gts_id_macro_prepends_configured_prefix() {
+    // In expression position the macro expands to a `&'static str` literal
+    // equal to `concat!(GTS_ID_PREFIX, suffix)`.
+    let expected = format!("{}acme.core.events.topic.v1~", gts::GTS_ID_PREFIX);
+    assert_eq!(gts_id!("acme.core.events.topic.v1~"), expected);
+}
+
+#[test]
+fn full_literal_id_still_accepted_for_backward_compat() {
+    // The pre-existing form — a complete id string literal including the
+    // prefix — must keep working alongside the gts_id!(...) marker.
+    let t: TopicV1 = gts_instance!(TopicV1 {
+        id: gts_id!("acme.core.events.topic.v1~vendor.app.compat.literal.v1"),
+        name: "compat".to_owned(),
+        retention: "P1D".to_owned(),
+    });
+    assert_eq!(
+        t.id.as_ref(),
+        gts_id!("acme.core.events.topic.v1~vendor.app.compat.literal.v1")
+    );
+}
+
+#[test]
+fn raw_form_accepts_gts_id_marker() {
+    let v: serde_json::Value = gts_instance_raw!({
+        "id": gts_id!("acme.core.events.topic.v1~vendor.app.events.marker.v1"),
+        "name": "marker",
+    });
+    assert_eq!(
+        v["id"].as_str().unwrap(),
+        gts_id!("acme.core.events.topic.v1~vendor.app.events.marker.v1")
+    );
+    assert_eq!(v["name"].as_str().unwrap(), "marker");
+}
+
+#[test]
+fn typed_form_accepts_qualified_gts_id_marker() {
+    // A fully-qualified `gts_macros::gts_id!(...)` path must be recognized
+    // just like the bare `gts_id!(...)` form inside macro arguments.
+    let t: TopicV1 = gts_instance!(TopicV1 {
+        id: gts_macros::gts_id!("acme.core.events.topic.v1~vendor.app.qualified.evt.v1"),
+        name: "qualified".to_owned(),
+        retention: "P1D".to_owned(),
+    });
+    assert_eq!(
+        t.id.as_ref(),
+        gts_id!("acme.core.events.topic.v1~vendor.app.qualified.evt.v1")
     );
 }

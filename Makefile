@@ -3,7 +3,7 @@ CI := 1
 # Default target - show help
 .DEFAULT_GOAL := help
 
-.PHONY: help build dev-fmt dev-clippy all check fmt clippy test deny security generate-schemas coverage
+.PHONY: help build dev-fmt dev-clippy all check fmt clippy test test-gts-id-prefix dylint dylint-tests deny security generate-schemas coverage
 
 # Show this help message
 help:
@@ -41,6 +41,24 @@ clippy:
 test:
 	cargo test --workspace
 
+# Re-run gts-id unit tests with a non-default GTS_ID_PREFIX to catch
+# hard-coded "gts." literals that should use the GTS_ID_PREFIX constant.
+# The prefix is read at compile time (option_env!), so this is a clean
+# rebuild + test cycle. Currently scoped to gts-id (whose tests are
+# prefix-aware); expand to more crates as their test data is cleaned up.
+test-gts-id-prefix:
+	GTS_ID_PREFIX=acme. cargo test -p gts-id
+
+# Run dylint lints (requires nightly toolchain + cargo-dylint)
+# Detects hard-coded "gts." / "gts://" string literals in production code
+dylint:
+	@command -v cargo-dylint >/dev/null || (echo "Installing cargo-dylint..." && cargo install cargo-dylint)
+	cargo +nightly-2026-04-16 dylint --all
+
+# Run dylint UI/example tests (requires nightly toolchain)
+dylint-tests:
+	cargo +nightly-2026-04-16 test --manifest-path gts-dylint/Cargo.toml
+
 # Check licenses and dependencies
 deny:
 	@command -v cargo-deny >/dev/null || (echo "Installing cargo-deny..." && cargo install cargo-deny)
@@ -56,7 +74,7 @@ coverage:
 	cargo llvm-cov report
 
 # Run all quality checks
-check: fmt clippy test gts-spec-tests
+check: fmt clippy test test-gts-id-prefix dylint dylint-tests gts-spec-tests
 
 
 # ==============================================================================

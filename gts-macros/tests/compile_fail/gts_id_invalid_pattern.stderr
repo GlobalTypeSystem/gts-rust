@@ -1,0 +1,5 @@
+error: gts_id!: invalid GTS ID pattern: Invalid GTS segment #1 @ offset 4: 'invalid..bad': Too few tokens (got 3, min 5). Expected format: gts.vendor.package.namespace.type.vMAJOR[.MINOR]
+ --> tests/compile_fail/gts_id_invalid_pattern.rs:6:21
+  |
+6 |     let _ = gts_id!("invalid..bad");
+  |                     ^^^^^^^^^^^^^^

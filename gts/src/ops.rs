@@ -227,6 +227,7 @@ impl GtsOps {
         }
 
         // Try default path (relative to current directory)
+        #[allow(unknown_lints, gts_id_hardcoded_prefix)]
         let default_path = PathBuf::from("gts.config.json");
         if let Ok(cfg) = Self::load_config_from_path(&default_path) {
             return cfg;

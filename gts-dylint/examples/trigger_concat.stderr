@@ -1,0 +1,16 @@
+error: hard-coded GTS ID prefix in string literal - use GTS_ID_PREFIX constant or the gts_id! macro instead
+  --> $DIR/trigger_concat.rs:3:30
+   |
+LL |     const GTS_PREFIX: &str = concat!("gts.", "");
+   |                              ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[deny(gts_id_hardcoded_prefix)]` on by default
+
+error: hard-coded GTS ID prefix in string literal - use GTS_ID_PREFIX constant or the gts_id! macro instead
+  --> $DIR/trigger_concat.rs:5:14
+   |
+LL |     let _x = concat!("gts.", "x");
+   |              ^^^^^^^^^^^^^^^^^^^^
+
+error: aborting due to 2 previous errors
+

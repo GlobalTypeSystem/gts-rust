@@ -9,7 +9,7 @@
 
 use gts::gts::GtsTypeId;
 use gts::{GtsInstanceId, GtsSchema, GtsStore};
-use gts_macros::struct_to_gts_schema;
+use gts_macros::{gts_id, struct_to_gts_schema};
 use uuid::Uuid;
 
 /* ============================================================
@@ -19,7 +19,7 @@ Chained inheritance
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.core.events.type.v1~",
+    type_id = gts_id!("x.core.events.type.v1~"),
     description = "Base event type definition",
     properties = "event_type,id,tenant_id,sequence_id,payload"
 )]
@@ -36,7 +36,7 @@ pub struct BaseEventV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = BaseEventV1,
-    type_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~",
+    type_id = gts_id!("x.core.events.type.v1~x.core.audit.event.v1~"),
     description = "Audit event with user context",
     properties = "user_agent,user_id,ip_address,data"
 )]
@@ -51,7 +51,7 @@ pub struct AuditPayloadV1<D> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = AuditPayloadV1,
-    type_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~",
+    type_id = gts_id!("x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~"),
     description = "Order placement audit event",
     properties = "order_id,product_id"
 )]
@@ -68,7 +68,7 @@ pub struct PlaceOrderDataV1 {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = BaseEventV1,
-    type_id = "gts.x.core.events.type.v1~x.core.simple.event.v1~",
+    type_id = gts_id!("x.core.events.type.v1~x.core.simple.event.v1~"),
     description = "Simple event payload with just a message",
     properties = "message,severity"
 )]
@@ -85,7 +85,7 @@ Base struct ID field validation tests
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.core.events.topic.v1~",
+    type_id = gts_id!("x.core.events.topic.v1~"),
     description = "Base topic type definition with id field",
     properties = "id,name,description"
 )]
@@ -100,7 +100,7 @@ pub struct TopicV1WithIdV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.core.events.topic.v1~",
+    type_id = gts_id!("x.core.events.topic.v1~"),
     description = "Base topic type definition with gts_id field",
     properties = "gts_id,name,description"
 )]
@@ -115,7 +115,7 @@ pub struct TopicV1WithGtsIdV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.core.events.topic.v1~",
+    type_id = gts_id!("x.core.events.topic.v1~"),
     description = "Base topic type definition with gtsId field",
     properties = "gts_id,name,description"
 )]
@@ -130,7 +130,7 @@ pub struct TopicV1WithGtsIdCamelV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.core.events.topic.v1~",
+    type_id = gts_id!("x.core.events.topic.v1~"),
     description = "Base topic type definition with gts_type field",
     properties = "gts_type,name,description"
 )]
@@ -145,7 +145,7 @@ pub struct TopicV1WithGtsTypeV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.core.events.topic.v1~",
+    type_id = gts_id!("x.core.events.topic.v1~"),
     description = "Base topic type definition with gtsType field",
     properties = "gts_type,name,description"
 )]
@@ -164,7 +164,7 @@ Chained inheritance w/o new attributes
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.core.events.topic.v1~",
+    type_id = gts_id!("x.core.events.topic.v1~"),
     description = "Base topic type definition",
     properties = "name,description"
 )]
@@ -179,7 +179,7 @@ pub struct TopicV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = TopicV1,
-    type_id = "gts.x.core.events.topic.v1~x.commerce.orders.topic.v1~",
+    type_id = gts_id!("x.core.events.topic.v1~x.commerce.orders.topic.v1~"),
     description = "Order topic configuration",
     properties = ""
 )]
@@ -194,7 +194,7 @@ Test serde rename on generic field - the serialized name should be used
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.core.events.container.v1~",
+    type_id = gts_id!("x.core.events.container.v1~"),
     description = "Container with renamed generic field",
     properties = "id,name,rust_field_name"
 )]
@@ -209,7 +209,7 @@ pub struct ContainerV1<T> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = ContainerV1,
-    type_id = "gts.x.core.events.container.v1~x.app.entities.content.v1~",
+    type_id = gts_id!("x.core.events.container.v1~x.app.entities.content.v1~"),
     description = "Content extending container",
     properties = "content_value"
 )]
@@ -330,7 +330,9 @@ mod tests {
         let event_json = serde_json::to_value(&event).unwrap();
         assert_eq!(
             event_json["type"],
-            "gts.x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~"
+            gts_id!(
+                "x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~"
+            )
         );
         assert!(event_json["payload"]["user_agent"].is_string());
         assert!(event_json["payload"]["data"]["order_id"].is_string());
@@ -405,12 +407,15 @@ mod tests {
 
         // Verify schema IDs are still accessible
         assert!(
-            BaseEventV1::<()>::gts_type_id().clone().into_string() == "gts.x.core.events.type.v1~"
+            BaseEventV1::<()>::gts_type_id().clone().into_string()
+                == gts_id!("x.core.events.type.v1~")
         );
         let _audit_payload_id = AuditPayloadV1::<()>::gts_type_id().clone().into_string();
         assert!(
             PlaceOrderDataV1::gts_type_id().clone().into_string()
-                == "gts.x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~"
+                == gts_id!(
+                    "x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~"
+                )
         );
 
         // BaseEventV1 should have direct properties, no allOf
@@ -518,7 +523,9 @@ mod tests {
         // Validate instance field paths match schema structure
         assert_eq!(
             json["type"],
-            "gts.x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~"
+            gts_id!(
+                "x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~"
+            )
         );
         assert!(json["payload"]["user_agent"].is_string());
         assert!(json["payload"]["data"]["order_id"].is_string());
@@ -575,7 +582,9 @@ mod tests {
         // Validate type field matches PlaceOrderDataV1 schema ID
         assert_eq!(
             json["type"],
-            "gts.x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~"
+            gts_id!(
+                "x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~"
+            )
         );
 
         // The actual JSON has nested objects:
@@ -624,15 +633,15 @@ mod tests {
         // Child types should have gts_base_type_id() = Some(parent's schema ID)
         assert_eq!(
             AuditPayloadV1::<()>::gts_base_type_id().map(AsRef::as_ref),
-            Some("gts.x.core.events.type.v1~")
+            Some(gts_id!("x.core.events.type.v1~"))
         );
         assert_eq!(
             PlaceOrderDataV1::gts_base_type_id().map(AsRef::as_ref),
-            Some("gts.x.core.events.type.v1~x.core.audit.event.v1~")
+            Some(gts_id!("x.core.events.type.v1~x.core.audit.event.v1~"))
         );
         assert_eq!(
             OrderTopicConfigV1::gts_base_type_id().map(AsRef::as_ref),
-            Some("gts.x.core.events.topic.v1~")
+            Some(gts_id!("x.core.events.topic.v1~"))
         );
     }
 
@@ -664,12 +673,12 @@ mod tests {
         // Verify the schema IDs are correctly related
         assert_eq!(
             TopicV1::<()>::gts_type_id().clone().into_string(),
-            "gts.x.core.events.topic.v1~"
+            gts_id!("x.core.events.topic.v1~")
         );
         let order_topic_id = OrderTopicConfigV1::gts_type_id().clone().into_string();
         assert_eq!(
             order_topic_id,
-            "gts.x.core.events.topic.v1~x.commerce.orders.topic.v1~"
+            gts_id!("x.core.events.topic.v1~x.commerce.orders.topic.v1~")
         );
 
         // Test that the GTS schema ID is a valid GTS schema ID
@@ -767,14 +776,14 @@ mod tests {
         // Unit struct should implement GtsSchema
         assert_eq!(
             OrderTopicConfigV1::TYPE_ID,
-            "gts.x.core.events.topic.v1~x.commerce.orders.topic.v1~"
+            gts_id!("x.core.events.topic.v1~x.commerce.orders.topic.v1~")
         );
         assert_eq!(OrderTopicConfigV1::GENERIC_FIELD, None);
 
         // innermost_type_id for a non-generic type returns itself
         assert_eq!(
             OrderTopicConfigV1::innermost_type_id(),
-            "gts.x.core.events.topic.v1~x.commerce.orders.topic.v1~"
+            gts_id!("x.core.events.topic.v1~x.commerce.orders.topic.v1~")
         );
     }
 
@@ -842,7 +851,10 @@ mod tests {
         let id_str = instance_id.as_ref();
         // The generated ID is deterministic, so assert the exact value rather
         // than a contains/ends_with pair that could pass on unexpected text.
-        assert_eq!(id_str, format!("gts.x.core.events.topic.v1~{segment}"));
+        assert_eq!(
+            id_str,
+            format!("{}{segment}", gts_id!("x.core.events.topic.v1~"))
+        );
         // Note: gts_make_instance_id uses the schema ID of the type it's called on (TopicV1),
         // not the generic parameter (OrderTopicConfigV1)
     }
@@ -905,7 +917,7 @@ mod tests {
 
         // Test query functionality using GtsOps
         let query_result = ops.query(
-            "gts.x.core.events.topic.v1~x.commerce.orders.topic.v1~*",
+            gts_id!("x.core.events.topic.v1~x.commerce.orders.topic.v1~*"),
             10,
         );
 
@@ -1062,11 +1074,11 @@ mod tests {
         // Verify the instance IDs are correctly generated
         assert_eq!(
             topic_instance.id,
-            "gts.x.core.events.topic.v1~vendor.app._.topic.v1"
+            gts_id!("x.core.events.topic.v1~vendor.app._.topic.v1")
         );
         assert_eq!(
             nested_topic_instance.id,
-            "gts.x.core.events.topic.v1~vendor.app.nested.topic.v1"
+            gts_id!("x.core.events.topic.v1~vendor.app.nested.topic.v1")
         );
 
         // Verify the JSON structure contains expected fields
@@ -1166,21 +1178,25 @@ mod tests {
         // Test that the schema constants are generated correctly
         assert_eq!(
             TopicV1WithIdV1::<()>::gts_type_id().clone().into_string(),
-            "gts.x.core.events.topic.v1~"
+            gts_id!("x.core.events.topic.v1~")
         );
         assert!(TopicV1WithIdV1::<()>::gts_base_type_id().is_none());
 
         // Test serialization
         let serialized = serde_json::to_string(&topic).expect("Serialization should succeed");
-        assert!(serialized.contains(
-            "gts.x.core.events.topic.v1~x.commerce.orders.topic.v1~vendor.app._.topic.v1"
-        ));
+        assert!(serialized.contains(gts_id!(
+            "x.core.events.topic.v1~x.commerce.orders.topic.v1~vendor.app._.topic.v1"
+        )));
         assert!(serialized.contains("orders"));
 
         // Test instance ID generation
         let instance_id =
             TopicV1WithIdV1::<OrderTopicConfigV1>::gts_make_instance_id("test-instance");
-        assert!(instance_id.as_ref().contains("gts.x.core.events.topic.v1~"));
+        assert!(
+            instance_id
+                .as_ref()
+                .contains(gts_id!("x.core.events.topic.v1~"))
+        );
         assert!(instance_id.as_ref().ends_with("test-instance"));
 
         // Validate instance against schema
@@ -1240,15 +1256,15 @@ mod tests {
             TopicV1WithGtsIdV1::<()>::gts_type_id()
                 .clone()
                 .into_string(),
-            "gts.x.core.events.topic.v1~"
+            gts_id!("x.core.events.topic.v1~")
         );
         assert!(TopicV1WithGtsIdV1::<()>::gts_base_type_id().is_none());
 
         // Test serialization
         let serialized = serde_json::to_string(&topic).expect("Serialization should succeed");
-        assert!(serialized.contains(
-            "gts.x.core.events.topic.v1~x.commerce.orders.topic.v1~vendor.app._.topic.v1"
-        ));
+        assert!(serialized.contains(gts_id!(
+            "x.core.events.topic.v1~x.commerce.orders.topic.v1~vendor.app._.topic.v1"
+        )));
         assert!(serialized.contains("orders"));
 
         // Validate instance against schema
@@ -1308,15 +1324,15 @@ mod tests {
             TopicV1WithGtsIdCamelV1::<()>::gts_type_id()
                 .clone()
                 .into_string(),
-            "gts.x.core.events.topic.v1~"
+            gts_id!("x.core.events.topic.v1~")
         );
         assert!(TopicV1WithGtsIdCamelV1::<()>::gts_base_type_id().is_none());
 
         // Test serialization
         let serialized = serde_json::to_string(&topic).expect("Serialization should succeed");
-        assert!(serialized.contains(
-            "gts.x.core.events.topic.v1~x.commerce.orders.topic.v1~vendor.app._.topic.v1"
-        ));
+        assert!(serialized.contains(gts_id!(
+            "x.core.events.topic.v1~x.commerce.orders.topic.v1~vendor.app._.topic.v1"
+        )));
         assert!(serialized.contains("orders"));
 
         // Validate instance against schema
@@ -1355,7 +1371,7 @@ mod tests {
 
         // Test that base structs with 'gts_type' field compile and work correctly
         let topic = TopicV1WithGtsTypeV1::<OrderTopicConfigV1> {
-            gts_type: GtsTypeId::new("gts.x.core.events.topic.v1~"),
+            gts_type: GtsTypeId::new(gts_id!("x.core.events.topic.v1~")),
             name: "orders".to_string(),
             description: Some("Order events".to_string()),
             config: OrderTopicConfigV1,
@@ -1366,13 +1382,13 @@ mod tests {
             TopicV1WithGtsTypeV1::<()>::gts_type_id()
                 .clone()
                 .into_string(),
-            "gts.x.core.events.topic.v1~"
+            gts_id!("x.core.events.topic.v1~")
         );
         assert!(TopicV1WithGtsTypeV1::<()>::gts_base_type_id().is_none());
 
         // Test serialization
         let serialized = serde_json::to_string(&topic).expect("Serialization should succeed");
-        assert!(serialized.contains("gts.x.core.events.topic.v1~"));
+        assert!(serialized.contains(gts_id!("x.core.events.topic.v1~")));
         assert!(serialized.contains("orders"));
 
         // Validate JSON structure matches schema (no GTS instance ID field, so verify structure)
@@ -1407,7 +1423,7 @@ mod tests {
 
         // Test that base structs with 'gtsType' field compile and work correctly
         let topic = TopicV1WithGtsTypeCamelV1::<OrderTopicConfigV1> {
-            gts_type: GtsTypeId::new("gts.x.core.events.topic.v1~"),
+            gts_type: GtsTypeId::new(gts_id!("x.core.events.topic.v1~")),
             name: "orders".to_string(),
             description: Some("Order events".to_string()),
             config: OrderTopicConfigV1,
@@ -1418,13 +1434,13 @@ mod tests {
             TopicV1WithGtsTypeCamelV1::<()>::gts_type_id()
                 .clone()
                 .into_string(),
-            "gts.x.core.events.topic.v1~"
+            gts_id!("x.core.events.topic.v1~")
         );
         assert!(TopicV1WithGtsTypeCamelV1::<()>::gts_base_type_id().is_none());
 
         // Test serialization
         let serialized = serde_json::to_string(&topic).expect("Serialization should succeed");
-        assert!(serialized.contains("gts.x.core.events.topic.v1~"));
+        assert!(serialized.contains(gts_id!("x.core.events.topic.v1~")));
         assert!(serialized.contains("orders"));
 
         // Validate JSON structure matches schema (no GTS instance ID field, so verify structure)
@@ -1519,7 +1535,9 @@ mod tests {
         // Validate instance matches schema structure
         assert_eq!(
             json_value["type"],
-            "gts.x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~"
+            gts_id!(
+                "x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~"
+            )
         );
         assert!(json_value["payload"]["user_agent"].is_string());
         assert!(json_value["payload"]["data"]["product_id"].is_string());
@@ -1575,7 +1593,10 @@ mod tests {
         // Child struct should return Some with correct value
         let child_id: Option<&gts::gts::GtsTypeId> = OrderTopicConfigV1::gts_base_type_id();
         assert!(child_id.is_some());
-        assert_eq!(child_id.unwrap().as_ref(), "gts.x.core.events.topic.v1~");
+        assert_eq!(
+            child_id.unwrap().as_ref(),
+            gts_id!("x.core.events.topic.v1~")
+        );
 
         // Verify it's usable as GtsTypeId
         let parent_id = child_id.unwrap();
@@ -1591,11 +1612,11 @@ mod tests {
         // Verify schema IDs for 2-level inheritance chain
         assert_eq!(
             BaseEventV1::<()>::gts_type_id().as_ref(),
-            "gts.x.core.events.type.v1~"
+            gts_id!("x.core.events.type.v1~")
         );
         assert_eq!(
             SimplePayloadV1::gts_type_id().as_ref(),
-            "gts.x.core.events.type.v1~x.core.simple.event.v1~"
+            gts_id!("x.core.events.type.v1~x.core.simple.event.v1~")
         );
 
         // Base should have no parent
@@ -1604,7 +1625,7 @@ mod tests {
         // SimplePayloadV1 should have BaseEventV1 as parent
         assert_eq!(
             SimplePayloadV1::gts_base_type_id().map(AsRef::as_ref),
-            Some("gts.x.core.events.type.v1~")
+            Some(gts_id!("x.core.events.type.v1~"))
         );
     }
 
@@ -1632,7 +1653,7 @@ mod tests {
         // Verify top-level fields from BaseEventV1
         assert_eq!(
             json["type"],
-            "gts.x.core.events.type.v1~x.core.simple.event.v1~"
+            gts_id!("x.core.events.type.v1~x.core.simple.event.v1~")
         );
         assert_eq!(json["id"], "550e8400-e29b-41d4-a716-446655440000");
         assert_eq!(json["tenant_id"], "660e8400-e29b-41d4-a716-446655440000");
@@ -1719,11 +1740,13 @@ mod tests {
         // Validate type fields match their respective schemas
         assert_eq!(
             two_json["type"],
-            "gts.x.core.events.type.v1~x.core.simple.event.v1~"
+            gts_id!("x.core.events.type.v1~x.core.simple.event.v1~")
         );
         assert_eq!(
             three_json["type"],
-            "gts.x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~"
+            gts_id!(
+                "x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~"
+            )
         );
 
         // 2-level field path: payload.message, payload.severity
@@ -2117,7 +2140,7 @@ mod tests {
         // Instead, we verify the JSON structure matches the schema properties
 
         let topic1 = TopicV1WithGtsTypeV1::<OrderTopicConfigV1> {
-            gts_type: GtsTypeId::new("gts.x.core.events.topic.v1~"),
+            gts_type: GtsTypeId::new(gts_id!("x.core.events.topic.v1~")),
             name: "orders".to_string(),
             description: Some("Order events".to_string()),
             config: OrderTopicConfigV1,
@@ -2140,7 +2163,7 @@ mod tests {
         );
 
         let topic2 = TopicV1WithGtsTypeCamelV1::<OrderTopicConfigV1> {
-            gts_type: GtsTypeId::new("gts.x.core.events.topic.v1~"),
+            gts_type: GtsTypeId::new(gts_id!("x.core.events.topic.v1~")),
             name: "orders-camel".to_string(),
             description: Some("Order events camel".to_string()),
             config: OrderTopicConfigV1,
@@ -2208,7 +2231,7 @@ mod tests {
         // Verify JSON structure matches expected field paths
         assert_eq!(
             event_json["type"],
-            "gts.x.core.events.type.v1~x.core.simple.event.v1~"
+            gts_id!("x.core.events.type.v1~x.core.simple.event.v1~")
         );
         assert_eq!(event_json["sequence_id"], 100);
         assert_eq!(event_json["payload"]["message"], "System started");
@@ -2286,7 +2309,9 @@ mod tests {
         // Verify JSON structure matches expected field paths for 3-level nesting
         assert_eq!(
             event_json["type"],
-            "gts.x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~"
+            gts_id!(
+                "x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~"
+            )
         );
         assert_eq!(event_json["sequence_id"], 42);
 
@@ -2522,7 +2547,7 @@ mod tests {
 
         verify_schema_field_path(
             &schema,
-            "gts.x.core.events.type.v1~",
+            gts_id!("x.core.events.type.v1~"),
             None, // No parent
             &[],  // No nesting path
             &["type", "id", "tenant_id", "sequence_id", "payload"],
@@ -2671,8 +2696,8 @@ mod tests {
 
         verify_schema_field_path(
             &schema,
-            "gts.x.core.events.type.v1~x.core.simple.event.v1~",
-            Some("gts.x.core.events.type.v1~"),
+            gts_id!("x.core.events.type.v1~x.core.simple.event.v1~"),
+            Some(gts_id!("x.core.events.type.v1~")),
             &["payload"], // Properties nested under "payload"
             &["message", "severity"],
         );
@@ -2689,7 +2714,7 @@ mod tests {
 
         verify_schema_field_path(
             &schema,
-            "gts.x.core.events.topic.v1~",
+            gts_id!("x.core.events.topic.v1~"),
             None, // No parent
             &[],  // No nesting path
             &["name", "description"],

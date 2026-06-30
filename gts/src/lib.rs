@@ -22,6 +22,7 @@ pub use files_reader::GtsFileReader;
 #[allow(deprecated)]
 pub use gts::GtsSchemaId;
 pub use gts::{
+    DEFAULT_GTS_ID_PREFIX, GTS_ID_MAX_LENGTH, GTS_ID_PREFIX, GTS_ID_PREFIX_ENV, GTS_ID_URI_PREFIX,
     GtsId, GtsIdError, GtsIdPattern, GtsIdPatternSegment, GtsIdSegment, GtsIdSegmentParts,
     GtsInstanceId, GtsTypeId, GtsUuidTail,
 };

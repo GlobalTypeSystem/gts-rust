@@ -12,8 +12,10 @@ const SEPARATOR: &str =
 // Include test structs to access their generated constants
 mod test_structs {
     use super::{Deserialize, GtsTypeId, Serialize};
-    use gts_macros::{GtsTraitsSchema, struct_to_gts_schema};
+    use gts_macros::{GtsTraitsSchema, gts_id, struct_to_gts_schema};
     use schemars::JsonSchema;
+
+    const TOPIC_TYPE_REF: &str = gts_id!("x.core.events.topic.v1~");
 
     // Inline trait-shape declaring the system-behaviour properties shared by
     // every event type. An ordinary `JsonSchema` struct marked with
@@ -28,7 +30,7 @@ mod test_structs {
     pub struct EventTypeTraitsV1 {
         // Required trait: no default, so every non-abstract type in the chain
         // must resolve it explicitly via `x-gts-traits` (OP#13 completeness).
-        #[schemars(extend("x-gts-ref" = "gts.x.core.events.topic.v1~"))]
+        #[schemars(extend("x-gts-ref" = TOPIC_TYPE_REF))]
         pub topic_ref: String,
         #[serde(default = "default_retention")]
         pub retention: String,
@@ -40,7 +42,7 @@ mod test_structs {
     #[struct_to_gts_schema(
         dir_path = "schemas",
         base = true,
-        type_id = "gts.x.core.events.type.v1~",
+        type_id = gts_id!("x.core.events.type.v1~"),
         description = "Base event type definition",
         properties = "event_type,id,tenant_id,sequence_id,payload",
         traits_schema = inline(EventTypeTraitsV1),
@@ -59,7 +61,7 @@ mod test_structs {
     #[struct_to_gts_schema(
         dir_path = "schemas",
         base = BaseEventV1,
-        type_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~",
+        type_id = gts_id!("x.core.events.type.v1~x.core.audit.event.v1~"),
         description = "Audit event with user context",
         properties = "user_agent,user_id,ip_address,data",
         gts_abstract = true,
@@ -75,11 +77,11 @@ mod test_structs {
     #[struct_to_gts_schema(
         dir_path = "schemas",
         base = AuditPayloadV1,
-        type_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~",
+        type_id = gts_id!("x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~"),
         description = "Order placement audit event",
         properties = "order_id,product_id",
         traits = serde_json::json!({
-            "topic_ref": "gts.x.core.events.topic.v1~x.marketplace._.orders.v1"
+            "topic_ref": gts_id!("x.core.events.topic.v1~x.marketplace._.orders.v1")
         }),
     )]
     #[derive(Debug, JsonSchema)]
@@ -92,7 +94,7 @@ mod test_structs {
     #[struct_to_gts_schema(
         dir_path = "schemas",
         base = PlaceOrderDataV1,
-        type_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~x.marketplace.order_purchase.payload.v1~",
+        type_id = gts_id!("x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~x.marketplace.order_purchase.payload.v1~"),
         description = "Order placement audit event",
         properties = "order_id"
     )]

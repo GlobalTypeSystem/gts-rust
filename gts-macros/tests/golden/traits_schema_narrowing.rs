@@ -23,7 +23,7 @@ pub struct NarrowPriorityTraits {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.test.golden.narrow.v1~",
+    type_id = gts_id!("x.test.golden.narrow.v1~"),
     description = "Base declaring an open-string priority trait",
     properties = "id,payload",
     traits_schema = inline(BasePriorityTraits),
@@ -38,7 +38,7 @@ pub struct NarrowBaseV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = NarrowBaseV1,
-    type_id = "gts.x.test.golden.narrow.v1~x.test.urgent.event.v1~",
+    type_id = gts_id!("x.test.golden.narrow.v1~x.test.urgent.event.v1~"),
     description = "Derived narrowing priority to an enum and resolving it",
     properties = "order_id",
     traits_schema = inline(NarrowPriorityTraits),

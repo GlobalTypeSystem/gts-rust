@@ -4,6 +4,7 @@
 
 use std::path::Path;
 
+use gts::{GTS_ID_PREFIX, GTS_ID_URI_PREFIX};
 use serde_json::Value;
 
 use crate::error::{ScanError, ScanErrorKind, ValidationError};
@@ -83,7 +84,7 @@ pub fn walk_json_value(
             // Only consider strings that look like GTS identifiers
             // Skip filenames that contain GTS IDs (e.g., "gts.x.core.type.v1~.schema.json")
             // A string is likely a filename if it contains a tilde followed by a dot and extension
-            let looks_like_filename = !candidate_str.starts_with("gts://")
+            let looks_like_filename = !candidate_str.starts_with(GTS_ID_URI_PREFIX)
                 && candidate_str.contains("~.")
                 && candidate_str
                     .rfind('.')
@@ -94,7 +95,7 @@ pub fn walk_json_value(
                 return;
             }
 
-            if candidate_str.starts_with("gts://gts.") || candidate_str.starts_with("gts.") {
+            if looks_like_gts_candidate(candidate_str) {
                 match normalize_candidate(candidate_str) {
                     Ok(candidate) => {
                         let allow_wildcards = is_xgts_ref;
@@ -131,7 +132,7 @@ pub fn walk_json_value(
         Value::Object(map) => {
             for (key, val) in map {
                 // Optionally scan keys
-                if scan_keys && (key.starts_with("gts://") || key.starts_with("gts.")) {
+                if scan_keys && looks_like_gts_candidate(key) {
                     match normalize_candidate(key) {
                         Ok(candidate) => {
                             let validation_errors = validate_candidate(&candidate, vendor, false);
@@ -186,6 +187,15 @@ pub fn walk_json_value(
         }
         _ => {}
     }
+}
+
+/// Returns `true` if a string looks like a GTS identifier worth normalizing,
+/// either as a bare id (`<prefix>...`) or wrapped in the `gts://` URI scheme
+/// (`gts://<prefix>...`). Honors the configured [`GTS_ID_PREFIX`].
+fn looks_like_gts_candidate(s: &str) -> bool {
+    s.strip_prefix(GTS_ID_URI_PREFIX)
+        .unwrap_or(s)
+        .starts_with(GTS_ID_PREFIX)
 }
 
 #[cfg(test)]

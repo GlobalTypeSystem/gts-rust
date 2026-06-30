@@ -2511,6 +2511,6 @@ mod inline_traits_schema_tests {
         let prop = &schema["properties"]["topic_ref"];
         assert_eq!(prop["type"], "string");
         assert_eq!(prop["format"], "gts-instance-id");
-        assert_eq!(prop["x-gts-ref"], "gts.*");
+        assert_eq!(prop["x-gts-ref"], format!("{}*", crate::GTS_ID_PREFIX));
     }
 }

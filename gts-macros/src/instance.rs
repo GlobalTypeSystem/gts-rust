@@ -33,13 +33,14 @@
 //! [`expand_gts_instance`] and [`expand_gts_instance_raw`] here.
 
 use crate::ID_FIELD_NAMES;
+use gts_id::GTS_ID_PREFIX;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{
-    Attribute, Expr, ExprLit, ExprStruct, FieldValue, GenericArgument, Ident, Lit, LitStr, Path,
-    PathArguments, Token, Type, parse2,
+    Attribute, Expr, ExprStruct, FieldValue, GenericArgument, Ident, LitStr, Path, PathArguments,
+    Token, Type, parse2,
 };
 
 /// Validate an `instance_id` literal against the full GTS spec via the
@@ -181,7 +182,9 @@ impl Parse for TypedInstanceArgs {
         let instance: ExprStruct = input.parse().map_err(|e| {
             syn::Error::new(
                 e.span(),
-                "expected a struct literal: `StructPath { id: \"gts...\", ...other fields... }`",
+                format!(
+                    "expected a struct literal: `StructPath {{ id: \"{GTS_ID_PREFIX}...\", ...other fields... }}`"
+                ),
             )
         })?;
         if !input.is_empty() {
@@ -226,19 +229,17 @@ fn extract_id_field(instance: &ExprStruct) -> syn::Result<(usize, Ident, LitStr)
                 ),
             ));
         }
-        let Expr::Lit(ExprLit {
-            lit: Lit::Str(lit_str),
-            ..
-        }) = &field.expr
-        else {
-            return Err(syn::Error::new_spanned(
+        let lit_str = crate::id_arg::gts_id_lit_from_expr(&field.expr).map_err(|_| {
+            syn::Error::new_spanned(
                 &field.expr,
                 format!(
-                    "`{name}:` must be a string literal containing the full GTS instance id (e.g. \"gts.acme.core.events.topic.v1~vendor.app.x.v1\")"
+                    "`{name}:` must be a string literal containing the full GTS instance id \
+                     (e.g. \"{GTS_ID_PREFIX}acme.core.events.topic.v1~vendor.app.x.v1\") or the \
+                     prefix-less marker `gts_id!(\"...\")`"
                 ),
-            ));
-        };
-        found = Some((idx, ident.clone(), lit_str.clone()));
+            )
+        })?;
+        found = Some((idx, ident.clone(), lit_str));
     }
 
     found.ok_or_else(|| {
@@ -261,8 +262,13 @@ fn build_typed_instance_block(args: &TypedInstanceArgs) -> syn::Result<TokenStre
     let (id_idx, id_ident, instance_id_lit) = extract_id_field(&args.instance)?;
     validate_instance_id_format(&instance_id_lit)?;
     let (prefix_str, segment_str) = split_instance_id(&instance_id_lit)?;
+    // `prefix_lit` keeps the original span so downstream lint passes can flag
+    // a hardcoded "gts." prefix. `segment_lit` and the const-assert literal use
+    // `mixed_site` to avoid duplicate lint errors.
     let prefix_lit = LitStr::new(&prefix_str, instance_id_lit.span());
-    let segment_lit = LitStr::new(&segment_str, instance_id_lit.span());
+    let segment_lit = LitStr::new(&segment_str, proc_macro2::Span::mixed_site());
+    let instance_id_lit_derived =
+        LitStr::new(&instance_id_lit.value(), proc_macro2::Span::mixed_site());
 
     // Replace the id field's string literal with a GtsInstanceId::new call.
     let mut struct_expr = args.instance.clone();
@@ -320,7 +326,7 @@ fn build_typed_instance_block(args: &TypedInstanceArgs) -> syn::Result<TokenStre
                 }
                 assert!(
                     __gts_validate_id_prefix(
-                        #instance_id_lit,
+                        #instance_id_lit_derived,
                         <#schema_path as ::gts::GtsSchema>::TYPE_ID,
                     ),
                     "instance id literal must equal the type's GtsSchema::TYPE_ID followed by a single non-empty segment (no extra `~`); for chained schemas, write the full type as a turbofish on the struct literal (e.g. `BaseV1::<LeafV1>` rather than bare `BaseV1`) so the macro can derive the conforming schema"
@@ -431,12 +437,18 @@ impl Parse for RawInstanceArgs {
                 err.combine(syn::Error::new_spanned(prev, "first `\"id\"` key was here"));
                 return Err(err);
             }
-            let id_lit: LitStr = parse2(entry.value.clone()).map_err(|_| {
+            let bad_id = || {
                 syn::Error::new_spanned(
                     &entry.value,
-                    "`\"id\"` must be a string literal containing the full GTS instance id (e.g. \"gts.acme.core.events.topic.v1~vendor.app.x.v1\")",
+                    format!(
+                        "`\"id\"` must be a string literal containing the full GTS instance id \
+                         (e.g. \"{GTS_ID_PREFIX}acme.core.events.topic.v1~vendor.app.x.v1\") or the \
+                         prefix-less marker `gts_id!(\"...\")`"
+                    ),
                 )
-            })?;
+            };
+            let id_expr: Expr = parse2(entry.value.clone()).map_err(|_| bad_id())?;
+            let id_lit = crate::id_arg::gts_id_lit_from_expr(&id_expr).map_err(|_| bad_id())?;
             found_id = Some(id_lit);
         }
 
@@ -462,6 +474,11 @@ pub fn expand_gts_instance_raw(input: TokenStream2) -> syn::Result<TokenStream2>
     let _ = split_instance_id(&args.instance_id)?;
     let instance_id_lit = &args.instance_id;
     let body_tokens = &args.body;
+    // Derived literal for the `insert` call uses `mixed_site` span so downstream
+    // lint passes don't fire a duplicate error. Only the user-written literal in
+    // the `json!` body should be flagged, not the macro-generated overwrite.
+    let instance_id_lit_derived =
+        LitStr::new(&instance_id_lit.value(), proc_macro2::Span::mixed_site());
     // Build the JSON object first, then unconditionally overwrite the
     // `"id"` key with the validated literal. The user's body already
     // contains an `"id"` entry (we rejected the macro otherwise), and
@@ -476,7 +493,7 @@ pub fn expand_gts_instance_raw(input: TokenStream2) -> syn::Result<TokenStream2>
                 .expect("gts_instance_raw! body must be a JSON object")
                 .insert(
                     "id".to_owned(),
-                    ::serde_json::Value::String((#instance_id_lit).to_owned()),
+                    ::serde_json::Value::String((#instance_id_lit_derived).to_owned()),
                 );
             __gts_value
         }

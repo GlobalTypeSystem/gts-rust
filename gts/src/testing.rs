@@ -7,6 +7,7 @@
 
 use serde_json::Value;
 
+use crate::GTS_ID_URI_PREFIX;
 use crate::ops::GtsOps;
 
 /// Register a base→leaf chain of GTS type schemas and run OP#13 trait validation
@@ -66,7 +67,7 @@ pub fn validate_all(schemas: &[&Value]) -> Result<(), String> {
         let Some(id) = schema.get("$id").and_then(Value::as_str) else {
             return Err("schema is missing a string `$id`".to_owned());
         };
-        let gts_id = id.strip_prefix("gts://").unwrap_or(id);
+        let gts_id = id.strip_prefix(GTS_ID_URI_PREFIX).unwrap_or(id);
         let result = ops.validate_schema(gts_id);
         if !result.ok {
             return Err(format!("{gts_id}: {}", result.error));

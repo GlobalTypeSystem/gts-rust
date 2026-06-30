@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::LazyLock;
 
+use gts::{GTS_ID_PREFIX, GTS_ID_URI_PREFIX};
 use regex::Regex;
 
 use crate::error::ValidationError;
@@ -51,16 +52,21 @@ fn parse_fence(trimmed_line: &str) -> Option<(char, usize)> {
 /// This catches both valid and malformed IDs for validation (more errors reported).
 /// Stops at tilde followed by non-alphanumeric to avoid matching filenames like "id.v1~.schema.json"
 static GTS_DISCOVERY_PATTERN_RELAXED: LazyLock<Regex> = LazyLock::new(|| {
-    match Regex::new(concat!(
-        r"(?:gts://)?",                    // optional URI prefix
-        r"\bgts\.", // mandatory gts. prefix (word boundary prevents xgts. match)
-        r"(?:[a-z_*][a-z0-9_*.-]*\.){3,}", // at least 3 segments (permissive: allows -, .)
-        r"[a-z_*][a-z0-9_*.-]*", // final segment before version
-        r"\.v[0-9]+", // version segment (required anchor)
-        r"(?:\.[0-9]+)?", // optional minor version
-        r"(?:~[a-z_][a-z0-9_.-]*)*", // optional chained segments (permissive)
-        r"~?",      // optional trailing tilde (but not if followed by .)
-    )) {
+    let pattern = format!(
+        concat!(
+            r"(?:{uri})?",                       // optional URI prefix
+            r"\b{prefix}", // mandatory configured prefix (word boundary prevents xgts. match)
+            r"(?:[a-z_*][a-z0-9_*.-]*\.){{3,}}", // at least 3 segments (permissive: allows -, .)
+            r"[a-z_*][a-z0-9_*.-]*", // final segment before version
+            r"\.v[0-9]+",  // version segment (required anchor)
+            r"(?:\.[0-9]+)?", // optional minor version
+            r"(?:~[a-z_][a-z0-9_.-]*)*", // optional chained segments (permissive)
+            r"~?",         // optional trailing tilde (but not if followed by .)
+        ),
+        uri = regex::escape(GTS_ID_URI_PREFIX),
+        prefix = regex::escape(GTS_ID_PREFIX),
+    );
+    match Regex::new(&pattern) {
         Ok(regex) => regex,
         Err(err) => panic!("Invalid discovery regex: {err}"),
     }
@@ -69,18 +75,23 @@ static GTS_DISCOVERY_PATTERN_RELAXED: LazyLock<Regex> = LazyLock::new(|| {
 /// Discovery regex (well-formed): only matches well-formed GTS identifiers.
 /// Requires exactly 5 segments with proper structure (fewer errors reported).
 static GTS_DISCOVERY_PATTERN_WELL_FORMED: LazyLock<Regex> = LazyLock::new(|| {
-    match Regex::new(concat!(
-        r"(?:gts://)?",          // optional URI prefix
-        r"\bgts\.",              // mandatory gts. prefix (word boundary prevents xgts. match)
-        r"[a-z_*][a-z0-9_*]*\.", // vendor
-        r"[a-z_*][a-z0-9_*]*\.", // package
-        r"[a-z_*][a-z0-9_*]*\.", // namespace
-        r"[a-z_*][a-z0-9_*]*\.", // type
-        r"v[0-9]+",              // major version (required)
-        r"(?:\.[0-9]+)?",        // optional minor version
-        r"(?:~[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*\.v[0-9]+(?:\.[0-9]+)?)*", // chained segments
-        r"~?", // optional trailing tilde
-    )) {
+    let pattern = format!(
+        concat!(
+            r"(?:{uri})?",           // optional URI prefix
+            r"\b{prefix}", // mandatory configured prefix (word boundary prevents xgts. match)
+            r"[a-z_*][a-z0-9_*]*\.", // vendor
+            r"[a-z_*][a-z0-9_*]*\.", // package
+            r"[a-z_*][a-z0-9_*]*\.", // namespace
+            r"[a-z_*][a-z0-9_*]*\.", // type
+            r"v[0-9]+",    // major version (required)
+            r"(?:\.[0-9]+)?", // optional minor version
+            r"(?:~[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*\.v[0-9]+(?:\.[0-9]+)?)*", // chained segments
+            r"~?", // optional trailing tilde
+        ),
+        uri = regex::escape(GTS_ID_URI_PREFIX),
+        prefix = regex::escape(GTS_ID_PREFIX),
+    );
+    match Regex::new(&pattern) {
         Ok(regex) => regex,
         Err(err) => panic!("Invalid discovery regex: {err}"),
     }

@@ -399,28 +399,13 @@ impl GtsStore {
         }
 
         // Build pairs of (base_id, derived_id) for each adjacent level
-        // Note: segment.segment already includes the trailing '~' for type segments
-        let segments = &gid.segments();
-        for i in 0..segments.len() - 1 {
-            let base_id = format!(
-                "gts.{}",
-                segments[..=i]
-                    .iter()
-                    .map(gts_id::GtsIdSegment::raw)
-                    .collect::<Vec<_>>()
-                    .join("")
-            );
-            let derived_id = format!(
-                "gts.{}",
-                segments[..=i + 1]
-                    .iter()
-                    .map(gts_id::GtsIdSegment::raw)
-                    .collect::<Vec<_>>()
-                    .join("")
-            );
+        let chain_ids = gid.chain_ids();
+        for i in 0..chain_ids.len() - 1 {
+            let base_id = &chain_ids[i];
+            let derived_id = &chain_ids[i + 1];
 
             // Check x-gts-final: if the base type is final, derivation is not allowed.
-            if let Some(base_entity) = self.get(&base_id)
+            if let Some(base_entity) = self.get(base_id)
                 && base_entity
                     .content
                     .get(crate::schema_modifiers::X_GTS_FINAL)
@@ -438,12 +423,12 @@ impl GtsStore {
             );
 
             // Get and resolve both schemas
-            let base_content = self.get_schema_content(&base_id).map_err(|_| {
+            let base_content = self.get_schema_content(base_id).map_err(|_| {
                 StoreError::ValidationError(format!(
                     "Base schema '{base_id}' not found for chain validation"
                 ))
             })?;
-            let derived_content = self.get_schema_content(&derived_id).map_err(|_| {
+            let derived_content = self.get_schema_content(derived_id).map_err(|_| {
                 StoreError::ValidationError(format!(
                     "Derived schema '{derived_id}' not found for chain validation"
                 ))
@@ -459,8 +444,8 @@ impl GtsStore {
             let errors = crate::schema_compat::validate_schema_compatibility(
                 &base_resolved,
                 &derived_resolved,
-                &base_id,
-                &derived_id,
+                base_id,
+                derived_id,
             );
 
             if !errors.is_empty() {
@@ -518,22 +503,12 @@ impl GtsStore {
     ) -> Result<crate::schema_traits::EffectiveTraits, StoreError> {
         let gid = GtsId::try_new(type_id)
             .map_err(|e| StoreError::ValidationError(format!("Invalid GTS ID: {e}")))?;
-        let segments = &gid.segments();
 
         let mut trait_schemas: Vec<Value> = Vec::new();
         let mut merged_traits = serde_json::Map::new();
 
-        for i in 0..segments.len() {
-            let schema_id = format!(
-                "gts.{}",
-                segments[..=i]
-                    .iter()
-                    .map(gts_id::GtsIdSegment::raw)
-                    .collect::<Vec<_>>()
-                    .join("")
-            );
-
-            let content = self.get_schema_content(&schema_id).map_err(|_| {
+        for schema_id in &gid.chain_ids() {
+            let content = self.get_schema_content(schema_id).map_err(|_| {
                 StoreError::ValidationError(format!(
                     "Schema '{schema_id}' not found for trait validation"
                 ))

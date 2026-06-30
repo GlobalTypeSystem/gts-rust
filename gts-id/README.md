@@ -16,6 +16,45 @@ gts.<vendor>.<package>.<namespace>.<type>.v<MAJOR>[.<MINOR>]
 * An **instance** identifier does not: `gts.x.core.events.topic.v1~acme.shop.orders.order.v1.0`
 * A **combined anonymous instance** ends with a UUID tail: `gts.x.core.events.topic.v1~7a1d2f34-5678-49ab-9012-abcdef123456`
 
+## Configurable identifier prefix
+
+By default, all GTS identifiers start with `gts.`. This prefix can be overridden
+at **compile time** via the `GTS_ID_PREFIX` environment variable:
+
+```bash
+# Use a custom prefix for your organization
+GTS_ID_PREFIX=acme. cargo build
+```
+
+The override is validated at compile time — an invalid value fails the build
+with a clear diagnostic. A valid prefix is a single lowercase token
+(`[a-z][a-z0-9_]*`) terminated by a single `.`:
+
+| Value | Accepted? | Reason |
+|-------|-----------|--------|
+| `acme.` | ✅ | Single lowercase token + trailing dot |
+| `gts.` | ✅ | The default |
+| `acme` | ❌ | Missing trailing `.` |
+| `Acme.` | ❌ | Uppercase rejected |
+| `my.org.` | ❌ | Multi-segment (contains an extra `.`) |
+| `acme-prod.` | ❌ | Hyphen is not allowed |
+| `_.` | ❌ | Must start with a letter, not underscore |
+| (empty) | ❌ | Empty prefix |
+
+Because the prefix is baked into the binary at compile time, a single binary
+cannot work with multiple prefixes. The `build.rs` emits
+`cargo:rerun-if-env-changed=GTS_ID_PREFIX` so Cargo rebuilds when the variable
+changes.
+
+### Relevant constants
+
+| Constant | Description |
+|----------|-------------|
+| `GTS_ID_PREFIX` | The configured prefix (default `"gts."`). |
+| `DEFAULT_GTS_ID_PREFIX` | The default prefix (`"gts."`), regardless of override. |
+| `GTS_ID_PREFIX_ENV` | The env var name (`"GTS_ID_PREFIX"`). |
+| `GTS_ID_MAX_LENGTH` | Maximum identifier length (1024 chars). |
+
 ## Types
 
 | Type | Purpose |

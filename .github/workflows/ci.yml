@@ -233,3 +233,37 @@ jobs:
       # host.docker.internal:$PORT. See Makefile.
       - name: Run gts-spec tests via docker
         run: make gts-spec-tests
+
+  dylint:
+    name: Dylint + Prefix Tests (nightly, Ubuntu)
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: nightly-2026-04-16
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install pinned nightly toolchain
+        uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+        with:
+          toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+          components: llvm-tools-preview,rustc-dev
+
+      - name: Cache Cargo/target
+        uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+        with:
+          shared-key: dylint
+
+      - name: Install cargo-dylint and dylint-link from source
+        run: cargo install --locked cargo-dylint dylint-link
+
+      - name: Run dylint
+        run: cargo +${{ env.RUSTUP_TOOLCHAIN }} dylint --all
+
+      - name: Run dylint UI tests
+        run: cargo +${{ env.RUSTUP_TOOLCHAIN }} test --manifest-path gts-dylint/Cargo.toml
+
+      - name: Run prefix-aware tests
+        run: make test-gts-id-prefix

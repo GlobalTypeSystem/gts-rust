@@ -4,7 +4,7 @@ Guidance for AI Agents when working in this repository.
 
 ## Project Overview
 
-`gts-rust` is the Rust reference implementation of [GTS](https://github.com/GlobalTypeSystem/gts-spec) — library (`gts/`), CLI and HTTP server (`gts-cli/`, binary name `gts`), plus supporting crates (`gts-id`, `gts-macros`, `gts-macros-cli`, `gts-validator`). The server answers the REST API exercised by the shared gts-spec conformance suite.
+`gts-rust` is the Rust reference implementation of [GTS](https://github.com/GlobalTypeSystem/gts-spec) — library (`gts/`), CLI and HTTP server (`gts-cli/`, binary name `gts`), plus supporting crates (`gts-id`, `gts-macros`, `gts-macros-cli`, `gts-validator`, `gts-dylint`). The server answers the REST API exercised by the shared gts-spec conformance suite.
 
 The conformance suite is shipped as a Docker image — `ghcr.io/globaltypesystem/gts-spec-tests` — and the spec version this implementation targets is pinned in `.gts-spec-version` (the file's contents are used verbatim as the image tag, format `vMAJOR.MINOR.PATCH`). The pin is immutable on purpose: every commit reproduces the same test run, and rolling forward requires a deliberate bump.
 
@@ -51,4 +51,5 @@ The server holds state in memory with no reset endpoint — restart it between f
 
 - `.gts-spec-version` is the canonical pin (`vMAJOR.MINOR.PATCH`). Bump it (commit + push) to roll the spec forward — both CI and `make gts-spec-tests` pick it up. Local cache survives across runs; `docker rmi $(GTS_SPEC_REF)` if you ever need to force a refetch.
 - Handlers in `gts-cli/src/server.rs` stay thin — logic goes in `gts/` where it is unit-testable. New REST behavior usually already has coverage in the gts-spec suite; run the relevant file (`make gts-spec-tests TEST=...`) before and after to confirm.
-- `make check` is the full local gate: fmt + clippy + test + gts-spec-tests.
+- `make check` is the full local gate: fmt + clippy + test + test-gts-id-prefix + dylint + gts-spec-tests.
+- `gts-dylint` is a Dylint lint (requires nightly) that flags hard-coded `"gts."` string literals in production code. Run it with `make dylint`. Use `#[allow(unknown_lints, gts_id_hardcoded_prefix)]` to suppress in specific locations. Prefixes can be customized via `GTS_DYLINT_PREFIXES` env var. Tests for the lint itself live in `gts-dylint/ui/` and run with `cargo +nightly test` inside the crate.

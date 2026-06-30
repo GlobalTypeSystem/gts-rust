@@ -8,7 +8,7 @@ use schemars::JsonSchema;
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.test.golden.closed.v1~",
+    type_id = gts_id!("x.test.golden.closed.v1~"),
     description = "Traits-prohibited host",
     properties = "id",
     traits_schema = false

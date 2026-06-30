@@ -11,8 +11,10 @@
 // `#[schemars(inline)]` cannot do, only generator-wide `inline_subschemas` can.
 
 use gts::{GtsInstanceId, GtsSchema};
-use gts_macros::{struct_to_gts_schema, GtsTraitsSchema};
+use gts_macros::{gts_id, struct_to_gts_schema, GtsTraitsSchema};
 use schemars::JsonSchema;
+
+const TOPIC_REF: &str = gts_id!("x.core.events.topic.v1~");
 
 fn default_retention() -> String {
     "P30D".to_owned()
@@ -34,7 +36,7 @@ pub struct Escalation {
 
 #[derive(JsonSchema, serde::Serialize, GtsTraitsSchema)]
 pub struct EventTraits {
-    #[schemars(extend("x-gts-ref" = "gts.x.core.events.topic.v1~"))]
+    #[schemars(extend("x-gts-ref" = TOPIC_REF))]
     pub topic_ref: String,
     #[serde(default = "default_retention")]
     pub retention: String,
@@ -47,7 +49,7 @@ pub struct EventTraits {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.test.golden.event.v1~",
+    type_id = gts_id!("x.test.golden.event.v1~"),
     description = "Base event",
     properties = "id,payload",
     traits_schema = inline(EventTraits),
@@ -62,11 +64,11 @@ pub struct EventV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = EventV1,
-    type_id = "gts.x.test.golden.event.v1~x.test.order.placed.v1~",
+    type_id = gts_id!("x.test.golden.event.v1~x.test.order.placed.v1~"),
     description = "Order placed",
     properties = "order_id",
     traits = serde_json::json!({
-        "topic_ref": "gts.x.core.events.topic.v1~x.test._.orders.v1",
+        "topic_ref": gts_id!("x.core.events.topic.v1~x.test._.orders.v1"),
         "indexed": true,
         "severity": "High",
         "escalation": { "after": "PT5M", "to": "Low" }

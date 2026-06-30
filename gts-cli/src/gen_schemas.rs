@@ -1,5 +1,5 @@
 use anyhow::{Result, bail};
-use gts::{GtsInstanceId, GtsTypeId};
+use gts::{GTS_ID_URI_PREFIX, GtsInstanceId, GtsTypeId};
 use regex::Regex;
 use std::collections::HashMap;
 use std::fs;
@@ -415,7 +415,7 @@ fn build_json_schema(
         BaseAttr::IsBase => {
             // Base type - simple flat schema
             let mut s = json!({
-                "$id": format!("gts://{type_id}"),
+                "$id": format!("{GTS_ID_URI_PREFIX}{type_id}"),
                 "$schema": gts::JSON_SCHEMA_DRAFT_07,
                 "title": struct_name,
                 "type": "object",
@@ -447,12 +447,12 @@ fn build_json_schema(
             }
 
             let mut s = json!({
-                "$id": format!("gts://{type_id}"),
+                "$id": format!("{GTS_ID_URI_PREFIX}{type_id}"),
                 "$schema": gts::JSON_SCHEMA_DRAFT_07,
                 "title": format!("{struct_name} (extends {parent_name})"),
                 "type": "object",
                 "allOf": [
-                    { "$ref": format!("gts://{parent_type_id}") },
+                    { "$ref": format!("{GTS_ID_URI_PREFIX}{parent_type_id}") },
                     own_properties
                 ]
             });
@@ -682,7 +682,7 @@ mod tests {
         assert!(req);
         assert_eq!(schema["type"], "string");
         assert_eq!(schema["format"], "gts-instance-id");
-        assert_eq!(schema["x-gts-ref"], "gts.*");
+        assert_eq!(schema["x-gts-ref"], format!("{}*", gts::GTS_ID_PREFIX));
 
         // Generic type parameter
         let (req, schema) = rust_type_to_json_schema("P");

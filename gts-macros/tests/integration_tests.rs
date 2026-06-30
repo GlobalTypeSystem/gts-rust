@@ -10,14 +10,14 @@
 mod inheritance_tests;
 
 use gts::{GtsConfig, GtsEntity, GtsId, GtsInstanceId, GtsSchema};
-use gts_macros::struct_to_gts_schema;
+use gts_macros::{gts_id, struct_to_gts_schema};
 /// Event Topic (Stream) definition for testing GTS schema generation.
 /// Inspired by examples/examples/events/schemas/gts.x.core.events.topic.v1~.schema.json
 #[derive(Debug, Clone)]
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.core.events.topic.v1~",
+    type_id = gts_id!("x.core.events.topic.v1~"),
     description = "Event Topic (Stream) definition",
     properties = "id,name,description,retention,ordering"
 )]
@@ -41,7 +41,7 @@ pub struct EventTopicV1 {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.test.entities.product.v1~",
+    type_id = gts_id!("x.test.entities.product.v1~"),
     description = "Product entity with pricing information",
     properties = "id,name,price,description,in_stock"
 )]
@@ -172,13 +172,13 @@ fn test_gts_instance_id_simple_segment() {
     let id = EventTopicV1::gts_make_instance_id("x.commerce.orders.orders.v1.0");
     assert_eq!(
         id,
-        "gts.x.core.events.topic.v1~x.commerce.orders.orders.v1.0"
+        gts_id!("x.core.events.topic.v1~x.commerce.orders.orders.v1.0")
     );
 
     let id = ProductV1::gts_make_instance_id("vendor.package.sku.abc.v1");
     assert_eq!(
         id,
-        "gts.x.test.entities.product.v1~vendor.package.sku.abc.v1"
+        gts_id!("x.test.entities.product.v1~vendor.package.sku.abc.v1")
     );
 }
 
@@ -186,31 +186,34 @@ fn test_gts_instance_id_simple_segment() {
 fn test_gts_instance_id_multi_segment() {
     // Test with multi-part segment like vendor.package.namespace.type.version
     let id = EventTopicV1::gts_make_instance_id("x.core.idp.contacts.v1");
-    assert_eq!(id, "gts.x.core.events.topic.v1~x.core.idp.contacts.v1");
+    assert_eq!(id, gts_id!("x.core.events.topic.v1~x.core.idp.contacts.v1"));
 }
 
 #[test]
 fn test_gts_instance_id_with_wildcard_segment() {
     // Test with segment containing wildcard "_"
     let id = EventTopicV1::gts_make_instance_id("x.commerce._.orders.v1.0");
-    assert_eq!(id, "gts.x.core.events.topic.v1~x.commerce._.orders.v1.0");
+    assert_eq!(
+        id,
+        gts_id!("x.core.events.topic.v1~x.commerce._.orders.v1.0")
+    );
 }
 
 #[test]
 fn test_gts_instance_id_versioned_segment() {
     // Test with versioned segment
     let id = EventTopicV1::gts_make_instance_id("x.y.z.instance.v1.0");
-    assert_eq!(id, "gts.x.core.events.topic.v1~x.y.z.instance.v1.0");
+    assert_eq!(id, gts_id!("x.core.events.topic.v1~x.y.z.instance.v1.0"));
 
     let id = ProductV1::gts_make_instance_id("x.y.z.sku.v2.1");
-    assert_eq!(id, "gts.x.test.entities.product.v1~x.y.z.sku.v2.1");
+    assert_eq!(id, gts_id!("x.test.entities.product.v1~x.y.z.sku.v2.1"));
 }
 
 #[test]
 fn test_gts_instance_id_empty_segment() {
     // Edge case: empty segment returns just the schema_id
     let id = EventTopicV1::gts_make_instance_id("");
-    assert_eq!(id, "gts.x.core.events.topic.v1~");
+    assert_eq!(id, gts_id!("x.core.events.topic.v1~"));
 }
 
 // =============================================================================
@@ -221,11 +224,11 @@ fn test_gts_instance_id_empty_segment() {
 fn test_schema_id_constant() {
     assert_eq!(
         EventTopicV1::gts_type_id().clone().into_string(),
-        "gts.x.core.events.topic.v1~"
+        gts_id!("x.core.events.topic.v1~")
     );
     assert_eq!(
         ProductV1::gts_type_id().clone().into_string(),
-        "gts.x.test.entities.product.v1~"
+        gts_id!("x.test.entities.product.v1~")
     );
 }
 
@@ -269,7 +272,9 @@ fn test_event_topic_serialization() {
     };
 
     let json = serde_json::to_string(&topic).unwrap();
-    assert!(json.contains("gts.x.core.events.topic.v1~x.commerce.orders.orders.v1.0"));
+    assert!(json.contains(gts_id!(
+        "x.core.events.topic.v1~x.commerce.orders.orders.v1.0"
+    )));
     assert!(json.contains("orders"));
     assert!(json.contains("P90D"));
 }
@@ -360,7 +365,7 @@ fn test_product_instance_with_absent_optional_field_validates() {
     // To properly handle optional fields, use #[serde(skip_serializing_if = "Option::is_none")]
     // or construct the JSON object without the field.
     let instance_without_description = serde_json::json!({
-        "id": "gts.x.test.entities.product.v1~vendor.package.sku.mouse_abc.v1",
+        "id": gts_id!("x.test.entities.product.v1~vendor.package.sku.mouse_abc.v1"),
         "name": "Wireless Mouse",
         "price": 29.99,
         "in_stock": false,
@@ -532,7 +537,7 @@ fn test_instance_id_appears_in_serialized_output() {
     // Verify the GTS instance ID is properly set in the serialized output
     assert_eq!(
         json_value["id"],
-        "gts.x.core.events.topic.v1~x.core.idp.contacts.v1"
+        gts_id!("x.core.events.topic.v1~x.core.idp.contacts.v1")
     );
 }
 
@@ -608,7 +613,7 @@ fn test_schema_parsed_as_gts_entity() {
 
     // Verify GTS ID was parsed
     let gts_id = entity.gts_id.as_ref().expect("Entity should have a GTS ID");
-    assert_eq!(gts_id.id(), "gts.x.core.events.topic.v1~");
+    assert_eq!(gts_id.id(), gts_id!("x.core.events.topic.v1~"));
 
     // Verify the ID matches what the macro generates
     assert_eq!(
@@ -648,7 +653,7 @@ fn test_instance_parsed_as_gts_entity() {
     let gts_id = entity.gts_id.as_ref().expect("Entity should have a GTS ID");
     assert_eq!(
         gts_id.id(),
-        "gts.x.core.events.topic.v1~x.commerce.orders.orders.v1.0"
+        gts_id!("x.core.events.topic.v1~x.commerce.orders.orders.v1.0")
     );
 }
 
@@ -839,7 +844,7 @@ fn test_gts_entity_strips_uri_prefix_from_schema() {
     let gts_id = entity.gts_id.as_ref().expect("Entity should have a GTS ID");
     assert_eq!(
         gts_id.id(),
-        "gts.x.core.events.topic.v1~",
+        gts_id!("x.core.events.topic.v1~"),
         "GTS ID should not contain 'gts://' prefix"
     );
 }
@@ -987,7 +992,7 @@ fn test_runtime_schema_inline_resolution() {
     let base_schema = inheritance_tests::BaseEventV1::<()>::gts_schema_with_refs();
 
     store
-        .register_schema("gts.x.core.events.type.v1~", &base_schema)
+        .register_schema(gts_id!("x.core.events.type.v1~"), &base_schema)
         .unwrap();
 
     // Generate the inlined schema using runtime resolution (only for base type)
@@ -1057,7 +1062,7 @@ fn test_runtime_schema_inline_resolution_single_segment() {
     let event_topic_schema: serde_json::Value =
         serde_json::from_str(&EventTopicV1::gts_schema_with_refs_as_string()).unwrap();
     store
-        .register_schema("gts.x.core.events.topic.v1~", &event_topic_schema)
+        .register_schema(gts_id!("x.core.events.topic.v1~"), &event_topic_schema)
         .unwrap();
 
     // Generate the inlined schema
@@ -1081,7 +1086,7 @@ fn test_runtime_schema_inline_resolution_single_segment() {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.test.versioned.minor.v1.0~",
+    type_id = gts_id!("x.test.versioned.minor.v1.0~"),
     description = "Test struct with minor version",
     properties = "id,value"
 )]
@@ -1094,7 +1099,7 @@ pub struct MinorVersionV1_0 {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.test.versioned.complex.v2.5~",
+    type_id = gts_id!("x.test.versioned.complex.v2.5~"),
     description = "Test struct with complex minor version",
     properties = "id,data"
 )]
@@ -1140,11 +1145,11 @@ fn test_version_extraction_underscore_format() {
     // Test that GtsSchema trait properly exposes the schema ID
     assert_eq!(
         MinorVersionV1_0::TYPE_ID,
-        "gts.x.test.versioned.minor.v1.0~"
+        gts_id!("x.test.versioned.minor.v1.0~")
     );
     assert_eq!(
         ComplexMinorV2_5::TYPE_ID,
-        "gts.x.test.versioned.complex.v2.5~"
+        gts_id!("x.test.versioned.complex.v2.5~")
     );
 }
 
@@ -1152,7 +1157,7 @@ fn test_version_extraction_underscore_format() {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.test.single.segment.v1~",
+    type_id = gts_id!("x.test.single.segment.v1~"),
     description = "Base struct with single segment",
     properties = "id,name"
 )]
@@ -1191,7 +1196,7 @@ fn test_base_true_single_segment_no_parent() {
 fn test_base_true_single_segment_schema_id() {
     // Verify schema ID is properly set
     let schema_id = SingleSegmentBaseV1::gts_type_id();
-    assert_eq!(schema_id.as_ref(), "gts.x.test.single.segment.v1~");
+    assert_eq!(schema_id.as_ref(), gts_id!("x.test.single.segment.v1~"));
 }
 
 #[test]
@@ -1209,7 +1214,7 @@ fn test_base_true_single_segment_instance_id_generation() {
 #[test]
 fn test_gts_schema_trait_impl() {
     // Verify GtsSchema trait is implemented correctly
-    assert_eq!(EventTopicV1::TYPE_ID, "gts.x.core.events.topic.v1~");
+    assert_eq!(EventTopicV1::TYPE_ID, gts_id!("x.core.events.topic.v1~"));
     assert_eq!(EventTopicV1::GENERIC_FIELD, None);
 
     let schema = EventTopicV1::gts_schema();
@@ -1241,7 +1246,7 @@ fn test_schema_string_methods() {
 #[test]
 fn test_instance_json_methods() {
     let topic = EventTopicV1 {
-        id: GtsInstanceId::new("gts.x.core.events.topic.v1~", "test.topic.v1"),
+        id: GtsInstanceId::new(gts_id!("x.core.events.topic.v1~"), "test.topic.v1"),
         name: "TestTopic".to_string(),
         description: Some("A test topic".to_string()),
         retention: "P30D".to_string(),
@@ -1265,7 +1270,7 @@ fn test_instance_json_methods() {
 #[test]
 fn test_optional_fields_serialization() {
     let topic = EventTopicV1 {
-        id: GtsInstanceId::new("gts.x.core.events.topic.v1~", "test.topic.v1"),
+        id: GtsInstanceId::new(gts_id!("x.core.events.topic.v1~"), "test.topic.v1"),
         name: "TestTopic".to_string(),
         description: None, // None value
         retention: "P30D".to_string(),

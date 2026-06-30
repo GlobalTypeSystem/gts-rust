@@ -92,7 +92,7 @@
 use serde_json::Value;
 use std::fmt;
 
-use crate::gts::{GtsId, GtsIdPattern};
+use crate::gts::{GTS_ID_PREFIX, GTS_ID_URI_PREFIX, GtsId, GtsIdPattern};
 
 /// Error type for x-gts-ref validation failures
 #[derive(Debug, Clone)]
@@ -361,7 +361,7 @@ impl XGtsRefValidator {
         let resolved_pattern = if ref_pattern.starts_with('/') {
             match Self::resolve_pointer(schema, ref_pattern) {
                 Some(resolved) => {
-                    if !resolved.starts_with("gts.") {
+                    if !resolved.starts_with(GTS_ID_PREFIX) {
                         return Some(XGtsRefValidationError::new(
                             field_path.to_owned(),
                             value.to_owned(),
@@ -401,7 +401,7 @@ impl XGtsRefValidator {
         // concrete GTS identifier or a trailing-`*` wildcard pattern; both forms
         // are validated by the canonical pattern parser, which rejects malformed
         // patterns such as `gts.x.*.events.*` (mid-string / multiple wildcards).
-        if ref_pattern.starts_with("gts.") {
+        if ref_pattern.starts_with(GTS_ID_PREFIX) {
             return GtsIdPattern::try_new(ref_pattern).err().map(|e| {
                 XGtsRefValidationError::new(
                     field_path.to_owned(),
@@ -446,7 +446,9 @@ impl XGtsRefValidator {
                 field_path.to_owned(),
                 ref_pattern.to_owned(),
                 ref_pattern.to_owned(),
-                format!("Invalid x-gts-ref value: '{ref_pattern}' must start with 'gts.' or '/'"),
+                format!(
+                    "Invalid x-gts-ref value: '{ref_pattern}' must start with '{GTS_ID_PREFIX}' or '/'"
+                ),
             ))
         }
     }
@@ -550,7 +552,10 @@ impl XGtsRefValidator {
     /// contains a full GTS URI (e.g., `gts://gts.x.example._.user.v1~`) but the
     /// instance value should match without the prefix (e.g., `gts.x.example._.user.v1~`).
     fn strip_gts_uri_prefix(value: &str) -> String {
-        value.strip_prefix("gts://").unwrap_or(value).to_owned()
+        value
+            .strip_prefix(GTS_ID_URI_PREFIX)
+            .unwrap_or(value)
+            .to_owned()
     }
 }
 

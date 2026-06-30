@@ -1,6 +1,7 @@
 // Proc macros run at compile time, so panics become compile errors
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use gts_id::GTS_ID_PREFIX;
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{
@@ -324,7 +325,7 @@ fn validate_version_match(struct_ident: &syn::Ident, type_id: &str) -> syn::Resu
             format!(
                 "struct_to_gts_schema: Struct '{struct_name}' has version suffix '{}' but \
                  cannot extract version from type_id '{type_id}'. \
-                 Expected format with version like 'gts.x.foo.v1~' or 'gts.x.foo.v1.0~'",
+                 Expected format with version like '{GTS_ID_PREFIX}x.foo.v1~' or '{GTS_ID_PREFIX}x.foo.v1.0~'",
                 sv.to_struct_suffix()
             ),
         )),
@@ -333,7 +334,7 @@ fn validate_version_match(struct_ident: &syn::Ident, type_id: &str) -> syn::Resu
             format!(
                 "struct_to_gts_schema: Both struct name and type_id must have a version. \
                  Struct '{struct_name}' has no version suffix (e.g., V1) and type_id '{type_id}' \
-                 has no version (e.g., v1~). Add version to both (e.g., '{struct_name}V1' with 'gts.x.foo.v1~')"
+                 has no version (e.g., v1~). Add version to both (e.g., '{struct_name}V1' with '{GTS_ID_PREFIX}x.foo.v1~')"
             ),
         )),
     }
@@ -654,6 +655,11 @@ enum TraitsSchemaSpec {
 struct GtsSchemaArgs {
     dir_path: String,
     type_id: String,
+    /// The original `LitStr` for `type_id`, preserving its span so that
+    /// downstream lint passes can distinguish `gts_id!("...")`
+    /// (macro-generated span) from hardcoded `"gts...."` literals (call-site
+    /// span).
+    type_id_lit: LitStr,
     description: String,
     properties: String,
     base: BaseAttr,
@@ -675,6 +681,7 @@ impl Parse for GtsSchemaArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut dir_path: Option<String> = None;
         let mut type_id: Option<String> = None;
+        let mut type_id_lit: Option<LitStr> = None;
         let mut schema_id_alias_used = false;
         let mut description: Option<String> = None;
         let mut properties: Option<String> = None;
@@ -701,7 +708,9 @@ impl Parse for GtsSchemaArgs {
                              `schema_id`, not both",
                         ));
                     }
-                    let value: LitStr = input.parse()?;
+                    // Accepts a full id string literal or the prefix-less
+                    // `gts_id!("...")` marker form.
+                    let value = id_arg::parse_gts_id_arg(input)?;
                     let id = value.value();
                     // Schema-specific check: must end with ~
                     if !id.ends_with('~') {
@@ -720,6 +729,7 @@ impl Parse for GtsSchemaArgs {
                         ));
                     }
                     type_id = Some(id);
+                    type_id_lit = Some(value);
                     if key_str == "schema_id" {
                         schema_id_alias_used = true;
                     }
@@ -797,6 +807,8 @@ impl Parse for GtsSchemaArgs {
             dir_path: dir_path
                 .ok_or_else(|| input.error("Missing required attribute: dir_path"))?,
             type_id: type_id
+                .ok_or_else(|| input.error("Missing required attribute: type_id"))?,
+            type_id_lit: type_id_lit
                 .ok_or_else(|| input.error("Missing required attribute: type_id"))?,
             description: description
                 .ok_or_else(|| input.error("Missing required attribute: description"))?,
@@ -1093,8 +1105,21 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     let struct_name = &input.ident;
     let dir_path = &args.dir_path;
     let type_id = &args.type_id;
+    let type_id_lit = &args.type_id_lit;
+    // Derived uses (gts_type_id(), gts_make_instance_id()) get a mixed_site
+    // span so downstream lint passes don't fire duplicate errors for the same
+    // literal.
+    // Only TYPE_ID keeps the original span: one error per hardcoded id.
+    let type_id_lit_derived = LitStr::new(&args.type_id, proc_macro2::Span::mixed_site());
     let description = &args.description;
     let properties_str = &args.properties;
+
+    // Wrap the derived parent type ID in a LitStr with mixed_site span so
+    // downstream lint passes treat it as macro-generated (not a hand-written
+    // hardcoded prefix).
+    let parent_id_lit = expected_parent_type_id
+        .as_ref()
+        .map(|pid| LitStr::new(pid, proc_macro2::Span::mixed_site()));
 
     // If the user wrote the deprecated `schema_id = "..."` form, emit a
     // compile-time deprecation warning at the macro call site.
@@ -1154,12 +1179,12 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     };
 
     // Generate BASE_TYPE_ID constant (private) and compile-time assertion for base struct matching
-    let base_schema_id_const = if let Some(parent_id) = &expected_parent_type_id {
+    let base_schema_id_const = if let Some(parent_id_lit) = &parent_id_lit {
         quote! {
             /// Parent type ID (extracted from `type_id` segments). Use `gts_base_type_id()` instead.
             #[doc(hidden)]
             #[allow(dead_code)]
-            const BASE_TYPE_ID: Option<&'static str> = Some(#parent_id);
+            const BASE_TYPE_ID: Option<&'static str> = Some(#parent_id_lit);
 
             /// Deprecated alias for `BASE_TYPE_ID`.
             #[doc(hidden)]
@@ -1183,8 +1208,8 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     };
 
     // Generate the literal option value for use in static initializers (avoids Self::BASE_SCHEMA_ID)
-    let base_schema_id_option = if let Some(parent_id) = &expected_parent_type_id {
-        quote! { Some(#parent_id) }
+    let base_schema_id_option = if let Some(parent_id_lit) = &parent_id_lit {
+        quote! { Some(#parent_id_lit) }
     } else {
         quote! { None::<&'static str> }
     };
@@ -1213,7 +1238,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 const _: () = {
                     // Use a const assertion to verify at compile time
                     const PARENT_ID: &'static str = <#parent_ident<()> as ::gts::GtsSchema>::TYPE_ID;
-                    const EXPECTED_ID: &'static str = #parent_id;
+                    const EXPECTED_ID: &'static str = #parent_id_lit;
                     // Use a manual string comparison for const context
                     const _: () = {
                         // Manual string equality check for const context
@@ -2172,7 +2197,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
             #[must_use]
             pub fn gts_type_id() -> &'static ::gts::gts::GtsTypeId {
                 static GTS_TYPE_ID: std::sync::LazyLock<::gts::gts::GtsTypeId> =
-                    std::sync::LazyLock::new(|| ::gts::gts::GtsTypeId::new(#type_id));
+                    std::sync::LazyLock::new(|| ::gts::gts::GtsTypeId::new(#type_id_lit_derived));
                 &GTS_TYPE_ID
             }
 
@@ -2208,13 +2233,13 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
             #[allow(dead_code)]
             #[must_use]
             pub fn gts_make_instance_id(segment: &str) -> ::gts::GtsInstanceId {
-                ::gts::GtsInstanceId::new(#type_id, segment)
+                ::gts::GtsInstanceId::new(#type_id_lit_derived, segment)
             }
         }
 
         // Implement GtsSchema trait for runtime schema composition
         impl #impl_generics ::gts::GtsSchema for #struct_name #ty_generics #gts_schema_where_clause {
-            const TYPE_ID: &'static str = #type_id;
+            const TYPE_ID: &'static str = #type_id_lit;
             const GENERIC_FIELD: Option<&'static str> = #generic_field_option;
             // Modifiers, so children / `gts_instance!` can guard at compile time
             // on the parent's / target's finality / abstractness.
@@ -2278,7 +2303,36 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
 // points must live at the crate root (Rust restriction), so they are
 // thin shims here that delegate into the module.
 
+mod id_arg;
 mod instance;
+
+/// Construct a full GTS identifier string from a prefix-less suffix.
+///
+/// `gts_id!("x.core.events.topic.v1~")` expands to a `&'static str` literal
+/// containing the configured prefix (`gts.` by default, overridable via the
+/// `GTS_ID_PREFIX` environment variable at compile time) followed by the given
+/// suffix.
+///
+/// The same `gts_id!("...")` form is also recognized as a marker inside the
+/// `type_id`/`id` arguments of [`struct_to_gts_schema`], [`gts_instance!`], and
+/// [`gts_instance_raw!`], so identifiers can be written prefix-free everywhere.
+///
+/// ```ignore
+/// let id: &str = gts_macros::gts_id!("acme.core.events.topic.v1~ven.app.x.v1");
+/// // With the default prefix: "gts.acme.core.events.topic.v1~ven.app.x.v1"
+/// ```
+#[proc_macro]
+pub fn gts_id(input: TokenStream) -> TokenStream {
+    let suffix = parse_macro_input!(input as LitStr);
+    let full = id_arg::build_prefixed_lit(&suffix);
+    let full_str = full.value();
+    if let Err(e) = gts_id::GtsIdPattern::try_new(&full_str) {
+        return syn::Error::new_spanned(&suffix, format!("gts_id!: invalid GTS ID pattern: {e}"))
+            .to_compile_error()
+            .into();
+    }
+    quote!(#full).into()
+}
 
 /// Typed GTS instance.
 ///

@@ -80,6 +80,7 @@ jobs:
           check_version "gts-cli/Cargo.toml"
           check_version "gts-macros-cli/Cargo.toml"
           check_version "gts-validator/Cargo.toml"
+          check_version "gts-dylint/Cargo.toml"
 
           # Verify workspace.dependencies versions for all known internal crates.
           # Uses explicit key list to avoid false negatives from pattern drift.

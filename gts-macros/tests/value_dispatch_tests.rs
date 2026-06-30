@@ -22,7 +22,7 @@
 
 use gts::gts::GtsTypeId;
 use gts::{GtsSchema, NarrowError, try_narrow};
-use gts_macros::struct_to_gts_schema;
+use gts_macros::{gts_id, struct_to_gts_schema};
 
 // =============================================================================
 // Type hierarchy
@@ -36,7 +36,7 @@ use gts_macros::struct_to_gts_schema;
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.test.value_dispatch.envelope.v1~",
+    type_id = gts_id!("x.test.value_dispatch.envelope.v1~"),
     description = "EnvelopeV1 carrying an opaque (default) or typed payload",
     properties = "gts_type,payload"
 )]
@@ -51,7 +51,7 @@ pub struct EnvelopeV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = EnvelopeV1,
-    type_id = "gts.x.test.value_dispatch.envelope.v1~x.test.value_dispatch.alpha.v1~",
+    type_id = gts_id!("x.test.value_dispatch.envelope.v1~x.test.value_dispatch.alpha.v1~"),
     description = "Alpha leaf — directly under EnvelopeV1",
     properties = "alpha_data"
 )]
@@ -65,7 +65,7 @@ pub struct AlphaLeafV1 {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = EnvelopeV1,
-    type_id = "gts.x.test.value_dispatch.envelope.v1~x.test.value_dispatch.gamma.v1~",
+    type_id = gts_id!("x.test.value_dispatch.envelope.v1~x.test.value_dispatch.gamma.v1~"),
     description = "Gamma leaf — directly under EnvelopeV1, different shape from Alpha",
     properties = "gamma_count,gamma_flag"
 )]
@@ -80,7 +80,7 @@ pub struct GammaLeafV1 {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = EnvelopeV1,
-    type_id = "gts.x.test.value_dispatch.envelope.v1~x.test.value_dispatch.intermediate.v1~",
+    type_id = gts_id!("x.test.value_dispatch.envelope.v1~x.test.value_dispatch.intermediate.v1~"),
     description = "IntermediateV1 node — common fields plus a generic `extension` for level-3 leaves",
     properties = "common_label,extension"
 )]
@@ -95,7 +95,7 @@ pub struct IntermediateV1<Q = ()> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = IntermediateV1,
-    type_id = "gts.x.test.value_dispatch.envelope.v1~x.test.value_dispatch.intermediate.v1~x.test.value_dispatch.beta.v1~",
+    type_id = gts_id!("x.test.value_dispatch.envelope.v1~x.test.value_dispatch.intermediate.v1~x.test.value_dispatch.beta.v1~"),
     description = "Beta leaf — under IntermediateV1, 3 segments deep",
     properties = "beta_value"
 )]
@@ -113,12 +113,14 @@ mod schema_id_contract {
     use super::*;
 
     const ALPHA_CHAIN: &str =
-        "gts.x.test.value_dispatch.envelope.v1~x.test.value_dispatch.alpha.v1~";
+        gts_id!("x.test.value_dispatch.envelope.v1~x.test.value_dispatch.alpha.v1~");
     const GAMMA_CHAIN: &str =
-        "gts.x.test.value_dispatch.envelope.v1~x.test.value_dispatch.gamma.v1~";
+        gts_id!("x.test.value_dispatch.envelope.v1~x.test.value_dispatch.gamma.v1~");
     const INTERMEDIATE_CHAIN: &str =
-        "gts.x.test.value_dispatch.envelope.v1~x.test.value_dispatch.intermediate.v1~";
-    const BETA_CHAIN: &str = "gts.x.test.value_dispatch.envelope.v1~x.test.value_dispatch.intermediate.v1~x.test.value_dispatch.beta.v1~";
+        gts_id!("x.test.value_dispatch.envelope.v1~x.test.value_dispatch.intermediate.v1~");
+    const BETA_CHAIN: &str = gts_id!(
+        "x.test.value_dispatch.envelope.v1~x.test.value_dispatch.intermediate.v1~x.test.value_dispatch.beta.v1~"
+    );
 
     #[test]
     fn unit_and_value_are_both_empty_id_placeholders() {
@@ -135,16 +137,16 @@ mod schema_id_contract {
         // — i.e. nothing further is known about the leaf at type level.
         assert_eq!(
             <EnvelopeV1<serde_json::Value> as GtsSchema>::TYPE_ID,
-            "gts.x.test.value_dispatch.envelope.v1~"
+            gts_id!("x.test.value_dispatch.envelope.v1~")
         );
         assert_eq!(
             <EnvelopeV1<serde_json::Value> as GtsSchema>::innermost_type_id(),
-            "gts.x.test.value_dispatch.envelope.v1~",
+            gts_id!("x.test.value_dispatch.envelope.v1~"),
             "Value-tail innermost is the envelope's own literal"
         );
         assert_eq!(
             <EnvelopeV1<()> as GtsSchema>::innermost_type_id(),
-            "gts.x.test.value_dispatch.envelope.v1~",
+            gts_id!("x.test.value_dispatch.envelope.v1~"),
             "(): same protocol -- empty tail collapses to the envelope's literal"
         );
     }
@@ -161,7 +163,7 @@ mod schema_id_contract {
         // innermost walks the chain and returns AlphaLeafV1's id.
         assert_eq!(
             <EnvelopeV1<AlphaLeafV1> as GtsSchema>::TYPE_ID,
-            "gts.x.test.value_dispatch.envelope.v1~"
+            gts_id!("x.test.value_dispatch.envelope.v1~")
         );
         assert_eq!(
             <EnvelopeV1<AlphaLeafV1> as GtsSchema>::innermost_type_id(),
@@ -223,7 +225,7 @@ mod deserialisation {
     fn envelope_of_value_round_trips_arbitrary_payload() {
         // Wire shape: gts_type discriminator + opaque JSON payload.
         let wire = serde_json::json!({
-            "gts_type": "gts.x.test.value_dispatch.envelope.v1~x.test.value_dispatch.alpha.v1~",
+            "gts_type": gts_id!("x.test.value_dispatch.envelope.v1~x.test.value_dispatch.alpha.v1~"),
             "payload": { "alpha_data": "hello" }
         });
 
@@ -232,7 +234,7 @@ mod deserialisation {
             serde_json::from_value(wire.clone()).expect("deserialize EnvelopeV1<Value>");
         assert_eq!(
             envelope.gts_type.as_ref(),
-            "gts.x.test.value_dispatch.envelope.v1~x.test.value_dispatch.alpha.v1~"
+            gts_id!("x.test.value_dispatch.envelope.v1~x.test.value_dispatch.alpha.v1~")
         );
         assert_eq!(
             envelope.payload,
@@ -254,9 +256,9 @@ mod deserialisation {
         // are effectively identity wrappers — the payload survives
         // any nesting without mangling.
         let envelope = EnvelopeV1::<serde_json::Value> {
-            gts_type: GtsTypeId::new(
-                "gts.x.test.value_dispatch.envelope.v1~x.test.unknown.thing.v1~",
-            ),
+            gts_type: GtsTypeId::new(gts_id!(
+                "x.test.value_dispatch.envelope.v1~x.test.unknown.thing.v1~"
+            )),
             payload: serde_json::json!({
                 "anything": ["the", "future", 42, null, { "nested": true }]
             }),
@@ -340,10 +342,12 @@ mod dispatch {
     #[test]
     fn dispatches_heterogeneous_batch_across_2_and_3_level_chains() {
         const ALPHA_CHAIN: &str =
-            "gts.x.test.value_dispatch.envelope.v1~x.test.value_dispatch.alpha.v1~";
+            gts_id!("x.test.value_dispatch.envelope.v1~x.test.value_dispatch.alpha.v1~");
         const GAMMA_CHAIN: &str =
-            "gts.x.test.value_dispatch.envelope.v1~x.test.value_dispatch.gamma.v1~";
-        const BETA_CHAIN: &str = "gts.x.test.value_dispatch.envelope.v1~x.test.value_dispatch.intermediate.v1~x.test.value_dispatch.beta.v1~";
+            gts_id!("x.test.value_dispatch.envelope.v1~x.test.value_dispatch.gamma.v1~");
+        const BETA_CHAIN: &str = gts_id!(
+            "x.test.value_dispatch.envelope.v1~x.test.value_dispatch.intermediate.v1~x.test.value_dispatch.beta.v1~"
+        );
 
         // A batch with two direct leaves, one 3-level chain, and one
         // gts_type the dispatcher was not built against — exactly the
@@ -351,17 +355,17 @@ mod dispatch {
         // catalog with mixed providers.
         let inputs: Vec<serde_json::Value> = vec![
             serde_json::json!({
-                "gts_type": "gts.x.test.value_dispatch.envelope.v1~x.test.value_dispatch.alpha.v1~",
+                "gts_type": gts_id!("x.test.value_dispatch.envelope.v1~x.test.value_dispatch.alpha.v1~"),
                 "payload": { "alpha_data": "first" }
             }),
             serde_json::json!({
-                "gts_type": "gts.x.test.value_dispatch.envelope.v1~x.test.value_dispatch.gamma.v1~",
+                "gts_type": gts_id!("x.test.value_dispatch.envelope.v1~x.test.value_dispatch.gamma.v1~"),
                 "payload": { "gamma_count": 7, "gamma_flag": true }
             }),
             // 3-level: payload contains intermediate's common_label plus
             // the leaf nested in `extension` (the generic-field path).
             serde_json::json!({
-                "gts_type": "gts.x.test.value_dispatch.envelope.v1~x.test.value_dispatch.intermediate.v1~x.test.value_dispatch.beta.v1~",
+                "gts_type": gts_id!("x.test.value_dispatch.envelope.v1~x.test.value_dispatch.intermediate.v1~x.test.value_dispatch.beta.v1~"),
                 "payload": {
                     "common_label": "shared",
                     "extension": { "beta_value": 99 }
@@ -370,7 +374,7 @@ mod dispatch {
             // A future / unknown gts_type — survives dispatch via the
             // open-set Unknown branch.
             serde_json::json!({
-                "gts_type": "gts.x.test.value_dispatch.envelope.v1~x.test.unmodelled.future.v1~",
+                "gts_type": gts_id!("x.test.value_dispatch.envelope.v1~x.test.unmodelled.future.v1~"),
                 "payload": { "anything": "goes" }
             }),
         ];
@@ -417,7 +421,7 @@ mod dispatch {
             Decoded::Unknown(env) => {
                 assert_eq!(
                     env.gts_type.as_ref(),
-                    "gts.x.test.value_dispatch.envelope.v1~x.test.unmodelled.future.v1~"
+                    gts_id!("x.test.value_dispatch.envelope.v1~x.test.unmodelled.future.v1~")
                 );
                 // Payload survives intact as the original JSON Value:
                 assert_eq!(env.payload, serde_json::json!({ "anything": "goes" }));
@@ -432,7 +436,7 @@ mod dispatch {
         // accessible WITHOUT narrowing — that's the whole point of
         // keeping Value as the default `P`.
         let wire = serde_json::json!({
-            "gts_type": "gts.x.test.value_dispatch.envelope.v1~x.test.value_dispatch.alpha.v1~",
+            "gts_type": gts_id!("x.test.value_dispatch.envelope.v1~x.test.value_dispatch.alpha.v1~"),
             "payload": { "alpha_data": "no narrowing needed" }
         });
         let envelope: EnvelopeV1<serde_json::Value> = serde_json::from_value(wire).unwrap();
@@ -460,8 +464,10 @@ mod narrow_helper {
     use super::*;
 
     const ALPHA_CHAIN: &str =
-        "gts.x.test.value_dispatch.envelope.v1~x.test.value_dispatch.alpha.v1~";
-    const BETA_CHAIN: &str = "gts.x.test.value_dispatch.envelope.v1~x.test.value_dispatch.intermediate.v1~x.test.value_dispatch.beta.v1~";
+        gts_id!("x.test.value_dispatch.envelope.v1~x.test.value_dispatch.alpha.v1~");
+    const BETA_CHAIN: &str = gts_id!(
+        "x.test.value_dispatch.envelope.v1~x.test.value_dispatch.intermediate.v1~x.test.value_dispatch.beta.v1~"
+    );
 
     #[test]
     fn try_narrow_succeeds_on_matching_chain_for_2_level_leaf() {

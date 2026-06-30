@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::gts::{GTS_URI_PREFIX, GtsId};
+use crate::gts::{GTS_ID_PREFIX, GTS_ID_URI_PREFIX, GtsId};
 use crate::path_resolver::JsonPathResolver;
 use crate::schema_cast::{GtsEntityCastResult, SchemaCastError};
 
@@ -228,15 +228,15 @@ impl GtsEntity {
             {
                 let trimmed = id_str.trim();
 
-                // Validate that schema $id uses gts:// URI format, not plain gts. prefix
+                // Validate that schema $id uses gts:// URI format, not the bare GTS_ID_PREFIX form.
                 // According to spec: "Do not place the canonical gts. string directly in $id"
-                if trimmed.starts_with("gts.") {
+                if trimmed.starts_with(GTS_ID_PREFIX) {
                     // This is invalid - schemas must use gts:// URI format
                     // We'll leave gts_id as None, which will cause registration to fail
                     return;
                 }
 
-                let normalized = trimmed.strip_prefix(GTS_URI_PREFIX).unwrap_or(trimmed);
+                let normalized = trimmed.strip_prefix(GTS_ID_URI_PREFIX).unwrap_or(trimmed);
                 if let Ok(gts_id) = GtsId::try_new(normalized) {
                     // A Type Schema must be keyed by a type id (ending in `~`).
                     if !gts_id.is_type() {
@@ -540,7 +540,7 @@ impl GtsEntity {
                 };
                 // Normalize: strip gts:// prefix for canonical GTS ID storage
                 let normalized_ref = ref_str
-                    .strip_prefix(GTS_URI_PREFIX)
+                    .strip_prefix(GTS_ID_URI_PREFIX)
                     .unwrap_or(ref_str)
                     .to_owned();
                 return Some(GtsRef {
@@ -562,9 +562,9 @@ impl GtsEntity {
         {
             let trimmed = s.trim();
             if !trimmed.is_empty() {
-                // For schema $id fields, validate that they use gts:// URI format, not plain gts. prefix
+                // For schema $id fields, validate that they use gts:// URI format, not the bare GTS_ID_PREFIX form.
                 // According to spec: "Do not place the canonical gts. string directly in $id"
-                if field == "$id" && self.is_schema && trimmed.starts_with("gts.") {
+                if field == "$id" && self.is_schema && trimmed.starts_with(GTS_ID_PREFIX) {
                     // Invalid: schema $id must use gts:// URI format
                     return None;
                 }
@@ -572,7 +572,7 @@ impl GtsEntity {
                 // Strip the "gts://" URI prefix ONLY for $id field (JSON Schema compatibility)
                 // The gts:// prefix is ONLY valid in the $id field of JSON Schema
                 let normalized = if field == "$id" {
-                    trimmed.strip_prefix(GTS_URI_PREFIX).unwrap_or(trimmed)
+                    trimmed.strip_prefix(GTS_ID_URI_PREFIX).unwrap_or(trimmed)
                 } else {
                     trimmed
                 };
@@ -1515,7 +1515,7 @@ mod tests {
             !entity
                 .schema_refs
                 .iter()
-                .any(|r| r.id.starts_with("gts://")),
+                .any(|r| r.id.starts_with(crate::GTS_ID_URI_PREFIX)),
             "No ref should contain gts:// prefix"
         );
     }

@@ -718,9 +718,13 @@ mod tests {
     #[test]
     fn test_segment1_format_has_gts_prefix() {
         let err = GtsIdSegment::parse(1, "x.core.events.event~").unwrap_err();
+        let expected = format!(
+            "{}vendor.package.namespace.type.vMAJOR",
+            crate::GTS_ID_PREFIX
+        );
         assert!(
-            err.contains("gts.vendor.package.namespace.type.vMAJOR"),
-            "segment #1 format should include gts. prefix, got: {err}"
+            err.contains(&expected),
+            "segment #1 format should include configured prefix, got: {err}"
         );
     }
 
@@ -728,8 +732,8 @@ mod tests {
     fn test_segment2_format_no_gts_prefix() {
         let err = GtsIdSegment::parse(2, "x.core.events.event~").unwrap_err();
         assert!(
-            !err.contains("gts.vendor"),
-            "segment #2 format should NOT include gts. prefix, got: {err}"
+            !err.contains(&format!("{}vendor", crate::GTS_ID_PREFIX)),
+            "segment #2 format should NOT include configured prefix, got: {err}"
         );
         assert!(
             err.contains("vendor.package.namespace.type.vMAJOR"),

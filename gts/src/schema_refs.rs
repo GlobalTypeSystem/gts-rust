@@ -1,7 +1,7 @@
 use serde_json::Value;
 use std::collections::BTreeSet;
 
-use crate::gts::{GTS_URI_PREFIX, GtsTypeId};
+use crate::gts::{GTS_ID_URI_PREFIX, GtsTypeId};
 
 /// Why a single `$ref` string is not a valid GTS reference.
 ///
@@ -57,7 +57,7 @@ fn classify_ref(ref_uri: &str) -> Result<RefKind<'_>, InvalidRefReason> {
 
     // Everything else must be a `gts://` URI; a bare id or any other scheme is
     // not a ref the store can resolve.
-    let Some(rest) = ref_uri.strip_prefix(GTS_URI_PREFIX) else {
+    let Some(rest) = ref_uri.strip_prefix(GTS_ID_URI_PREFIX) else {
         return Err(InvalidRefReason::NotGtsUri);
     };
 

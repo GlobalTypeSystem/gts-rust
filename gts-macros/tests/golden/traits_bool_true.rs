@@ -9,7 +9,7 @@ use schemars::JsonSchema;
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.test.golden.open.v1~",
+    type_id = gts_id!("x.test.golden.open.v1~"),
     description = "Open traits host",
     properties = "id",
     traits_schema = true,
