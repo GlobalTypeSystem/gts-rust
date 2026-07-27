@@ -102,6 +102,46 @@ pub struct MyStructV1 { ... }
 pub struct MyStructV1 { ... }
 ```
 
+### Ordinary Nested Data Structs and Content Models
+
+The macro emits Draft-07 schemas and preserves `definitions` for ordinary nested Rust structs.
+
+Under GTS 0.13, adding an optional field to an **open** object is not backward compatible: the
+old schema already accepted arbitrary values under that property name, so declaring it narrows
+the set of accepted instances (gts-spec §4.4–§4.5). Schemars leaves a nested struct's object
+level open unless it declares `#[serde(deny_unknown_fields)]`, so the macro closes those levels
+itself — nested types stay evolvable in place without changing how Serde deserializes them at
+runtime.
+
+Levels the macro closes:
+
+- the document root of a base type, and the level carrying a derived type's own properties
+  (it always did this);
+- every nested object level that declares `properties` and states no content model of its own.
+
+Levels the macro deliberately leaves alone:
+
+| Level | Why |
+|---|---|
+| Generic GTS extension slot | §4.4.1 requires it open so derived types can extend it |
+| Map types (`HashMap`, `BTreeMap`) | already partially open via a schema-valued `additionalProperties` |
+| A struct that flattens a map | Schemars emits `additionalProperties: true`; closing would be wrong |
+| Branches of `allOf`/`anyOf`/`oneOf`/`not`/`if` | `additionalProperties` only sees `properties` from the same schema object, so closing a branch would reject the properties its siblings declare |
+
+To keep a nested level open on purpose — as a designated extension point in the sense of
+§4.4.1 — state the content model explicitly and the macro will not touch it:
+
+```rust
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[schemars(extend("additionalProperties" = true))]
+pub struct ExtensionPoint {
+    pub label: String,
+}
+```
+
+`#[serde(deny_unknown_fields)]` also still works and is the right choice when the wire contract
+should reject unknown fields at deserialization time as well, not just during schema validation.
+
 ### What Gets Validated
 
 | Check | Description |

@@ -10,6 +10,7 @@
 //! instance of the base schema.  Concretely the derived schema may only
 //! **tighten** (never loosen) constraints on properties inherited from the base.
 
+use crate::schema_semantics::boolean_schema_value;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
@@ -23,23 +24,29 @@ pub(crate) struct EffectiveSchema {
 }
 
 /// Folds an `additionalProperties` value into an accumulator using a
-/// closedness-preserving lattice: `false` (closed) is strongest, an object
-/// (partial constraint) is in the middle, and `true` (open) is weakest.
+/// closedness-preserving lattice: schemas equivalent to `false` (closed) are
+/// strongest, nontrivial constraining schemas are in the middle, and schemas
+/// equivalent to `true` (open) are weakest.
 ///
 /// This mirrors `allOf` composition, where the schema stays closed if **any**
-/// branch sets `additionalProperties: false`, so a permissive overlay can never
-/// loosen a closed base. Used both when flattening `allOf` during ref
-/// resolution and when extracting the effective schema for compatibility checks.
+/// branch gives `additionalProperties` a false-equivalent schema, so a
+/// permissive overlay can never loosen a closed base. Used both when flattening
+/// `allOf` during ref resolution and when extracting the effective schema for
+/// compatibility checks.
 pub(crate) fn merge_additional_properties_constraint(
     current: &mut Option<Value>,
     candidate: &Value,
 ) {
-    match (current.as_ref(), candidate) {
-        (Some(Value::Bool(false)), _) => {}
-        (_, Value::Bool(false)) => *current = Some(Value::Bool(false)),
-        (None | Some(Value::Bool(true)), _) => *current = Some(candidate.clone()),
-        (Some(_), Value::Bool(true)) => {}
-        (Some(_), _) => *current = Some(candidate.clone()),
+    let candidate_boolean = boolean_schema_value(candidate);
+    if current.as_ref().and_then(boolean_schema_value) == Some(false) {
+        return;
+    }
+    if candidate_boolean == Some(false) {
+        *current = Some(candidate.clone());
+    } else if candidate_boolean == Some(true) && current.is_some() {
+        // Intersecting an existing constraint with `true` changes nothing.
+    } else {
+        *current = Some(candidate.clone());
     }
 }
 
@@ -120,7 +127,7 @@ pub(crate) fn validate_schema_compatibility(
 /// Validates that a derived effective schema is compatible with its base.
 ///
 /// Rules checked:
-/// - Derived cannot add properties if base has `additionalProperties: false`
+/// - Derived cannot add properties if the base's `additionalProperties` rejects them
 /// - Derived cannot loosen constraints on existing properties
 /// - Derived cannot disable (`false`) properties that base defines
 /// - Derived enum must be a subset of base enum
@@ -139,7 +146,11 @@ pub(crate) fn validate_effective_schema_compatibility(
     derived_id: &str,
 ) -> Vec<String> {
     let mut errors = Vec::new();
-    let base_disallows_additional = matches!(base.additional_properties, Some(Value::Bool(false)));
+    let base_disallows_additional = base
+        .additional_properties
+        .as_ref()
+        .and_then(boolean_schema_value)
+        == Some(false);
 
     for (prop_name, derived_prop) in &derived.properties {
         if let Some(base_prop) = base.properties.get(prop_name) {
@@ -157,8 +168,12 @@ pub(crate) fn validate_effective_schema_compatibility(
         // New property in derived – check additionalProperties
         else if base_disallows_additional {
             errors.push(format!(
-                    "property '{prop_name}': derived schema '{derived_id}' adds new property but base '{base_id}' has additionalProperties: false"
+                    "property '{prop_name}': derived schema '{derived_id}' adds new property but base '{base_id}' has a closed additionalProperties constraint"
                 ));
+        } else if let Some(base_additional) = &base.additional_properties
+            && boolean_schema_value(base_additional) != Some(true)
+        {
+            compare_property_constraints(base_additional, derived_prop, prop_name, &mut errors);
         }
     }
 
@@ -168,8 +183,8 @@ pub(crate) fn validate_effective_schema_compatibility(
     // `additionalProperties` without a closed constraint surviving through
     // allOf composition. Omitting the keyword, or composing a permissive
     // overlay with a closed base, is **not** loosening: across JSON Schema
-    // dialects, the base's `additionalProperties: false` still applies to
-    // the same instance via `$ref`/`allOf` composition.
+    // dialects, the base's closed `additionalProperties` constraint still
+    // applies to the same instance via `$ref`/`allOf` composition.
     //
     // The per-property loop above already catches the only structurally
     // dangerous case (derived adds a new top-level property that base
@@ -177,12 +192,12 @@ pub(crate) fn validate_effective_schema_compatibility(
     // to "explicit permissive declarations" is safe.
     if base_disallows_additional {
         let derived_explicitly_allows = match &derived.additional_properties {
-            Some(Value::Bool(false)) | None => false,
-            Some(_) => true,
+            Some(value) => boolean_schema_value(value) != Some(false),
+            None => false,
         };
         if derived_explicitly_allows {
             errors.push(format!(
-                "derived schema '{derived_id}' loosens additionalProperties from false in base '{base_id}'"
+                "derived schema '{derived_id}' loosens additionalProperties from a closed constraint in base '{base_id}'"
             ));
         }
     }
@@ -193,13 +208,13 @@ pub(crate) fn validate_effective_schema_compatibility(
     errors
 }
 
-/// Validates branch-scoped `additionalProperties: false` in a descendant schema.
+/// Validates branch-scoped closed `additionalProperties` in a descendant schema.
 ///
 /// Flattened compatibility catches closed ancestors that reject new descendant
 /// properties, but it cannot see the inverse `allOf` hazard: a descendant
-/// branch can set `additionalProperties: false` without restating an ancestor
-/// property at the same object path, making that ancestor property unusable in
-/// the composed schema. This walks the raw/resolved descendant branches so that
+/// branch can close `additionalProperties` without restating an ancestor property
+/// at the same object path, making that ancestor property unusable in the
+/// composed schema. This walks the raw/resolved descendant branches so that
 /// branch ownership is preserved.
 pub(crate) fn validate_closed_descendant_branches(
     ancestor_schema: &Value,
@@ -244,7 +259,11 @@ fn collect_closed_descendant_branch_errors(
     };
     let descendant_props = descendant_obj.get("properties").and_then(Value::as_object);
 
-    if descendant_obj.get("additionalProperties") == Some(&Value::Bool(false)) {
+    if descendant_obj
+        .get("additionalProperties")
+        .and_then(boolean_schema_value)
+        == Some(false)
+    {
         let mut orphaned: Vec<&str> = ancestor
             .properties
             .keys()
@@ -256,7 +275,7 @@ fn collect_closed_descendant_branch_errors(
             let property_path = join_schema_path(path, name);
             errors.push(format!(
                 "property '{property_path}': descendant schema '{descendant_label}' sets \
-                 additionalProperties: false but does not restate property defined in \
+                 a closed additionalProperties constraint but does not restate property defined in \
                  ancestor '{ancestor_label}', making it unusable under allOf composition"
             ));
         }
@@ -327,6 +346,26 @@ fn compare_property_constraints(
     prop_name: &str,
     errors: &mut Vec<String>,
 ) {
+    match (
+        boolean_schema_value(base_prop),
+        boolean_schema_value(derived_prop),
+    ) {
+        (_, Some(false)) | (Some(true), _) => return,
+        (Some(false), _) => {
+            errors.push(format!(
+                "property '{prop_name}': derived schema accepts values but base schema rejects all values"
+            ));
+            return;
+        }
+        (_, Some(true)) => {
+            errors.push(format!(
+                "property '{prop_name}': derived schema accepts every value, loosening base constraints"
+            ));
+            return;
+        }
+        (None, None) => {}
+    }
+
     // If base is not an object schema, it places no constraints to loosen.
     let Some(base_map) = base_prop.as_object() else {
         return;
@@ -786,7 +825,91 @@ mod tests {
         assert_eq!(eff.additional_properties, Some(Value::Bool(false)));
     }
 
+    #[test]
+    fn test_extract_allof_boolean_equivalent_false_wins_over_true() {
+        let schema = json!({
+            "type": "object",
+            "allOf": [
+                {"additionalProperties": {"not": {}}},
+                {"additionalProperties": {}}
+            ]
+        });
+        let eff = extract_effective_schema(&schema);
+        assert_eq!(eff.additional_properties, Some(json!({"not": {}})));
+    }
+
     // -- validate_schema_compatibility ------------------------------------
+
+    #[test]
+    fn test_partially_open_base_accepts_compatible_derived_property() {
+        let base = json!({
+            "type": "object",
+            "additionalProperties": {"type": "string"}
+        });
+        let derived = json!({
+            "type": "object",
+            "additionalProperties": {"type": "string"},
+            "properties": {
+                "foo": {"type": "string", "maxLength": 5}
+            }
+        });
+
+        let errors = validate_schema_compatibility(&base, &derived, "base", "derived");
+        assert!(
+            errors.is_empty(),
+            "compatible refinement must be accepted: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_partially_open_base_rejects_incompatible_derived_property() {
+        let base = json!({
+            "type": "object",
+            "additionalProperties": {"type": "string"}
+        });
+        let derived = json!({
+            "type": "object",
+            "additionalProperties": {"type": "string"},
+            "properties": {
+                "foo": {"type": "integer"}
+            }
+        });
+
+        let errors = validate_schema_compatibility(&base, &derived, "base", "derived");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("foo") && error.contains("changes type")),
+            "incompatible refinement must be rejected: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_boolean_equivalent_additional_properties_control_derivation() {
+        let open_base = json!({
+            "type": "object",
+            "additionalProperties": {}
+        });
+        let closed_base = json!({
+            "type": "object",
+            "additionalProperties": {"not": {}}
+        });
+        let derived = json!({
+            "type": "object",
+            "properties": {
+                "foo": {"type": "integer"}
+            }
+        });
+
+        assert!(validate_schema_compatibility(&open_base, &derived, "base", "derived").is_empty());
+        let errors = validate_schema_compatibility(&closed_base, &derived, "base", "derived");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("foo") && error.contains("additionalProperties")),
+            "false-equivalent additionalProperties must close the model: {errors:?}"
+        );
+    }
 
     #[test]
     fn test_compatible_tightening() {

@@ -78,6 +78,55 @@ pub struct SimplePayloadV1 {
     pub severity: u8,
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct NestedContact {
+    pub email: String,
+}
+
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = true,
+    type_id = gts_id!("x.test.nested.definition.v1~"),
+    description = "Schema containing an ordinary nested Rust struct",
+    properties = "schema_type,contact"
+)]
+#[derive(Debug)]
+pub struct SchemaWithNestedContactV1 {
+    #[serde(rename = "type")]
+    pub schema_type: GtsTypeId,
+    pub contact: NestedContact,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[schemars(extend("additionalProperties" = true))]
+pub struct OpenExtensionPoint {
+    pub label: String,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum UntaggedChoice {
+    First { a: String },
+    Second { b: String },
+}
+
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = true,
+    type_id = gts_id!("x.test.nested.content_model.v1~"),
+    description = "Schema exercising nested content-model closure",
+    properties = "schema_type,contact,extension_point,choice,labels"
+)]
+#[derive(Debug)]
+pub struct SchemaWithNestedContentModelV1 {
+    #[serde(rename = "type")]
+    pub schema_type: GtsTypeId,
+    pub contact: NestedContact,
+    pub extension_point: OpenExtensionPoint,
+    pub choice: UntaggedChoice,
+    pub labels: std::collections::HashMap<String, String>,
+}
+
 /* ============================================================
 Base struct ID field validation tests
 ============================================================ */
@@ -394,6 +443,68 @@ mod tests {
             "`type` property should be the inlined GtsTypeId fragment, got:\n{}",
             serde_json::to_string_pretty(type_prop).unwrap()
         );
+    }
+
+    #[test]
+    fn test_ordinary_nested_struct_keeps_draft_07_definition() {
+        let schema = SchemaWithNestedContactV1::gts_schema_with_refs();
+        assert_eq!(
+            schema.get("$schema").and_then(serde_json::Value::as_str),
+            Some(gts::JSON_SCHEMA_DRAFT_07)
+        );
+        assert_eq!(
+            schema
+                .pointer("/properties/contact/$ref")
+                .and_then(serde_json::Value::as_str),
+            Some("#/definitions/NestedContact")
+        );
+        assert!(
+            schema.pointer("/definitions/NestedContact").is_some(),
+            "nested definition is missing:\n{}",
+            serde_json::to_string_pretty(&schema).unwrap()
+        );
+        jsonschema::validator_for(&schema).expect("emitted Draft-07 schema must compile");
+    }
+
+    /// Nested object levels are closed so that a later definition of the type
+    /// can add an optional property backward compatibly (gts-spec sec 4.4-4.5),
+    /// while the levels where closing would be wrong are left alone.
+    #[test]
+    fn test_nested_object_levels_are_closed_except_where_unsafe() {
+        let schema = SchemaWithNestedContentModelV1::gts_schema_with_refs();
+        let additional = |pointer: &str| {
+            schema
+                .pointer(pointer)
+                .unwrap_or_else(|| panic!("missing level '{pointer}' in {schema}"))
+                .get("additionalProperties")
+                .cloned()
+        };
+
+        // An ordinary nested struct is closed, so it stays evolvable in place.
+        assert_eq!(
+            additional("/definitions/NestedContact"),
+            Some(serde_json::json!(false))
+        );
+
+        // `#[schemars(extend(...))]` is the per-level opt-out for a deliberate
+        // extension point.
+        assert_eq!(
+            additional("/definitions/OpenExtensionPoint"),
+            Some(serde_json::json!(true))
+        );
+
+        // Closing an `anyOf` branch would reject the properties its sibling
+        // branches declare, so combinator branches are left untouched.
+        assert_eq!(additional("/definitions/UntaggedChoice/anyOf/0"), None);
+        assert_eq!(additional("/definitions/UntaggedChoice/anyOf/1"), None);
+
+        // A map level is partially open; its existing constraint is preserved.
+        assert_eq!(
+            additional("/properties/labels"),
+            Some(serde_json::json!({"type": "string"}))
+        );
+
+        jsonschema::validator_for(&schema).expect("emitted Draft-07 schema must compile");
     }
 
     #[test]

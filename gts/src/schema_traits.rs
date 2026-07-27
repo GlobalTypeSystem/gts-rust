@@ -192,7 +192,7 @@ pub trait GtsTraitsSchema: schemars::JsonSchema {}
 // an accept-anything trait schema that validates nothing.
 #[allow(clippy::expect_used)]
 pub fn inline_traits_schema_of<T: schemars::JsonSchema>() -> Value {
-    let mut generator = schemars::generate::SchemaSettings::default()
+    let mut generator = schemars::generate::SchemaSettings::draft07()
         .with(|s| s.inline_subschemas = true)
         .into_generator();
     let schema = <T as schemars::JsonSchema>::json_schema(&mut generator);

@@ -87,12 +87,21 @@ impl GtsIdPattern {
     /// [`GtsId::matches_pattern`]: crate::GtsId::matches_pattern
     pub(crate) fn matches_views<C: SegmentView>(&self, candidate: &[C]) -> bool {
         let pattern_segs = &self.segments;
-        // If pattern is longer than candidate, no match
-        if pattern_segs.len() > candidate.len() {
+        // A final bare `~*` may match an empty chain suffix. A wildcard that
+        // already specifies part of the next segment (for example `~abc.*`)
+        // still requires that segment to exist.
+        let matches_empty_suffix = pattern_segs
+            .last()
+            .is_some_and(|seg| seg.is_wildcard() && seg.raw() == "*");
+        let required_candidate_len = pattern_segs.len() - usize::from(matches_empty_suffix);
+        if required_candidate_len > candidate.len() {
             return false;
         }
 
         for (i, p_seg) in pattern_segs.iter().enumerate() {
+            if i == candidate.len() {
+                return matches_empty_suffix && i == pattern_segs.len() - 1;
+            }
             let c_seg = &candidate[i];
 
             // If pattern segment is a wildcard, only its specified (non-empty)
@@ -307,6 +316,24 @@ mod tests {
 
         assert!(type_candidate.matches_pattern(&pattern));
         assert!(instance_candidate.matches_pattern(&pattern));
+    }
+
+    #[test]
+    fn test_trailing_chain_wildcard_matches_empty_suffix() {
+        let pattern = GtsIdPattern::try_new(&gts_id("x.core.events.topic.v1~*")).expect("test");
+        let exact = GtsId::try_new(&gts_id("x.core.events.topic.v1~")).expect("test");
+        let specific_minor = GtsId::try_new(&gts_id("x.core.events.topic.v1.1~")).expect("test");
+
+        assert!(exact.matches_pattern(&pattern));
+        assert!(specific_minor.matches_pattern(&pattern));
+    }
+
+    #[test]
+    fn test_prefixed_chain_wildcard_requires_a_suffix() {
+        let pattern = GtsIdPattern::try_new(&gts_id("x.core.events.topic.v1~abc.*")).expect("test");
+        let base = GtsId::try_new(&gts_id("x.core.events.topic.v1~")).expect("test");
+
+        assert!(!base.matches_pattern(&pattern));
     }
 
     #[test]

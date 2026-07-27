@@ -3,7 +3,76 @@ use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
-use crate::gts::GtsId;
+use crate::{gts::GtsId, schema_semantics::boolean_schema_value};
+
+/// Result of attempting to establish one schema-compatibility relation.
+///
+/// `Unknown` is deliberately distinct from `Incompatible`: it means the
+/// checker could not prove or disprove the required accepted-instance-set
+/// inclusion. The caller, not this library, decides how that affects admission.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompatibilityVerdict {
+    Compatible,
+    Incompatible,
+    #[default]
+    Unknown,
+}
+
+impl CompatibilityVerdict {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Compatible => "compatible",
+            Self::Incompatible => "incompatible",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    #[must_use]
+    pub const fn is_compatible(self) -> bool {
+        matches!(self, Self::Compatible)
+    }
+
+    #[must_use]
+    pub const fn is_incompatible(self) -> bool {
+        matches!(self, Self::Incompatible)
+    }
+
+    #[must_use]
+    pub const fn is_unknown(self) -> bool {
+        matches!(self, Self::Unknown)
+    }
+
+    /// Derives full compatibility from the two directional verdicts.
+    #[must_use]
+    pub const fn full(backward: Self, forward: Self) -> Self {
+        match (backward, forward) {
+            (Self::Compatible, Self::Compatible) => Self::Compatible,
+            (Self::Incompatible, _) | (_, Self::Incompatible) => Self::Incompatible,
+            _ => Self::Unknown,
+        }
+    }
+
+    fn from_diagnostics(diagnostics: &[CompatibilityDiagnostic]) -> Self {
+        if diagnostics.is_empty() {
+            Self::Compatible
+        } else if diagnostics
+            .iter()
+            .all(CompatibilityDiagnostic::is_inconclusive)
+        {
+            Self::Unknown
+        } else {
+            Self::Incompatible
+        }
+    }
+}
+
+impl std::fmt::Display for CompatibilityVerdict {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum SchemaCastError {
@@ -19,7 +88,6 @@ pub enum SchemaCastError {
     CastError(String),
 }
 
-#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GtsEntityCastResult {
     #[serde(rename = "from")]
@@ -32,15 +100,314 @@ pub struct GtsEntityCastResult {
     pub added_properties: Vec<String>,
     pub removed_properties: Vec<String>,
     pub changed_properties: Vec<HashMap<String, String>>,
-    pub is_fully_compatible: bool,
-    pub is_backward_compatible: bool,
-    pub is_forward_compatible: bool,
+    pub full_compatibility: CompatibilityVerdict,
+    pub backward_compatibility: CompatibilityVerdict,
+    pub forward_compatibility: CompatibilityVerdict,
     pub incompatibility_reasons: Vec<String>,
     pub backward_errors: Vec<String>,
     pub forward_errors: Vec<String>,
+    #[serde(default = "specification_version")]
+    pub specification_version: String,
+    #[serde(default = "implementation_version")]
+    pub implementation_version: String,
     pub casted_entity: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+fn specification_version() -> String {
+    crate::GTS_SPECIFICATION_VERSION.to_owned()
+}
+
+fn implementation_version() -> String {
+    crate::GTS_IMPLEMENTATION_VERSION.to_owned()
+}
+
+/// Content model of one object level of a **resolved** effective schema.
+///
+/// Classified per gts-spec §4.4, which requires the level to be judged after
+/// `$ref` resolution and `allOf` composition rather than from a single authored
+/// keyword. Use [`GtsEntityCastResult::classify_object_levels`] to obtain the
+/// classification of every level of a document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContentModel {
+    /// Accepts an undeclared property with any value.
+    Open,
+    /// Rejects every undeclared property.
+    Closed,
+    /// Accepts some undeclared property names, or constrains their values - for
+    /// example through a nontrivial schema-valued `additionalProperties`,
+    /// `patternProperties`, or `propertyNames`.
+    Partial,
+}
+
+impl ContentModel {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Closed => "closed",
+            Self::Partial => "partially open",
+        }
+    }
+
+    /// Whether a later definition may add an optional property at this level
+    /// and stay backward compatible.
+    ///
+    /// Only a closed level can: an open level already accepted arbitrary values
+    /// under the new property name, so declaring it narrows the accepted set
+    /// (§4.4). For a partially open level the answer depends on the constraint
+    /// that governs undeclared properties, so it is reported as not evolvable
+    /// rather than guessed.
+    #[must_use]
+    pub const fn is_evolvable_in_place(self) -> bool {
+        matches!(self, Self::Closed)
+    }
+}
+
+impl std::fmt::Display for ContentModel {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.label())
+    }
+}
+
+/// One object level of a resolved schema, with its content model.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObjectLevel {
+    /// Location of the level, `$` for the document root and dotted segments
+    /// below it, for example `$.payload` or `$.items[]`.
+    pub path: String,
+    /// How this level treats undeclared properties.
+    pub content_model: ContentModel,
+}
+
+/// Machine-readable kind of a [`CompatibilityDiagnostic`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompatibilityFinding {
+    /// A property was declared at a level whose content model does not permit
+    /// the addition in this direction.
+    PropertyAdded,
+    /// A property declaration was dropped at a level whose content model does
+    /// not permit the removal in this direction.
+    PropertyRemoved,
+    /// The set of `required` properties changed.
+    RequiredChanged,
+    /// The content model of an object level changed.
+    ContentModelChanged,
+    /// The set of permitted `type` values is not an inclusion in this direction.
+    TypeChanged,
+    /// The `enum` constraint is not an inclusion in this direction.
+    EnumChanged,
+    /// A numeric bound moved in the direction this mode forbids.
+    BoundChanged,
+    /// A keyword that only narrows was added or removed.
+    NarrowingConstraintChanged,
+    /// A keyword whose values cannot be ordered by inclusion changed.
+    ConstraintChanged,
+    /// The declared JSON Schema dialect changed, so this checker cannot compare
+    /// the two documents under one stable set of keyword semantics.
+    DialectChanged,
+    /// Inclusion could not be established either way - an unresolved `$ref`, an
+    /// `allOf` intersection the checker cannot prove, a partially open level, or
+    /// two values of one keyword that this implementation cannot order. It is
+    /// reported distinctly so callers can apply their own admission policy.
+    NotProvable,
+}
+
+/// Evidence explaining an incompatible or unknown directional verdict.
+///
+/// Carries the schema location separately from the prose so that a caller can
+/// report per object level without parsing the message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompatibilityDiagnostic {
+    /// Location of the offending schema node, in the form used by
+    /// [`ObjectLevel::path`].
+    pub path: String,
+    /// What kind of finding this is.
+    pub finding: CompatibilityFinding,
+    /// Human-readable detail, without the location prefix.
+    pub detail: String,
+}
+
+impl CompatibilityDiagnostic {
+    fn new(path: &str, finding: CompatibilityFinding, detail: String) -> Self {
+        Self {
+            path: path.to_owned(),
+            finding,
+            detail,
+        }
+    }
+
+    const fn is_inconclusive(&self) -> bool {
+        matches!(
+            self.finding,
+            CompatibilityFinding::NotProvable | CompatibilityFinding::DialectChanged
+        )
+    }
+}
+
+impl std::fmt::Display for CompatibilityDiagnostic {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "Schema at '{}' {}", self.path, self.detail)
+    }
+}
+
+const UNPROVEN_INTERSECTION: &str = "x-gts-internal-unproven-intersection";
+
+fn merge_schema_map(target: &mut Map<String, Value>, candidate: &Map<String, Value>) {
+    const ANNOTATIONS: &[&str] = &[
+        "$id",
+        "$schema",
+        "title",
+        "description",
+        "default",
+        "examples",
+        "readOnly",
+        "writeOnly",
+        "deprecated",
+        "definitions",
+        "$defs",
+        "x-gts-abstract",
+        "x-gts-final",
+        "x-gts-traits",
+        "x-gts-traits-schema",
+    ];
+    const MINIMUMS: &[&str] = &[
+        "minimum",
+        "exclusiveMinimum",
+        "minLength",
+        "minItems",
+        "minProperties",
+        "minContains",
+    ];
+    const MAXIMUMS: &[&str] = &[
+        "maximum",
+        "exclusiveMaximum",
+        "maxLength",
+        "maxItems",
+        "maxProperties",
+        "maxContains",
+    ];
+
+    for (keyword, candidate_value) in candidate {
+        if ANNOTATIONS.contains(&keyword.as_str()) {
+            target.insert(keyword.clone(), candidate_value.clone());
+            continue;
+        }
+        let Some(current) = target.get_mut(keyword) else {
+            target.insert(keyword.clone(), candidate_value.clone());
+            continue;
+        };
+        if current == candidate_value {
+            continue;
+        }
+
+        match keyword.as_str() {
+            "properties" | "patternProperties" => {
+                if let (Some(current_map), Some(candidate_map)) =
+                    (current.as_object_mut(), candidate_value.as_object())
+                {
+                    for (name, candidate_schema) in candidate_map {
+                        if let Some(current_schema) = current_map.get_mut(name) {
+                            merge_schema_intersection(current_schema, candidate_schema);
+                        } else {
+                            current_map.insert(name.clone(), candidate_schema.clone());
+                        }
+                    }
+                } else {
+                    record_unproven_intersection(
+                        target,
+                        format!("'{keyword}' has incompatible representations"),
+                    );
+                }
+            }
+            "required" => {
+                if let (Some(current_items), Some(candidate_items)) =
+                    (current.as_array_mut(), candidate_value.as_array())
+                {
+                    for item in candidate_items {
+                        if !current_items.contains(item) {
+                            current_items.push(item.clone());
+                        }
+                    }
+                }
+            }
+            "additionalProperties"
+            | "unevaluatedProperties"
+            | "items"
+            | "propertyNames"
+            | "contains" => merge_schema_intersection(current, candidate_value),
+            "enum" => {
+                if let (Some(current_values), Some(candidate_values)) =
+                    (current.as_array_mut(), candidate_value.as_array())
+                {
+                    current_values.retain(|value| candidate_values.contains(value));
+                    if current_values.is_empty() {
+                        record_unproven_intersection(
+                            target,
+                            "allOf enum intersection is empty".to_owned(),
+                        );
+                    }
+                }
+            }
+            keyword if MINIMUMS.contains(&keyword) => {
+                if candidate_value.as_f64() > current.as_f64() {
+                    *current = candidate_value.clone();
+                }
+            }
+            keyword if MAXIMUMS.contains(&keyword) => {
+                if candidate_value.as_f64() < current.as_f64() {
+                    *current = candidate_value.clone();
+                }
+            }
+            "type" => {
+                if current.as_str() == Some("number") && candidate_value.as_str() == Some("integer")
+                {
+                    *current = candidate_value.clone();
+                } else if !(current.as_str() == Some("integer")
+                    && candidate_value.as_str() == Some("number"))
+                {
+                    let reason = format!(
+                        "allOf has incompatible type constraints {current} and {candidate_value}"
+                    );
+                    record_unproven_intersection(target, reason);
+                }
+            }
+            _ => record_unproven_intersection(
+                target,
+                format!("allOf has differing '{keyword}' constraints"),
+            ),
+        }
+    }
+}
+
+fn merge_schema_intersection(target: &mut Value, candidate: &Value) {
+    match (&mut *target, candidate) {
+        (Value::Bool(false), _) | (_, Value::Bool(true)) => {}
+        (Value::Bool(true), value) => *target = value.clone(),
+        (_, Value::Bool(false)) => *target = Value::Bool(false),
+        (Value::Object(target_map), Value::Object(candidate_map)) => {
+            merge_schema_map(target_map, candidate_map);
+        }
+        _ => {
+            *target = Value::Object(Map::from_iter([(
+                UNPROVEN_INTERSECTION.to_owned(),
+                Value::Array(vec![target.clone(), candidate.clone()]),
+            )]));
+        }
+    }
+}
+
+fn record_unproven_intersection(schema: &mut Map<String, Value>, reason: String) {
+    let marker = schema
+        .entry(UNPROVEN_INTERSECTION)
+        .or_insert_with(|| Value::Array(Vec::new()));
+    if let Some(reasons) = marker.as_array_mut() {
+        reasons.push(Value::String(reason));
+    } else {
+        *marker = Value::Array(vec![Value::String(reason)]);
+    }
 }
 
 impl GtsEntityCastResult {
@@ -66,10 +433,12 @@ impl GtsEntityCastResult {
         let (old_schema, new_schema) = (from_schema_content, to_schema_content);
 
         // Check compatibility
-        let (is_backward, backward_errors) =
+        let (backward_compatibility, backward_errors) =
             Self::check_backward_compatibility(old_schema, new_schema);
-        let (is_forward, forward_errors) =
+        let (forward_compatibility, forward_errors) =
             Self::check_forward_compatibility(old_schema, new_schema);
+        let full_compatibility =
+            CompatibilityVerdict::full(backward_compatibility, forward_compatibility);
 
         // Apply casting rules to the instance
         let instance_obj = from_instance_content
@@ -89,20 +458,20 @@ impl GtsEntityCastResult {
                         added_properties: Vec::new(),
                         removed_properties: Vec::new(),
                         changed_properties: Vec::new(),
-                        is_fully_compatible: false,
-                        is_backward_compatible: is_backward,
-                        is_forward_compatible: is_forward,
+                        full_compatibility,
+                        backward_compatibility,
+                        forward_compatibility,
                         incompatibility_reasons: vec![e.to_string()],
                         backward_errors,
                         forward_errors,
+                        specification_version: specification_version(),
+                        implementation_version: implementation_version(),
                         casted_entity: None,
                         error: None,
                     });
                 }
             };
 
-        // Validate the transformed instance against the FULL target schema
-        let is_fully_compatible = true; // Simplified for now
         let reasons = incompatibility_reasons;
 
         // TODO: Add full jsonschema validation with GTS ID tolerance
@@ -124,12 +493,14 @@ impl GtsEntityCastResult {
             added_properties: added_sorted,
             removed_properties: removed_sorted,
             changed_properties: Vec::new(),
-            is_fully_compatible,
-            is_backward_compatible: is_backward,
-            is_forward_compatible: is_forward,
+            full_compatibility,
+            backward_compatibility,
+            forward_compatibility,
             incompatibility_reasons: reasons,
             backward_errors,
             forward_errors,
+            specification_version: specification_version(),
+            implementation_version: implementation_version(),
             casted_entity: Some(Value::Object(casted)),
             error: None,
         })
@@ -347,78 +718,73 @@ impl GtsEntityCastResult {
 
     #[must_use]
     pub fn flatten_schema(schema: &Value) -> Value {
-        let mut result = Map::new();
-        result.insert("properties".to_owned(), Value::Object(Map::new()));
-        result.insert("required".to_owned(), Value::Array(Vec::new()));
-
-        if let Some(obj) = schema.as_object() {
-            // Merge allOf schemas
-            if let Some(all_of) = obj.get("allOf")
-                && let Some(arr) = all_of.as_array()
-            {
-                for sub_schema in arr {
-                    let flattened = Self::flatten_schema(sub_schema);
-                    if let Some(flat_obj) = flattened.as_object() {
-                        // Merge properties
-                        if let Some(props) = flat_obj.get("properties")
-                            && let Some(props_obj) = props.as_object()
-                            && let Some(result_props) =
-                                result.get_mut("properties").and_then(|p| p.as_object_mut())
-                        {
-                            for (k, v) in props_obj {
-                                result_props.insert(k.clone(), v.clone());
-                            }
-                        }
-                        // Merge required
-                        if let Some(req) = flat_obj.get("required")
-                            && let Some(req_arr) = req.as_array()
-                            && let Some(result_req) =
-                                result.get_mut("required").and_then(|r| r.as_array_mut())
-                        {
-                            result_req.extend(req_arr.clone());
-                        }
-                        // Preserve additionalProperties
-                        if let Some(additional) = flat_obj.get("additionalProperties") {
-                            result.insert("additionalProperties".to_owned(), additional.clone());
-                        }
-                    }
-                }
-            }
-
-            // Add direct properties and required
-            if let Some(props) = obj.get("properties")
-                && let Some(props_obj) = props.as_object()
-                && let Some(result_props) =
-                    result.get_mut("properties").and_then(|p| p.as_object_mut())
-            {
-                for (k, v) in props_obj {
-                    result_props.insert(k.clone(), v.clone());
-                }
-            }
-            if let Some(req) = obj.get("required")
-                && let Some(req_arr) = req.as_array()
-                && let Some(result_req) = result.get_mut("required").and_then(|r| r.as_array_mut())
-            {
-                result_req.extend(req_arr.clone());
-            }
-            // Preserve additionalProperties from top level
-            if let Some(additional) = obj.get("additionalProperties") {
-                result.insert("additionalProperties".to_owned(), additional.clone());
+        let Some(schema_map) = schema.as_object() else {
+            return schema.clone();
+        };
+        let mut result = Value::Bool(true);
+        if let Some(all_of) = schema_map.get("allOf").and_then(Value::as_array) {
+            for branch in all_of {
+                merge_schema_intersection(&mut result, &Self::flatten_schema(branch));
             }
         }
+        let direct = Value::Object(
+            schema_map
+                .iter()
+                .filter(|(keyword, _)| keyword.as_str() != "allOf")
+                .map(|(keyword, value)| (keyword.clone(), value.clone()))
+                .collect(),
+        );
+        merge_schema_intersection(&mut result, &direct);
+        result
+    }
 
-        Value::Object(result)
+    /// Reports a bound keyword whose value is present but not a number.
+    ///
+    /// Draft-04 spells `exclusiveMinimum`/`exclusiveMaximum` as booleans that
+    /// modify `minimum`/`maximum`, so a numeric comparison would silently ignore
+    /// them. Fall back to exact equality for any non-numeric value rather than
+    /// guessing which direction it widens.
+    fn check_non_numeric_bound(
+        path: &str,
+        old_schema: &Map<String, Value>,
+        new_schema: &Map<String, Value>,
+        key: &str,
+    ) -> Option<CompatibilityDiagnostic> {
+        let non_numeric = |schema: &Map<String, Value>| {
+            schema
+                .get(key)
+                .is_some_and(|value| value.as_f64().is_none())
+        };
+        if (non_numeric(old_schema) || non_numeric(new_schema))
+            && old_schema.get(key) != new_schema.get(key)
+        {
+            return Some(CompatibilityDiagnostic::new(
+                path,
+                CompatibilityFinding::NotProvable,
+                format!("changes non-numeric '{key}' constraint"),
+            ));
+        }
+        None
     }
 
     fn check_min_max_constraint(
-        prop: &str,
+        path: &str,
         old_schema: &Map<String, Value>,
         new_schema: &Map<String, Value>,
         min_key: &str,
         max_key: &str,
         check_tightening: bool,
-    ) -> Vec<String> {
+    ) -> Vec<CompatibilityDiagnostic> {
+        let bound = |detail: String| {
+            CompatibilityDiagnostic::new(path, CompatibilityFinding::BoundChanged, detail)
+        };
         let mut errors = Vec::new();
+        errors.extend(Self::check_non_numeric_bound(
+            path, old_schema, new_schema, min_key,
+        ));
+        errors.extend(Self::check_non_numeric_bound(
+            path, old_schema, new_schema, max_key,
+        ));
 
         // Check minimum constraint
         let old_min = old_schema.get(min_key).and_then(Value::as_f64);
@@ -426,20 +792,18 @@ impl GtsEntityCastResult {
 
         if let (Some(old_m), Some(new_m)) = (old_min, new_min) {
             if check_tightening && new_m > old_m {
-                errors.push(format!(
-                    "Property '{prop}' {min_key} increased from {old_m} to {new_m}"
-                ));
+                errors.push(bound(format!(
+                    "{min_key} increased from {old_m} -> {new_m}"
+                )));
             } else if !check_tightening && new_m < old_m {
-                errors.push(format!(
-                    "Property '{prop}' {min_key} decreased from {old_m} to {new_m}"
-                ));
+                errors.push(bound(format!(
+                    "{min_key} decreased from {old_m} -> {new_m}"
+                )));
             }
         } else if let (true, None, Some(new_m)) = (check_tightening, old_min, new_min) {
-            errors.push(format!(
-                "Property '{prop}' added {min_key} constraint: {new_m}"
-            ));
+            errors.push(bound(format!("adds {min_key} constraint: {new_m}")));
         } else if !check_tightening && old_min.is_some() && new_min.is_none() {
-            errors.push(format!("Property '{prop}' removed {min_key} constraint"));
+            errors.push(bound(format!("removes {min_key} constraint")));
         }
 
         // Check maximum constraint
@@ -448,236 +812,866 @@ impl GtsEntityCastResult {
 
         if let (Some(old_m), Some(new_m)) = (old_max, new_max) {
             if check_tightening && new_m < old_m {
-                errors.push(format!(
-                    "Property '{prop}' {max_key} decreased from {old_m} to {new_m}"
-                ));
+                errors.push(bound(format!(
+                    "{max_key} decreased from {old_m} -> {new_m}"
+                )));
             } else if !check_tightening && new_m > old_m {
-                errors.push(format!(
-                    "Property '{prop}' {max_key} increased from {old_m} to {new_m}"
-                ));
+                errors.push(bound(format!(
+                    "{max_key} increased from {old_m} -> {new_m}"
+                )));
             }
         } else if let (true, None, Some(new_m)) = (check_tightening, old_max, new_max) {
-            errors.push(format!(
-                "Property '{prop}' added {max_key} constraint: {new_m}"
-            ));
+            errors.push(bound(format!("adds {max_key} constraint: {new_m}")));
         } else if !check_tightening && old_max.is_some() && new_max.is_none() {
-            errors.push(format!("Property '{prop}' removed {max_key} constraint"));
+            errors.push(bound(format!("removes {max_key} constraint")));
         }
 
         errors
     }
 
     fn check_constraint_compatibility(
-        prop: &str,
+        path: &str,
         old_prop_schema: &Map<String, Value>,
         new_prop_schema: &Map<String, Value>,
         check_tightening: bool,
-    ) -> Vec<String> {
-        let mut errors = Vec::new();
-        let prop_type = old_prop_schema.get("type").and_then(|t| t.as_str());
+    ) -> Vec<CompatibilityDiagnostic> {
+        // Every pair is checked whenever either definition carries it, never
+        // gated on `type`. Gating on the old schema's `type` missed a real
+        // narrowing whenever `type` was absent or written as an array, which
+        // reported such a change as fully compatible - the one direction of
+        // error a registry cannot tolerate.
+        const BOUNDS: &[(&str, &str)] = &[
+            ("minimum", "maximum"),
+            ("exclusiveMinimum", "exclusiveMaximum"),
+            ("minLength", "maxLength"),
+            ("minItems", "maxItems"),
+            ("minProperties", "maxProperties"),
+            ("minContains", "maxContains"),
+        ];
 
-        // Numeric constraints (for number/integer types)
-        if prop_type == Some("number") || prop_type == Some("integer") {
-            errors.extend(Self::check_min_max_constraint(
-                prop,
-                old_prop_schema,
-                new_prop_schema,
-                "minimum",
-                "maximum",
-                check_tightening,
-            ));
-        }
+        BOUNDS
+            .iter()
+            .filter(|(min_key, max_key)| {
+                [min_key, max_key].iter().any(|key| {
+                    old_prop_schema.contains_key(**key) || new_prop_schema.contains_key(**key)
+                })
+            })
+            .flat_map(|(min_key, max_key)| {
+                Self::check_min_max_constraint(
+                    path,
+                    old_prop_schema,
+                    new_prop_schema,
+                    min_key,
+                    max_key,
+                    check_tightening,
+                )
+            })
+            .collect()
+    }
 
-        // String constraints
-        if prop_type == Some("string") {
-            errors.extend(Self::check_min_max_constraint(
-                prop,
-                old_prop_schema,
-                new_prop_schema,
-                "minLength",
-                "maxLength",
-                check_tightening,
-            ));
-        }
+    /// Handles keywords that only ever narrow `Valid(S)` when present.
+    ///
+    /// Whether two different values of such a keyword include one another is
+    /// undecidable in general - no implementation can compare two regexes - but
+    /// presence alone is decidable: adding the constraint narrows the accepted
+    /// set, removing it widens it. That is exactly the shape of the "Relaxing /
+    /// Tightening constraints" rows of gts-spec sec 4.5, so reporting both
+    /// directions as incompatible (as plain equality does) contradicts the table
+    /// for the common case of adding or dropping one of these keywords.
+    fn check_narrowing_constraints(
+        path: &str,
+        old_schema: &Map<String, Value>,
+        new_schema: &Map<String, Value>,
+        check_backward: bool,
+    ) -> Vec<CompatibilityDiagnostic> {
+        const NARROWING: &[&str] = &["pattern", "format", "multipleOf"];
 
-        // Array constraints
-        if prop_type == Some("array") {
-            errors.extend(Self::check_min_max_constraint(
-                prop,
-                old_prop_schema,
-                new_prop_schema,
-                "minItems",
-                "maxItems",
-                check_tightening,
+        let mut errors: Vec<CompatibilityDiagnostic> = NARROWING
+            .iter()
+            .filter_map(|keyword| {
+                let old_value = old_schema.get(*keyword);
+                let new_value = new_schema.get(*keyword);
+                match (old_value, new_value) {
+                    _ if old_value == new_value => None,
+                    // Added: narrows, so forward-only.
+                    (None, Some(_)) if check_backward => Some(CompatibilityDiagnostic::new(
+                        path,
+                        CompatibilityFinding::NarrowingConstraintChanged,
+                        format!("adds '{keyword}' constraint"),
+                    )),
+                    // Removed: widens, so backward-only.
+                    (Some(_), None) if !check_backward => Some(CompatibilityDiagnostic::new(
+                        path,
+                        CompatibilityFinding::NarrowingConstraintChanged,
+                        format!("removes '{keyword}' constraint"),
+                    )),
+                    // Changed: inclusion between the two values is undecidable.
+                    (Some(old_value), Some(new_value)) => Some(CompatibilityDiagnostic::new(
+                        path,
+                        CompatibilityFinding::NotProvable,
+                        format!(
+                            "changes '{keyword}' from {old_value} to {new_value}; inclusion \
+                             between the two cannot be proven"
+                        ),
+                    )),
+                    // Added in the forward direction, or removed in the
+                    // backward one: the change widens what this direction
+                    // requires, so it is permitted.
+                    (None, Some(_) | None) | (Some(_), None) => None,
+                }
+            })
+            .collect();
+
+        // `uniqueItems` defaults to false, so its presence is not what matters:
+        // false -> true narrows and true -> false widens, both decidable.
+        let unique_items = |schema: &Map<String, Value>| {
+            schema
+                .get("uniqueItems")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        };
+        let old_unique = unique_items(old_schema);
+        let new_unique = unique_items(new_schema);
+        if old_unique != new_unique && check_backward == new_unique {
+            errors.push(CompatibilityDiagnostic::new(
+                path,
+                CompatibilityFinding::NarrowingConstraintChanged,
+                format!(
+                    "{} 'uniqueItems'",
+                    if new_unique { "enables" } else { "disables" }
+                ),
             ));
         }
 
         errors
     }
 
+    fn check_type_compatibility(
+        path: &str,
+        old_schema: &Map<String, Value>,
+        new_schema: &Map<String, Value>,
+        check_backward: bool,
+    ) -> Vec<CompatibilityDiagnostic> {
+        // `type` is a set of permitted primitive types, and an absent `type`
+        // permits all of them (an empty set stands for "unconstrained" below).
+        // Inclusion of the accepted-instance sets therefore follows inclusion of
+        // the type sets, which makes member order irrelevant and makes dropping
+        // a member - say the `null` of an `Option<T>` - a narrowing rather than
+        // an unrelated change.
+        fn type_set(value: Option<&Value>) -> Option<Vec<&str>> {
+            match value {
+                None => Some(Vec::new()),
+                Some(Value::String(name)) => Some(vec![name.as_str()]),
+                Some(Value::Array(names)) => names
+                    .iter()
+                    .map(Value::as_str)
+                    .collect::<Option<Vec<&str>>>(),
+                Some(_) => None,
+            }
+        }
+
+        let old_type = old_schema.get("type");
+        let new_type = new_schema.get("type");
+        let (source, target) = if check_backward {
+            (old_type, new_type)
+        } else {
+            (new_type, old_type)
+        };
+
+        let compatible = match (type_set(source), type_set(target)) {
+            // A malformed `type` cannot be interpreted; fall back to equality.
+            (None, _) | (_, None) => source == target,
+            // An unconstrained target accepts every type the source permits.
+            (_, Some(target_names)) if target_names.is_empty() => true,
+            // An unconstrained source permits types the target may not.
+            (Some(source_names), Some(_)) if source_names.is_empty() => false,
+            (Some(source_names), Some(target_names)) => source_names.iter().all(|name| {
+                target_names.contains(name)
+                    || (*name == "integer" && target_names.contains(&"number"))
+            }),
+        };
+
+        if compatible {
+            Vec::new()
+        } else {
+            vec![CompatibilityDiagnostic::new(
+                path,
+                CompatibilityFinding::TypeChanged,
+                format!(
+                    "changes type incompatibly from {} to {}",
+                    old_type.map_or_else(|| "any".to_owned(), Value::to_string),
+                    new_type.map_or_else(|| "any".to_owned(), Value::to_string),
+                ),
+            )]
+        }
+    }
+
+    fn check_enum_compatibility(
+        path: &str,
+        old_schema: &Map<String, Value>,
+        new_schema: &Map<String, Value>,
+        check_backward: bool,
+    ) -> Vec<CompatibilityDiagnostic> {
+        let old_enum = old_schema.get("enum").and_then(Value::as_array);
+        let new_enum = new_schema.get("enum").and_then(Value::as_array);
+
+        let incompatible_values: Vec<&Value> = match (old_enum, new_enum, check_backward) {
+            // Backward checks Valid(old) ⊆ Valid(new); forward checks the
+            // reverse inclusion. Expanding an enum is therefore backward-only.
+            (Some(old), Some(new), true) => {
+                old.iter().filter(|value| !new.contains(value)).collect()
+            }
+            (Some(old), Some(new), false) => {
+                new.iter().filter(|value| !old.contains(value)).collect()
+            }
+            (None, Some(_), true) | (Some(_), None, false) => {
+                return vec![CompatibilityDiagnostic::new(
+                    path,
+                    CompatibilityFinding::EnumChanged,
+                    format!(
+                        "{} enum constraint",
+                        if old_enum.is_some() {
+                            "removes"
+                        } else {
+                            "adds"
+                        }
+                    ),
+                )];
+            }
+            _ => Vec::new(),
+        };
+
+        if incompatible_values.is_empty() {
+            Vec::new()
+        } else {
+            vec![CompatibilityDiagnostic::new(
+                path,
+                CompatibilityFinding::EnumChanged,
+                format!("changes enum incompatibly: {incompatible_values:?}"),
+            )]
+        }
+    }
+
+    fn check_exact_constraints(
+        path: &str,
+        old_schema: &Map<String, Value>,
+        new_schema: &Map<String, Value>,
+    ) -> Vec<CompatibilityDiagnostic> {
+        // Keywords whose two values cannot be ordered by inclusion, so equality
+        // is the only thing that can be proven. Numeric bounds live in
+        // [`Self::check_constraint_compatibility`] and keywords that merely
+        // narrow when present live in [`Self::check_narrowing_constraints`];
+        // listing either here would report both directions as incompatible and
+        // contradict the "Relaxing / Tightening constraints" rows of sec 4.5.
+        //
+        // `patternProperties`, `unevaluatedProperties` and `propertyNames` stay
+        // here on purpose: they also decide the content model in
+        // [`Self::classify_content_model`], and a level whose classification can
+        // change between two definitions is not something this checker attempts
+        // to reason about.
+        const EXACT_CONSTRAINTS: &[&str] = &[
+            "const",
+            "additionalItems",
+            "prefixItems",
+            "patternProperties",
+            "unevaluatedProperties",
+            "contains",
+            "propertyNames",
+            "dependentRequired",
+            "dependentSchemas",
+            "dependencies",
+            "oneOf",
+            "anyOf",
+            "not",
+            "if",
+            "then",
+            "else",
+            "contentEncoding",
+            "contentMediaType",
+        ];
+
+        EXACT_CONSTRAINTS
+            .iter()
+            .filter(|keyword| old_schema.get(**keyword) != new_schema.get(**keyword))
+            .map(|keyword| {
+                CompatibilityDiagnostic::new(
+                    path,
+                    CompatibilityFinding::ConstraintChanged,
+                    format!("changes '{keyword}' constraint"),
+                )
+            })
+            .collect()
+    }
+
+    /// Reports a `$ref` that survived resolution.
+    ///
+    /// `$defs`/`definitions` are deliberately absent from
+    /// [`Self::check_exact_constraints`]: in every dialect they are containers
+    /// reachable only through `$ref` and never contribute to `Valid(S)` (§4.3),
+    /// so comparing them would reject changes that alter no accepted instance.
+    /// The reference itself is what carries the constraint, and
+    /// [`crate::store::GtsStore::is_compatible`] resolves references before
+    /// comparing. A `$ref` that is still present therefore means this node was
+    /// never resolved and nothing can be proven about its target - unless both
+    /// definitions name the same reference, which needs no resolution.
+    fn check_unresolved_ref(
+        path: &str,
+        old_schema: &Map<String, Value>,
+        new_schema: &Map<String, Value>,
+    ) -> Vec<CompatibilityDiagnostic> {
+        let old_ref = old_schema.get("$ref").and_then(Value::as_str);
+        let new_ref = new_schema.get("$ref").and_then(Value::as_str);
+        if old_ref == new_ref {
+            return Vec::new();
+        }
+        vec![CompatibilityDiagnostic::new(
+            path,
+            CompatibilityFinding::NotProvable,
+            format!(
+                "has an unresolved '$ref' ({} vs {}); resolve the reference before comparing, \
+                 as compatibility depends on the effective resolved schemas",
+                old_ref.unwrap_or("none"),
+                new_ref.unwrap_or("none"),
+            ),
+        )]
+    }
+
+    fn check_schema_node_compatibility(
+        old_schema: &Value,
+        new_schema: &Value,
+        path: &str,
+        check_backward: bool,
+        old_supports_unevaluated: bool,
+        new_supports_unevaluated: bool,
+        errors: &mut Vec<CompatibilityDiagnostic>,
+    ) {
+        let old_effective = if old_schema.get("allOf").is_some() {
+            Self::flatten_schema(old_schema)
+        } else {
+            old_schema.clone()
+        };
+        let new_effective = if new_schema.get("allOf").is_some() {
+            Self::flatten_schema(new_schema)
+        } else {
+            new_schema.clone()
+        };
+
+        let (Some(old_map), Some(new_map)) = (old_effective.as_object(), new_effective.as_object())
+        else {
+            if old_effective != new_effective {
+                errors.push(CompatibilityDiagnostic::new(
+                    path,
+                    CompatibilityFinding::ConstraintChanged,
+                    "changes a schema that is not an object".to_owned(),
+                ));
+            }
+            return;
+        };
+        if old_map.contains_key(UNPROVEN_INTERSECTION)
+            || new_map.contains_key(UNPROVEN_INTERSECTION)
+        {
+            errors.push(CompatibilityDiagnostic::new(
+                path,
+                CompatibilityFinding::NotProvable,
+                "contains an allOf intersection that the compatibility checker cannot prove"
+                    .to_owned(),
+            ));
+            return;
+        }
+
+        errors.extend(Self::check_type_compatibility(
+            path,
+            old_map,
+            new_map,
+            check_backward,
+        ));
+        errors.extend(Self::check_enum_compatibility(
+            path,
+            old_map,
+            new_map,
+            check_backward,
+        ));
+        errors.extend(Self::check_exact_constraints(path, old_map, new_map));
+        errors.extend(Self::check_unresolved_ref(path, old_map, new_map));
+        errors.extend(Self::check_narrowing_constraints(
+            path,
+            old_map,
+            new_map,
+            check_backward,
+        ));
+        errors.extend(Self::check_constraint_compatibility(
+            path,
+            old_map,
+            new_map,
+            check_backward,
+        ));
+
+        let is_object_schema = |schema: &Map<String, Value>| {
+            schema.get("type").and_then(Value::as_str) == Some("object")
+                || schema.contains_key("properties")
+                || schema.contains_key("required")
+                || schema.contains_key("additionalProperties")
+                || schema.contains_key("unevaluatedProperties")
+                || schema.contains_key("patternProperties")
+                || schema.contains_key("propertyNames")
+        };
+        if is_object_schema(old_map) || is_object_schema(new_map) {
+            Self::check_object_compatibility(
+                old_map,
+                new_map,
+                path,
+                check_backward,
+                old_supports_unevaluated,
+                new_supports_unevaluated,
+                errors,
+            );
+        }
+
+        match (old_map.get("items"), new_map.get("items")) {
+            (Some(old_items), Some(new_items)) => Self::check_schema_node_compatibility(
+                old_items,
+                new_items,
+                &format!("{path}[]"),
+                check_backward,
+                old_supports_unevaluated,
+                new_supports_unevaluated,
+                errors,
+            ),
+            (None, Some(_)) if check_backward => {
+                errors.push(CompatibilityDiagnostic::new(
+                    path,
+                    CompatibilityFinding::ConstraintChanged,
+                    "adds an array items constraint".to_owned(),
+                ));
+            }
+            (Some(_), None) if !check_backward => errors.push(CompatibilityDiagnostic::new(
+                path,
+                CompatibilityFinding::ConstraintChanged,
+                "removes an array items constraint".to_owned(),
+            )),
+            _ => {}
+        }
+    }
+
+    fn check_object_compatibility(
+        old_schema: &Map<String, Value>,
+        new_schema: &Map<String, Value>,
+        path: &str,
+        check_backward: bool,
+        old_supports_unevaluated: bool,
+        new_supports_unevaluated: bool,
+        errors: &mut Vec<CompatibilityDiagnostic>,
+    ) {
+        let empty = Map::new();
+        let old_props = old_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .unwrap_or(&empty);
+        let new_props = new_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .unwrap_or(&empty);
+
+        let old_required: HashSet<&str> = old_schema
+            .get("required")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        let new_required: HashSet<&str> = new_schema
+            .get("required")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+
+        let mut required_difference: Vec<&str> = if check_backward {
+            new_required.difference(&old_required).copied().collect()
+        } else {
+            old_required.difference(&new_required).copied().collect()
+        };
+        required_difference.sort_unstable();
+        if !required_difference.is_empty() {
+            errors.push(CompatibilityDiagnostic::new(
+                path,
+                CompatibilityFinding::RequiredChanged,
+                format!(
+                    "{} required properties: {required_difference:?}",
+                    if check_backward { "adds" } else { "removes" }
+                ),
+            ));
+        }
+
+        let old_model = Self::classify_content_model(old_schema, old_supports_unevaluated);
+        let new_model = Self::classify_content_model(new_schema, new_supports_unevaluated);
+        let (source_model, target_model) = if check_backward {
+            (old_model, new_model)
+        } else {
+            (new_model, old_model)
+        };
+        let partial_constraints_equal = Self::partial_content_constraints_equal(
+            old_schema,
+            new_schema,
+            old_supports_unevaluated,
+            new_supports_unevaluated,
+        );
+        if !Self::content_model_is_subset(source_model, target_model) {
+            errors.push(CompatibilityDiagnostic::new(
+                path,
+                CompatibilityFinding::ContentModelChanged,
+                format!(
+                    "changes the content model incompatibly from {} to {}",
+                    old_model.label(),
+                    new_model.label(),
+                ),
+            ));
+        } else if source_model == ContentModel::Partial
+            && target_model == ContentModel::Partial
+            && !partial_constraints_equal
+        {
+            errors.push(CompatibilityDiagnostic::new(
+                path,
+                CompatibilityFinding::NotProvable,
+                "changes partially open content constraints; inclusion cannot be proven".to_owned(),
+            ));
+        }
+
+        for (name, old_property) in old_props {
+            let property_path = if path == "$" {
+                format!("$.{name}")
+            } else {
+                format!("{path}.{name}")
+            };
+            if let Some(new_property) = new_props.get(name) {
+                Self::check_schema_node_compatibility(
+                    old_property,
+                    new_property,
+                    &property_path,
+                    check_backward,
+                    old_supports_unevaluated,
+                    new_supports_unevaluated,
+                    errors,
+                );
+            } else {
+                let incompatible_model = if check_backward {
+                    new_model != ContentModel::Open
+                } else {
+                    new_model != ContentModel::Closed
+                };
+                if incompatible_model {
+                    errors.push(Self::property_change_error(path, name, true, new_model));
+                }
+            }
+        }
+
+        for name in new_props
+            .keys()
+            .filter(|name| !old_props.contains_key(*name))
+        {
+            let incompatible_model = if check_backward {
+                old_model != ContentModel::Closed
+            } else {
+                old_model != ContentModel::Open
+            };
+            if incompatible_model {
+                errors.push(Self::property_change_error(path, name, false, old_model));
+            }
+        }
+    }
+
+    fn classify_content_model(
+        schema: &Map<String, Value>,
+        supports_unevaluated: bool,
+    ) -> ContentModel {
+        let pattern_properties = schema
+            .get("patternProperties")
+            .and_then(Value::as_object)
+            .filter(|patterns| !patterns.is_empty());
+        let patterns_all_open = pattern_properties.is_some_and(|patterns| {
+            patterns
+                .values()
+                .all(|constraint| boolean_schema_value(constraint) == Some(true))
+        });
+        let patterns_all_closed = pattern_properties.is_some_and(|patterns| {
+            patterns
+                .values()
+                .all(|constraint| boolean_schema_value(constraint) == Some(false))
+        });
+        let property_names_model = schema.get("propertyNames").and_then(boolean_schema_value);
+        if property_names_model == Some(false) {
+            return ContentModel::Closed;
+        }
+
+        // `unevaluatedProperties` is the fallback only when this level does not
+        // already evaluate unmatched names through `additionalProperties`.
+        let undeclared_fallback = schema.get("additionalProperties").or_else(|| {
+            supports_unevaluated
+                .then(|| schema.get("unevaluatedProperties"))
+                .flatten()
+        });
+        let fallback_model = undeclared_fallback.map_or(Some(true), boolean_schema_value);
+        let constrains_property_names =
+            property_names_model.is_none() && schema.contains_key("propertyNames");
+        let constrains_fallback = fallback_model.is_none();
+
+        if pattern_properties.is_some() {
+            if fallback_model == Some(false) && patterns_all_closed {
+                ContentModel::Closed
+            } else if fallback_model == Some(true)
+                && patterns_all_open
+                && !constrains_property_names
+            {
+                ContentModel::Open
+            } else {
+                ContentModel::Partial
+            }
+        } else if fallback_model == Some(false) {
+            ContentModel::Closed
+        } else if constrains_property_names || constrains_fallback {
+            ContentModel::Partial
+        } else {
+            ContentModel::Open
+        }
+    }
+
+    const fn content_model_is_subset(source: ContentModel, target: ContentModel) -> bool {
+        matches!(
+            (source, target),
+            (ContentModel::Closed, _)
+                | (_, ContentModel::Open)
+                | (ContentModel::Partial, ContentModel::Partial)
+        )
+    }
+
+    fn partial_content_constraints_equal(
+        old_schema: &Map<String, Value>,
+        new_schema: &Map<String, Value>,
+        old_supports_unevaluated: bool,
+        new_supports_unevaluated: bool,
+    ) -> bool {
+        let normalize_additional = |schema: &Map<String, Value>| {
+            schema
+                .get("additionalProperties")
+                .cloned()
+                .unwrap_or(Value::Bool(true))
+        };
+        let normalize_unevaluated = |schema: &Map<String, Value>, supported: bool| {
+            if supported {
+                schema
+                    .get("unevaluatedProperties")
+                    .cloned()
+                    .unwrap_or(Value::Bool(true))
+            } else {
+                Value::Bool(true)
+            }
+        };
+
+        normalize_additional(old_schema) == normalize_additional(new_schema)
+            && old_schema.get("patternProperties") == new_schema.get("patternProperties")
+            && old_schema.get("propertyNames") == new_schema.get("propertyNames")
+            && normalize_unevaluated(old_schema, old_supports_unevaluated)
+                == normalize_unevaluated(new_schema, new_supports_unevaluated)
+    }
+
+    fn property_change_error(
+        path: &str,
+        property: &str,
+        removed: bool,
+        model: ContentModel,
+    ) -> CompatibilityDiagnostic {
+        let operation = if removed { "removes" } else { "adds" };
+        if model == ContentModel::Partial {
+            CompatibilityDiagnostic::new(
+                path,
+                CompatibilityFinding::NotProvable,
+                format!(
+                    "{operation} property '{property}', but compatibility cannot be proven for \
+                     the partially open object level"
+                ),
+            )
+        } else {
+            CompatibilityDiagnostic::new(
+                path,
+                if removed {
+                    CompatibilityFinding::PropertyRemoved
+                } else {
+                    CompatibilityFinding::PropertyAdded
+                },
+                format!(
+                    "{operation} property '{property}' in a {} model",
+                    model.label()
+                ),
+            )
+        }
+    }
+
+    /// Checks `Valid(old) ⊆ Valid(new)` and renders each reason as a string.
+    ///
+    /// The two schemas MUST already be `$ref`-resolved; see
+    /// [`crate::store::GtsStore::compare_documents`], which resolves and then
+    /// calls this. Prefer [`Self::check_backward_diagnostics`] when the caller
+    /// needs the offending schema location rather than prose.
     #[must_use]
     pub fn check_backward_compatibility(
         old_schema: &Value,
         new_schema: &Value,
-    ) -> (bool, Vec<String>) {
-        Self::check_schema_compatibility(old_schema, new_schema, true)
+    ) -> (CompatibilityVerdict, Vec<String>) {
+        let (verdict, diagnostics) = Self::check_backward_diagnostics(old_schema, new_schema);
+        (verdict, render_diagnostics(&diagnostics))
     }
 
+    /// Checks `Valid(new) ⊆ Valid(old)` and renders each reason as a string.
+    ///
+    /// See [`Self::check_backward_compatibility`] for the resolution
+    /// requirement.
     #[must_use]
     pub fn check_forward_compatibility(
         old_schema: &Value,
         new_schema: &Value,
-    ) -> (bool, Vec<String>) {
+    ) -> (CompatibilityVerdict, Vec<String>) {
+        let (verdict, diagnostics) = Self::check_forward_diagnostics(old_schema, new_schema);
+        (verdict, render_diagnostics(&diagnostics))
+    }
+
+    /// Checks `Valid(old) ⊆ Valid(new)`, reporting each reason with its schema
+    /// location.
+    #[must_use]
+    pub fn check_backward_diagnostics(
+        old_schema: &Value,
+        new_schema: &Value,
+    ) -> (CompatibilityVerdict, Vec<CompatibilityDiagnostic>) {
+        Self::check_schema_compatibility(old_schema, new_schema, true)
+    }
+
+    /// Checks `Valid(new) ⊆ Valid(old)`, reporting each reason with its schema
+    /// location.
+    #[must_use]
+    pub fn check_forward_diagnostics(
+        old_schema: &Value,
+        new_schema: &Value,
+    ) -> (CompatibilityVerdict, Vec<CompatibilityDiagnostic>) {
         Self::check_schema_compatibility(old_schema, new_schema, false)
     }
 
-    #[allow(clippy::too_many_lines)]
     fn check_schema_compatibility(
         old_schema: &Value,
         new_schema: &Value,
         check_backward: bool,
-    ) -> (bool, Vec<String>) {
+    ) -> (CompatibilityVerdict, Vec<CompatibilityDiagnostic>) {
         let mut errors = Vec::new();
+        let declared_old = old_schema.get("$schema").and_then(Value::as_str);
+        let declared_new = new_schema.get("$schema").and_then(Value::as_str);
 
-        // Flatten schemas to handle allOf
-        let old_flat = Self::flatten_schema(old_schema);
-        let new_flat = Self::flatten_schema(new_schema);
+        // Only a genuine change of declared dialect is reported. An omitted
+        // `$schema` means "whatever dialect the implementation applies" (sec 11
+        // makes GTS dialect-agnostic), so it is read as the dialect the other
+        // definition declares rather than as a difference - otherwise merely
+        // starting to declare a dialect that was already in effect would be
+        // reported as incompatible in both directions.
+        if let (Some(old_dialect), Some(new_dialect)) = (declared_old, declared_new)
+            && old_dialect != new_dialect
+        {
+            errors.push(CompatibilityDiagnostic::new(
+                "$",
+                CompatibilityFinding::DialectChanged,
+                format!("changes JSON Schema dialect from {old_dialect} to {new_dialect}"),
+            ));
+        }
+        let effective_old = declared_old.or(declared_new);
+        let effective_new = declared_new.or(declared_old);
+        let supports_unevaluated = |dialect: Option<&str>| {
+            dialect.is_some_and(|value| value.contains("2019-09") || value.contains("2020-12"))
+        };
+        Self::check_schema_node_compatibility(
+            old_schema,
+            new_schema,
+            "$",
+            check_backward,
+            supports_unevaluated(effective_old),
+            supports_unevaluated(effective_new),
+            &mut errors,
+        );
+        (CompatibilityVerdict::from_diagnostics(&errors), errors)
+    }
 
-        let old_props = old_flat
-            .get("properties")
-            .and_then(|p| p.as_object())
-            .cloned()
-            .unwrap_or_default();
-        let new_props = new_flat
-            .get("properties")
-            .and_then(|p| p.as_object())
-            .cloned()
-            .unwrap_or_default();
+    /// Classifies the content model of every object level of a schema.
+    ///
+    /// The schema MUST already be `$ref`-resolved: gts-spec §4.4 requires the
+    /// content model to be read from the fully resolved effective schema,
+    /// because `unevaluatedProperties`, `patternProperties`, `propertyNames`, a
+    /// nontrivial schema-valued `additionalProperties`, or a conjunctive
+    /// subschema reached through `allOf` or `$ref` can all decide whether
+    /// undeclared properties are accepted.
+    /// [`crate::store::GtsStore::compare_documents`] resolves before calling
+    /// this.
+    ///
+    /// A level is reported once, at the location where it appears in the
+    /// document. Levels reached only through `oneOf`, `anyOf`, `not`, or
+    /// `if`/`then`/`else` are not reported: an instance satisfies one branch
+    /// rather than all of them, so such a level has no single content model.
+    #[must_use]
+    pub fn classify_object_levels(schema: &Value) -> Vec<ObjectLevel> {
+        let dialect = schema.get("$schema").and_then(Value::as_str);
+        let supports_unevaluated =
+            dialect.is_some_and(|value| value.contains("2019-09") || value.contains("2020-12"));
+        let mut levels = Vec::new();
+        Self::collect_object_levels(schema, "$", supports_unevaluated, &mut levels);
+        levels
+    }
 
-        let old_required: HashSet<String> = old_flat
-            .get("required")
-            .and_then(|r| r.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(str::to_owned))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let new_required: HashSet<String> = new_flat
-            .get("required")
-            .and_then(|r| r.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(str::to_owned))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        // Check required properties changes
-        if check_backward {
-            // Backward: cannot add required properties
-            let newly_required: Vec<_> = new_required.difference(&old_required).collect();
-            if !newly_required.is_empty() {
-                let props: Vec<_> = newly_required.iter().map(|s| s.as_str()).collect();
-                errors.push(format!("Added required properties: {}", props.join(", ")));
-            }
+    fn collect_object_levels(
+        schema: &Value,
+        path: &str,
+        supports_unevaluated: bool,
+        levels: &mut Vec<ObjectLevel>,
+    ) {
+        let effective = if schema.get("allOf").is_some() {
+            Self::flatten_schema(schema)
         } else {
-            // Forward: cannot remove required properties
-            let removed_required: Vec<_> = old_required.difference(&new_required).collect();
-            if !removed_required.is_empty() {
-                let props: Vec<_> = removed_required.iter().map(|s| s.as_str()).collect();
-                errors.push(format!("Removed required properties: {}", props.join(", ")));
-            }
+            schema.clone()
+        };
+        let Some(map) = effective.as_object() else {
+            return;
+        };
+
+        let declares_object = map.get("type").and_then(Value::as_str) == Some("object")
+            || map.contains_key("properties")
+            || map.contains_key("additionalProperties")
+            || map.contains_key("unevaluatedProperties")
+            || map.contains_key("patternProperties")
+            || map.contains_key("propertyNames");
+        if declares_object {
+            levels.push(ObjectLevel {
+                path: path.to_owned(),
+                content_model: Self::classify_content_model(map, supports_unevaluated),
+            });
         }
 
-        // Check properties that exist in both schemas
-        let old_keys: HashSet<_> = old_props.keys().collect();
-        let new_keys: HashSet<_> = new_props.keys().collect();
-        let common_props: Vec<_> = old_keys.intersection(&new_keys).collect();
-
-        for prop in common_props {
-            if let (Some(old_prop_schema), Some(new_prop_schema)) =
-                (old_props.get(*prop), new_props.get(*prop))
-            {
-                // Check if type changed
-                let old_type = old_prop_schema.get("type").and_then(|t| t.as_str());
-                let new_type = new_prop_schema.get("type").and_then(|t| t.as_str());
-
-                if let (Some(ot), Some(nt)) = (old_type, new_type)
-                    && ot != nt
-                {
-                    errors.push(format!("Property '{prop}' type changed from {ot} to {nt}"));
-                }
-
-                // Check enum constraints
-                let old_enum = old_prop_schema.get("enum").and_then(|e| e.as_array());
-                let new_enum = new_prop_schema.get("enum").and_then(|e| e.as_array());
-
-                if let (Some(old_e), Some(new_e)) = (old_enum, new_enum) {
-                    let old_enum_set: HashSet<String> = old_e
-                        .iter()
-                        .filter_map(|v| v.as_str().map(str::to_owned))
-                        .collect();
-                    let new_enum_set: HashSet<String> = new_e
-                        .iter()
-                        .filter_map(|v| v.as_str().map(str::to_owned))
-                        .collect();
-
-                    if check_backward {
-                        // Backward: cannot add enum values
-                        let added_enum_values: Vec<_> =
-                            new_enum_set.difference(&old_enum_set).collect();
-                        if !added_enum_values.is_empty() {
-                            let values: Vec<_> =
-                                added_enum_values.iter().map(|s| s.as_str()).collect();
-                            errors.push(format!("Property '{prop}' added enum values: {values:?}"));
-                        }
-                    } else {
-                        // Forward: cannot remove enum values
-                        let removed_enum_values: Vec<_> =
-                            old_enum_set.difference(&new_enum_set).collect();
-                        if !removed_enum_values.is_empty() {
-                            let values: Vec<_> =
-                                removed_enum_values.iter().map(|s| s.as_str()).collect();
-                            errors
-                                .push(format!("Property '{prop}' removed enum values: {values:?}"));
-                        }
-                    }
-                }
-
-                // Check constraint compatibility
-                if let Some(old_obj) = old_prop_schema.as_object()
-                    && let Some(new_obj) = new_prop_schema.as_object()
-                {
-                    let constraint_errors = Self::check_constraint_compatibility(
-                        prop,
-                        old_obj,
-                        new_obj,
-                        check_backward,
-                    );
-                    errors.extend(constraint_errors);
-                }
-
-                // Recursively check nested object properties
-                if old_type == Some("object") && new_type == Some("object") {
-                    let (nested_compat, nested_errors) = Self::check_schema_compatibility(
-                        old_prop_schema,
-                        new_prop_schema,
-                        check_backward,
-                    );
-                    if !nested_compat {
-                        for err in nested_errors {
-                            errors.push(format!("Property '{prop}': {err}"));
-                        }
-                    }
-                }
+        if let Some(properties) = map.get("properties").and_then(Value::as_object) {
+            for (name, property) in properties {
+                let property_path = if path == "$" {
+                    format!("$.{name}")
+                } else {
+                    format!("{path}.{name}")
+                };
+                Self::collect_object_levels(property, &property_path, supports_unevaluated, levels);
             }
         }
-
-        (errors.is_empty(), errors)
+        if let Some(items) = map.get("items") {
+            Self::collect_object_levels(items, &format!("{path}[]"), supports_unevaluated, levels);
+        }
     }
 }
+
+fn render_diagnostics(diagnostics: &[CompatibilityDiagnostic]) -> Vec<String> {
+    diagnostics
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect()
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -685,12 +1679,12 @@ mod tests {
     use serde_json::json;
 
     // Helper struct for compatibility results
-    #[allow(clippy::struct_excessive_bools)]
     #[derive(Debug, Default)]
+    #[allow(clippy::struct_field_names)]
     struct CompatibilityResult {
-        is_backward_compatible: bool,
-        is_forward_compatible: bool,
-        is_fully_compatible: bool,
+        backward_compatibility: CompatibilityVerdict,
+        forward_compatibility: CompatibilityVerdict,
+        full_compatibility: CompatibilityVerdict,
     }
 
     // Helper function to check schema compatibility
@@ -698,16 +1692,17 @@ mod tests {
         old_schema: &serde_json::Value,
         new_schema: &serde_json::Value,
     ) -> CompatibilityResult {
-        let (is_backward, _) =
+        let (backward_compatibility, _) =
             GtsEntityCastResult::check_backward_compatibility(old_schema, new_schema);
-        let (is_forward, _) =
+        let (forward_compatibility, _) =
             GtsEntityCastResult::check_forward_compatibility(old_schema, new_schema);
-        let is_fully = is_backward && is_forward;
+        let full_compatibility =
+            CompatibilityVerdict::full(backward_compatibility, forward_compatibility);
 
         CompatibilityResult {
-            is_backward_compatible: is_backward,
-            is_forward_compatible: is_forward,
-            is_fully_compatible: is_fully,
+            backward_compatibility,
+            forward_compatibility,
+            full_compatibility,
         }
     }
 
@@ -718,6 +1713,45 @@ mod tests {
 
         let error = SchemaCastError::CastError("cast error".to_owned());
         assert!(error.to_string().contains("cast error"));
+    }
+
+    #[test]
+    fn test_compatibility_verdict_serialization_and_full_derivation() {
+        assert_eq!(
+            serde_json::to_value(CompatibilityVerdict::Compatible).expect("serialize verdict"),
+            json!("compatible")
+        );
+        assert_eq!(
+            serde_json::to_value(CompatibilityVerdict::Incompatible).expect("serialize verdict"),
+            json!("incompatible")
+        );
+        assert_eq!(
+            serde_json::to_value(CompatibilityVerdict::Unknown).expect("serialize verdict"),
+            json!("unknown")
+        );
+        assert_eq!(CompatibilityVerdict::Unknown.to_string(), "unknown");
+
+        assert_eq!(
+            CompatibilityVerdict::full(
+                CompatibilityVerdict::Compatible,
+                CompatibilityVerdict::Compatible
+            ),
+            CompatibilityVerdict::Compatible
+        );
+        assert_eq!(
+            CompatibilityVerdict::full(
+                CompatibilityVerdict::Compatible,
+                CompatibilityVerdict::Unknown
+            ),
+            CompatibilityVerdict::Unknown
+        );
+        assert_eq!(
+            CompatibilityVerdict::full(
+                CompatibilityVerdict::Unknown,
+                CompatibilityVerdict::Incompatible
+            ),
+            CompatibilityVerdict::Incompatible
+        );
     }
 
     #[test]
@@ -759,12 +1793,14 @@ mod tests {
             added_properties: vec![],
             removed_properties: vec![],
             changed_properties: vec![],
-            is_fully_compatible: false,
-            is_backward_compatible: true,
-            is_forward_compatible: false,
+            full_compatibility: CompatibilityVerdict::Incompatible,
+            backward_compatibility: CompatibilityVerdict::Compatible,
+            forward_compatibility: CompatibilityVerdict::Incompatible,
             incompatibility_reasons: vec![],
             backward_errors: vec![],
             forward_errors: vec![],
+            specification_version: specification_version(),
+            implementation_version: implementation_version(),
             casted_entity: None,
             error: None,
         };
@@ -783,6 +1819,14 @@ mod tests {
             json.get("direction").expect("test").as_str().expect("test"),
             "up"
         );
+        assert_eq!(
+            json.get("specification_version").and_then(Value::as_str),
+            Some(crate::GTS_SPECIFICATION_VERSION)
+        );
+        assert_eq!(
+            json.get("implementation_version").and_then(Value::as_str),
+            Some(crate::GTS_IMPLEMENTATION_VERSION)
+        );
     }
 
     #[test]
@@ -795,9 +1839,9 @@ mod tests {
         });
 
         let result = check_schema_compatibility(&schema1, &schema1);
-        assert!(result.is_backward_compatible);
-        assert!(result.is_forward_compatible);
-        assert!(result.is_fully_compatible);
+        assert!(result.backward_compatibility.is_compatible());
+        assert!(result.forward_compatibility.is_compatible());
+        assert!(result.full_compatibility.is_compatible());
     }
 
     #[test]
@@ -818,8 +1862,10 @@ mod tests {
         });
 
         let result = check_schema_compatibility(&old_schema, &new_schema);
-        // Adding optional property is backward compatible
-        assert!(result.is_backward_compatible);
+        // An open model already accepted arbitrary `email` values; declaring
+        // it narrows that set.
+        assert!(result.backward_compatibility.is_incompatible());
+        assert!(result.forward_compatibility.is_compatible());
     }
 
     #[test]
@@ -843,7 +1889,7 @@ mod tests {
 
         let result = check_schema_compatibility(&old_schema, &new_schema);
         // Adding required property is not backward compatible
-        assert!(!result.is_backward_compatible);
+        assert!(result.backward_compatibility.is_incompatible());
     }
 
     #[test]
@@ -864,8 +1910,8 @@ mod tests {
         });
 
         let result = check_schema_compatibility(&old_schema, &new_schema);
-        // Removing property is forward compatible in current implementation
-        assert!(result.is_forward_compatible);
+        assert!(result.backward_compatibility.is_compatible());
+        assert!(result.forward_compatibility.is_incompatible());
     }
 
     #[test]
@@ -881,8 +1927,9 @@ mod tests {
         });
 
         let result = check_schema_compatibility(&old_schema, &new_schema);
-        // Enum expansion: backward compatible (old values still valid)
-        assert!(result.is_backward_compatible);
+        assert!(result.backward_compatibility.is_compatible());
+        assert!(result.forward_compatibility.is_incompatible());
+        assert!(result.full_compatibility.is_incompatible());
     }
 
     #[test]
@@ -898,8 +1945,9 @@ mod tests {
         });
 
         let result = check_schema_compatibility(&old_schema, &new_schema);
-        // Enum reduction: backward compatible (new schema more restrictive)
-        assert!(result.is_backward_compatible);
+        assert!(result.backward_compatibility.is_incompatible());
+        assert!(result.forward_compatibility.is_compatible());
+        assert!(result.full_compatibility.is_incompatible());
     }
 
     #[test]
@@ -912,11 +1960,9 @@ mod tests {
             "type": "number"
         });
 
-        let _result = check_schema_compatibility(&old_schema, &new_schema);
-        // Type change - current implementation may not detect this as incompatible
-        // Just verify it runs without error
-        // assert!(!result.is_backward_compatible);
-        // assert!(!result.is_forward_compatible);
+        let result = check_schema_compatibility(&old_schema, &new_schema);
+        assert!(result.backward_compatibility.is_incompatible());
+        assert!(result.forward_compatibility.is_incompatible());
     }
 
     #[test]
@@ -932,8 +1978,8 @@ mod tests {
         });
 
         let result = check_schema_compatibility(&old_schema, &new_schema);
-        // Tightening minimum is backward compatible (new schema more restrictive)
-        assert!(result.is_backward_compatible);
+        assert!(result.backward_compatibility.is_incompatible());
+        assert!(result.forward_compatibility.is_compatible());
     }
 
     #[test]
@@ -950,7 +1996,7 @@ mod tests {
 
         let result = check_schema_compatibility(&old_schema, &new_schema);
         // Relaxing maximum is backward compatible
-        assert!(result.is_backward_compatible);
+        assert!(result.backward_compatibility.is_compatible());
     }
 
     #[test]
@@ -981,8 +2027,8 @@ mod tests {
         });
 
         let result = check_schema_compatibility(&old_schema, &new_schema);
-        // Adding optional nested property is backward compatible
-        assert!(result.is_backward_compatible);
+        assert!(result.backward_compatibility.is_incompatible());
+        assert!(result.forward_compatibility.is_compatible());
     }
 
     #[test]
@@ -1000,8 +2046,8 @@ mod tests {
         });
 
         let result = check_schema_compatibility(&old_schema, &new_schema);
-        // Tightening string constraints is backward compatible
-        assert!(result.is_backward_compatible);
+        assert!(result.backward_compatibility.is_incompatible());
+        assert!(result.forward_compatibility.is_compatible());
     }
 
     #[test]
@@ -1019,26 +2065,26 @@ mod tests {
         });
 
         let result = check_schema_compatibility(&old_schema, &new_schema);
-        // Tightening array constraints is backward compatible
-        assert!(result.is_backward_compatible);
+        assert!(result.backward_compatibility.is_incompatible());
+        assert!(result.forward_compatibility.is_compatible());
     }
 
     #[test]
     fn test_compatibility_result_default() {
         let result = CompatibilityResult::default();
-        assert!(!result.is_backward_compatible);
-        assert!(!result.is_forward_compatible);
-        assert!(!result.is_fully_compatible);
+        assert!(result.backward_compatibility.is_unknown());
+        assert!(result.forward_compatibility.is_unknown());
+        assert!(result.full_compatibility.is_unknown());
     }
 
     #[test]
     fn test_compatibility_result_fully_compatible() {
         let result = CompatibilityResult {
-            is_backward_compatible: true,
-            is_forward_compatible: true,
-            is_fully_compatible: true,
+            backward_compatibility: CompatibilityVerdict::Compatible,
+            forward_compatibility: CompatibilityVerdict::Compatible,
+            full_compatibility: CompatibilityVerdict::Compatible,
         };
-        assert!(result.is_fully_compatible);
+        assert!(result.full_compatibility.is_compatible());
     }
 
     #[test]
@@ -1054,9 +2100,9 @@ mod tests {
         });
 
         let result = check_schema_compatibility(&old_schema, &new_schema);
-        assert!(result.is_backward_compatible);
-        assert!(result.is_forward_compatible);
-        assert!(result.is_fully_compatible);
+        assert!(result.backward_compatibility.is_compatible());
+        assert!(result.forward_compatibility.is_compatible());
+        assert!(result.full_compatibility.is_compatible());
     }
 
     #[test]
@@ -1092,7 +2138,7 @@ mod tests {
 
         let result = check_schema_compatibility(&old_schema, &new_schema);
         // Adding nested required is not backward compatible
-        assert!(!result.is_backward_compatible);
+        assert!(result.backward_compatibility.is_incompatible());
     }
 
     #[test]
@@ -1122,14 +2168,14 @@ mod tests {
 
         // Either direction should be fully compatible
         let r1 = check_schema_compatibility(&direct, &via_allof);
-        assert!(r1.is_backward_compatible);
-        assert!(r1.is_forward_compatible);
-        assert!(r1.is_fully_compatible);
+        assert!(r1.backward_compatibility.is_compatible());
+        assert!(r1.forward_compatibility.is_compatible());
+        assert!(r1.full_compatibility.is_compatible());
 
         let r2 = check_schema_compatibility(&via_allof, &direct);
-        assert!(r2.is_backward_compatible);
-        assert!(r2.is_forward_compatible);
-        assert!(r2.is_fully_compatible);
+        assert!(r2.backward_compatibility.is_compatible());
+        assert!(r2.forward_compatibility.is_compatible());
+        assert!(r2.full_compatibility.is_compatible());
     }
 
     #[test]
@@ -1147,7 +2193,7 @@ mod tests {
 
         let result = check_schema_compatibility(&old_schema, &new_schema);
         // Removing required is forward-incompatible
-        assert!(!result.is_forward_compatible);
+        assert!(result.forward_compatibility.is_incompatible());
     }
 
     #[test]
@@ -1238,5 +2284,804 @@ mod tests {
         let casted = cast.casted_entity.expect("casted entity");
         assert!(casted.get("extra").is_none());
         assert!(cast.removed_properties.iter().any(|p| p == "extra"));
+    }
+
+    #[test]
+    fn test_closed_model_optional_addition_is_not_fully_compatible() {
+        let old_schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "name": {"type": "string"}
+            }
+        });
+        let new_schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "name": {"type": "string"},
+                "email": {"type": "string"}
+            }
+        });
+
+        let result = check_schema_compatibility(&old_schema, &new_schema);
+        assert!(result.backward_compatibility.is_compatible());
+        assert!(result.forward_compatibility.is_incompatible());
+        assert!(result.full_compatibility.is_incompatible());
+    }
+
+    #[test]
+    fn test_additional_properties_change_without_declared_properties_is_detected() {
+        let old_schema = json!({"type": "object"});
+        let new_schema = json!({
+            "type": "object",
+            "additionalProperties": false
+        });
+
+        let result = check_schema_compatibility(&old_schema, &new_schema);
+        assert!(result.backward_compatibility.is_incompatible());
+        assert!(result.forward_compatibility.is_compatible());
+        assert!(result.full_compatibility.is_incompatible());
+    }
+
+    #[test]
+    fn test_required_change_without_declared_properties_is_detected() {
+        let old_schema = json!({"type": "object"});
+        let new_schema = json!({
+            "type": "object",
+            "required": ["value"]
+        });
+
+        let result = check_schema_compatibility(&old_schema, &new_schema);
+        assert!(result.backward_compatibility.is_incompatible());
+        assert!(result.forward_compatibility.is_compatible());
+        assert!(result.full_compatibility.is_incompatible());
+    }
+
+    #[test]
+    fn test_removing_enum_constraint_is_not_fully_compatible() {
+        let old_schema = json!({
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "enum": ["active", "inactive"]}
+            }
+        });
+        let new_schema = json!({
+            "type": "object",
+            "properties": {
+                "status": {"type": "string"}
+            }
+        });
+
+        let result = check_schema_compatibility(&old_schema, &new_schema);
+        assert!(result.backward_compatibility.is_compatible());
+        assert!(result.forward_compatibility.is_incompatible());
+        assert!(result.full_compatibility.is_incompatible());
+    }
+
+    #[test]
+    fn test_adding_enum_constraint_is_forward_only() {
+        let old_schema = json!({"type": "string"});
+        let new_schema = json!({
+            "type": "string",
+            "enum": ["active", "inactive"]
+        });
+
+        let result = check_schema_compatibility(&old_schema, &new_schema);
+        assert!(result.backward_compatibility.is_incompatible());
+        assert!(result.forward_compatibility.is_compatible());
+        assert!(result.full_compatibility.is_incompatible());
+    }
+
+    #[test]
+    fn test_closed_model_optional_removal_is_forward_only() {
+        let old_schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "name": {"type": "string"},
+                "email": {"type": "string"}
+            }
+        });
+        let new_schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "name": {"type": "string"}
+            }
+        });
+
+        let result = check_schema_compatibility(&old_schema, &new_schema);
+        assert!(result.backward_compatibility.is_incompatible());
+        assert!(result.forward_compatibility.is_compatible());
+        assert!(result.full_compatibility.is_incompatible());
+    }
+
+    #[test]
+    fn test_unevaluated_properties_closes_2020_12_object() {
+        let old_schema = json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "unevaluatedProperties": false,
+            "properties": {"name": {"type": "string"}}
+        });
+        let new_schema = json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "unevaluatedProperties": false,
+            "properties": {
+                "name": {"type": "string"},
+                "email": {"type": "string"}
+            }
+        });
+
+        let result = check_schema_compatibility(&old_schema, &new_schema);
+        assert!(result.backward_compatibility.is_compatible());
+        assert!(result.forward_compatibility.is_incompatible());
+    }
+
+    #[test]
+    fn test_unevaluated_properties_is_ignored_by_draft_07() {
+        let old_schema = json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "unevaluatedProperties": false,
+            "properties": {"name": {"type": "string"}}
+        });
+        let new_schema = json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "unevaluatedProperties": false,
+            "properties": {
+                "name": {"type": "string"},
+                "email": {"type": "string"}
+            }
+        });
+
+        let result = check_schema_compatibility(&old_schema, &new_schema);
+        assert!(result.backward_compatibility.is_incompatible());
+        assert!(result.forward_compatibility.is_compatible());
+    }
+
+    #[test]
+    fn test_partial_content_model_change_is_conservative_and_names_path() {
+        let old_schema = json!({
+            "type": "object",
+            "properties": {
+                "details": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"}
+                }
+            }
+        });
+        let new_schema = json!({
+            "type": "object",
+            "properties": {
+                "details": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"},
+                    "properties": {"count": {"type": "integer"}}
+                }
+            }
+        });
+
+        let (backward, backward_errors) =
+            GtsEntityCastResult::check_backward_compatibility(&old_schema, &new_schema);
+        let (forward, forward_errors) =
+            GtsEntityCastResult::check_forward_compatibility(&old_schema, &new_schema);
+        assert_eq!(backward, CompatibilityVerdict::Unknown);
+        assert_eq!(forward, CompatibilityVerdict::Unknown);
+        assert!(
+            backward_errors
+                .iter()
+                .any(|error| error.contains("$.details") && error.contains("partially open"))
+        );
+        assert!(
+            forward_errors
+                .iter()
+                .any(|error| error.contains("$.details") && error.contains("partially open"))
+        );
+    }
+
+    #[test]
+    fn test_dialect_change_is_not_proven_compatible() {
+        let old_schema = json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "string"
+        });
+        let new_schema = json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "string"
+        });
+
+        let result = check_schema_compatibility(&old_schema, &new_schema);
+        assert!(result.backward_compatibility.is_unknown());
+        assert!(result.forward_compatibility.is_unknown());
+    }
+
+    #[test]
+    fn test_all_of_inherited_closure_controls_property_addition() {
+        let old_schema = json!({
+            "allOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {"name": {"type": "string"}}
+                }
+            ]
+        });
+        let new_schema = json!({
+            "allOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "name": {"type": "string"},
+                        "email": {"type": "string"}
+                    }
+                }
+            ]
+        });
+
+        let result = check_schema_compatibility(&old_schema, &new_schema);
+        assert!(result.backward_compatibility.is_compatible());
+        assert!(result.forward_compatibility.is_incompatible());
+    }
+
+    #[test]
+    fn test_all_of_intersects_duplicate_property_schemas() {
+        let schema = json!({
+            "allOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "value": {"type": "string", "minLength": 1}
+                    }
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "value": {"type": "string", "maxLength": 10}
+                    }
+                }
+            ]
+        });
+
+        let flattened = GtsEntityCastResult::flatten_schema(&schema);
+        assert_eq!(
+            flattened.pointer("/properties/value/minLength"),
+            Some(&json!(1))
+        );
+        assert_eq!(
+            flattened.pointer("/properties/value/maxLength"),
+            Some(&json!(10))
+        );
+    }
+
+    #[test]
+    fn test_definitions_container_change_alone_is_fully_compatible() {
+        // `definitions` is reachable only through `$ref` and never contributes
+        // to Valid(S), so adding an entry nothing references changes nothing.
+        let old_schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "definitions": {
+                "Used": {"type": "object", "additionalProperties": false}
+            },
+            "properties": {"u": {"type": "object", "additionalProperties": false}}
+        });
+        let new_schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "definitions": {
+                "Used": {"type": "object", "additionalProperties": false},
+                "NeverReferenced": {"type": "string"}
+            },
+            "properties": {"u": {"type": "object", "additionalProperties": false}}
+        });
+
+        let result = check_schema_compatibility(&old_schema, &new_schema);
+        assert!(result.full_compatibility.is_compatible());
+    }
+
+    #[test]
+    fn test_resolved_nested_definition_addition_is_backward_only() {
+        // The shape `resolve_schema_refs` produces for a macro-generated
+        // document: the referenced level is inlined and closed, and the
+        // residual `definitions` container must not double-count the change.
+        let level = |extra: bool| {
+            let mut props = json!({"label": {"type": "string"}});
+            if extra {
+                props["note"] = json!({"type": "string"});
+            }
+            json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": props,
+                "required": ["label"]
+            })
+        };
+        let document = |extra: bool| {
+            json!({
+                "type": "object",
+                "additionalProperties": false,
+                "definitions": {"Nested": level(extra)},
+                "properties": {"nested": level(extra)},
+                "required": ["nested"]
+            })
+        };
+
+        let result = check_schema_compatibility(&document(false), &document(true));
+        assert!(result.backward_compatibility.is_compatible());
+        assert!(result.forward_compatibility.is_incompatible());
+    }
+
+    #[test]
+    fn test_differing_unresolved_ref_is_reported_as_unresolved() {
+        let old_schema = json!({
+            "type": "object",
+            "properties": {"target": {"$ref": "gts://gts.x.core.a.b.v1~"}}
+        });
+        let new_schema = json!({
+            "type": "object",
+            "properties": {"target": {"$ref": "gts://gts.x.core.a.b.v2~"}}
+        });
+
+        let (is_backward, backward_errors) =
+            GtsEntityCastResult::check_backward_compatibility(&old_schema, &new_schema);
+        assert!(is_backward.is_unknown());
+        assert!(
+            backward_errors
+                .iter()
+                .any(|error| error.contains("$.target") && error.contains("unresolved '$ref'")),
+            "{backward_errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_identical_unresolved_ref_needs_no_resolution() {
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {"target": {"$ref": "gts://gts.x.core.a.b.v1~"}}
+        });
+
+        let result = check_schema_compatibility(&schema, &schema);
+        assert!(result.full_compatibility.is_compatible());
+    }
+
+    fn property_change(old_property: Value, new_property: Value) -> CompatibilityResult {
+        let document = |property: Value| {
+            json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {"value": property},
+                "required": ["value"]
+            })
+        };
+        check_schema_compatibility(&document(old_property), &document(new_property))
+    }
+
+    /// Bound keywords must be compared whenever present, never gated on `type`.
+    /// Gating on the old schema's `type` reported a real narrowing as fully
+    /// compatible whenever `type` was absent or written as an array.
+    #[test]
+    fn test_numeric_bounds_are_checked_without_a_type_keyword() {
+        let result = property_change(json!({"minimum": 0}), json!({"minimum": 5}));
+        assert!(result.backward_compatibility.is_incompatible());
+        assert!(result.forward_compatibility.is_compatible());
+
+        let result = property_change(
+            json!({"type": ["integer"], "minimum": 0}),
+            json!({"type": ["integer"], "minimum": 5}),
+        );
+        assert!(result.backward_compatibility.is_incompatible());
+        assert!(result.forward_compatibility.is_compatible());
+    }
+
+    #[test]
+    fn test_exclusive_and_size_bounds_are_directional() {
+        for (min_key, max_key) in [
+            ("exclusiveMinimum", "exclusiveMaximum"),
+            ("minProperties", "maxProperties"),
+        ] {
+            let relaxed = property_change(json!({max_key: 10}), json!({max_key: 100}));
+            assert!(
+                relaxed.backward_compatibility.is_compatible(),
+                "relaxing {max_key}"
+            );
+            assert!(
+                relaxed.forward_compatibility.is_incompatible(),
+                "relaxing {max_key}"
+            );
+
+            let tightened = property_change(json!({min_key: 1}), json!({min_key: 5}));
+            assert!(
+                tightened.backward_compatibility.is_incompatible(),
+                "tightening {min_key}"
+            );
+            assert!(
+                tightened.forward_compatibility.is_compatible(),
+                "tightening {min_key}"
+            );
+        }
+    }
+
+    /// Draft-04 spells `exclusiveMinimum` as a boolean modifier, which a numeric
+    /// comparison would silently ignore.
+    #[test]
+    fn test_boolean_exclusive_minimum_is_not_silently_ignored() {
+        let result = property_change(
+            json!({"type": "integer", "minimum": 1, "exclusiveMinimum": false}),
+            json!({"type": "integer", "minimum": 1, "exclusiveMinimum": true}),
+        );
+        assert!(result.backward_compatibility.is_unknown());
+        assert!(result.forward_compatibility.is_unknown());
+    }
+
+    #[test]
+    fn test_type_is_compared_as_a_set() {
+        // Dropping `null` from an `Option<T>` union narrows the accepted set.
+        let narrowed = property_change(
+            json!({"type": ["string", "null"]}),
+            json!({"type": "string"}),
+        );
+        assert!(narrowed.backward_compatibility.is_incompatible());
+        assert!(narrowed.forward_compatibility.is_compatible());
+
+        // Member order carries no meaning.
+        let reordered = property_change(
+            json!({"type": ["string", "null"]}),
+            json!({"type": ["null", "string"]}),
+        );
+        assert!(reordered.full_compatibility.is_compatible());
+
+        // Widening a union accepts everything the old union did.
+        let widened = property_change(
+            json!({"type": "string"}),
+            json!({"type": ["string", "null"]}),
+        );
+        assert!(widened.backward_compatibility.is_compatible());
+        assert!(widened.forward_compatibility.is_incompatible());
+
+        // `integer` remains a subset of `number` inside a union.
+        let promoted = property_change(
+            json!({"type": ["integer", "null"]}),
+            json!({"type": ["number", "null"]}),
+        );
+        assert!(promoted.backward_compatibility.is_compatible());
+        assert!(promoted.forward_compatibility.is_incompatible());
+    }
+
+    #[test]
+    fn test_narrowing_keyword_presence_is_directional() {
+        for keyword in ["pattern", "format", "multipleOf"] {
+            let value = if keyword == "multipleOf" {
+                json!(5)
+            } else if keyword == "format" {
+                json!("date-time")
+            } else {
+                json!("^a+$")
+            };
+
+            let added = property_change(json!({}), json!({keyword: value.clone()}));
+            assert!(
+                added.backward_compatibility.is_incompatible(),
+                "adding {keyword}"
+            );
+            assert!(
+                added.forward_compatibility.is_compatible(),
+                "adding {keyword}"
+            );
+
+            let removed = property_change(json!({keyword: value}), json!({}));
+            assert!(
+                removed.backward_compatibility.is_compatible(),
+                "removing {keyword}"
+            );
+            assert!(
+                removed.forward_compatibility.is_incompatible(),
+                "removing {keyword}"
+            );
+        }
+    }
+
+    /// Two different regexes cannot be ordered by inclusion, so neither
+    /// direction is provable - and the diagnostic must say so rather than imply
+    /// the change is breaking.
+    #[test]
+    fn test_changed_pattern_is_reported_as_unprovable() {
+        let (_, errors) = GtsEntityCastResult::check_backward_compatibility(
+            &json!({"type": "string", "pattern": "^a+$"}),
+            &json!({"type": "string", "pattern": "^[ab]+$"}),
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("cannot be proven")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_unique_items_defaults_to_false() {
+        let enabled = property_change(
+            json!({"type": "array"}),
+            json!({"type": "array", "uniqueItems": true}),
+        );
+        assert!(enabled.backward_compatibility.is_incompatible());
+        assert!(enabled.forward_compatibility.is_compatible());
+
+        let disabled = property_change(
+            json!({"type": "array", "uniqueItems": true}),
+            json!({"type": "array", "uniqueItems": false}),
+        );
+        assert!(disabled.backward_compatibility.is_compatible());
+        assert!(disabled.forward_compatibility.is_incompatible());
+
+        // Spelling out the default changes no accepted instance.
+        let no_op = property_change(
+            json!({"type": "array", "uniqueItems": false}),
+            json!({"type": "array"}),
+        );
+        assert!(no_op.full_compatibility.is_compatible());
+    }
+
+    /// An omitted `$schema` means "the dialect the implementation applies", so
+    /// starting to declare a dialect that was already in effect is not a change.
+    #[test]
+    fn test_declaring_a_previously_omitted_dialect_is_compatible() {
+        let result = check_schema_compatibility(
+            &json!({"type": "object", "additionalProperties": false}),
+            &json!({
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "additionalProperties": false
+            }),
+        );
+        assert!(result.full_compatibility.is_compatible());
+    }
+
+    /// The `unevaluatedProperties` decision must follow the dialect that is in
+    /// effect, including when only one definition spells it out.
+    #[test]
+    fn test_omitted_dialect_inherits_unevaluated_support() {
+        let result = check_schema_compatibility(
+            &json!({
+                "type": "object",
+                "unevaluatedProperties": false,
+                "properties": {"name": {"type": "string"}}
+            }),
+            &json!({
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "unevaluatedProperties": false,
+                "properties": {
+                    "name": {"type": "string"},
+                    "email": {"type": "string"}
+                }
+            }),
+        );
+        assert!(result.backward_compatibility.is_compatible());
+        assert!(result.forward_compatibility.is_incompatible());
+    }
+
+    #[test]
+    fn test_boolean_equivalent_property_schemas_classify_semantically() {
+        let additional_open = json!({
+            "type": "object",
+            "additionalProperties": {}
+        });
+        let additional_closed = json!({
+            "type": "object",
+            "additionalProperties": {"not": {}}
+        });
+        let property_names_open = json!({
+            "type": "object",
+            "propertyNames": {}
+        });
+        let property_names_closed = json!({
+            "type": "object",
+            "propertyNames": {"not": {}}
+        });
+        let closed_fallback_with_name_constraint = json!({
+            "type": "object",
+            "additionalProperties": {"not": {}},
+            "propertyNames": {"type": "string"}
+        });
+        let closed_names_with_pattern = json!({
+            "type": "object",
+            "propertyNames": {"not": {}},
+            "patternProperties": {".*": {}}
+        });
+        let open_pattern = json!({
+            "type": "object",
+            "patternProperties": {"^x-": {}}
+        });
+        let closed_pattern = json!({
+            "type": "object",
+            "additionalProperties": {"not": {}},
+            "patternProperties": {"^x-": {"not": {}}}
+        });
+        let explicit_open_additional_precedes_unevaluated = json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "additionalProperties": {},
+            "unevaluatedProperties": {"not": {}}
+        });
+
+        for (schema, expected) in [
+            (additional_open, ContentModel::Open),
+            (additional_closed, ContentModel::Closed),
+            (property_names_open, ContentModel::Open),
+            (property_names_closed, ContentModel::Closed),
+            (closed_fallback_with_name_constraint, ContentModel::Closed),
+            (closed_names_with_pattern, ContentModel::Closed),
+            (open_pattern, ContentModel::Open),
+            (closed_pattern, ContentModel::Closed),
+            (
+                explicit_open_additional_precedes_unevaluated,
+                ContentModel::Open,
+            ),
+        ] {
+            let levels = GtsEntityCastResult::classify_object_levels(&schema);
+            assert_eq!(
+                levels.first().map(|level| level.content_model),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn test_boolean_equivalent_additional_properties_drive_compatibility() {
+        let added_property = |additional_properties: Value| {
+            check_schema_compatibility(
+                &json!({
+                    "type": "object",
+                    "additionalProperties": additional_properties
+                }),
+                &json!({
+                    "type": "object",
+                    "additionalProperties": additional_properties,
+                    "properties": {"name": {"type": "string"}}
+                }),
+            )
+        };
+
+        let open = added_property(json!({}));
+        assert!(open.backward_compatibility.is_incompatible());
+        assert!(open.forward_compatibility.is_compatible());
+
+        let closed = added_property(json!({"not": {}}));
+        assert!(closed.backward_compatibility.is_compatible());
+        assert!(closed.forward_compatibility.is_incompatible());
+    }
+
+    /// §4.4 requires the content model to be read per object level from the
+    /// resolved effective schema, and §4.4.1's closed-envelope shape puts the
+    /// level that decides evolvability inside an extension container rather
+    /// than at the document root.
+    #[test]
+    fn test_classify_object_levels_reports_every_level() {
+        let schema = json!({
+            "$schema": "http://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "envelope_field": {"type": "string"},
+                "payload": {
+                    "type": "object",
+                    "properties": {
+                        "own": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {"a": {"type": "string"}}
+                        }
+                    }
+                },
+                "labels": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"}
+                },
+                "closed_by_unevaluated": {
+                    "type": "object",
+                    "unevaluatedProperties": false,
+                    "properties": {"b": {"type": "string"}}
+                },
+                "rows": {
+                    "type": "array",
+                    "items": {"type": "object", "properties": {"c": {"type": "string"}}}
+                }
+            }
+        });
+
+        let levels: HashMap<String, ContentModel> =
+            GtsEntityCastResult::classify_object_levels(&schema)
+                .into_iter()
+                .map(|level| (level.path, level.content_model))
+                .collect();
+
+        assert_eq!(levels.get("$"), Some(&ContentModel::Closed));
+        assert_eq!(levels.get("$.payload"), Some(&ContentModel::Open));
+        assert_eq!(levels.get("$.payload.own"), Some(&ContentModel::Closed));
+        assert_eq!(levels.get("$.labels"), Some(&ContentModel::Partial));
+        assert_eq!(
+            levels.get("$.closed_by_unevaluated"),
+            Some(&ContentModel::Closed)
+        );
+        assert_eq!(levels.get("$.rows[]"), Some(&ContentModel::Open));
+        // A scalar property is not an object level.
+        assert!(!levels.contains_key("$.envelope_field"));
+
+        // Evolvability is exactly closure.
+        assert!(ContentModel::Closed.is_evolvable_in_place());
+        assert!(!ContentModel::Open.is_evolvable_in_place());
+        assert!(!ContentModel::Partial.is_evolvable_in_place());
+    }
+
+    /// A level closed only through `allOf` composition must classify as closed,
+    /// not as the open level it looks like in isolation.
+    #[test]
+    fn test_classify_object_levels_uses_the_effective_schema() {
+        let schema = json!({
+            "allOf": [
+                {"type": "object", "additionalProperties": false},
+                {"type": "object", "properties": {"a": {"type": "string"}}}
+            ]
+        });
+
+        let levels = GtsEntityCastResult::classify_object_levels(&schema);
+        assert_eq!(
+            levels.first().map(|level| level.content_model),
+            Some(ContentModel::Closed)
+        );
+    }
+
+    #[test]
+    fn test_diagnostics_carry_the_schema_location_and_kind() {
+        let old_schema = json!({
+            "type": "object",
+            "properties": {
+                "payload": {"type": "object", "properties": {"a": {"type": "string"}}}
+            }
+        });
+        let new_schema = json!({
+            "type": "object",
+            "properties": {
+                "payload": {
+                    "type": "object",
+                    "properties": {"a": {"type": "string"}, "b": {"type": "string"}}
+                }
+            }
+        });
+
+        let (compatible, diagnostics) =
+            GtsEntityCastResult::check_backward_diagnostics(&old_schema, &new_schema);
+        assert!(compatible.is_incompatible());
+        let finding = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.path == "$.payload")
+            .expect("the offending level must be named, not the document root");
+        assert_eq!(finding.finding, CompatibilityFinding::PropertyAdded);
+        assert_eq!(
+            finding.to_string(),
+            "Schema at '$.payload' adds property 'b' in a open model"
+        );
+    }
+
+    /// A caller that fails closed treats both alike, but an owner needs to tell
+    /// "we cannot decide this" from "this is known to break".
+    #[test]
+    fn test_undecidable_changes_are_reported_as_not_provable() {
+        let (_, diagnostics) = GtsEntityCastResult::check_backward_diagnostics(
+            &json!({"type": "string", "pattern": "^a+$"}),
+            &json!({"type": "string", "pattern": "^[ab]+$"}),
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.finding == CompatibilityFinding::NotProvable),
+            "{diagnostics:?}"
+        );
     }
 }
