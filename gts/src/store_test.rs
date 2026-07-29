@@ -713,9 +713,66 @@ fn test_gts_store_cast_entity_without_schema() {
 #[test]
 fn test_gts_store_is_minor_compatible_missing_schemas() {
     let mut store = GtsStore::new();
-    let result = store.is_minor_compatible("nonexistent1~", "nonexistent2~");
+    let result = store.is_minor_compatible(
+        "gts.vendor.package.namespace.nonexistent1.v1~",
+        "gts.vendor.package.namespace.nonexistent2.v1~",
+    );
     assert!(result.backward_compatibility.is_unknown());
     assert_eq!(result.error.as_deref(), Some("Schema not found"));
+}
+
+/// A malformed id is not an unregistered type, so it reports itself instead of
+/// borrowing the "Schema not found" wording.
+#[test]
+fn test_gts_store_is_compatible_reports_malformed_type_id() {
+    let mut store = GtsStore::new();
+    let result = store.is_compatible("nonexistent1~", "gts.vendor.package.namespace.type.v1~");
+    assert!(result.backward_compatibility.is_unknown());
+    let error = result.error.expect("a malformed id must be reported");
+    assert!(
+        error.starts_with("Invalid GTS type id: "),
+        "expected the id parse error, got: {error}"
+    );
+}
+
+#[test]
+fn test_gts_store_is_compatible_rejects_non_schema_entity() {
+    let mut store = GtsStore::new();
+    let cfg = GtsConfig::default();
+    let old_id = "gts.vendor.package.namespace.type.v1.0~";
+    let new_id = "gts.vendor.package.namespace.type.v1.1~";
+    let content = json!({
+        "id": old_id,
+        "name": "not a schema"
+    });
+    let entity = GtsEntity::new(
+        None,
+        None,
+        &content,
+        Some(&cfg),
+        Some(GtsId::try_new(old_id).expect("test")),
+        false,
+        String::new(),
+        None,
+        None,
+    );
+    store.register(entity).expect("register instance");
+    store
+        .register_schema(
+            new_id,
+            &json!({
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object"
+            }),
+        )
+        .expect("register schema");
+
+    let result = store.is_compatible(old_id, new_id);
+    assert!(result.full_compatibility.is_unknown());
+    assert_eq!(
+        result.error.as_deref(),
+        Some("Entity is invalid: Entity 'gts.vendor.package.namespace.type.v1.0~' is not a schema")
+    );
 }
 
 #[test]

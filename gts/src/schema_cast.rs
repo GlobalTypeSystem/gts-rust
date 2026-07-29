@@ -1,3 +1,4 @@
+use num_cmp::NumCmp;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
@@ -411,6 +412,42 @@ fn record_unproven_intersection(schema: &mut Map<String, Value>, reason: String)
 }
 
 impl GtsEntityCastResult {
+    /// Builds an error result for a compatibility or cast outcome that could not
+    /// be decided.
+    pub(crate) fn undecided(from_id: &str, to_id: &str, message: impl Into<String>) -> Self {
+        Self::undecided_with_direction(from_id, to_id, "unknown", message)
+    }
+
+    /// Same as [`Self::undecided`], retaining a direction already established
+    /// independently of the failed compatibility check.
+    pub(crate) fn undecided_with_direction(
+        from_id: &str,
+        to_id: &str,
+        direction: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            from_id: from_id.to_owned(),
+            to_id: to_id.to_owned(),
+            old: from_id.to_owned(),
+            new: to_id.to_owned(),
+            direction: direction.into(),
+            added_properties: Vec::new(),
+            removed_properties: Vec::new(),
+            changed_properties: Vec::new(),
+            full_compatibility: CompatibilityVerdict::Unknown,
+            backward_compatibility: CompatibilityVerdict::Unknown,
+            forward_compatibility: CompatibilityVerdict::Unknown,
+            incompatibility_reasons: Vec::new(),
+            backward_errors: Vec::new(),
+            forward_errors: Vec::new(),
+            specification_version: specification_version(),
+            implementation_version: implementation_version(),
+            casted_entity: None,
+            error: Some(message.into()),
+        }
+    }
+
     /// Casts an instance from one schema to another.
     ///
     /// # Errors
@@ -842,13 +879,20 @@ impl GtsEntityCastResult {
         exclusive_key: &str,
         is_lower: bool,
     ) -> Result<Option<(f64, bool)>, ()> {
+        // `total_cmp` orders `-0.0` below `0.0`, but the two denote the same JSON
+        // number and must compare equal, so the sign of zero is dropped as the
+        // bound is read.
+        let bound_value = |value: &Value| -> Result<f64, ()> {
+            let value = value.as_f64().ok_or(())?;
+            Ok(if value == 0.0 { 0.0 } else { value })
+        };
         let inclusive = match schema.get(inclusive_key) {
-            Some(value) => Some((value.as_f64().ok_or(())?, false)),
+            Some(value) => Some((bound_value(value)?, false)),
             None => None,
         };
         let exclusive = match schema.get(exclusive_key) {
             Some(Value::Bool(is_exclusive)) => inclusive.map(|(value, _)| (value, *is_exclusive)),
-            Some(value) => Some((value.as_f64().ok_or(())?, true)),
+            Some(value) => Some((bound_value(value)?, true)),
             None => None,
         };
 
@@ -1017,6 +1061,13 @@ impl GtsEntityCastResult {
                 let old_value = old_schema.get(*keyword);
                 let new_value = new_schema.get(*keyword);
                 match (old_value, new_value) {
+                    // `multipleOf` is a number, so the two spellings of one
+                    // mathematical value are not a change.
+                    (Some(old_value), Some(new_value))
+                        if json_values_equal(old_value, new_value) =>
+                    {
+                        None
+                    }
                     _ if old_value == new_value => None,
                     // Added: narrows, so forward-only.
                     (None, Some(_)) if check_backward => Some(CompatibilityDiagnostic::new(
@@ -1093,12 +1144,14 @@ impl GtsEntityCastResult {
             match value {
                 Value::Null => "null",
                 Value::Bool(_) => "boolean",
+                // JSON Schema's `integer` matches a number with a zero
+                // fractional part, so `1.0` is an integer. The test must be
+                // exact: a tolerance would also swallow tiny nonzero fractions
+                // such as `1e-20`, which no `integer` schema accepts.
                 Value::Number(number)
                     if number.is_i64()
                         || number.is_u64()
-                        || number
-                            .as_f64()
-                            .is_some_and(|value| value.fract().abs() < f64::EPSILON) =>
+                        || number.as_f64().is_some_and(|value| value.fract() == 0.0) =>
                 {
                     "integer"
                 }
@@ -1121,17 +1174,12 @@ impl GtsEntityCastResult {
                     }),
                 Some(_) => TypeSet::Invalid,
                 None => {
-                    let values: Option<Vec<&Value>> = if let Some(value) = schema.get("const") {
-                        Some(vec![value])
-                    } else {
-                        schema
-                            .get("enum")
-                            .and_then(Value::as_array)
-                            .map(|values| values.iter().collect())
-                    };
+                    // With no `type`, the effective types are those of the
+                    // values `const` and `enum` accept between them.
+                    let values = GtsEntityCastResult::accepted_value_set(schema);
                     values.map_or(TypeSet::Any, |values| {
                         let mut names = Vec::new();
-                        for value in values {
+                        for value in &values {
                             let name = value_type(value).to_owned();
                             if !names.contains(&name) {
                                 names.push(name);
@@ -1182,49 +1230,91 @@ impl GtsEntityCastResult {
         }
     }
 
-    fn check_enum_compatibility(
+    /// The finite set of instances a level accepts through `const` and `enum`,
+    /// or `None` when neither keyword constrains it.
+    ///
+    /// An instance must satisfy every keyword present, so two coexisting
+    /// keywords accept their intersection - possibly nothing at all.
+    fn accepted_value_set(schema: &Map<String, Value>) -> Option<Vec<Value>> {
+        // A non-array `enum` is not a valid constraint and nothing can be read
+        // from it, which is what `as_array` returning `None` expresses here.
+        let enumeration = schema.get("enum").and_then(Value::as_array);
+        match (schema.get("const"), enumeration) {
+            (None, None) => None,
+            (Some(constant), None) => Some(vec![constant.clone()]),
+            (None, Some(values)) => Some(values.clone()),
+            (Some(constant), Some(values)) => Some(
+                values
+                    .iter()
+                    .filter(|value| json_values_equal(value, constant))
+                    .cloned()
+                    .collect(),
+            ),
+        }
+    }
+
+    /// Compares the value sets `const` and `enum` impose, as one set.
+    ///
+    /// Both keywords restrict which concrete instances are accepted, so a
+    /// revision that moves between the two spellings only has a meaning when
+    /// they are read together: checking each keyword against its own
+    /// counterpart would read a keyword that is merely absent as an
+    /// unconstrained target and report the equivalent rewrite of
+    /// `{"const": 1}` into `{"enum": [1]}` as incompatible in both directions.
+    fn check_value_set_compatibility(
         path: &str,
         old_schema: &Map<String, Value>,
         new_schema: &Map<String, Value>,
         check_backward: bool,
     ) -> Vec<CompatibilityDiagnostic> {
-        let old_enum = old_schema.get("enum").and_then(Value::as_array);
-        let new_enum = new_schema.get("enum").and_then(Value::as_array);
-
-        let incompatible_values: Vec<&Value> = match (old_enum, new_enum, check_backward) {
-            // Backward checks Valid(old) ⊆ Valid(new); forward checks the
-            // reverse inclusion. Expanding an enum is therefore backward-only.
-            (Some(old), Some(new), true) => {
-                old.iter().filter(|value| !new.contains(value)).collect()
-            }
-            (Some(old), Some(new), false) => {
-                new.iter().filter(|value| !old.contains(value)).collect()
-            }
-            (None, Some(_), true) | (Some(_), None, false) => {
-                return vec![CompatibilityDiagnostic::new(
-                    path,
-                    CompatibilityFinding::EnumChanged,
-                    format!(
-                        "{} enum constraint",
-                        if old_enum.is_some() {
-                            "removes"
-                        } else {
-                            "adds"
-                        }
-                    ),
-                )];
-            }
-            _ => Vec::new(),
+        let old_values = Self::accepted_value_set(old_schema);
+        let new_values = Self::accepted_value_set(new_schema);
+        // Backward checks Valid(old) ⊆ Valid(new); forward checks the reverse
+        // inclusion. Expanding the set is therefore backward-only.
+        let (source, target) = if check_backward {
+            (old_values.as_deref(), new_values.as_deref())
+        } else {
+            (new_values.as_deref(), old_values.as_deref())
+        };
+        let finding = if old_schema.contains_key("enum") || new_schema.contains_key("enum") {
+            CompatibilityFinding::EnumChanged
+        } else {
+            CompatibilityFinding::ConstraintChanged
         };
 
-        if incompatible_values.is_empty() {
-            Vec::new()
-        } else {
-            vec![CompatibilityDiagnostic::new(
+        match (source, target) {
+            // An unconstrained target accepts every value the source permits.
+            (_, None) => Vec::new(),
+            (None, Some(_)) => vec![CompatibilityDiagnostic::new(
                 path,
-                CompatibilityFinding::EnumChanged,
-                format!("changes enum incompatibly: {incompatible_values:?}"),
-            )]
+                finding,
+                format!(
+                    "{} the 'const'/'enum' value constraint",
+                    if check_backward { "adds" } else { "removes" }
+                ),
+            )],
+            (Some(source), Some(target)) => {
+                let incompatible_values: Vec<&Value> = source
+                    .iter()
+                    .filter(|value| {
+                        !target
+                            .iter()
+                            .any(|accepted| json_values_equal(value, accepted))
+                    })
+                    .collect();
+                if incompatible_values.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![CompatibilityDiagnostic::new(
+                        path,
+                        finding,
+                        format!(
+                            "changes the 'const'/'enum' value set incompatibly: \
+                             {incompatible_values:?}"
+                        ),
+                    )]
+                }
+            }
         }
     }
 
@@ -1276,37 +1366,6 @@ impl GtsEntityCastResult {
                 )
             })
             .collect()
-    }
-
-    fn check_const_compatibility(
-        path: &str,
-        old_schema: &Map<String, Value>,
-        new_schema: &Map<String, Value>,
-        check_backward: bool,
-    ) -> Vec<CompatibilityDiagnostic> {
-        let old_const = old_schema.get("const");
-        let new_const = new_schema.get("const");
-        if old_const == new_const {
-            return Vec::new();
-        }
-
-        let (source, target) = if check_backward {
-            (old_const, new_const)
-        } else {
-            (new_const, old_const)
-        };
-        // A source constrained to one value is included in an unconstrained
-        // target. The reverse is not; two different singleton sets are
-        // disjoint and therefore incompatible in either direction.
-        if source.is_some() && target.is_none() {
-            return Vec::new();
-        }
-
-        vec![CompatibilityDiagnostic::new(
-            path,
-            CompatibilityFinding::ConstraintChanged,
-            "changes 'const' constraint incompatibly".to_owned(),
-        )]
     }
 
     /// Reports a `$ref` that survived resolution.
@@ -1410,13 +1469,7 @@ impl GtsEntityCastResult {
             new_map,
             check_backward,
         ));
-        errors.extend(Self::check_enum_compatibility(
-            path,
-            old_map,
-            new_map,
-            check_backward,
-        ));
-        errors.extend(Self::check_const_compatibility(
+        errors.extend(Self::check_value_set_compatibility(
             path,
             old_map,
             new_map,
@@ -1812,19 +1865,31 @@ impl GtsEntityCastResult {
         }
         let effective_old = declared_old.or(declared_new);
         let effective_new = declared_new.or(declared_old);
-        let supports_unevaluated = |dialect: Option<&str>| {
-            dialect.is_some_and(|value| value.contains("2019-09") || value.contains("2020-12"))
-        };
         Self::check_schema_node_compatibility(
             old_schema,
             new_schema,
             "$",
             check_backward,
-            supports_unevaluated(effective_old),
-            supports_unevaluated(effective_new),
+            Self::dialect_supports_unevaluated(effective_old),
+            Self::dialect_supports_unevaluated(effective_new),
             &mut errors,
         );
         (CompatibilityVerdict::from_diagnostics(&errors), errors)
+    }
+
+    /// Whether `unevaluatedProperties` is evaluated under `dialect`.
+    ///
+    /// The keyword exists from Draft 2019-09 on; earlier dialects ignore it as
+    /// an unknown annotation. An omitted `$schema` means "whatever dialect the
+    /// implementation applies" - GTS is dialect-agnostic (sec 11) and names no
+    /// default - and this implementation validates instances with
+    /// [`jsonschema::validator_for`], which falls back to Draft 2020-12. Reading
+    /// an omitted dialect as pre-2019-09 would therefore make this checker
+    /// contradict the validator running in the same process: a level closed by
+    /// `unevaluatedProperties: false` would be classified open, which reverses
+    /// both verdicts for an added optional property.
+    fn dialect_supports_unevaluated(dialect: Option<&str>) -> bool {
+        dialect.is_none_or(|value| value.contains("2019-09") || value.contains("2020-12"))
     }
 
     /// Classifies the content model of every object level of a schema.
@@ -1845,8 +1910,7 @@ impl GtsEntityCastResult {
     #[must_use]
     pub fn classify_object_levels(schema: &Value) -> Vec<ObjectLevel> {
         let dialect = schema.get("$schema").and_then(Value::as_str);
-        let supports_unevaluated =
-            dialect.is_some_and(|value| value.contains("2019-09") || value.contains("2020-12"));
+        let supports_unevaluated = Self::dialect_supports_unevaluated(dialect);
         let mut levels = Vec::new();
         Self::collect_object_levels(schema, "$", supports_unevaluated, &mut levels);
         levels
@@ -1894,6 +1958,96 @@ impl GtsEntityCastResult {
             Self::collect_object_levels(items, &format!("{path}[]"), supports_unevaluated, levels);
         }
     }
+}
+
+/// Compares two JSON values the way JSON Schema compares instances.
+///
+/// `serde_json`'s `PartialEq` distinguishes the integer and float
+/// representations of a number, but JSON Schema equality - the relation `const`
+/// and `enum` are defined in terms of - compares numbers by mathematical
+/// value, so `1` and `1.0` denote the same instance. Composites
+/// compare member by member, which makes the numeric rule apply at any depth;
+/// every other value type compares as `serde_json` already does.
+fn json_values_equal(left: &Value, right: &Value) -> bool {
+    match (left, right) {
+        (Value::Number(left), Value::Number(right)) => json_numbers_equal(left, right),
+        (Value::Array(left), Value::Array(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right.iter())
+                    .all(|(left, right)| json_values_equal(left, right))
+        }
+        // Object member order carries no meaning, so equal length plus a match
+        // for every key of one side is equality.
+        (Value::Object(left), Value::Object(right)) => {
+            left.len() == right.len()
+                && left.iter().all(|(key, left)| {
+                    right
+                        .get(key)
+                        .is_some_and(|right| json_values_equal(left, right))
+                })
+        }
+        _ => left == right,
+    }
+}
+
+/// Compares two JSON numbers by mathematical value.
+#[allow(
+    clippy::float_cmp,
+    reason = "JSON Schema equality is exact equality of the mathematical value"
+)]
+fn json_numbers_equal(left: &serde_json::Number, right: &serde_json::Number) -> bool {
+    // Integers are compared as integers: routing them through `f64` would round
+    // the 64-bit values a double cannot represent exactly and call two distinct
+    // numbers equal.
+    if let (Some(left), Some(right)) = (left.as_u64(), right.as_u64()) {
+        return left == right;
+    }
+    if let (Some(left), Some(right)) = (left.as_i64(), right.as_i64()) {
+        return left == right;
+    }
+
+    let left_integer = left.is_u64() || left.is_i64();
+    let right_integer = right.is_u64() || right.is_i64();
+    // Two integers that neither comparison above could pair up are one negative
+    // value and one above `i64::MAX`, so they are not equal.
+    if left_integer && right_integer {
+        return false;
+    }
+    // One integer and one float. The pair is compared exactly rather than by
+    // converting both sides to `f64`, which would round `2^53 + 1` down to
+    // `2^53` and report two different mathematical values - two different
+    // accepted-instance sets - as equal. This is the comparator `jsonschema`
+    // applies to a mixed pair when it validates the same instance.
+    if left_integer {
+        return right
+            .as_f64()
+            .is_some_and(|right| integer_equals_float(left, right));
+    }
+    if right_integer {
+        return left
+            .as_f64()
+            .is_some_and(|left| integer_equals_float(right, left));
+    }
+
+    match (left.as_f64(), right.as_f64()) {
+        (Some(left), Some(right)) => left == right,
+        // Not representable as `f64`, which needs `serde_json`'s
+        // `arbitrary_precision`; the stored representation is all that is left
+        // to compare.
+        _ => left == right,
+    }
+}
+
+/// Compares an integer-valued JSON number to a float, exactly.
+fn integer_equals_float(integer: &serde_json::Number, float: f64) -> bool {
+    if let Some(integer) = integer.as_u64() {
+        return NumCmp::num_eq(integer, float);
+    }
+    integer
+        .as_i64()
+        .is_some_and(|integer| NumCmp::num_eq(integer, float))
 }
 
 fn render_diagnostics(diagnostics: &[CompatibilityDiagnostic]) -> Vec<String> {
@@ -1992,6 +2146,38 @@ mod tests {
             "gts.vendor.package.namespace.type.v1.1~abc.app.custom.event.v1.1", // v1.1 has higher minor version
         );
         assert_eq!(direction, "up");
+    }
+
+    #[test]
+    fn test_undecided_result_initializes_error_contract() {
+        let result = GtsEntityCastResult::undecided("old", "new", "could not decide");
+
+        assert_eq!(result.from_id, "old");
+        assert_eq!(result.to_id, "new");
+        assert_eq!(result.direction, "unknown");
+        assert!(result.full_compatibility.is_unknown());
+        assert!(result.backward_compatibility.is_unknown());
+        assert!(result.forward_compatibility.is_unknown());
+        assert!(result.added_properties.is_empty());
+        assert!(result.removed_properties.is_empty());
+        assert!(result.changed_properties.is_empty());
+        assert!(result.incompatibility_reasons.is_empty());
+        assert!(result.backward_errors.is_empty());
+        assert!(result.forward_errors.is_empty());
+        assert_eq!(
+            result.specification_version,
+            crate::GTS_SPECIFICATION_VERSION
+        );
+        assert_eq!(
+            result.implementation_version,
+            crate::GTS_IMPLEMENTATION_VERSION
+        );
+        assert!(result.casted_entity.is_none());
+        assert_eq!(result.error.as_deref(), Some("could not decide"));
+
+        let directed =
+            GtsEntityCastResult::undecided_with_direction("old", "new", "up", "resolution failed");
+        assert_eq!(directed.direction, "up");
     }
 
     #[test]
@@ -2621,6 +2807,120 @@ mod tests {
         assert!(removed.forward_compatibility.is_incompatible());
     }
 
+    /// `const` and `enum` constrain the same thing, so a revision that moves
+    /// between the two spellings must be read as one value set.
+    #[test]
+    fn test_const_and_enum_form_one_value_set() {
+        // Valid({"const": 1}) = Valid({"enum": [1]}) = {1}.
+        let rewritten = property_change(json!({"const": 1}), json!({"enum": [1]}));
+        assert!(rewritten.full_compatibility.is_compatible());
+
+        let rewritten_back = property_change(json!({"enum": [1]}), json!({"const": 1}));
+        assert!(rewritten_back.full_compatibility.is_compatible());
+
+        // Widening the singleton into a larger set is backward-only.
+        let widened = property_change(json!({"const": 1}), json!({"enum": [1, 2]}));
+        assert!(widened.backward_compatibility.is_compatible());
+        assert!(widened.forward_compatibility.is_incompatible());
+
+        // Narrowing an enum down to one of its members is forward-only.
+        let narrowed = property_change(json!({"enum": [1, 2]}), json!({"const": 1}));
+        assert!(narrowed.backward_compatibility.is_incompatible());
+        assert!(narrowed.forward_compatibility.is_compatible());
+
+        // A value outside the old set is incompatible in either direction.
+        let moved = property_change(json!({"const": 1}), json!({"enum": [2]}));
+        assert!(moved.backward_compatibility.is_incompatible());
+        assert!(moved.forward_compatibility.is_incompatible());
+
+        // Both keywords at once accept only what satisfies both.
+        let intersected = property_change(json!({"const": 1, "enum": [1, 2]}), json!({"const": 1}));
+        assert!(intersected.full_compatibility.is_compatible());
+    }
+
+    /// JSON Schema compares values by mathematical value, so the integer and
+    /// float spellings of one number denote the same instance.
+    #[test]
+    fn test_value_sets_use_json_schema_equality() {
+        let respelled = property_change(json!({"const": 1}), json!({"enum": [1.0]}));
+        assert!(respelled.full_compatibility.is_compatible());
+
+        // The rule applies at any depth inside a composite value.
+        let nested = property_change(
+            json!({"const": {"a": [1, {"b": 2}]}}),
+            json!({"const": {"a": [1.0, {"b": 2.0}]}}),
+        );
+        assert!(nested.full_compatibility.is_compatible());
+
+        // Narrowing still has to be seen through the respelling.
+        let narrowed = property_change(json!({"enum": [1, 2]}), json!({"const": 2.0}));
+        assert!(narrowed.backward_compatibility.is_incompatible());
+        assert!(narrowed.forward_compatibility.is_compatible());
+
+        // Equal mathematical value is not equal representation of anything else:
+        // a different number, a different type, or a differing member count all
+        // remain distinct values.
+        for (old_value, new_value) in [
+            (json!(1), json!(1.5)),
+            (json!(1), json!("1")),
+            (json!(1), json!(true)),
+            (json!([1]), json!([1, 1])),
+            (json!({"a": 1}), json!({"a": 1, "b": 1})),
+        ] {
+            let moved = property_change(json!({"const": old_value}), json!({"const": new_value}));
+            assert!(
+                moved.backward_compatibility.is_incompatible(),
+                "{old_value} vs {new_value}"
+            );
+            assert!(
+                moved.forward_compatibility.is_incompatible(),
+                "{old_value} vs {new_value}"
+            );
+        }
+
+        // The same equality decides whether a narrowing keyword changed at all.
+        let respelled_multiple_of =
+            property_change(json!({"multipleOf": 5}), json!({"multipleOf": 5.0}));
+        assert!(respelled_multiple_of.full_compatibility.is_compatible());
+    }
+
+    /// Comparing a mixed integer/float pair has to be exact: rounding both sides
+    /// to `f64` would erase the difference between `2^53 + 1` and `2^53`.
+    #[test]
+    fn test_value_set_equality_is_exact_across_number_types() {
+        // 9007199254740993 is 2^53 + 1, which no `f64` represents.
+        let rounded = property_change(
+            json!({"const": 9_007_199_254_740_993_i64}),
+            json!({"enum": [9_007_199_254_740_992.0_f64]}),
+        );
+        assert!(rounded.backward_compatibility.is_incompatible());
+        assert!(rounded.forward_compatibility.is_incompatible());
+
+        // 2^53 itself is exactly representable, so its two spellings are one
+        // value and the comparison must still see that.
+        let exact = property_change(
+            json!({"const": 9_007_199_254_740_992_i64}),
+            json!({"enum": [9_007_199_254_740_992.0_f64]}),
+        );
+        assert!(exact.full_compatibility.is_compatible());
+
+        // The same number kept as an integer on both sides.
+        let integral = property_change(
+            json!({"const": 9_007_199_254_740_993_i64}),
+            json!({"enum": [9_007_199_254_740_993_i64]}),
+        );
+        assert!(integral.full_compatibility.is_compatible());
+
+        // A `u64` above `i64::MAX` and a negative number share no
+        // representation to be compared through, and are not equal.
+        let mixed_signedness = property_change(
+            json!({"const": 18_446_744_073_709_551_615_u64}),
+            json!({"const": -1_i64}),
+        );
+        assert!(mixed_signedness.backward_compatibility.is_incompatible());
+        assert!(mixed_signedness.forward_compatibility.is_incompatible());
+    }
+
     #[test]
     fn test_boolean_schemas_follow_set_inclusion() {
         let narrowed = check_schema_compatibility(&json!(true), &json!(false));
@@ -2987,6 +3287,23 @@ mod tests {
         assert!(upper.forward_compatibility.is_compatible());
     }
 
+    /// `-0.0` and `0.0` denote the same JSON number, so respelling a bound
+    /// changes no accepted instance.
+    #[test]
+    fn test_signed_zero_bounds_are_equal() {
+        let lower = property_change(
+            json!({"type": "number", "minimum": -0.0}),
+            json!({"type": "number", "minimum": 0.0}),
+        );
+        assert!(lower.full_compatibility.is_compatible());
+
+        let upper = property_change(
+            json!({"type": "number", "maximum": -0.0}),
+            json!({"type": "number", "maximum": 0.0}),
+        );
+        assert!(upper.full_compatibility.is_compatible());
+    }
+
     /// Draft-04 spells `exclusiveMinimum` as a boolean modifier, which a numeric
     /// comparison would silently ignore.
     #[test]
@@ -3048,6 +3365,13 @@ mod tests {
         let integral_number = property_change(json!({"type": "integer"}), json!({"const": 1.0}));
         assert!(integral_number.backward_compatibility.is_incompatible());
         assert!(integral_number.forward_compatibility.is_compatible());
+
+        // A tiny nonzero fraction is not an integer, however close to one it
+        // lands: `{"const": 1e-20}` is the sole value the new schema accepts and
+        // `{"type": "integer"}` rejects it.
+        let tiny_fraction = property_change(json!({"type": "integer"}), json!({"const": 1e-20}));
+        assert!(tiny_fraction.backward_compatibility.is_incompatible());
+        assert!(tiny_fraction.forward_compatibility.is_incompatible());
     }
 
     #[test]
@@ -3161,6 +3485,41 @@ mod tests {
         );
         assert!(result.backward_compatibility.is_compatible());
         assert!(result.forward_compatibility.is_incompatible());
+    }
+
+    /// With no `$schema` anywhere the dialect is the one this implementation
+    /// applies when validating instances, which is Draft 2020-12 - so
+    /// `unevaluatedProperties` closes the level here too.
+    #[test]
+    fn test_undeclared_dialect_evaluates_unevaluated_properties() {
+        let old_schema = json!({
+            "type": "object",
+            "unevaluatedProperties": false,
+            "properties": {"name": {"type": "string"}}
+        });
+        let new_schema = json!({
+            "type": "object",
+            "unevaluatedProperties": false,
+            "properties": {
+                "name": {"type": "string"},
+                "email": {"type": "string"}
+            }
+        });
+
+        let result = check_schema_compatibility(&old_schema, &new_schema);
+        assert!(result.backward_compatibility.is_compatible());
+        assert!(result.forward_compatibility.is_incompatible());
+
+        // The instance validator this crate builds must agree with the verdict.
+        let validator = jsonschema::validator_for(&old_schema).expect("compile schema");
+        assert!(!validator.is_valid(&json!({"name": "n", "email": "e"})));
+
+        // The same dialect decides the reported content model of a level.
+        let levels = GtsEntityCastResult::classify_object_levels(&old_schema);
+        assert_eq!(
+            levels.first().map(|level| level.content_model),
+            Some(ContentModel::Closed)
+        );
     }
 
     #[test]

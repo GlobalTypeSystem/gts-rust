@@ -1587,6 +1587,15 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     //   `properties` declared in the same schema object, so closing a branch
     //   would reject the properties its sibling branches declare. Schemars
     //   already closes the branches of an externally tagged enum itself.
+    // * a `definitions` entry a combinator branch resolves to, because such an
+    //   entry *is* the branch and closing it would reject the sibling branches'
+    //   properties just the same. Reachability is computed first, over both the
+    //   property subschemas and `definitions` itself, and is followed through
+    //   chains of aliasing definitions (a top-level `$ref`). The granularity is
+    //   the whole entry, so a definition used both as a combinator branch and as
+    //   an ordinary property schema stays open everywhere: keeping the
+    //   composition satisfiable wins over closing the ordinary use, which merely
+    //   forfeits in-place evolution for that one level.
     // * the generic extension field, which this macro replaces with a bare
     //   `{"type": "object"}` before this pass runs and which sec 4.4.1 requires
     //   to stay open so derived types can extend it.
@@ -1615,6 +1624,82 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 "dependentSchemas",
             ];
             const SCHEMA_LIST: &[&str] = &["allOf", "anyOf", "oneOf", "prefixItems"];
+
+            fn local_definition_name(reference: &str) -> Option<String> {
+                reference
+                    .strip_prefix("#/definitions/")
+                    .or_else(|| reference.strip_prefix("#/$defs/"))
+                    .and_then(|name| name.split('/').next())
+                    .map(|name| name.replace("~1", "/").replace("~0", "~"))
+            }
+
+            fn collect_combinator_definition_refs(
+                value: &serde_json::Value,
+                is_combinator_branch: bool,
+                referenced: &mut ::std::collections::HashSet<String>,
+            ) {
+                let Some(object) = value.as_object() else {
+                    return;
+                };
+
+                if is_combinator_branch
+                    && let Some(name) = object
+                        .get("$ref")
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(local_definition_name)
+                {
+                    referenced.insert(name);
+                }
+
+                for (keyword, nested) in object {
+                    let branch = COMBINATORS.contains(&keyword.as_str());
+                    if SINGLE_SCHEMA.contains(&keyword.as_str()) {
+                        collect_combinator_definition_refs(nested, branch, referenced);
+                    } else if SCHEMA_MAP.contains(&keyword.as_str()) {
+                        collect_combinator_definition_refs_map(nested, branch, referenced);
+                    } else if SCHEMA_LIST.contains(&keyword.as_str()) {
+                        collect_combinator_definition_refs_list(nested, branch, referenced);
+                    } else if keyword == "items" {
+                        if nested.is_array() {
+                            collect_combinator_definition_refs_list(nested, branch, referenced);
+                        } else {
+                            collect_combinator_definition_refs(nested, branch, referenced);
+                        }
+                    }
+                }
+            }
+
+            fn collect_combinator_definition_refs_map(
+                value: &serde_json::Value,
+                is_combinator_branch: bool,
+                referenced: &mut ::std::collections::HashSet<String>,
+            ) {
+                if let Some(object) = value.as_object() {
+                    for nested in object.values() {
+                        collect_combinator_definition_refs(
+                            nested,
+                            is_combinator_branch,
+                            referenced,
+                        );
+                    }
+                }
+            }
+
+            fn collect_combinator_definition_refs_list(
+                value: &serde_json::Value,
+                is_combinator_branch: bool,
+                referenced: &mut ::std::collections::HashSet<String>,
+            ) {
+                if let Some(values) = value.as_array() {
+                    for nested in values {
+                        collect_combinator_definition_refs(
+                            nested,
+                            is_combinator_branch,
+                            referenced,
+                        );
+                    }
+                }
+            }
 
             fn close_schema(value: &mut serde_json::Value, is_combinator_branch: bool) {
                 let Some(object) = value.as_object_mut() else {
@@ -1674,9 +1759,51 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 }
             }
 
+            let mut combinator_definitions = ::std::collections::HashSet::new();
+            collect_combinator_definition_refs_map(
+                &properties,
+                false,
+                &mut combinator_definitions,
+            );
+            if let Some(definitions) = definitions.as_ref() {
+                collect_combinator_definition_refs_map(
+                    definitions,
+                    false,
+                    &mut combinator_definitions,
+                );
+            }
+
+            // A definition whose top level is a bare `$ref` only aliases another
+            // one - Schemars emits that for a newtype struct carrying no doc
+            // comment - so the alias target is what actually contributes the
+            // branch's content model and has to stay open as well. Chase the
+            // alias chain to a fixed point; a name is enqueued only when it was
+            // newly inserted, so the walk terminates even on a `$ref` cycle.
+            let mut alias_queue: Vec<String> =
+                combinator_definitions.iter().cloned().collect();
+            while let Some(name) = alias_queue.pop() {
+                let alias = definitions
+                    .as_ref()
+                    .and_then(serde_json::Value::as_object)
+                    .and_then(|object| object.get(&name))
+                    .and_then(|definition| definition.get("$ref"))
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(local_definition_name);
+                if let Some(alias) = alias
+                    && combinator_definitions.insert(alias.clone())
+                {
+                    alias_queue.push(alias);
+                }
+            }
+
             close_schema_map(&mut properties, false);
-            if let Some(definitions) = definitions.as_mut() {
-                close_schema_map(definitions, false);
+            if let Some(definitions_object) = definitions
+                .as_mut()
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                for (name, definition) in definitions_object {
+                    close_schema(definition, combinator_definitions.contains(name));
+                }
             }
         }
     };

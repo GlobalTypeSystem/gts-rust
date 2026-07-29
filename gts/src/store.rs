@@ -850,54 +850,44 @@ impl GtsStore {
             .map_err(|e| StoreError::SchemaNotFound(e.to_string()))
     }
 
+    /// Fetches one side of a compatibility comparison, rendering the failure as
+    /// the message the result carries.
+    ///
+    /// A missing schema keeps the historical `"Schema not found"` wording, which
+    /// clients match on; every other cause - a malformed type id, an id naming a
+    /// registered non-schema entity - reports itself, so the caller can tell an
+    /// unregistered type from a request it should not have made at all.
+    fn compared_schema_entity(&mut self, type_id: &str) -> Result<GtsEntity, String> {
+        self.get_schema_entity(type_id)
+            .cloned()
+            .map_err(|error| match error {
+                StoreError::SchemaNotFound(_) => "Schema not found".to_owned(),
+                error => error.to_string(),
+            })
+    }
+
     /// Checks GTS schema-evolution compatibility using accepted-instance set inclusion.
     pub fn is_compatible(&mut self, old_type_id: &str, new_type_id: &str) -> GtsEntityCastResult {
-        let old_entity = self.get(old_type_id).cloned();
-        let new_entity = self.get(new_type_id).cloned();
-
-        let (Some(old_ent), Some(new_ent)) = (old_entity, new_entity) else {
-            let message = "Schema not found".to_owned();
-            return GtsEntityCastResult {
-                from_id: old_type_id.to_owned(),
-                to_id: new_type_id.to_owned(),
-                old: old_type_id.to_owned(),
-                new: new_type_id.to_owned(),
-                direction: "unknown".to_owned(),
-                added_properties: Vec::new(),
-                removed_properties: Vec::new(),
-                changed_properties: Vec::new(),
-                full_compatibility: CompatibilityVerdict::Unknown,
-                backward_compatibility: CompatibilityVerdict::Unknown,
-                forward_compatibility: CompatibilityVerdict::Unknown,
-                incompatibility_reasons: Vec::new(),
-                backward_errors: Vec::new(),
-                forward_errors: Vec::new(),
-                specification_version: crate::GTS_SPECIFICATION_VERSION.to_owned(),
-                implementation_version: crate::GTS_IMPLEMENTATION_VERSION.to_owned(),
-                casted_entity: None,
-                error: Some(message),
-            };
+        let entities = self
+            .compared_schema_entity(old_type_id)
+            .and_then(|old_ent| {
+                self.compared_schema_entity(new_type_id)
+                    .map(|new_ent| (old_ent, new_ent))
+            });
+        let (old_ent, new_ent) = match entities {
+            Ok(entities) => entities,
+            Err(message) => {
+                return GtsEntityCastResult::undecided(old_type_id, new_type_id, message);
+            }
         };
 
-        let resolution_failure = |message: String| GtsEntityCastResult {
-            from_id: old_type_id.to_owned(),
-            to_id: new_type_id.to_owned(),
-            old: old_type_id.to_owned(),
-            new: new_type_id.to_owned(),
-            direction: GtsEntityCastResult::infer_direction(old_type_id, new_type_id),
-            added_properties: Vec::new(),
-            removed_properties: Vec::new(),
-            changed_properties: Vec::new(),
-            full_compatibility: CompatibilityVerdict::Unknown,
-            backward_compatibility: CompatibilityVerdict::Unknown,
-            forward_compatibility: CompatibilityVerdict::Unknown,
-            incompatibility_reasons: Vec::new(),
-            backward_errors: Vec::new(),
-            forward_errors: Vec::new(),
-            specification_version: crate::GTS_SPECIFICATION_VERSION.to_owned(),
-            implementation_version: crate::GTS_IMPLEMENTATION_VERSION.to_owned(),
-            casted_entity: None,
-            error: Some(message),
+        let resolution_failure = |message: String| {
+            GtsEntityCastResult::undecided_with_direction(
+                old_type_id,
+                new_type_id,
+                GtsEntityCastResult::infer_direction(old_type_id, new_type_id),
+                message,
+            )
         };
         let old_schema = match self.resolve_schema_refs(&old_ent.content) {
             Ok(schema) => schema,

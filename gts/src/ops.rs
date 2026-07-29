@@ -8,7 +8,9 @@ use crate::entities::{GtsConfig, GtsEntity};
 use crate::files_reader::GtsFileReader;
 use crate::gts::{GtsId, GtsIdPattern};
 use crate::path_resolver::JsonPathResolver;
-use crate::schema_cast::{CompatibilityVerdict, GtsEntityCastResult};
+#[cfg(test)]
+use crate::schema_cast::CompatibilityVerdict;
+use crate::schema_cast::GtsEntityCastResult;
 use crate::store::{GtsStore, GtsStoreQueryResult};
 
 /// `is_schema` is `Some(true)` for schema/type IDs (ending with `~`),
@@ -673,26 +675,7 @@ impl GtsOps {
     pub fn cast(&mut self, from_id: &str, to_type_id: &str) -> GtsEntityCastResult {
         match self.store.cast(from_id, to_type_id) {
             Ok(result) => result,
-            Err(e) => GtsEntityCastResult {
-                from_id: from_id.to_owned(),
-                to_id: to_type_id.to_owned(),
-                old: from_id.to_owned(),
-                new: to_type_id.to_owned(),
-                direction: "unknown".to_owned(),
-                added_properties: Vec::new(),
-                removed_properties: Vec::new(),
-                changed_properties: Vec::new(),
-                full_compatibility: CompatibilityVerdict::Unknown,
-                backward_compatibility: CompatibilityVerdict::Unknown,
-                forward_compatibility: CompatibilityVerdict::Unknown,
-                incompatibility_reasons: Vec::new(),
-                backward_errors: Vec::new(),
-                forward_errors: Vec::new(),
-                specification_version: crate::GTS_SPECIFICATION_VERSION.to_owned(),
-                implementation_version: crate::GTS_IMPLEMENTATION_VERSION.to_owned(),
-                casted_entity: None,
-                error: Some(e.to_string()),
-            },
+            Err(e) => GtsEntityCastResult::undecided(from_id, to_type_id, e.to_string()),
         }
     }
 
