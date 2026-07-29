@@ -63,13 +63,7 @@ impl From<&crate::gts::GtsIdPatternSegment> for GtsIdSegmentInfo {
             package: seg.package().to_owned(),
             namespace: seg.namespace().to_owned(),
             type_name: seg.type_name().to_owned(),
-            // For a wildcard segment, `ver_major() == 0` is the "unspecified"
-            // sentinel and must serialize as `null`.
-            ver_major: if seg.is_wildcard() && seg.ver_major() == 0 {
-                None
-            } else {
-                Some(seg.ver_major())
-            },
+            ver_major: seg.ver_major_opt(),
             ver_minor: seg.ver_minor(),
             is_type: seg.is_type(),
         }
@@ -3360,6 +3354,16 @@ mod tests {
         assert_eq!(result.segments[0].ver_minor, None);
         assert!(!result.segments[0].is_type);
         assert_eq!(result.is_type, Some(false));
+    }
+
+    #[test]
+    fn test_parse_id_with_zero_major_minor_wildcard() {
+        let result = GtsOps::parse_id("gts.vendor.package.namespace.type.v0.*");
+        assert!(result.ok, "Parsing a v0 minor wildcard should succeed");
+        assert!(result.is_wildcard);
+        assert_eq!(result.segments.len(), 1);
+        assert_eq!(result.segments[0].ver_major, Some(0));
+        assert_eq!(result.segments[0].ver_minor, None);
     }
 
     #[test]
