@@ -1507,6 +1507,9 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         }
 
         inline_gts_id_refs(&mut properties);
+        if let Some(definitions) = definitions.as_mut() {
+            inline_gts_id_refs(definitions);
+        }
     };
 
     let prune_unused_definitions = quote! {

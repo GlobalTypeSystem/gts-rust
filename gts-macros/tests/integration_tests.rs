@@ -9,7 +9,7 @@
 
 mod inheritance_tests;
 
-use gts::{GtsConfig, GtsEntity, GtsId, GtsInstanceId, GtsSchema};
+use gts::{GtsConfig, GtsEntity, GtsId, GtsInstanceId, GtsSchema, GtsTypeId};
 use gts_macros::{gts_id, struct_to_gts_schema};
 /// Event Topic (Stream) definition for testing GTS schema generation.
 /// Inspired by examples/examples/events/schemas/gts.x.core.events.topic.v1~.schema.json
@@ -53,6 +53,25 @@ pub struct ProductV1 {
     pub in_stock: bool,
     // This field is not included in the schema
     pub warehouse_location: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct NestedGtsIds {
+    pub type_id: GtsTypeId,
+    pub instance_id: GtsInstanceId,
+}
+
+#[derive(Debug, Clone)]
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = true,
+    type_id = gts_id!("x.test.entities.nested_ids.v1~"),
+    description = "Entity whose retained definition contains GTS ID references",
+    properties = "id,nested"
+)]
+pub struct NestedGtsIdsV1 {
+    pub id: GtsInstanceId,
+    pub nested: NestedGtsIds,
 }
 
 // =============================================================================
@@ -138,6 +157,45 @@ fn test_schema_json_is_valid_json() {
         "gts://gts.x.test.entities.product.v1~"
     );
     assert_eq!(product_schema["type"], "object");
+}
+
+#[test]
+fn test_gts_id_refs_are_inlined_inside_retained_definitions() {
+    fn contains_gts_id_ref(value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::Object(object) => {
+                let is_gts_id_ref = object
+                    .get("$ref")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|reference| {
+                        reference.ends_with("/GtsInstanceId")
+                            || reference.ends_with("/GtsTypeId")
+                            || reference.ends_with("/GtsSchemaId")
+                    });
+                is_gts_id_ref || object.values().any(contains_gts_id_ref)
+            }
+            serde_json::Value::Array(values) => values.iter().any(contains_gts_id_ref),
+            _ => false,
+        }
+    }
+
+    let schema = NestedGtsIdsV1::gts_schema_with_refs();
+    assert!(
+        schema["definitions"]["NestedGtsIds"].is_object(),
+        "the nested definition must remain reachable"
+    );
+    assert!(
+        !contains_gts_id_ref(&schema),
+        "generated schema contains a dangling GTS-ID definition reference: {schema}"
+    );
+
+    let mut store = gts::GtsStore::new();
+    store
+        .register_schema(NestedGtsIdsV1::TYPE_ID, &schema)
+        .expect("generated schema should register");
+    store
+        .validate_schema(NestedGtsIdsV1::TYPE_ID)
+        .expect("generated schema should have no unresolved local references");
 }
 
 #[test]

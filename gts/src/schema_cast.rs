@@ -829,6 +829,129 @@ impl GtsEntityCastResult {
         errors
     }
 
+    /// Returns the effective lower or upper numeric bound.
+    ///
+    /// Draft 6 and later allow an inclusive and an exclusive bound to coexist;
+    /// their intersection is the stricter of the two (with exclusive winning
+    /// when the numeric values are equal). Draft 4's boolean
+    /// `exclusiveMinimum`/`exclusiveMaximum` spelling is handled as a modifier
+    /// of the corresponding inclusive bound.
+    fn effective_numeric_bound(
+        schema: &Map<String, Value>,
+        inclusive_key: &str,
+        exclusive_key: &str,
+        is_lower: bool,
+    ) -> Result<Option<(f64, bool)>, ()> {
+        let inclusive = match schema.get(inclusive_key) {
+            Some(value) => Some((value.as_f64().ok_or(())?, false)),
+            None => None,
+        };
+        let exclusive = match schema.get(exclusive_key) {
+            Some(Value::Bool(is_exclusive)) => inclusive.map(|(value, _)| (value, *is_exclusive)),
+            Some(value) => Some((value.as_f64().ok_or(())?, true)),
+            None => None,
+        };
+
+        Ok(match (inclusive, exclusive) {
+            (None, bound) | (bound, None) => bound,
+            (Some(inclusive), Some(exclusive)) => {
+                let ordering = exclusive.0.total_cmp(&inclusive.0);
+                let exclusive_is_stricter = if is_lower {
+                    ordering.is_gt()
+                } else {
+                    ordering.is_lt()
+                };
+                if exclusive_is_stricter || (ordering.is_eq() && exclusive.1 && !inclusive.1) {
+                    Some(exclusive)
+                } else {
+                    Some(inclusive)
+                }
+            }
+        })
+    }
+
+    fn check_numeric_bounds(
+        path: &str,
+        old_schema: &Map<String, Value>,
+        new_schema: &Map<String, Value>,
+        check_backward: bool,
+    ) -> Vec<CompatibilityDiagnostic> {
+        let mut diagnostics = Vec::new();
+        for (inclusive_key, exclusive_key, is_lower) in [
+            ("minimum", "exclusiveMinimum", true),
+            ("maximum", "exclusiveMaximum", false),
+        ] {
+            if !old_schema.contains_key(inclusive_key)
+                && !old_schema.contains_key(exclusive_key)
+                && !new_schema.contains_key(inclusive_key)
+                && !new_schema.contains_key(exclusive_key)
+            {
+                continue;
+            }
+
+            if (old_schema.get(exclusive_key).is_some_and(Value::is_boolean)
+                || new_schema.get(exclusive_key).is_some_and(Value::is_boolean))
+                && (old_schema.get(inclusive_key) != new_schema.get(inclusive_key)
+                    || old_schema.get(exclusive_key) != new_schema.get(exclusive_key))
+            {
+                diagnostics.push(CompatibilityDiagnostic::new(
+                    path,
+                    CompatibilityFinding::NotProvable,
+                    format!(
+                        "changes Draft-04 boolean '{exclusive_key}' constraint; dialect semantics \
+                         cannot be inferred at this node"
+                    ),
+                ));
+                continue;
+            }
+
+            let old_bound =
+                Self::effective_numeric_bound(old_schema, inclusive_key, exclusive_key, is_lower);
+            let new_bound =
+                Self::effective_numeric_bound(new_schema, inclusive_key, exclusive_key, is_lower);
+            let (Ok(old_bound), Ok(new_bound)) = (old_bound, new_bound) else {
+                if old_schema.get(inclusive_key) != new_schema.get(inclusive_key)
+                    || old_schema.get(exclusive_key) != new_schema.get(exclusive_key)
+                {
+                    diagnostics.push(CompatibilityDiagnostic::new(
+                        path,
+                        CompatibilityFinding::NotProvable,
+                        format!(
+                            "changes non-numeric '{inclusive_key}'/'{exclusive_key}' constraints"
+                        ),
+                    ));
+                }
+                continue;
+            };
+
+            let (source, target) = if check_backward {
+                (old_bound, new_bound)
+            } else {
+                (new_bound, old_bound)
+            };
+            let included = match (source, target) {
+                (_, None) => true,
+                (None, Some(_)) => false,
+                (Some(source), Some(target)) if is_lower => {
+                    let ordering = source.0.total_cmp(&target.0);
+                    ordering.is_gt() || (ordering.is_eq() && (!target.1 || source.1))
+                }
+                (Some(source), Some(target)) => {
+                    let ordering = source.0.total_cmp(&target.0);
+                    ordering.is_lt() || (ordering.is_eq() && (!target.1 || source.1))
+                }
+            };
+            if !included {
+                diagnostics.push(CompatibilityDiagnostic::new(
+                    path,
+                    CompatibilityFinding::BoundChanged,
+                    format!("changes effective {inclusive_key}/{exclusive_key} bound incompatibly"),
+                ));
+            }
+        }
+        diagnostics
+    }
+
     fn check_constraint_compatibility(
         path: &str,
         old_prop_schema: &Map<String, Value>,
@@ -841,32 +964,34 @@ impl GtsEntityCastResult {
         // reported such a change as fully compatible - the one direction of
         // error a registry cannot tolerate.
         const BOUNDS: &[(&str, &str)] = &[
-            ("minimum", "maximum"),
-            ("exclusiveMinimum", "exclusiveMaximum"),
             ("minLength", "maxLength"),
             ("minItems", "maxItems"),
             ("minProperties", "maxProperties"),
             ("minContains", "maxContains"),
         ];
 
-        BOUNDS
-            .iter()
-            .filter(|(min_key, max_key)| {
-                [min_key, max_key].iter().any(|key| {
-                    old_prop_schema.contains_key(**key) || new_prop_schema.contains_key(**key)
+        let mut diagnostics =
+            Self::check_numeric_bounds(path, old_prop_schema, new_prop_schema, check_tightening);
+        diagnostics.extend(
+            BOUNDS
+                .iter()
+                .filter(|(min_key, max_key)| {
+                    [min_key, max_key].iter().any(|key| {
+                        old_prop_schema.contains_key(**key) || new_prop_schema.contains_key(**key)
+                    })
                 })
-            })
-            .flat_map(|(min_key, max_key)| {
-                Self::check_min_max_constraint(
-                    path,
-                    old_prop_schema,
-                    new_prop_schema,
-                    min_key,
-                    max_key,
-                    check_tightening,
-                )
-            })
-            .collect()
+                .flat_map(|(min_key, max_key)| {
+                    Self::check_min_max_constraint(
+                        path,
+                        old_prop_schema,
+                        new_prop_schema,
+                        min_key,
+                        max_key,
+                        check_tightening,
+                    )
+                }),
+        );
+        diagnostics
     }
 
     /// Handles keywords that only ever narrow `Valid(S)` when present.
@@ -952,43 +1077,94 @@ impl GtsEntityCastResult {
         new_schema: &Map<String, Value>,
         check_backward: bool,
     ) -> Vec<CompatibilityDiagnostic> {
-        // `type` is a set of permitted primitive types, and an absent `type`
-        // permits all of them (an empty set stands for "unconstrained" below).
+        // `type` is a set of permitted primitive types. When it is absent,
+        // `const` and `enum` can still imply a finite set of effective types.
         // Inclusion of the accepted-instance sets therefore follows inclusion of
         // the type sets, which makes member order irrelevant and makes dropping
         // a member - say the `null` of an `Option<T>` - a narrowing rather than
         // an unrelated change.
-        fn type_set(value: Option<&Value>) -> Option<Vec<&str>> {
+        enum TypeSet {
+            Any,
+            Set(Vec<String>),
+            Invalid,
+        }
+
+        fn value_type(value: &Value) -> &'static str {
             match value {
-                None => Some(Vec::new()),
-                Some(Value::String(name)) => Some(vec![name.as_str()]),
+                Value::Null => "null",
+                Value::Bool(_) => "boolean",
+                Value::Number(number)
+                    if number.is_i64()
+                        || number.is_u64()
+                        || number
+                            .as_f64()
+                            .is_some_and(|value| value.fract().abs() < f64::EPSILON) =>
+                {
+                    "integer"
+                }
+                Value::Number(_) => "number",
+                Value::String(_) => "string",
+                Value::Array(_) => "array",
+                Value::Object(_) => "object",
+            }
+        }
+
+        fn type_set(schema: &Map<String, Value>) -> TypeSet {
+            match schema.get("type") {
+                Some(Value::String(name)) => TypeSet::Set(vec![name.clone()]),
                 Some(Value::Array(names)) => names
                     .iter()
                     .map(Value::as_str)
-                    .collect::<Option<Vec<&str>>>(),
-                Some(_) => None,
+                    .collect::<Option<Vec<&str>>>()
+                    .map_or(TypeSet::Invalid, |names| {
+                        TypeSet::Set(names.into_iter().map(str::to_owned).collect())
+                    }),
+                Some(_) => TypeSet::Invalid,
+                None => {
+                    let values: Option<Vec<&Value>> = if let Some(value) = schema.get("const") {
+                        Some(vec![value])
+                    } else {
+                        schema
+                            .get("enum")
+                            .and_then(Value::as_array)
+                            .map(|values| values.iter().collect())
+                    };
+                    values.map_or(TypeSet::Any, |values| {
+                        let mut names = Vec::new();
+                        for value in values {
+                            let name = value_type(value).to_owned();
+                            if !names.contains(&name) {
+                                names.push(name);
+                            }
+                        }
+                        TypeSet::Set(names)
+                    })
+                }
             }
         }
 
         let old_type = old_schema.get("type");
         let new_type = new_schema.get("type");
-        let (source, target) = if check_backward {
-            (old_type, new_type)
+        let (source_schema, target_schema) = if check_backward {
+            (old_schema, new_schema)
         } else {
-            (new_type, old_type)
+            (new_schema, old_schema)
         };
 
-        let compatible = match (type_set(source), type_set(target)) {
+        let compatible = match (type_set(source_schema), type_set(target_schema)) {
             // A malformed `type` cannot be interpreted; fall back to equality.
-            (None, _) | (_, None) => source == target,
+            (TypeSet::Invalid, _) | (_, TypeSet::Invalid) => old_type == new_type,
             // An unconstrained target accepts every type the source permits.
-            (_, Some(target_names)) if target_names.is_empty() => true,
+            (_, TypeSet::Any) => true,
             // An unconstrained source permits types the target may not.
-            (Some(source_names), Some(_)) if source_names.is_empty() => false,
-            (Some(source_names), Some(target_names)) => source_names.iter().all(|name| {
-                target_names.contains(name)
-                    || (*name == "integer" && target_names.contains(&"number"))
-            }),
+            (TypeSet::Any, TypeSet::Set(_)) => false,
+            (TypeSet::Set(source_names), TypeSet::Set(target_names)) => {
+                source_names.iter().all(|name| {
+                    target_names.contains(name)
+                        || (name == "integer"
+                            && target_names.iter().any(|target| target == "number"))
+                })
+            }
         };
 
         if compatible {
@@ -1070,7 +1246,6 @@ impl GtsEntityCastResult {
         // change between two definitions is not something this checker attempts
         // to reason about.
         const EXACT_CONSTRAINTS: &[&str] = &[
-            "const",
             "additionalItems",
             "prefixItems",
             "patternProperties",
@@ -1101,6 +1276,37 @@ impl GtsEntityCastResult {
                 )
             })
             .collect()
+    }
+
+    fn check_const_compatibility(
+        path: &str,
+        old_schema: &Map<String, Value>,
+        new_schema: &Map<String, Value>,
+        check_backward: bool,
+    ) -> Vec<CompatibilityDiagnostic> {
+        let old_const = old_schema.get("const");
+        let new_const = new_schema.get("const");
+        if old_const == new_const {
+            return Vec::new();
+        }
+
+        let (source, target) = if check_backward {
+            (old_const, new_const)
+        } else {
+            (new_const, old_const)
+        };
+        // A source constrained to one value is included in an unconstrained
+        // target. The reverse is not; two different singleton sets are
+        // disjoint and therefore incompatible in either direction.
+        if source.is_some() && target.is_none() {
+            return Vec::new();
+        }
+
+        vec![CompatibilityDiagnostic::new(
+            path,
+            CompatibilityFinding::ConstraintChanged,
+            "changes 'const' constraint incompatibly".to_owned(),
+        )]
     }
 
     /// Reports a `$ref` that survived resolution.
@@ -1156,6 +1362,25 @@ impl GtsEntityCastResult {
             new_schema.clone()
         };
 
+        let (source, target) = if check_backward {
+            (&old_effective, &new_effective)
+        } else {
+            (&new_effective, &old_effective)
+        };
+        let source_boolean = boolean_schema_value(source);
+        let target_boolean = boolean_schema_value(target);
+        if source_boolean == Some(false) || target_boolean == Some(true) {
+            return;
+        }
+        if source_boolean == Some(true) || target_boolean == Some(false) {
+            errors.push(CompatibilityDiagnostic::new(
+                path,
+                CompatibilityFinding::ConstraintChanged,
+                "changes boolean schema incompatibly".to_owned(),
+            ));
+            return;
+        }
+
         let (Some(old_map), Some(new_map)) = (old_effective.as_object(), new_effective.as_object())
         else {
             if old_effective != new_effective {
@@ -1186,6 +1411,12 @@ impl GtsEntityCastResult {
             check_backward,
         ));
         errors.extend(Self::check_enum_compatibility(
+            path,
+            old_map,
+            new_map,
+            check_backward,
+        ));
+        errors.extend(Self::check_const_compatibility(
             path,
             old_map,
             new_map,
@@ -2374,6 +2605,38 @@ mod tests {
     }
 
     #[test]
+    fn test_adding_and_removing_const_are_directional() {
+        let added = property_change(
+            json!({"type": "integer"}),
+            json!({"type": "integer", "const": 1}),
+        );
+        assert!(added.backward_compatibility.is_incompatible());
+        assert!(added.forward_compatibility.is_compatible());
+
+        let removed = property_change(
+            json!({"type": "integer", "const": 1}),
+            json!({"type": "integer"}),
+        );
+        assert!(removed.backward_compatibility.is_compatible());
+        assert!(removed.forward_compatibility.is_incompatible());
+    }
+
+    #[test]
+    fn test_boolean_schemas_follow_set_inclusion() {
+        let narrowed = check_schema_compatibility(&json!(true), &json!(false));
+        assert!(narrowed.backward_compatibility.is_incompatible());
+        assert!(narrowed.forward_compatibility.is_compatible());
+
+        let widened = check_schema_compatibility(&json!(false), &json!(true));
+        assert!(widened.backward_compatibility.is_compatible());
+        assert!(widened.forward_compatibility.is_incompatible());
+
+        // Object spellings of the boolean schemas have identical semantics.
+        let equivalent = check_schema_compatibility(&json!(true), &json!({}));
+        assert!(equivalent.full_compatibility.is_compatible());
+    }
+
+    #[test]
     fn test_closed_model_optional_removal_is_forward_only() {
         let old_schema = json!({
             "type": "object",
@@ -2707,6 +2970,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_inclusive_and_exclusive_bounds_are_compared_together() {
+        let lower = property_change(
+            json!({"type": "number", "minimum": 0}),
+            json!({"type": "number", "exclusiveMinimum": 0}),
+        );
+        assert!(lower.backward_compatibility.is_incompatible());
+        assert!(lower.forward_compatibility.is_compatible());
+
+        let upper = property_change(
+            json!({"type": "number", "maximum": 10}),
+            json!({"type": "number", "exclusiveMaximum": 10}),
+        );
+        assert!(upper.backward_compatibility.is_incompatible());
+        assert!(upper.forward_compatibility.is_compatible());
+    }
+
     /// Draft-04 spells `exclusiveMinimum` as a boolean modifier, which a numeric
     /// comparison would silently ignore.
     #[test]
@@ -2751,6 +3031,23 @@ mod tests {
         );
         assert!(promoted.backward_compatibility.is_compatible());
         assert!(promoted.forward_compatibility.is_incompatible());
+    }
+
+    #[test]
+    fn test_enum_and_const_imply_effective_types() {
+        let enum_narrowed = property_change(json!({"type": "string"}), json!({"enum": ["a"]}));
+        assert!(enum_narrowed.backward_compatibility.is_incompatible());
+        assert!(enum_narrowed.forward_compatibility.is_compatible());
+
+        let const_narrowed = property_change(json!({"type": "string"}), json!({"const": "a"}));
+        assert!(const_narrowed.backward_compatibility.is_incompatible());
+        assert!(const_narrowed.forward_compatibility.is_compatible());
+
+        // JSON Schema treats mathematically integral JSON numbers as integers,
+        // regardless of whether the source text contains a decimal point.
+        let integral_number = property_change(json!({"type": "integer"}), json!({"const": 1.0}));
+        assert!(integral_number.backward_compatibility.is_incompatible());
+        assert!(integral_number.forward_compatibility.is_compatible());
     }
 
     #[test]
