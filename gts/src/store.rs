@@ -456,6 +456,23 @@ impl GtsStore {
                     errors.join("; ")
                 )));
             }
+
+            // Check x-gts-closed-derivations: an (open) base may require every
+            // derived schema to resolve to a closed content model at its own
+            // top level, so undeclared properties are rejected rather than
+            // silently accepted (e.g. extensible metadata envelopes).
+            if base_content.get(crate::schema_modifiers::X_GTS_CLOSED_DERIVATIONS)
+                == Some(&Value::Bool(true))
+            {
+                let derived_eff = crate::schema_compat::extract_effective_schema(&derived_resolved);
+                if derived_eff.additional_properties != Some(Value::Bool(false)) {
+                    return Err(StoreError::ValidationError(format!(
+                        "base type '{base_id}' declares x-gts-closed-derivations: derived \
+                         schema '{derived_id}' must resolve to a closed content model \
+                         (effective additionalProperties: false) at its top level"
+                    )));
+                }
+            }
         }
 
         Ok(())

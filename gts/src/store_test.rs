@@ -5910,3 +5910,145 @@ fn test_validate_instance_reports_unresolvable_ref() {
             .contains("Unresolved $ref(s): gts://gts.vendor.package.namespace.nonexistent.v1.0~")
     );
 }
+
+/* ── x-gts-closed-derivations (OP#12) ── */
+
+fn closed_derivations_base() -> serde_json::Value {
+    // Open abstract envelope that requires closed derived schemas — the
+    // extensible-metadata pattern (e.g. AM tenant metadata).
+    json!({
+        "$id": "gts://gts.x.tcd.meta.env.v1~",
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "x-gts-abstract": true,
+        "x-gts-closed-derivations": true,
+        "additionalProperties": true
+    })
+}
+
+#[test]
+fn test_closed_derivations_accepts_closed_derived() {
+    let mut store = GtsStore::new();
+    store
+        .register_schema("gts.x.tcd.meta.env.v1~", &closed_derivations_base())
+        .expect("register base");
+
+    let derived = json!({
+        "$id": "gts://gts.x.tcd.meta.env.v1~x.app._.settings.v1~",
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+            "automation_level": {"type": "string", "enum": ["manual", "autonomous"]}
+        },
+        "additionalProperties": false
+    });
+    store
+        .register_schema("gts.x.tcd.meta.env.v1~x.app._.settings.v1~", &derived)
+        .expect("register derived");
+
+    store
+        .validate_schema_chain("gts.x.tcd.meta.env.v1~x.app._.settings.v1~")
+        .expect("closed derived schema under closed-derivations base must pass");
+}
+
+#[test]
+fn test_closed_derivations_rejects_open_derived() {
+    let mut store = GtsStore::new();
+    store
+        .register_schema("gts.x.tcd.meta.env.v1~", &closed_derivations_base())
+        .expect("register base");
+
+    // additionalProperties: true — a typo'd property would be accepted.
+    let derived = json!({
+        "$id": "gts://gts.x.tcd.meta.env.v1~x.app._.settings.v1~",
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+            "automation_level": {"type": "string"}
+        },
+        "additionalProperties": true
+    });
+    store
+        .register_schema("gts.x.tcd.meta.env.v1~x.app._.settings.v1~", &derived)
+        .expect("register derived");
+
+    let result = store.validate_schema_chain("gts.x.tcd.meta.env.v1~x.app._.settings.v1~");
+    assert!(result.is_err(), "open derived schema must be rejected");
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("x-gts-closed-derivations"),
+        "error should name the modifier: {msg}"
+    );
+}
+
+#[test]
+fn test_closed_derivations_rejects_unspecified_additional_properties() {
+    let mut store = GtsStore::new();
+    store
+        .register_schema("gts.x.tcd.meta.env.v1~", &closed_derivations_base())
+        .expect("register base");
+
+    // additionalProperties omitted — open by JSON Schema default, so it must
+    // be rejected just like an explicit `true`.
+    let derived = json!({
+        "$id": "gts://gts.x.tcd.meta.env.v1~x.app._.settings.v1~",
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+            "automation_level": {"type": "string"}
+        }
+    });
+    store
+        .register_schema("gts.x.tcd.meta.env.v1~x.app._.settings.v1~", &derived)
+        .expect("register derived");
+
+    let result = store.validate_schema_chain("gts.x.tcd.meta.env.v1~x.app._.settings.v1~");
+    assert!(
+        result.is_err(),
+        "derived schema with default-open content model must be rejected"
+    );
+}
+
+#[test]
+fn test_closed_derivations_closed_via_allof_conjunct() {
+    let mut store = GtsStore::new();
+    store
+        .register_schema("gts.x.tcd.meta.env.v1~", &closed_derivations_base())
+        .expect("register base");
+
+    // Closedness contributed by an allOf conjunct (the lattice keeps `false`).
+    let derived = json!({
+        "$id": "gts://gts.x.tcd.meta.env.v1~x.app._.settings.v1~",
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "allOf": [
+            {"$ref": "gts://gts.x.tcd.meta.env.v1~"},
+            {
+                "type": "object",
+                "properties": {"automation_level": {"type": "string"}},
+                "additionalProperties": false
+            }
+        ]
+    });
+    store
+        .register_schema("gts.x.tcd.meta.env.v1~x.app._.settings.v1~", &derived)
+        .expect("register derived");
+
+    store
+        .validate_schema_chain("gts.x.tcd.meta.env.v1~x.app._.settings.v1~")
+        .expect("allOf-closed derived schema must pass");
+}
+
+#[test]
+fn test_closed_derivations_final_combination_rejected() {
+    use crate::schema_modifiers::validate_schema_modifiers;
+    let bad = json!({
+        "type": "object",
+        "x-gts-final": true,
+        "x-gts-closed-derivations": true
+    });
+    assert!(
+        validate_schema_modifiers(&bad).is_err(),
+        "final + closed-derivations is meaningless and must be rejected"
+    );
+}
