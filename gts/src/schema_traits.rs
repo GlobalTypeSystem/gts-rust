@@ -23,10 +23,11 @@
 //!   preserved from the ancestor).
 //! - Arrays: replace wholesale (no element-wise merge).
 //! - `null` at any depth deletes the key, after which `materialize_traits` may
-//!   re-substitute a `const` or `default`.
+//!   re-substitute a `default` (never a `const` — see `materialize_traits`).
 //! - Locking publisher-controlled values is done via JSON Schema `const` in
 //!   `x-gts-traits-schema`; the registry carries no GTS-specific immutability
-//!   rule.
+//!   rule. `const` locks the value but not the presence, so a lock that must
+//!   also survive deletion pairs `const` with `required` or with `default`.
 //!
 //! **Empty trait schemas:** If a schema in the chain declares
 //! `x-gts-traits-schema: {}` or `true`, it contributes an unconstrained
@@ -65,7 +66,7 @@ const MAX_RECURSION_DEPTH: usize = 64;
 pub(crate) struct EffectiveTraits {
     /// Dialect-pinned, `allOf`-composed effective trait schema.
     pub schema: Value,
-    /// Chain-merged (RFC 7396) and const/default-materialized trait values.
+    /// Chain-merged (RFC 7396) and default-materialized trait values.
     pub values: Value,
     /// `$ref`-resolved `x-gts-traits-schema` subschemas, root → leaf — retained
     /// for per-index integrity checks and the closed-entity check.
@@ -574,8 +575,8 @@ fn collect_traits_recursive(
 /// - Objects merge recursively (keys not restated by `patch` are preserved).
 /// - `null` values **delete** the corresponding key from `target`; if the
 ///   target had no such key the null is a no-op (the key remains absent so
-///   `materialize_traits` can later substitute a `const`/`default` from the
-///   trait schema).
+///   `materialize_traits` can later substitute a `default` from the trait
+///   schema).
 ///
 /// This is the trait-merge primitive used to compose `x-gts-traits` along the
 /// `$id` chain (root → leaf).
@@ -648,24 +649,27 @@ pub(crate) fn build_effective_traits_schema(schemas: &[Value]) -> Value {
 /// Materialize trait values from the effective trait schema onto the merged
 /// traits object, filling any property that is not yet present.
 ///
-/// Resolution precedence for an absent property is **`const` → `default`**: a
-/// `const` locks the value (it is the only value the schema accepts, so the
-/// effective value is fully determined even when the chain never restates it),
-/// and `default` fills the rest. A property already supplied by the chain is
-/// left as-is — a value that conflicts with a `const`/enum is caught by the
-/// later JSON Schema validation, which gives a clearer error than silently
-/// overwriting it here.
+/// An absent property is filled from its `default` only. `const` is deliberately
+/// NOT materialized: per gts-spec README §9.7.5 and ADR-0003, materialization is
+/// defined over `default` alone, and `const` is a JSON Schema *assertion* — it
+/// constrains a value that is present rather than supplying a missing one. A
+/// publisher who wants a locked value to also survive absence (including an
+/// RFC 7396 `null` deletion) declares `default` alongside `const`.
+///
+/// A property already supplied by the chain is left as-is — a value that
+/// conflicts with a `const`/enum is caught by the later JSON Schema validation,
+/// which gives a clearer error than silently overwriting it here.
 ///
 /// Handles nested object properties recursively: if a present trait property is
-/// an object type with its own `properties`, nested `const`/`default` values
-/// are materialized into the corresponding nested object.
+/// an object type with its own `properties`, nested `default` values are
+/// materialized into the corresponding nested object.
 fn materialize_traits(trait_schema: &Value, traits: &Value) -> Value {
     materialize_traits_recursive(trait_schema, traits, 0)
 }
 
 /// Per-property materialization view: (most-derived declaration, nearest
-/// `const`, nearest `default`).
-type PropResolution = (Value, Option<Value>, Option<Value>);
+/// `default`).
+type PropResolution = (Value, Option<Value>);
 
 fn materialize_traits_recursive(trait_schema: &Value, traits: &Value, depth: usize) -> Value {
     if depth >= MAX_RECURSION_DEPTH {
@@ -683,8 +687,8 @@ fn materialize_traits_recursive(trait_schema: &Value, traits: &Value, depth: usi
     let mut all_props: Vec<(String, Value)> = Vec::new();
     collect_props_recursive(trait_schema, &mut all_props, 0);
 
-    // Resolve each property once. `const`/`default` are taken from the *nearest*
-    // (most-derived) declaration that carries them — scanning leaf→root — because
+    // Resolve each property once. `default` is taken from the *nearest*
+    // (most-derived) declaration that carries it — scanning leaf→root — because
     // `default` does not participate in narrowing, so an ancestor default ripples
     // to descendants even when a descendant redeclares the property without one
     // (gts-spec §9.7.2, ADR-0003). The most-derived declaration also drives the
@@ -696,28 +700,22 @@ fn materialize_traits_recursive(trait_schema: &Value, traits: &Value, depth: usi
         let obj = sch.as_object();
         let entry = resolved.entry(name.clone()).or_insert_with(|| {
             order.push(name.clone());
-            (sch.clone(), None, None)
+            (sch.clone(), None)
         });
         if entry.1.is_none()
-            && let Some(const_val) = obj.and_then(|o| o.get("const"))
-        {
-            entry.1 = Some(const_val.clone());
-        }
-        if entry.2.is_none()
             && let Some(default_val) = obj.and_then(|o| o.get("default"))
         {
-            entry.2 = Some(default_val.clone());
+            entry.1 = Some(default_val.clone());
         }
     }
 
     for name in &order {
-        let (prop_schema, nearest_const, nearest_default) = &resolved[name];
+        let (prop_schema, nearest_default) = &resolved[name];
         if !result.contains_key(name.as_str()) {
-            // Property is absent — a `const` locks the value (highest priority),
-            // otherwise fall back to the nearest `default` up the chain.
-            if let Some(const_val) = nearest_const {
-                result.insert(name.clone(), const_val.clone());
-            } else if let Some(default_val) = nearest_default {
+            // Property is absent — fill from the nearest `default` up the chain.
+            // A `const` is not substituted here: it asserts the value of a
+            // present property, it does not supply a missing one.
+            if let Some(default_val) = nearest_default {
                 result.insert(name.clone(), default_val.clone());
             }
         } else if result.get(name.as_str()).is_some_and(Value::is_object)
@@ -922,14 +920,15 @@ fn validate_traits_against_schema(
 
         let has_value = traits_obj.is_some_and(|m| m.contains_key(prop_name.as_str()));
 
-        // A `const` fully determines the value (materialized by
-        // `materialize_traits`), so it resolves the property just like a
-        // `default` does.
-        let has_default_or_const = prop_schema
+        // Only a `default` resolves an absent property (see
+        // `materialize_traits`). A `const` does not: it constrains a value that
+        // is present, so a required-and-`const` property with no value anywhere
+        // in the chain and no `default` is still an unresolved hole.
+        let has_default = prop_schema
             .as_object()
-            .is_some_and(|m| m.contains_key("default") || m.contains_key("const"));
+            .is_some_and(|m| m.contains_key("default"));
 
-        if !has_value && !has_default_or_const {
+        if !has_value && !has_default {
             let expected_type = prop_schema
                 .as_object()
                 .and_then(|m| m.get("type"))
@@ -937,9 +936,9 @@ fn validate_traits_against_schema(
                 .unwrap_or("any");
             errors.push(format!(
                 "trait property '{prop_name}' (type: {expected_type}) is not resolved: \
-                 no value provided and no default or const defined in the trait schema. \
-                 All traits must be resolved (via a {X_GTS_TRAITS} value in the chain \
-                 or a `default`/`const` in the trait schema) on non-abstract types; \
+                 no value provided and no default defined in the trait schema. \
+                 All required traits must be resolved (via a {X_GTS_TRAITS} value in \
+                 the chain or a `default` in the trait schema) on non-abstract types; \
                  otherwise mark the type abstract (x-gts-abstract: true)"
             ));
         }
@@ -1093,10 +1092,14 @@ mod tests {
     }
 
     #[test]
-    fn test_const_only_required_trait_resolves_and_materializes() {
-        // A required trait whose schema pins a `const` (no default, no explicit
-        // x-gts-traits value) must (a) be materialized into the effective traits
-        // and (b) pass completeness — its value is fully determined by the lock.
+    fn test_const_only_required_trait_is_not_materialized() {
+        // gts-spec README §9.7.5 / ADR-0003: materialization is defined over
+        // `default` alone. A required trait whose schema only pins a `const`
+        // (no default, no explicit x-gts-traits value) must (a) stay absent from
+        // the effective traits and (b) fail completeness as an unresolved hole —
+        // `const` asserts the value of a property that is present, it does not
+        // supply a missing one. Publishers pair `const` with `default` to get a
+        // self-resolving lock.
         let schemas = vec![json!({
             "type": "object",
             "additionalProperties": false,
@@ -1110,29 +1113,65 @@ mod tests {
             &json!({}),
             Some("http://json-schema.org/draft-07/schema#"),
         );
-        assert_eq!(
-            traits.values["channel"], "audit",
-            "const must be materialized into effective traits values"
+        assert!(
+            traits.values.get("channel").is_none(),
+            "const must not be materialized into effective traits values: {:?}",
+            traits.values
         );
         assert!(
+            traits.validate(true).is_err(),
+            "a required const-only trait with no value and no default is unresolved"
+        );
+    }
+
+    #[test]
+    fn test_const_with_matching_default_resolves_required_trait() {
+        // The spec-sanctioned self-resolving lock: `const` fixes the value,
+        // `default` supplies it when the chain never states it (and after an
+        // RFC 7396 `null` deletion).
+        let schemas = vec![json!({
+            "type": "object",
+            "properties": {
+                "channel": {"type": "string", "const": "audit", "default": "audit"}
+            },
+            "required": ["channel"]
+        })];
+        let traits = build_effective_traits(
+            &schemas,
+            &json!({}),
+            Some("http://json-schema.org/draft-07/schema#"),
+        );
+        assert_eq!(traits.values["channel"], "audit");
+        assert!(
             traits.validate(true).is_ok(),
-            "a const-locked required trait is fully resolved: {:?}",
+            "const + matching default is fully resolved: {:?}",
             traits.validate(true)
         );
     }
 
     #[test]
-    fn test_const_takes_priority_over_default_in_materialization() {
+    fn test_default_contradicting_const_fails_validation() {
+        // Only `default` is materialized, so a `default` that violates the
+        // property's own `const` produces a type that fails validation rather
+        // than being silently corrected to the const value.
         let schemas = vec![json!({
             "type": "object",
             "properties": {
                 "mode": {"type": "string", "const": "locked", "default": "open"}
             }
         })];
-        let traits = build_effective_traits(&schemas, &json!({}), None);
+        let traits = build_effective_traits(
+            &schemas,
+            &json!({}),
+            Some("http://json-schema.org/draft-07/schema#"),
+        );
         assert_eq!(
-            traits.values["mode"], "locked",
-            "const wins over default when the value is absent"
+            traits.values["mode"], "open",
+            "the default is materialized as declared, const does not override it"
+        );
+        assert!(
+            traits.validate(true).is_err(),
+            "a default contradicting const must fail validation"
         );
     }
 

@@ -5147,7 +5147,9 @@ fn test_op13_chain4_merge_defaults_consts_nulls_via_validate_schema() {
     //   - tier:      base "standard" -> l1 "premium"            => leaf-most wins
     //   - region:    base "eu" -> l2 `null` (delete)            => falls back to default "us"
     //   - retention: only leaf "P90D"                           => overrides default
-    //   - locked:    never provided, schema `const: "X"`        => const materializes
+    //   - locked:    never provided, schema `const: "X"`        => stays ABSENT; a
+    //                `const` is an assertion, not a source of values, and the
+    //                property is optional so its absence is valid
     //   - optional:  never provided, schema `default: "d"`      => default materializes
     let mut store = GtsStore::new();
     let base = "gts.x.c4.tr.base.v1~";
@@ -5186,10 +5188,10 @@ fn test_op13_chain4_merge_defaults_consts_nulls_via_validate_schema() {
             "retention": "P90D",
             "tier": "premium",
             "region": "us",
-            "locked": "X",
             "optional": "d"
         }),
-        "merge across 4 levels must honor leaf-wins, null-delete->default, const, and default"
+        "merge across 4 levels must honor leaf-wins, null-delete->default, and \
+         default-only materialization (no const substitution)"
     );
 }
 
