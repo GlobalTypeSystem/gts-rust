@@ -5973,9 +5973,9 @@ fn test_compatibility_inherits_closed_model_through_external_ref() {
         .expect("resolve new derived schema");
 
     let (backward, _) =
-        GtsEntityCastResult::check_backward_compatibility(&old_resolved, &new_resolved);
+        crate::schema_evolution::check_backward_compatibility(&old_resolved, &new_resolved);
     let (forward, _) =
-        GtsEntityCastResult::check_forward_compatibility(&old_resolved, &new_resolved);
+        crate::schema_evolution::check_forward_compatibility(&old_resolved, &new_resolved);
     assert!(backward.is_compatible());
     assert!(forward.is_incompatible());
 }

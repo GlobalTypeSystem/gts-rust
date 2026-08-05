@@ -8,9 +8,9 @@ use crate::entities::{GtsConfig, GtsEntity};
 use crate::files_reader::GtsFileReader;
 use crate::gts::{GtsId, GtsIdPattern};
 use crate::path_resolver::JsonPathResolver;
-#[cfg(test)]
-use crate::schema_cast::CompatibilityVerdict;
 use crate::schema_cast::GtsEntityCastResult;
+#[cfg(test)]
+use crate::schema_evolution::CompatibilityVerdict;
 use crate::store::{GtsStore, GtsStoreQueryResult};
 
 /// `is_schema` is `Some(true)` for schema/type IDs (ending with `~`),
@@ -2068,8 +2068,6 @@ mod tests {
 
     #[test]
     fn test_schema_compatibility_type_change() {
-        use crate::schema_cast::GtsEntityCastResult;
-
         let old_schema = json!({
             "type": "object",
             "properties": {
@@ -2085,15 +2083,13 @@ mod tests {
         });
 
         let (is_backward, backward_errors) =
-            GtsEntityCastResult::check_backward_compatibility(&old_schema, &new_schema);
+            crate::schema_evolution::check_backward_compatibility(&old_schema, &new_schema);
         assert!(is_backward.is_incompatible());
         assert!(!backward_errors.is_empty());
     }
 
     #[test]
     fn test_schema_compatibility_enum_changes() {
-        use crate::schema_cast::GtsEntityCastResult;
-
         let old_schema = json!({
             "type": "object",
             "properties": {
@@ -2115,9 +2111,9 @@ mod tests {
         });
 
         let (is_backward, _) =
-            GtsEntityCastResult::check_backward_compatibility(&old_schema, &new_schema);
+            crate::schema_evolution::check_backward_compatibility(&old_schema, &new_schema);
         let (is_forward, _) =
-            GtsEntityCastResult::check_forward_compatibility(&old_schema, &new_schema);
+            crate::schema_evolution::check_forward_compatibility(&old_schema, &new_schema);
 
         // Expanding the accepted set is backward compatible, not forward compatible.
         assert!(is_backward.is_compatible());
@@ -2126,8 +2122,6 @@ mod tests {
 
     #[test]
     fn test_schema_compatibility_numeric_constraints() {
-        use crate::schema_cast::GtsEntityCastResult;
-
         let old_schema = json!({
             "type": "object",
             "properties": {
@@ -2151,15 +2145,13 @@ mod tests {
         });
 
         let (is_backward, backward_errors) =
-            GtsEntityCastResult::check_backward_compatibility(&old_schema, &new_schema);
+            crate::schema_evolution::check_backward_compatibility(&old_schema, &new_schema);
         assert!(is_backward.is_incompatible());
         assert!(!backward_errors.is_empty());
     }
 
     #[test]
     fn test_schema_compatibility_string_constraints() {
-        use crate::schema_cast::GtsEntityCastResult;
-
         let old_schema = json!({
             "type": "object",
             "properties": {
@@ -2183,14 +2175,12 @@ mod tests {
         });
 
         let (is_backward, _) =
-            GtsEntityCastResult::check_backward_compatibility(&old_schema, &new_schema);
+            crate::schema_evolution::check_backward_compatibility(&old_schema, &new_schema);
         assert!(is_backward.is_incompatible());
     }
 
     #[test]
     fn test_schema_compatibility_array_constraints() {
-        use crate::schema_cast::GtsEntityCastResult;
-
         let old_schema = json!({
             "type": "object",
             "properties": {
@@ -2214,14 +2204,12 @@ mod tests {
         });
 
         let (is_backward, _) =
-            GtsEntityCastResult::check_backward_compatibility(&old_schema, &new_schema);
+            crate::schema_evolution::check_backward_compatibility(&old_schema, &new_schema);
         assert!(is_backward.is_incompatible());
     }
 
     #[test]
     fn test_schema_compatibility_added_constraint() {
-        use crate::schema_cast::GtsEntityCastResult;
-
         let old_schema = json!({
             "type": "object",
             "properties": {
@@ -2240,14 +2228,12 @@ mod tests {
         });
 
         let (is_backward, _) =
-            GtsEntityCastResult::check_backward_compatibility(&old_schema, &new_schema);
+            crate::schema_evolution::check_backward_compatibility(&old_schema, &new_schema);
         assert!(is_backward.is_incompatible());
     }
 
     #[test]
     fn test_schema_compatibility_removed_constraint() {
-        use crate::schema_cast::GtsEntityCastResult;
-
         let old_schema = json!({
             "type": "object",
             "properties": {
@@ -2266,14 +2252,12 @@ mod tests {
         });
 
         let (is_forward, _) =
-            GtsEntityCastResult::check_forward_compatibility(&old_schema, &new_schema);
+            crate::schema_evolution::check_forward_compatibility(&old_schema, &new_schema);
         assert!(is_forward.is_incompatible());
     }
 
     #[test]
     fn test_schema_compatibility_removed_required_property() {
-        use crate::schema_cast::GtsEntityCastResult;
-
         let old_schema = json!({
             "type": "object",
             "properties": {
@@ -2293,15 +2277,13 @@ mod tests {
         });
 
         let (is_forward, forward_errors) =
-            GtsEntityCastResult::check_forward_compatibility(&old_schema, &new_schema);
+            crate::schema_evolution::check_forward_compatibility(&old_schema, &new_schema);
         assert!(is_forward.is_incompatible());
         assert!(!forward_errors.is_empty());
     }
 
     #[test]
     fn test_schema_compatibility_enum_removed_values() {
-        use crate::schema_cast::GtsEntityCastResult;
-
         let old_schema = json!({
             "type": "object",
             "properties": {
@@ -2323,9 +2305,9 @@ mod tests {
         });
 
         let (is_backward, backward_errors) =
-            GtsEntityCastResult::check_backward_compatibility(&old_schema, &new_schema);
+            crate::schema_evolution::check_backward_compatibility(&old_schema, &new_schema);
         let (is_forward, _) =
-            GtsEntityCastResult::check_forward_compatibility(&old_schema, &new_schema);
+            crate::schema_evolution::check_forward_compatibility(&old_schema, &new_schema);
         assert!(is_backward.is_incompatible());
         assert!(!backward_errors.is_empty());
         assert!(is_forward.is_compatible());

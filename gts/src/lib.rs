@@ -5,7 +5,8 @@ pub mod ops;
 pub mod path_resolver;
 pub mod schema;
 pub mod schema_cast;
-pub mod schema_compat;
+pub mod schema_derivation;
+pub mod schema_evolution;
 pub mod schema_modifiers;
 pub mod schema_narrow;
 pub mod schema_refs;
@@ -40,9 +41,11 @@ pub use schema::{
     GtsSerialize, GtsSerializeWrapper, JSON_SCHEMA_DRAFT_07, TraitSchemaState, deserialize_gts,
     serialize_gts, strip_schema_metadata,
 };
-pub use schema_cast::{
-    CompatibilityDiagnostic, CompatibilityFinding, CompatibilityVerdict, ContentModel,
-    GtsEntityCastResult, ObjectLevel, SchemaCastError,
+pub use schema_cast::{GtsEntityCastResult, SchemaCastError};
+pub use schema_evolution::{
+    CompatibilityDiagnostic, CompatibilityFinding, CompatibilityVerdict, ContentModel, ObjectLevel,
+    check_backward_compatibility, check_backward_diagnostics, check_forward_compatibility,
+    check_forward_diagnostics,
 };
 pub use schema_narrow::{NarrowError, try_narrow};
 pub use schema_refs::{ExtractRefsError, InvalidRefReason, extract_gts_refs};

@@ -5,8 +5,10 @@ use thiserror::Error;
 
 use crate::entities::GtsEntity;
 use crate::gts::{GtsId, GtsIdError, GtsIdPattern};
-use crate::schema_cast::{
-    CompatibilityDiagnostic, CompatibilityVerdict, GtsEntityCastResult, ObjectLevel,
+use crate::schema_cast::GtsEntityCastResult;
+use crate::schema_evolution::{
+    CompatibilityDiagnostic, CompatibilityVerdict, ObjectLevel, check_backward_diagnostics,
+    check_forward_diagnostics, classify_object_levels,
 };
 
 #[derive(Debug, Error)]
@@ -67,7 +69,7 @@ pub struct SchemaComparison {
     ///
     /// A caller admitting the new definition uses this to report, per level,
     /// whether a later definition will be able to add an optional property
-    /// there - see [`crate::schema_cast::ContentModel::is_evolvable_in_place`].
+    /// there - see [`crate::schema_evolution::ContentModel::is_evolvable_in_place`].
     /// One flag for the
     /// whole document would not do: in the closed-envelope shape recommended by
     /// §4.4.1 the level that decides evolvability is inside an extension
@@ -85,15 +87,15 @@ impl SchemaComparison {
     /// Compares two documents whose references are already resolved.
     fn of_resolved(old_schema: &Value, new_schema: &Value) -> Self {
         let (backward_compatibility, backward_diagnostics) =
-            GtsEntityCastResult::check_backward_diagnostics(old_schema, new_schema);
+            check_backward_diagnostics(old_schema, new_schema);
         let (forward_compatibility, forward_diagnostics) =
-            GtsEntityCastResult::check_forward_diagnostics(old_schema, new_schema);
+            check_forward_diagnostics(old_schema, new_schema);
         Self {
             backward_compatibility,
             forward_compatibility,
             backward_diagnostics,
             forward_diagnostics,
-            candidate_object_levels: GtsEntityCastResult::classify_object_levels(new_schema),
+            candidate_object_levels: classify_object_levels(new_schema),
         }
     }
 
@@ -465,7 +467,7 @@ impl GtsStore {
     /// - B (derived from A) is compatible with A
     /// - C (derived from A~B) is compatible with A~B
     ///
-    /// The heavy lifting is delegated to [`crate::schema_compat`].
+    /// The heavy lifting is delegated to [`crate::schema_derivation`].
     ///
     /// # Errors
     /// Returns `StoreError::ValidationError` if any derived schema loosens base constraints.
@@ -521,7 +523,7 @@ impl GtsStore {
                 StoreError::ValidationError(format!("Schema '{derived_id}' has {e}"))
             })?;
 
-            let errors = crate::schema_compat::validate_schema_compatibility(
+            let errors = crate::schema_derivation::validate_derivation_compatibility(
                 &base_resolved,
                 &derived_resolved,
                 base_id,

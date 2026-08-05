@@ -299,11 +299,9 @@ fn validate_trait_schema_compatibility(
         let ancestor_schema = build_effective_traits_schema(&resolved_trait_schemas[..i]);
         let descendant_schema = build_effective_traits_schema(&resolved_trait_schemas[..=i]);
 
-        let ancestor = crate::schema_compat::extract_effective_schema(&ancestor_schema);
-        let descendant = crate::schema_compat::extract_effective_schema(&descendant_schema);
-        let pair_errors = crate::schema_compat::validate_effective_schema_compatibility(
-            &ancestor,
-            &descendant,
+        let pair_errors = crate::schema_derivation::validate_derivation(
+            &ancestor_schema,
+            &descendant_schema,
             "ancestor trait schema",
             "descendant trait schema",
         );
@@ -312,7 +310,7 @@ fn validate_trait_schema_compatibility(
             format!("x-gts-traits-schema[{i}] is incompatible with ancestor trait schema: {err}")
         }));
 
-        let branch_errors = crate::schema_compat::validate_closed_descendant_branches(
+        let branch_errors = crate::schema_derivation::validate_closed_descendant_branches(
             &ancestor_schema,
             &resolved_trait_schemas[i],
             "ancestor trait schema",
