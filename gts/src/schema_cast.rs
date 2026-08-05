@@ -1,7 +1,7 @@
 use num_cmp::NumCmp;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use thiserror::Error;
 
 use crate::{gts::GtsId, schema_semantics::boolean_schema_value};
@@ -254,9 +254,42 @@ impl std::fmt::Display for CompatibilityDiagnostic {
     }
 }
 
-const UNPROVEN_INTERSECTION: &str = "x-gts-internal-unproven-intersection";
+/// Locations, relative to the node being flattened, whose `allOf` intersection
+/// could not be reduced to an exact single schema.
+///
+/// The root of the flattened node is the empty string; a property extends the
+/// location with `.name` and array items with `[]`, matching the paths
+/// [`GtsEntityCastResult::check_schema_node_compatibility`] descends through.
+/// Keywords the checker treats as node-level constraints (`additionalProperties`,
+/// `patternProperties`, `propertyNames`, ...) are attributed to their owning
+/// node: an intersection this checker cannot prove there makes the whole node
+/// unprovable.
+type UnprovenPaths = BTreeSet<String>;
 
-fn merge_schema_map(target: &mut Map<String, Value>, candidate: &Map<String, Value>) {
+/// Whether each side's effective dialect evaluates `unevaluatedProperties`.
+#[derive(Debug, Clone, Copy)]
+struct DialectSupport {
+    old_unevaluated: bool,
+    new_unevaluated: bool,
+}
+
+/// Narrows `unproven` to the locations inside `child`, rebased so that the
+/// empty string denotes `child` itself.
+fn unproven_below(unproven: &UnprovenPaths, child: &str) -> UnprovenPaths {
+    unproven
+        .iter()
+        .filter_map(|location| location.strip_prefix(child))
+        .filter(|rest| rest.is_empty() || rest.starts_with('.') || rest.starts_with('['))
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn merge_schema_map(
+    target: &mut Map<String, Value>,
+    candidate: &Map<String, Value>,
+    path: &str,
+    unproven: &mut UnprovenPaths,
+) {
     const ANNOTATIONS: &[&str] = &[
         "$id",
         "$schema",
@@ -306,21 +339,32 @@ fn merge_schema_map(target: &mut Map<String, Value>, candidate: &Map<String, Val
 
         match keyword.as_str() {
             "properties" | "patternProperties" => {
+                // The checker descends into named properties, so an unprovable
+                // property intersection stays local to that property. Pattern
+                // properties are compared as a node-level constraint instead.
+                let named = keyword == "properties";
                 if let (Some(current_map), Some(candidate_map)) =
                     (current.as_object_mut(), candidate_value.as_object())
                 {
                     for (name, candidate_schema) in candidate_map {
                         if let Some(current_schema) = current_map.get_mut(name) {
-                            merge_schema_intersection(current_schema, candidate_schema);
+                            let property_path = if named {
+                                format!("{path}.{name}")
+                            } else {
+                                path.to_owned()
+                            };
+                            merge_schema_intersection(
+                                current_schema,
+                                candidate_schema,
+                                &property_path,
+                                unproven,
+                            );
                         } else {
                             current_map.insert(name.clone(), candidate_schema.clone());
                         }
                     }
                 } else {
-                    record_unproven_intersection(
-                        target,
-                        format!("'{keyword}' has incompatible representations"),
-                    );
+                    unproven.insert(path.to_owned());
                 }
             }
             "required" => {
@@ -334,21 +378,19 @@ fn merge_schema_map(target: &mut Map<String, Value>, candidate: &Map<String, Val
                     }
                 }
             }
-            "additionalProperties"
-            | "unevaluatedProperties"
-            | "items"
-            | "propertyNames"
-            | "contains" => merge_schema_intersection(current, candidate_value),
+            "items" => {
+                merge_schema_intersection(current, candidate_value, &format!("{path}[]"), unproven);
+            }
+            "additionalProperties" | "unevaluatedProperties" | "propertyNames" | "contains" => {
+                merge_schema_intersection(current, candidate_value, path, unproven);
+            }
             "enum" => {
                 if let (Some(current_values), Some(candidate_values)) =
                     (current.as_array_mut(), candidate_value.as_array())
                 {
                     current_values.retain(|value| candidate_values.contains(value));
                     if current_values.is_empty() {
-                        record_unproven_intersection(
-                            target,
-                            "allOf enum intersection is empty".to_owned(),
-                        );
+                        unproven.insert(path.to_owned());
                     }
                 }
             }
@@ -369,45 +411,36 @@ fn merge_schema_map(target: &mut Map<String, Value>, candidate: &Map<String, Val
                 } else if !(current.as_str() == Some("integer")
                     && candidate_value.as_str() == Some("number"))
                 {
-                    let reason = format!(
-                        "allOf has incompatible type constraints {current} and {candidate_value}"
-                    );
-                    record_unproven_intersection(target, reason);
+                    unproven.insert(path.to_owned());
                 }
             }
-            _ => record_unproven_intersection(
-                target,
-                format!("allOf has differing '{keyword}' constraints"),
-            ),
+            _ => {
+                unproven.insert(path.to_owned());
+            }
         }
     }
 }
 
-fn merge_schema_intersection(target: &mut Value, candidate: &Value) {
+fn merge_schema_intersection(
+    target: &mut Value,
+    candidate: &Value,
+    path: &str,
+    unproven: &mut UnprovenPaths,
+) {
     match (&mut *target, candidate) {
         (Value::Bool(false), _) | (_, Value::Bool(true)) => {}
         (Value::Bool(true), value) => *target = value.clone(),
         (_, Value::Bool(false)) => *target = Value::Bool(false),
         (Value::Object(target_map), Value::Object(candidate_map)) => {
-            merge_schema_map(target_map, candidate_map);
+            merge_schema_map(target_map, candidate_map, path, unproven);
         }
         _ => {
-            *target = Value::Object(Map::from_iter([(
-                UNPROVEN_INTERSECTION.to_owned(),
-                Value::Array(vec![target.clone(), candidate.clone()]),
-            )]));
+            // Two branches that are not both object schemas have no
+            // representable intersection; leave the node unconstrained and let
+            // the caller decide what an unprovable location means.
+            unproven.insert(path.to_owned());
+            *target = Value::Object(Map::new());
         }
-    }
-}
-
-fn record_unproven_intersection(schema: &mut Map<String, Value>, reason: String) {
-    let marker = schema
-        .entry(UNPROVEN_INTERSECTION)
-        .or_insert_with(|| Value::Array(Vec::new()));
-    if let Some(reasons) = marker.as_array_mut() {
-        reasons.push(Value::String(reason));
-    } else {
-        *marker = Value::Array(vec![Value::String(reason)]);
     }
 }
 
@@ -755,13 +788,25 @@ impl GtsEntityCastResult {
 
     #[must_use]
     pub fn flatten_schema(schema: &Value) -> Value {
+        Self::flatten_effective(schema).0
+    }
+
+    /// Flattens `allOf` and reports where the intersection could not be proven.
+    ///
+    /// The flattened schema is always a usable approximation; the returned
+    /// [`UnprovenPaths`] tell a compatibility checker which locations it must
+    /// not draw conclusions about.
+    fn flatten_effective(schema: &Value) -> (Value, UnprovenPaths) {
+        let mut unproven = UnprovenPaths::new();
         let Some(schema_map) = schema.as_object() else {
-            return schema.clone();
+            return (schema.clone(), unproven);
         };
         let mut result = Value::Bool(true);
         if let Some(all_of) = schema_map.get("allOf").and_then(Value::as_array) {
             for branch in all_of {
-                merge_schema_intersection(&mut result, &Self::flatten_schema(branch));
+                let (flattened_branch, branch_unproven) = Self::flatten_effective(branch);
+                unproven.extend(branch_unproven);
+                merge_schema_intersection(&mut result, &flattened_branch, "", &mut unproven);
             }
         }
         let direct = Value::Object(
@@ -771,8 +816,8 @@ impl GtsEntityCastResult {
                 .map(|(keyword, value)| (keyword.clone(), value.clone()))
                 .collect(),
         );
-        merge_schema_intersection(&mut result, &direct);
-        result
+        merge_schema_intersection(&mut result, &direct, "", &mut unproven);
+        (result, unproven)
     }
 
     /// Reports a bound keyword whose value is present but not a number.
@@ -1406,17 +1451,24 @@ impl GtsEntityCastResult {
         new_schema: &Value,
         path: &str,
         check_backward: bool,
-        old_supports_unevaluated: bool,
-        new_supports_unevaluated: bool,
+        dialects: DialectSupport,
+        inherited_unproven: UnprovenPaths,
         errors: &mut Vec<CompatibilityDiagnostic>,
     ) {
+        // Locations an ancestor could not prove stay unprovable here; add
+        // whatever this node's own `allOf` composition leaves undecided.
+        let mut unproven = inherited_unproven;
         let old_effective = if old_schema.get("allOf").is_some() {
-            Self::flatten_schema(old_schema)
+            let (effective, paths) = Self::flatten_effective(old_schema);
+            unproven.extend(paths);
+            effective
         } else {
             old_schema.clone()
         };
         let new_effective = if new_schema.get("allOf").is_some() {
-            Self::flatten_schema(new_schema)
+            let (effective, paths) = Self::flatten_effective(new_schema);
+            unproven.extend(paths);
+            effective
         } else {
             new_schema.clone()
         };
@@ -1451,9 +1503,7 @@ impl GtsEntityCastResult {
             }
             return;
         };
-        if old_map.contains_key(UNPROVEN_INTERSECTION)
-            || new_map.contains_key(UNPROVEN_INTERSECTION)
-        {
+        if unproven.contains("") {
             errors.push(CompatibilityDiagnostic::new(
                 path,
                 CompatibilityFinding::NotProvable,
@@ -1505,8 +1555,8 @@ impl GtsEntityCastResult {
                 new_map,
                 path,
                 check_backward,
-                old_supports_unevaluated,
-                new_supports_unevaluated,
+                dialects,
+                &unproven,
                 errors,
             );
         }
@@ -1517,8 +1567,8 @@ impl GtsEntityCastResult {
                 new_items,
                 &format!("{path}[]"),
                 check_backward,
-                old_supports_unevaluated,
-                new_supports_unevaluated,
+                dialects,
+                unproven_below(&unproven, "[]"),
                 errors,
             ),
             (None, Some(_)) if check_backward => {
@@ -1542,8 +1592,8 @@ impl GtsEntityCastResult {
         new_schema: &Map<String, Value>,
         path: &str,
         check_backward: bool,
-        old_supports_unevaluated: bool,
-        new_supports_unevaluated: bool,
+        dialects: DialectSupport,
+        unproven: &UnprovenPaths,
         errors: &mut Vec<CompatibilityDiagnostic>,
     ) {
         let empty = Map::new();
@@ -1588,19 +1638,15 @@ impl GtsEntityCastResult {
             ));
         }
 
-        let old_model = Self::classify_content_model(old_schema, old_supports_unevaluated);
-        let new_model = Self::classify_content_model(new_schema, new_supports_unevaluated);
+        let old_model = Self::classify_content_model(old_schema, dialects.old_unevaluated);
+        let new_model = Self::classify_content_model(new_schema, dialects.new_unevaluated);
         let (source_model, target_model) = if check_backward {
             (old_model, new_model)
         } else {
             (new_model, old_model)
         };
-        let partial_constraints_equal = Self::partial_content_constraints_equal(
-            old_schema,
-            new_schema,
-            old_supports_unevaluated,
-            new_supports_unevaluated,
-        );
+        let partial_constraints_equal =
+            Self::partial_content_constraints_equal(old_schema, new_schema, dialects);
         if !Self::content_model_is_subset(source_model, target_model) {
             errors.push(CompatibilityDiagnostic::new(
                 path,
@@ -1634,8 +1680,8 @@ impl GtsEntityCastResult {
                     new_property,
                     &property_path,
                     check_backward,
-                    old_supports_unevaluated,
-                    new_supports_unevaluated,
+                    dialects,
+                    unproven_below(unproven, &format!(".{name}")),
                     errors,
                 );
             } else {
@@ -1732,8 +1778,7 @@ impl GtsEntityCastResult {
     fn partial_content_constraints_equal(
         old_schema: &Map<String, Value>,
         new_schema: &Map<String, Value>,
-        old_supports_unevaluated: bool,
-        new_supports_unevaluated: bool,
+        dialects: DialectSupport,
     ) -> bool {
         let normalize_additional = |schema: &Map<String, Value>| {
             schema
@@ -1755,8 +1800,8 @@ impl GtsEntityCastResult {
         normalize_additional(old_schema) == normalize_additional(new_schema)
             && old_schema.get("patternProperties") == new_schema.get("patternProperties")
             && old_schema.get("propertyNames") == new_schema.get("propertyNames")
-            && normalize_unevaluated(old_schema, old_supports_unevaluated)
-                == normalize_unevaluated(new_schema, new_supports_unevaluated)
+            && normalize_unevaluated(old_schema, dialects.old_unevaluated)
+                == normalize_unevaluated(new_schema, dialects.new_unevaluated)
     }
 
     fn property_change_error(
@@ -1870,8 +1915,11 @@ impl GtsEntityCastResult {
             new_schema,
             "$",
             check_backward,
-            Self::dialect_supports_unevaluated(effective_old),
-            Self::dialect_supports_unevaluated(effective_new),
+            DialectSupport {
+                old_unevaluated: Self::dialect_supports_unevaluated(effective_old),
+                new_unevaluated: Self::dialect_supports_unevaluated(effective_new),
+            },
+            UnprovenPaths::new(),
             &mut errors,
         );
         (CompatibilityVerdict::from_diagnostics(&errors), errors)
@@ -3737,6 +3785,66 @@ mod tests {
             diagnostics
                 .iter()
                 .all(|diagnostic| diagnostic.finding == CompatibilityFinding::NotProvable),
+            "{diagnostics:?}"
+        );
+    }
+
+    /// An unprovable `allOf` intersection is the checker's own bookkeeping and
+    /// must never surface as a keyword: `flatten_schema` is public and its
+    /// output feeds instance casting and `additionalProperties` comparisons,
+    /// where a synthetic keyword reads as a real constraint difference.
+    #[test]
+    fn test_unprovable_intersection_leaves_no_synthetic_keyword() {
+        let flattened = GtsEntityCastResult::flatten_schema(&json!({
+            "allOf": [
+                {"type": "object", "additionalProperties": {"type": "string"}},
+                {"type": "object", "additionalProperties": {"type": "number"}}
+            ]
+        }));
+
+        let keys: Vec<&String> = flattened
+            .as_object()
+            .expect("flattening object branches yields an object")
+            .keys()
+            .collect();
+        assert!(
+            keys.iter().all(|key| !key.starts_with("x-gts-internal")),
+            "{keys:?}"
+        );
+    }
+
+    /// The undecidable branch must stay local: reporting it must not swallow a
+    /// sibling that is decidably broken, or "unknown" would mask "incompatible".
+    #[test]
+    fn test_unprovable_property_does_not_mask_sibling_incompatibility() {
+        let schema_with = |sibling: Value| {
+            json!({
+                "type": "object",
+                "allOf": [
+                    {"properties": {"undecidable": {"type": "string"}}},
+                    {"properties": {"undecidable": {"type": "integer"}}}
+                ],
+                "properties": {"sibling": sibling}
+            })
+        };
+
+        let (verdict, diagnostics) = GtsEntityCastResult::check_backward_diagnostics(
+            &schema_with(json!({"type": "string"})),
+            &schema_with(json!({"type": "number"})),
+        );
+
+        assert!(verdict.is_incompatible(), "{diagnostics:?}");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.path == "$.undecidable"
+                    && diagnostic.finding == CompatibilityFinding::NotProvable),
+            "{diagnostics:?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.path == "$.sibling"),
             "{diagnostics:?}"
         );
     }
