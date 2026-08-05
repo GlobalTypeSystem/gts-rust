@@ -1,0 +1,37 @@
+{
+  "$id": "gts://gts.x.test.golden.flattenedmap.v1~",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "ExtensibleMetadata": {
+      "additionalProperties": true,
+      "properties": {
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "Host with a nested struct opened by a flattened map",
+  "properties": {
+    "metadata": {
+      "$ref": "#/definitions/ExtensibleMetadata"
+    },
+    "type": {
+      "description": "GTS type identifier",
+      "format": "gts-type-id",
+      "title": "GTS Type ID",
+      "type": "string",
+      "x-gts-ref": "gts.*"
+    }
+  },
+  "required": [
+    "type",
+    "metadata"
+  ],
+  "type": "object"
+}

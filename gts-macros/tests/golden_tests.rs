@@ -136,6 +136,12 @@ macro_rules! golden_cases {
 }
 
 golden_cases!(
+    additional_properties_nested_closed,
+    additional_properties_explicit_open,
+    additional_properties_flattened_map,
+    additional_properties_content_models,
+    additional_properties_gts_root_open,
+    additional_properties_gts_derived_open,
     traits_inline_chain,
     traits_bool_true,
     traits_bool_false,

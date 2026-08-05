@@ -1,0 +1,60 @@
+{
+  "$id": "gts://gts.x.test.golden.contentmodels.v1~",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Choice": {
+      "anyOf": [
+        {
+          "properties": {
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "code": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "code"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "description": "Host preserving map and combinator content models",
+  "properties": {
+    "choice": {
+      "$ref": "#/definitions/Choice"
+    },
+    "labels": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "type": {
+      "description": "GTS type identifier",
+      "format": "gts-type-id",
+      "title": "GTS Type ID",
+      "type": "string",
+      "x-gts-ref": "gts.*"
+    }
+  },
+  "required": [
+    "type",
+    "labels",
+    "choice"
+  ],
+  "type": "object"
+}

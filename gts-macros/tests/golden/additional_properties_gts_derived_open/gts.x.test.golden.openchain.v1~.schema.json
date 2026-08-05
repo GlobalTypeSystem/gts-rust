@@ -1,0 +1,24 @@
+{
+  "$id": "gts://gts.x.test.golden.openchain.v1~",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": true,
+  "description": "Abstract base with a payload extension slot",
+  "properties": {
+    "payload": {
+      "type": "object"
+    },
+    "type": {
+      "description": "GTS type identifier",
+      "format": "gts-type-id",
+      "title": "GTS Type ID",
+      "type": "string",
+      "x-gts-ref": "gts.*"
+    }
+  },
+  "required": [
+    "type",
+    "payload"
+  ],
+  "type": "object",
+  "x-gts-abstract": true
+}

@@ -1,0 +1,53 @@
+{
+  "$id": "gts://gts.x.test.golden.nestedclosed.v1~",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Contact": {
+      "additionalProperties": false,
+      "properties": {
+        "email": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "email"
+      ],
+      "type": "object"
+    },
+    "Profile": {
+      "additionalProperties": false,
+      "properties": {
+        "contact": {
+          "$ref": "#/definitions/Contact"
+        },
+        "display_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "display_name",
+        "contact"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "Host with recursively closed nested data structs",
+  "properties": {
+    "profile": {
+      "$ref": "#/definitions/Profile"
+    },
+    "type": {
+      "description": "GTS type identifier",
+      "format": "gts-type-id",
+      "title": "GTS Type ID",
+      "type": "string",
+      "x-gts-ref": "gts.*"
+    }
+  },
+  "required": [
+    "type",
+    "profile"
+  ],
+  "type": "object"
+}

@@ -1,0 +1,33 @@
+{
+  "$id": "gts://gts.x.test.golden.openchain.v1~x.test.audit.payload.v1~",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "allOf": [
+    {
+      "$ref": "gts://gts.x.test.golden.openchain.v1~"
+    },
+    {
+      "properties": {
+        "payload": {
+          "additionalProperties": true,
+          "properties": {
+            "data": {
+              "type": "object"
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "label",
+            "data"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "object"
+    }
+  ],
+  "description": "Derived payload with an explicitly open content model",
+  "type": "object",
+  "x-gts-abstract": true
+}

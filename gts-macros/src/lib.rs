@@ -508,9 +508,19 @@ fn add_missing_derives(input: &mut syn::DeriveInput, base: &BaseAttr) {
         let derives_str = derives_to_add.join(", ");
         let derives_tokens: proc_macro2::TokenStream =
             derives_str.parse().expect("Failed to parse derive tokens");
-        input
+        let derive_attr = syn::parse_quote!(#[derive(#derives_tokens)]);
+
+        // `schemars` is a derive-helper attribute. Keep the derive that
+        // introduces it before a container-level `#[schemars(...)]`; placing
+        // the automatically-added derive after the helper triggers
+        // `legacy_derive_helpers` in crates that deny future-incompatible
+        // lints.
+        let insert_at = input
             .attrs
-            .push(syn::parse_quote!(#[derive(#derives_tokens)]));
+            .iter()
+            .position(|attr| attr.path().is_ident("schemars"))
+            .unwrap_or(input.attrs.len());
+        input.attrs.insert(insert_at, derive_attr);
     }
 }
 
@@ -1564,10 +1574,11 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     //
     // Under GTS 0.13 an open object level cannot gain an optional property
     // backward compatibly, because the old schema already accepted arbitrary
-    // values under that name (gts-spec sec 4.4-4.5). The macro already closes
-    // every level it builds itself - the document root of a base type and the
-    // level carrying a derived type's own properties - but property subschemas
-    // come from `schemars::JsonSchema`, which emits
+    // values under that name (gts-spec sec 4.4-4.5). By default, the macro
+    // closes every level it builds itself - the document root of a base type
+    // and the level carrying a derived type's own properties - but preserves an
+    // `additionalProperties` content model explicitly emitted by Schemars for
+    // either level. Property subschemas come from `schemars::JsonSchema`, which emits
     // `additionalProperties: false` only for a struct declaring
     // `#[serde(deny_unknown_fields)]`. Closing those levels here makes
     // macro-generated types evolvable in place without asking every nested data
@@ -1808,6 +1819,54 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         }
     };
 
+    // A derived Rust struct is emitted as an overlay inside its parent's
+    // generic extension path rather than at the JSON document root. Preserve a
+    // content model explicitly declared on that struct by applying it to the
+    // object level that actually carries the struct's own properties.
+    let apply_declared_additional_properties_to_derived_level = quote! {
+        if let Some(declared_additional_properties) = declared_additional_properties {
+            fn set_additional_properties_at_path(
+                properties: &mut serde_json::Value,
+                path: &[&str],
+                additional_properties: serde_json::Value,
+            ) {
+                let Some((field, remaining)) = path.split_first() else {
+                    return;
+                };
+                let Some(schema) = properties
+                    .as_object_mut()
+                    .and_then(|object| object.get_mut(*field))
+                else {
+                    return;
+                };
+
+                if remaining.is_empty() {
+                    if let Some(object) = schema.as_object_mut() {
+                        object.insert(
+                            "additionalProperties".to_owned(),
+                            additional_properties,
+                        );
+                    }
+                    return;
+                }
+
+                if let Some(nested_properties) = schema.get_mut("properties") {
+                    set_additional_properties_at_path(
+                        nested_properties,
+                        remaining,
+                        additional_properties,
+                    );
+                }
+            }
+
+            set_additional_properties_at_path(
+                &mut nested_properties,
+                &path_refs,
+                declared_additional_properties,
+            );
+        }
+    };
+
     let gts_schema_impl = if has_generic {
         let generic_param = input.generics.type_params().next().unwrap();
         let generic_ident = &generic_param.ident;
@@ -1899,6 +1958,8 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 let mut properties = schema_val.get("properties").cloned().unwrap_or(serde_json::json!({}));
                 let required = schema_val.get("required").cloned().unwrap_or(serde_json::json!([]));
                 let mut definitions = schema_val.get("definitions").cloned();
+                let declared_additional_properties =
+                    schema_val.get("additionalProperties").cloned();
 
                 // Replace the generic field with a simple {"type": "object"} placeholder
                 // The generic field should not be expanded, regardless of the concrete type parameter
@@ -1936,7 +1997,8 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 }
 
                 // If no parent (base type), return simple schema without allOf
-                // Base types have additionalProperties: false at root level
+                // Base types are closed by default, while an explicit Schemars
+                // content model on the source struct is preserved.
                 // Generic fields are just {"type": "object"} (will be extended by children)
                 if parent_type_id.is_empty() {
                     let mut schema = serde_json::json!({
@@ -1944,7 +2006,9 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                         "$schema": ::gts::JSON_SCHEMA_DRAFT_07,
                         "description": #description,
                         "type": "object",
-                        "additionalProperties": false,
+                        "additionalProperties": declared_additional_properties
+                            .clone()
+                            .unwrap_or(serde_json::Value::Bool(false)),
                         "properties": properties
                     });
                     if !required.as_array().map(|a| a.is_empty()).unwrap_or(true) {
@@ -1970,12 +2034,13 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 let path_refs: Vec<&str> = owned_path.iter().copied().collect();
                 let innermost_generic_field =
                     <#generic_ident as ::gts::GtsSchema>::GENERIC_FIELD;
-                let nested_properties = Self::wrap_in_nesting_path(
+                let mut nested_properties = Self::wrap_in_nesting_path(
                     &path_refs,
                     properties,
                     required.clone(),
                     innermost_generic_field,
                 );
+                #apply_declared_additional_properties_to_derived_level
 
                 // Child type - use allOf with $ref to parent.
                 //
@@ -2052,6 +2117,8 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 let mut properties = schema_val.get("properties").cloned().unwrap_or_else(|| serde_json::json!({}));
                 let required = schema_val.get("required").cloned().unwrap_or_else(|| serde_json::json!([]));
                 let mut definitions = schema_val.get("definitions").cloned();
+                let declared_additional_properties =
+                    schema_val.get("additionalProperties").cloned();
 
                 // Resolve internal $ref references to GtsInstanceId and GtsTypeId at compile time
                 // This is needed for schemas validated directly (not through GtsStore)
@@ -2074,14 +2141,17 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 }
 
                 // If no parent (base type), return simple schema without allOf
-                // Non-generic base types have additionalProperties: false at root level
+                // Non-generic base types are closed by default, while an
+                // explicit Schemars content model on the source struct is preserved.
                 if parent_type_id.is_empty() {
                     let mut schema = serde_json::json!({
                         "$id": format!("gts://{}", type_id),
                         "$schema": ::gts::JSON_SCHEMA_DRAFT_07,
                         "description": #description,
                         "type": "object",
-                        "additionalProperties": false,
+                        "additionalProperties": declared_additional_properties
+                            .clone()
+                            .unwrap_or(serde_json::Value::Bool(false)),
                         "properties": properties
                     });
                     if !required.as_array().map(|a| a.is_empty()).unwrap_or(true) {
@@ -2101,7 +2171,8 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 // chain's `additionalProperties: false` honoured.
                 let owned_path = Self::outer_generic_path();
                 let path_refs: Vec<&str> = owned_path.iter().copied().collect();
-                let nested_properties = Self::wrap_in_nesting_path(&path_refs, properties, required, None);
+                let mut nested_properties = Self::wrap_in_nesting_path(&path_refs, properties, required, None);
+                #apply_declared_additional_properties_to_derived_level
                 // No top-level `additionalProperties: false` here either -
                 // see the matching comment in `gts_schema_for!` above.
                 let mut schema = serde_json::json!({
