@@ -4,6 +4,14 @@ use crate::schema_traits::{X_GTS_TRAITS, X_GTS_TRAITS_SCHEMA};
 
 pub const X_GTS_FINAL: &str = "x-gts-final";
 pub const X_GTS_ABSTRACT: &str = "x-gts-abstract";
+/// Marks a type whose derived schemas must resolve to a closed content model
+/// at their top level (effective `additionalProperties: false`). Designed for
+/// open abstract envelope bases (e.g. extensible metadata): the base stays
+/// open so derived schemas can declare payload properties, while this
+/// modifier guarantees each derived schema rejects undeclared properties —
+/// keeping server-side validation meaningful (a typo'd property name fails
+/// instead of being silently accepted).
+pub const X_GTS_CLOSED_DERIVATIONS: &str = "x-gts-closed-derivations";
 
 fn contains_key_recursive(value: &Value, key: &str) -> bool {
     match value {
@@ -39,15 +47,32 @@ pub fn validate_schema_modifiers(content: &Value) -> Result<(), String> {
         None => false,
     };
 
+    let closed_derivations = match content.get(X_GTS_CLOSED_DERIVATIONS) {
+        Some(Value::Bool(b)) => *b,
+        Some(other) => {
+            return Err(format!(
+                "{X_GTS_CLOSED_DERIVATIONS} must be a boolean, got {other}"
+            ));
+        }
+        None => false,
+    };
+
     if is_final && is_abstract {
         return Err(format!(
             "schema cannot declare both {X_GTS_FINAL} and {X_GTS_ABSTRACT} as true"
         ));
     }
 
+    if is_final && closed_derivations {
+        return Err(format!(
+            "schema cannot declare both {X_GTS_FINAL} and {X_GTS_CLOSED_DERIVATIONS} as true: \
+             a final type has no derivations to constrain"
+        ));
+    }
+
     if let Value::Object(map) = content {
         for (k, v) in map {
-            if k == X_GTS_FINAL || k == X_GTS_ABSTRACT {
+            if k == X_GTS_FINAL || k == X_GTS_ABSTRACT || k == X_GTS_CLOSED_DERIVATIONS {
                 continue;
             }
             if contains_key_recursive(v, X_GTS_FINAL) {
@@ -55,6 +80,11 @@ pub fn validate_schema_modifiers(content: &Value) -> Result<(), String> {
             }
             if contains_key_recursive(v, X_GTS_ABSTRACT) {
                 return Err(format!("{X_GTS_ABSTRACT} must be at the schema top level"));
+            }
+            if contains_key_recursive(v, X_GTS_CLOSED_DERIVATIONS) {
+                return Err(format!(
+                    "{X_GTS_CLOSED_DERIVATIONS} must be at the schema top level"
+                ));
             }
         }
     }
