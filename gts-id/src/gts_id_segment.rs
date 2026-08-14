@@ -23,8 +23,9 @@ use crate::parse::{expected_format, is_valid_segment_token, parse_u32_exact};
 ///
 /// For a wildcard segment these fields hold the (possibly partial) prefix that
 /// precedes the `*` token — e.g. `x.core.*` fills `vendor` and `package` and
-/// leaves the rest empty. Empty strings, a zero `ver_major`, and a `None`
-/// `ver_minor` therefore mean "unspecified" in the wildcard case.
+/// leaves the rest empty. Empty strings and `None` version components therefore
+/// mean "unspecified" in the wildcard case. A present major version may
+/// legitimately be zero.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct GtsIdSegmentParts {
     /// The raw segment string as it appeared in the source (including any
@@ -34,7 +35,7 @@ pub struct GtsIdSegmentParts {
     package: String,
     namespace: String,
     type_name: String,
-    ver_major: u32,
+    ver_major: Option<u32>,
     ver_minor: Option<u32>,
 }
 
@@ -72,8 +73,17 @@ impl GtsIdSegmentParts {
     }
 
     /// The major version, or `0` when unspecified in a wildcard segment.
+    ///
+    /// Use [`Self::ver_major_opt`] when the distinction between an unspecified
+    /// version and a real `v0` matters.
     #[must_use]
     pub fn ver_major(&self) -> u32 {
+        self.ver_major.unwrap_or(0)
+    }
+
+    /// The major version when one was specified.
+    #[must_use]
+    pub fn ver_major_opt(&self) -> Option<u32> {
         self.ver_major
     }
 
@@ -100,7 +110,7 @@ pub trait SegmentView {
     fn package(&self) -> &str;
     fn namespace(&self) -> &str;
     fn type_name(&self) -> &str;
-    fn ver_major(&self) -> u32;
+    fn ver_major_opt(&self) -> Option<u32>;
     fn ver_minor(&self) -> Option<u32>;
     fn is_type(&self) -> bool;
     fn uuid_tail(&self) -> Option<&str>;
@@ -198,9 +208,18 @@ impl GtsIdSegment {
     }
 
     /// The major version, or `0` for a UUID tail.
+    ///
+    /// Use [`Self::ver_major_opt`] when the distinction between an absent
+    /// version and a real `v0` matters.
     #[must_use]
     pub fn ver_major(&self) -> u32 {
-        self.parts().map_or(0, |p| p.ver_major)
+        self.parts().map_or(0, GtsIdSegmentParts::ver_major)
+    }
+
+    /// The major version when this is a named GTS segment.
+    #[must_use]
+    pub fn ver_major_opt(&self) -> Option<u32> {
+        self.parts().and_then(GtsIdSegmentParts::ver_major_opt)
     }
 
     /// The minor version, when present.
@@ -329,11 +348,23 @@ impl GtsIdPatternSegment {
     }
 
     /// The major version, or `0` when unspecified.
+    ///
+    /// Use [`Self::ver_major_opt`] when the distinction between an unspecified
+    /// version wildcard and a real `v0` matters.
     #[must_use]
     pub fn ver_major(&self) -> u32 {
         match self {
             GtsIdPatternSegment::Segment(s) => s.ver_major(),
-            GtsIdPatternSegment::Wildcard(p) => p.ver_major,
+            GtsIdPatternSegment::Wildcard(p) => p.ver_major(),
+        }
+    }
+
+    /// The major version when one was specified in this pattern segment.
+    #[must_use]
+    pub fn ver_major_opt(&self) -> Option<u32> {
+        match self {
+            GtsIdPatternSegment::Segment(s) => s.ver_major_opt(),
+            GtsIdPatternSegment::Wildcard(p) => p.ver_major_opt(),
         }
     }
 
@@ -483,7 +514,7 @@ fn parse_segment_parts(
         package: String::new(),
         namespace: String::new(),
         type_name: String::new(),
-        ver_major: 0,
+        ver_major: None,
         ver_minor: None,
     };
 
@@ -539,8 +570,10 @@ fn parse_segment_parts(
         }
 
         let major_str = &tokens[4][1..];
-        parts.ver_major = parse_u32_exact(major_str)
-            .ok_or_else(|| format!("Major version must be an integer, got '{major_str}'"))?;
+        parts.ver_major = Some(
+            parse_u32_exact(major_str)
+                .ok_or_else(|| format!("Major version must be an integer, got '{major_str}'"))?,
+        );
     }
 
     if tokens.len() > 5 {
@@ -573,8 +606,8 @@ impl SegmentView for GtsIdSegment {
     fn type_name(&self) -> &str {
         self.type_name()
     }
-    fn ver_major(&self) -> u32 {
-        self.ver_major()
+    fn ver_major_opt(&self) -> Option<u32> {
+        self.ver_major_opt()
     }
     fn ver_minor(&self) -> Option<u32> {
         self.ver_minor()
@@ -600,8 +633,8 @@ impl SegmentView for GtsIdPatternSegment {
     fn type_name(&self) -> &str {
         self.type_name()
     }
-    fn ver_major(&self) -> u32 {
-        self.ver_major()
+    fn ver_major_opt(&self) -> Option<u32> {
+        self.ver_major_opt()
     }
     fn ver_minor(&self) -> Option<u32> {
         self.ver_minor()

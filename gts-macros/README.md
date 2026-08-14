@@ -102,6 +102,63 @@ pub struct MyStructV1 { ... }
 pub struct MyStructV1 { ... }
 ```
 
+### Ordinary Nested Data Structs and Content Models
+
+The macro emits Draft-07 schemas and preserves `definitions` for ordinary nested Rust structs.
+
+Under GTS 0.13, adding an optional field to an **open** object is not backward compatible: the
+old schema already accepted arbitrary values under that property name, so declaring it narrows
+the set of accepted instances (gts-spec §4.4–§4.5). Schemars leaves a nested struct's object
+level open unless it declares `#[serde(deny_unknown_fields)]`, so the macro closes those levels
+itself — nested types stay evolvable in place without changing how Serde deserializes them at
+runtime.
+
+Levels the macro closes:
+
+- the document root of a base type, and the level carrying a derived type's own properties,
+  unless the source struct explicitly states an `additionalProperties` content model;
+- every nested object level that declares `properties` and states no content model of its own.
+
+Levels the macro deliberately leaves alone:
+
+| Level | Why |
+|---|---|
+| Generic GTS extension slot | §4.4.1 requires it open so derived types can extend it |
+| Map types (`HashMap`, `BTreeMap`) | already partially open via a schema-valued `additionalProperties` |
+| A struct that flattens a map | Schemars emits `additionalProperties: true`; closing would be wrong |
+| Branches of `allOf`/`anyOf`/`oneOf`/`not`/`if` | `additionalProperties` only sees `properties` from the same schema object, so closing a branch would reject the properties its siblings declare |
+
+To keep an object level open on purpose — as a designated extension point in the sense of
+§4.4.1 — state the content model explicitly and the macro will not touch it:
+
+```rust
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[schemars(extend("additionalProperties" = true))]
+pub struct ExtensionPoint {
+    pub label: String,
+}
+```
+
+The same attribute is supported directly on a `struct_to_gts_schema` source struct. On a base
+type it opens the document root; on a derived type it opens the nested object level that carries
+that type's own properties:
+
+```rust
+#[struct_to_gts_schema(/* ... */)]
+#[derive(Debug)]
+#[schemars(extend("additionalProperties" = true))]
+pub struct DeliberatelyOpenType {
+    pub label: String,
+}
+```
+
+Without an explicit content model, those macro-owned levels remain closed by default. The GTS
+spec recommends a closed envelope with designated open containers for types that need both
+in-place evolution and derivation, but an open root remains a valid authoring choice.
+
+`#[serde(deny_unknown_fields)]` also still works and is the right choice when the wire contract
+should reject unknown fields at deserialization time as well, not just during schema validation.
+
 ### What Gets Validated
 
 | Check | Description |
@@ -493,7 +550,8 @@ assert_eq!(schema1, schema2);  // OK. Identical schemas
 
 **Schema structure:**
 
-- **Base structs** (single-segment schema_id): Direct properties, no `allOf`
+- **Base structs** (single-segment schema_id): Direct properties, no `allOf`; closed by default
+  unless the source struct explicitly declares an `additionalProperties` content model
   ```json
   {
     "$id": "gts://gts.x.core.events.type.v1~",

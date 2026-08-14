@@ -423,8 +423,8 @@ fn test_gts_store_is_minor_compatible() {
         "gts.vendor.package.namespace.type.v1.1~",
     );
 
-    // Adding optional property is backward compatible
-    assert!(result.is_backward_compatible);
+    assert!(result.backward_compatibility.is_incompatible());
+    assert!(result.forward_compatibility.is_compatible());
 }
 
 #[test]
@@ -713,8 +713,66 @@ fn test_gts_store_cast_entity_without_schema() {
 #[test]
 fn test_gts_store_is_minor_compatible_missing_schemas() {
     let mut store = GtsStore::new();
-    let result = store.is_minor_compatible("nonexistent1~", "nonexistent2~");
-    assert!(!result.is_backward_compatible);
+    let result = store.is_minor_compatible(
+        "gts.vendor.package.namespace.nonexistent1.v1~",
+        "gts.vendor.package.namespace.nonexistent2.v1~",
+    );
+    assert!(result.backward_compatibility.is_unknown());
+    assert_eq!(result.error.as_deref(), Some("Schema not found"));
+}
+
+/// A malformed id is not an unregistered type, so it reports itself instead of
+/// borrowing the "Schema not found" wording.
+#[test]
+fn test_gts_store_is_compatible_reports_malformed_type_id() {
+    let mut store = GtsStore::new();
+    let result = store.is_compatible("nonexistent1~", "gts.vendor.package.namespace.type.v1~");
+    assert!(result.backward_compatibility.is_unknown());
+    let error = result.error.expect("a malformed id must be reported");
+    assert!(
+        error.starts_with("Invalid GTS type id: "),
+        "expected the id parse error, got: {error}"
+    );
+}
+
+#[test]
+fn test_gts_store_is_compatible_rejects_non_schema_entity() {
+    let mut store = GtsStore::new();
+    let cfg = GtsConfig::default();
+    let old_id = "gts.vendor.package.namespace.type.v1.0~";
+    let new_id = "gts.vendor.package.namespace.type.v1.1~";
+    let content = json!({
+        "id": old_id,
+        "name": "not a schema"
+    });
+    let entity = GtsEntity::new(
+        None,
+        None,
+        &content,
+        Some(&cfg),
+        Some(GtsId::try_new(old_id).expect("test")),
+        false,
+        String::new(),
+        None,
+        None,
+    );
+    store.register(entity).expect("register instance");
+    store
+        .register_schema(
+            new_id,
+            &json!({
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object"
+            }),
+        )
+        .expect("register schema");
+
+    let result = store.is_compatible(old_id, new_id);
+    assert!(result.full_compatibility.is_unknown());
+    assert_eq!(
+        result.error.as_deref(),
+        Some("Entity is invalid: Entity 'gts.vendor.package.namespace.type.v1.0~' is not a schema")
+    );
 }
 
 #[test]
@@ -1337,7 +1395,7 @@ fn test_gts_store_cast_backward_incompatible() {
 
     let cast = result.expect("cast returns a compatibility report even when incompatible");
     assert!(
-        !cast.is_backward_compatible,
+        cast.backward_compatibility.is_incompatible(),
         "adding required `age` must make the cast backward-incompatible"
     );
     assert!(
@@ -1404,8 +1462,9 @@ fn test_gts_store_compatibility_fully_compatible() {
         "gts.vendor.package.namespace.type.v1.1~",
     );
 
-    // Adding optional property is backward compatible
-    assert!(result.is_backward_compatible);
+    assert!(result.backward_compatibility.is_incompatible());
+    assert!(result.forward_compatibility.is_compatible());
+    assert!(result.full_compatibility.is_incompatible());
 }
 
 #[test]
@@ -1765,8 +1824,8 @@ fn test_gts_store_compatibility_with_removed_properties() {
         "gts.vendor.package.namespace.type.v1.1~",
     );
 
-    // Removing optional properties is forward compatible in current implementation
-    assert!(result.is_forward_compatible);
+    assert!(result.backward_compatibility.is_compatible());
+    assert!(result.forward_compatibility.is_incompatible());
 }
 
 #[test]
@@ -5088,7 +5147,9 @@ fn test_op13_chain4_merge_defaults_consts_nulls_via_validate_schema() {
     //   - tier:      base "standard" -> l1 "premium"            => leaf-most wins
     //   - region:    base "eu" -> l2 `null` (delete)            => falls back to default "us"
     //   - retention: only leaf "P90D"                           => overrides default
-    //   - locked:    never provided, schema `const: "X"`        => const materializes
+    //   - locked:    never provided, schema `const: "X"`        => stays ABSENT; a
+    //                `const` is an assertion, not a source of values, and the
+    //                property is optional so its absence is valid
     //   - optional:  never provided, schema `default: "d"`      => default materializes
     let mut store = GtsStore::new();
     let base = "gts.x.c4.tr.base.v1~";
@@ -5127,10 +5188,10 @@ fn test_op13_chain4_merge_defaults_consts_nulls_via_validate_schema() {
             "retention": "P90D",
             "tier": "premium",
             "region": "us",
-            "locked": "X",
             "optional": "d"
         }),
-        "merge across 4 levels must honor leaf-wins, null-delete->default, const, and default"
+        "merge across 4 levels must honor leaf-wins, null-delete->default, and \
+         default-only materialization (no const substitution)"
     );
 }
 
@@ -5815,6 +5876,349 @@ fn test_resolve_schema_refs_uses_exact_gts_uri_lookup_without_minor_fallback() {
         StoreError::UnresolvedRefs(refs)
             if refs == &["gts://gts.x.core.events.type.v1~".to_owned()]
     ));
+}
+
+#[test]
+fn test_compatibility_resolves_referenced_schema_versions() {
+    let mut store = GtsStore::new();
+    let draft = "http://json-schema.org/draft-07/schema#";
+    for (id, values) in [
+        ("gts.x.test.compat.target.v1.0~", json!(["a", "b"])),
+        ("gts.x.test.compat.target.v1.1~", json!(["a", "b", "c"])),
+    ] {
+        store
+            .register_schema(
+                id,
+                &json!({
+                    "$id": format!("gts://{id}"),
+                    "$schema": draft,
+                    "type": "object",
+                    "required": ["code"],
+                    "properties": {
+                        "code": {"type": "string", "enum": values}
+                    }
+                }),
+            )
+            .expect("register referenced schema");
+    }
+
+    for (id, target) in [
+        (
+            "gts.x.test.compat.container.v1.0~",
+            "gts.x.test.compat.target.v1.0~",
+        ),
+        (
+            "gts.x.test.compat.container.v1.1~",
+            "gts.x.test.compat.target.v1.1~",
+        ),
+    ] {
+        store
+            .register_schema(
+                id,
+                &json!({
+                    "$id": format!("gts://{id}"),
+                    "$schema": draft,
+                    "type": "object",
+                    "required": ["detail"],
+                    "properties": {
+                        "detail": {"$ref": format!("gts://{target}")}
+                    }
+                }),
+            )
+            .expect("register container schema");
+    }
+
+    let result = store.is_minor_compatible(
+        "gts.x.test.compat.container.v1.0~",
+        "gts.x.test.compat.container.v1.1~",
+    );
+    assert!(result.backward_compatibility.is_compatible());
+    assert!(result.forward_compatibility.is_incompatible());
+    assert!(result.full_compatibility.is_incompatible());
+}
+
+#[test]
+fn test_compatibility_inherits_closed_model_through_external_ref() {
+    let mut store = GtsStore::new();
+    let base_id = "gts.x.test.compat.closed_base.v1~";
+    store
+        .register_schema(
+            base_id,
+            &json!({
+                "$id": format!("gts://{base_id}"),
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {"name": {"type": "string"}}
+            }),
+        )
+        .expect("register closed base");
+
+    let old_schema = json!({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "allOf": [{"$ref": format!("gts://{base_id}")}]
+    });
+    let new_schema = json!({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "allOf": [
+            {"$ref": format!("gts://{base_id}")},
+            {"type": "object", "properties": {"email": {"type": "string"}}}
+        ]
+    });
+    let old_resolved = store
+        .resolve_schema_refs(&old_schema)
+        .expect("resolve old derived schema");
+    let new_resolved = store
+        .resolve_schema_refs(&new_schema)
+        .expect("resolve new derived schema");
+
+    let (backward, _) =
+        crate::schema_evolution::check_backward_compatibility(&old_resolved, &new_resolved);
+    let (forward, _) =
+        crate::schema_evolution::check_forward_compatibility(&old_resolved, &new_resolved);
+    assert!(backward.is_compatible());
+    assert!(forward.is_incompatible());
+}
+
+/// The document-level entry point for an implementation that replaces a
+/// definition in place under an unchanged identifier (gts-spec §4.2): the two
+/// definitions are never simultaneously addressable, so they are passed as
+/// documents and the store resolves them before comparing.
+#[test]
+fn test_compare_documents_resolves_and_reports_levels() {
+    let mut store = GtsStore::new();
+    let base_id = "gts.x.test.docs.envelope.v1~";
+    store
+        .register_schema(
+            base_id,
+            &json!({
+                "$id": format!("gts://{base_id}"),
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "id": {"type": "string"},
+                    "payload": {"type": "object"}
+                },
+                "required": ["id"]
+            }),
+        )
+        .expect("register envelope");
+
+    // Closed envelope with a designated open container, per sec 4.4.1: the
+    // level carrying the definition's own properties is closed, the container
+    // that derived types extend stays open.
+    let revision = |extra: bool| {
+        let mut own = json!({"a": {"type": "string"}});
+        if extra {
+            own["b"] = json!({"type": "string"});
+        }
+        json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "allOf": [
+                {"$ref": format!("gts://{base_id}")},
+                {
+                    "type": "object",
+                    "properties": {
+                        "payload": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": own
+                        }
+                    }
+                }
+            ]
+        })
+    };
+
+    let comparison = store
+        .compare_documents(&revision(false), &revision(true))
+        .expect("both documents resolve against the store");
+
+    // Adding an optional property at a closed level is backward compatible and
+    // not forward compatible (sec 4.5).
+    assert!(
+        comparison.backward_compatibility.is_compatible(),
+        "{:?}",
+        comparison.backward_diagnostics
+    );
+    assert!(comparison.forward_compatibility.is_incompatible());
+    assert!(comparison.full_compatibility().is_incompatible());
+
+    // The root is closed only through the resolved `$ref` to the envelope.
+    let levels: std::collections::HashMap<&str, crate::ContentModel> = comparison
+        .candidate_object_levels
+        .iter()
+        .map(|level| (level.path.as_str(), level.content_model))
+        .collect();
+    assert_eq!(levels.get("$"), Some(&crate::ContentModel::Closed));
+    assert_eq!(levels.get("$.payload"), Some(&crate::ContentModel::Closed));
+    assert!(
+        comparison.levels_not_evolvable_in_place().is_empty(),
+        "{:?}",
+        comparison.levels_not_evolvable_in_place()
+    );
+}
+
+/// An open level is admitted normally but reported as not evolvable, and the
+/// diagnostic names that level rather than the document root.
+#[test]
+fn test_compare_documents_names_the_open_level() {
+    let store = GtsStore::new();
+    let revision = |extra: bool| {
+        let mut own = json!({"a": {"type": "string"}});
+        if extra {
+            own["b"] = json!({"type": "string"});
+        }
+        json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {"payload": {"type": "object", "properties": own}}
+        })
+    };
+
+    let comparison = store
+        .compare_documents(&revision(false), &revision(true))
+        .expect("documents without references resolve trivially");
+
+    assert!(comparison.backward_compatibility.is_incompatible());
+    let diagnostic = comparison
+        .backward_diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.path == "$.payload")
+        .expect("the diagnostic must identify the open level, not the document root");
+    assert_eq!(
+        diagnostic.finding,
+        crate::CompatibilityFinding::PropertyAdded
+    );
+
+    let not_evolvable: Vec<&str> = comparison
+        .levels_not_evolvable_in_place()
+        .iter()
+        .map(|level| level.path.as_str())
+        .collect();
+    assert_eq!(not_evolvable, vec!["$.payload"]);
+}
+
+/// An unresolvable reference must fail rather than be compared as authored: a
+/// level closed only through a `$ref` would otherwise classify as open.
+#[test]
+fn test_compare_documents_fails_on_unresolvable_reference() {
+    let store = GtsStore::new();
+    let document = json!({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "allOf": [{"$ref": "gts://gts.x.test.docs.missing.v1~"}]
+    });
+
+    let error = store
+        .compare_documents(&document, &document)
+        .expect_err("an unresolved reference must not be reported as a verdict");
+    assert!(matches!(error, StoreError::SchemaNotFound(_)), "{error:?}");
+}
+
+/// OP#8 and OP#9 must agree: both resolve `$ref` before comparing, so the same
+/// pair of schemas cannot be compatible through one operation and incompatible
+/// through the other.
+#[test]
+fn test_cast_and_compatibility_agree_on_referenced_schemas() {
+    let mut store = GtsStore::new();
+    let base_id = "gts.x.test.agree.base.v1~";
+    store
+        .register_schema(
+            base_id,
+            &json!({
+                "$id": format!("gts://{base_id}"),
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "id": {"type": "string"},
+                    "type": {"type": "string"},
+                    "payload": {"type": "object"}
+                },
+                "required": ["id", "type"]
+            }),
+        )
+        .expect("register base");
+
+    // Plain (non-chained) type identifiers that reference the base through
+    // `allOf`, so the instance's type is unambiguous and the only thing under
+    // test is whether both operations resolve that reference.
+    let referencing = |minor: u32, extra: bool| {
+        let mut payload_properties = json!({"a": {"type": "string"}});
+        if extra {
+            payload_properties["b"] = json!({"type": "string"});
+        }
+        json!({
+            "$id": format!("gts://gts.x.test.agree.doc.v1.{minor}~"),
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "allOf": [
+                {"$ref": format!("gts://{base_id}")},
+                {
+                    "type": "object",
+                    "properties": {
+                        "payload": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": payload_properties
+                        }
+                    }
+                }
+            ]
+        })
+    };
+    let old_id = "gts.x.test.agree.doc.v1.0~".to_owned();
+    let new_id = "gts.x.test.agree.doc.v1.1~".to_owned();
+    store
+        .register_schema(&old_id, &referencing(0, false))
+        .expect("register v1.0");
+    store
+        .register_schema(&new_id, &referencing(1, true))
+        .expect("register v1.1");
+
+    let compatibility = store.is_compatible(&old_id, &new_id);
+    assert!(
+        compatibility.backward_compatibility.is_compatible(),
+        "{:?}",
+        compatibility.backward_errors
+    );
+    assert!(compatibility.forward_compatibility.is_incompatible());
+
+    let cfg = GtsConfig::default();
+    let instance_id = "gts.x.test.agree.doc.v1.0".to_owned();
+    let content = json!({
+        "id": instance_id,
+        "type": old_id,
+        "payload": {"a": "value"}
+    });
+    let entity = GtsEntity::new(
+        None,
+        None,
+        &content,
+        Some(&cfg),
+        None,
+        false,
+        String::new(),
+        None,
+        Some(old_id.clone()),
+    );
+    store.register(entity).expect("register instance");
+
+    let cast = store
+        .cast(&instance_id, &new_id)
+        .expect("cast to the successor definition should succeed");
+    assert_eq!(
+        (cast.backward_compatibility, cast.forward_compatibility),
+        (
+            compatibility.backward_compatibility,
+            compatibility.forward_compatibility
+        ),
+        "cast verdicts {:?} disagree with compatibility verdicts",
+        (cast.backward_errors, cast.forward_errors)
+    );
 }
 
 #[test]

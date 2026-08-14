@@ -183,6 +183,8 @@ chrono = "0.4"
 
 # JSON Schema validation
 jsonschema = { version = "0.40", default-features = false }
+# Exact comparison between differently typed numbers, as used by `jsonschema`.
+num-cmp = "0.1"
 
 # JSON Schema generation
 schemars = { version = "1.2", features = ["uuid1"] }

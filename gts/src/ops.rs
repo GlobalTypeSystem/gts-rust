@@ -9,6 +9,8 @@ use crate::files_reader::GtsFileReader;
 use crate::gts::{GtsId, GtsIdPattern};
 use crate::path_resolver::JsonPathResolver;
 use crate::schema_cast::GtsEntityCastResult;
+#[cfg(test)]
+use crate::schema_evolution::CompatibilityVerdict;
 use crate::store::{GtsStore, GtsStoreQueryResult};
 
 /// `is_schema` is `Some(true)` for schema/type IDs (ending with `~`),
@@ -63,13 +65,7 @@ impl From<&crate::gts::GtsIdPatternSegment> for GtsIdSegmentInfo {
             package: seg.package().to_owned(),
             namespace: seg.namespace().to_owned(),
             type_name: seg.type_name().to_owned(),
-            // For a wildcard segment, `ver_major() == 0` is the "unspecified"
-            // sentinel and must serialize as `null`.
-            ver_major: if seg.is_wildcard() && seg.ver_major() == 0 {
-                None
-            } else {
-                Some(seg.ver_major())
-            },
+            ver_major: seg.ver_major_opt(),
             ver_minor: seg.ver_minor(),
             is_type: seg.is_type(),
         }
@@ -673,30 +669,13 @@ impl GtsOps {
     }
 
     pub fn compatibility(&mut self, old_type_id: &str, new_type_id: &str) -> GtsEntityCastResult {
-        self.store.is_minor_compatible(old_type_id, new_type_id)
+        self.store.is_compatible(old_type_id, new_type_id)
     }
 
     pub fn cast(&mut self, from_id: &str, to_type_id: &str) -> GtsEntityCastResult {
         match self.store.cast(from_id, to_type_id) {
             Ok(result) => result,
-            Err(e) => GtsEntityCastResult {
-                from_id: from_id.to_owned(),
-                to_id: to_type_id.to_owned(),
-                old: from_id.to_owned(),
-                new: to_type_id.to_owned(),
-                direction: "unknown".to_owned(),
-                added_properties: Vec::new(),
-                removed_properties: Vec::new(),
-                changed_properties: Vec::new(),
-                is_fully_compatible: false,
-                is_backward_compatible: false,
-                is_forward_compatible: false,
-                incompatibility_reasons: Vec::new(),
-                backward_errors: Vec::new(),
-                forward_errors: Vec::new(),
-                casted_entity: None,
-                error: Some(e.to_string()),
-            },
+            Err(e) => GtsEntityCastResult::undecided(from_id, to_type_id, e.to_string()),
         }
     }
 
@@ -1828,12 +1807,14 @@ mod tests {
             added_properties: vec!["email".to_owned()],
             removed_properties: vec![],
             changed_properties: vec![],
-            is_fully_compatible: true,
-            is_backward_compatible: true,
-            is_forward_compatible: false,
+            full_compatibility: CompatibilityVerdict::Incompatible,
+            backward_compatibility: CompatibilityVerdict::Compatible,
+            forward_compatibility: CompatibilityVerdict::Incompatible,
             incompatibility_reasons: vec![],
             backward_errors: vec![],
             forward_errors: vec![],
+            specification_version: crate::GTS_SPECIFICATION_VERSION.to_owned(),
+            implementation_version: crate::GTS_IMPLEMENTATION_VERSION.to_owned(),
             casted_entity: Some(json!({"name": "test"})),
             error: None,
         };
@@ -2087,8 +2068,6 @@ mod tests {
 
     #[test]
     fn test_schema_compatibility_type_change() {
-        use crate::schema_cast::GtsEntityCastResult;
-
         let old_schema = json!({
             "type": "object",
             "properties": {
@@ -2104,15 +2083,13 @@ mod tests {
         });
 
         let (is_backward, backward_errors) =
-            GtsEntityCastResult::check_backward_compatibility(&old_schema, &new_schema);
-        assert!(!is_backward);
+            crate::schema_evolution::check_backward_compatibility(&old_schema, &new_schema);
+        assert!(is_backward.is_incompatible());
         assert!(!backward_errors.is_empty());
     }
 
     #[test]
     fn test_schema_compatibility_enum_changes() {
-        use crate::schema_cast::GtsEntityCastResult;
-
         let old_schema = json!({
             "type": "object",
             "properties": {
@@ -2134,19 +2111,17 @@ mod tests {
         });
 
         let (is_backward, _) =
-            GtsEntityCastResult::check_backward_compatibility(&old_schema, &new_schema);
+            crate::schema_evolution::check_backward_compatibility(&old_schema, &new_schema);
         let (is_forward, _) =
-            GtsEntityCastResult::check_forward_compatibility(&old_schema, &new_schema);
+            crate::schema_evolution::check_forward_compatibility(&old_schema, &new_schema);
 
-        // Adding enum values is not backward compatible but is forward compatible
-        assert!(!is_backward);
-        assert!(is_forward);
+        // Expanding the accepted set is backward compatible, not forward compatible.
+        assert!(is_backward.is_compatible());
+        assert!(is_forward.is_incompatible());
     }
 
     #[test]
     fn test_schema_compatibility_numeric_constraints() {
-        use crate::schema_cast::GtsEntityCastResult;
-
         let old_schema = json!({
             "type": "object",
             "properties": {
@@ -2170,15 +2145,13 @@ mod tests {
         });
 
         let (is_backward, backward_errors) =
-            GtsEntityCastResult::check_backward_compatibility(&old_schema, &new_schema);
-        assert!(!is_backward);
+            crate::schema_evolution::check_backward_compatibility(&old_schema, &new_schema);
+        assert!(is_backward.is_incompatible());
         assert!(!backward_errors.is_empty());
     }
 
     #[test]
     fn test_schema_compatibility_string_constraints() {
-        use crate::schema_cast::GtsEntityCastResult;
-
         let old_schema = json!({
             "type": "object",
             "properties": {
@@ -2202,14 +2175,12 @@ mod tests {
         });
 
         let (is_backward, _) =
-            GtsEntityCastResult::check_backward_compatibility(&old_schema, &new_schema);
-        assert!(!is_backward);
+            crate::schema_evolution::check_backward_compatibility(&old_schema, &new_schema);
+        assert!(is_backward.is_incompatible());
     }
 
     #[test]
     fn test_schema_compatibility_array_constraints() {
-        use crate::schema_cast::GtsEntityCastResult;
-
         let old_schema = json!({
             "type": "object",
             "properties": {
@@ -2233,14 +2204,12 @@ mod tests {
         });
 
         let (is_backward, _) =
-            GtsEntityCastResult::check_backward_compatibility(&old_schema, &new_schema);
-        assert!(!is_backward);
+            crate::schema_evolution::check_backward_compatibility(&old_schema, &new_schema);
+        assert!(is_backward.is_incompatible());
     }
 
     #[test]
     fn test_schema_compatibility_added_constraint() {
-        use crate::schema_cast::GtsEntityCastResult;
-
         let old_schema = json!({
             "type": "object",
             "properties": {
@@ -2259,14 +2228,12 @@ mod tests {
         });
 
         let (is_backward, _) =
-            GtsEntityCastResult::check_backward_compatibility(&old_schema, &new_schema);
-        assert!(!is_backward);
+            crate::schema_evolution::check_backward_compatibility(&old_schema, &new_schema);
+        assert!(is_backward.is_incompatible());
     }
 
     #[test]
     fn test_schema_compatibility_removed_constraint() {
-        use crate::schema_cast::GtsEntityCastResult;
-
         let old_schema = json!({
             "type": "object",
             "properties": {
@@ -2285,14 +2252,12 @@ mod tests {
         });
 
         let (is_forward, _) =
-            GtsEntityCastResult::check_forward_compatibility(&old_schema, &new_schema);
-        assert!(!is_forward);
+            crate::schema_evolution::check_forward_compatibility(&old_schema, &new_schema);
+        assert!(is_forward.is_incompatible());
     }
 
     #[test]
     fn test_schema_compatibility_removed_required_property() {
-        use crate::schema_cast::GtsEntityCastResult;
-
         let old_schema = json!({
             "type": "object",
             "properties": {
@@ -2312,15 +2277,13 @@ mod tests {
         });
 
         let (is_forward, forward_errors) =
-            GtsEntityCastResult::check_forward_compatibility(&old_schema, &new_schema);
-        assert!(!is_forward);
+            crate::schema_evolution::check_forward_compatibility(&old_schema, &new_schema);
+        assert!(is_forward.is_incompatible());
         assert!(!forward_errors.is_empty());
     }
 
     #[test]
     fn test_schema_compatibility_enum_removed_values() {
-        use crate::schema_cast::GtsEntityCastResult;
-
         let old_schema = json!({
             "type": "object",
             "properties": {
@@ -2341,10 +2304,13 @@ mod tests {
             }
         });
 
-        let (is_forward, forward_errors) =
-            GtsEntityCastResult::check_forward_compatibility(&old_schema, &new_schema);
-        assert!(!is_forward);
-        assert!(!forward_errors.is_empty());
+        let (is_backward, backward_errors) =
+            crate::schema_evolution::check_backward_compatibility(&old_schema, &new_schema);
+        let (is_forward, _) =
+            crate::schema_evolution::check_forward_compatibility(&old_schema, &new_schema);
+        assert!(is_backward.is_incompatible());
+        assert!(!backward_errors.is_empty());
+        assert!(is_forward.is_compatible());
     }
 
     // Additional ops.rs coverage tests
@@ -2692,8 +2658,8 @@ mod tests {
             "gts.vendor.package.namespace.type.v1.1~",
         );
 
-        // Adding optional property is backward compatible
-        assert!(result.is_backward_compatible);
+        assert!(result.backward_compatibility.is_incompatible());
+        assert!(result.forward_compatibility.is_compatible());
     }
 
     // Additional entities.rs coverage tests
@@ -3291,14 +3257,14 @@ mod tests {
     #[test]
     fn test_validate_id_with_wildcard_schema() {
         // Test wildcard validation for pattern matching instances of a schema
-        // Note: gts.vendor.package.namespace.type.v1~* matches instances, not schemas
+        // A wildcard pattern is not itself a canonical type identifier.
         let result = GtsOps::validate_id("gts.vendor.package.namespace.type.v1~*");
         assert!(result.valid, "Wildcard at end of schema should be valid");
         assert!(result.is_wildcard);
         assert_eq!(
             result.is_type,
             Some(false),
-            "Pattern matches instances, not schemas"
+            "A wildcard pattern is not itself a canonical type identifier"
         );
     }
 
@@ -3356,9 +3322,19 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_id_with_zero_major_minor_wildcard() {
+        let result = GtsOps::parse_id("gts.vendor.package.namespace.type.v0.*");
+        assert!(result.ok, "Parsing a v0 minor wildcard should succeed");
+        assert!(result.is_wildcard);
+        assert_eq!(result.segments.len(), 1);
+        assert_eq!(result.segments[0].ver_major, Some(0));
+        assert_eq!(result.segments[0].ver_minor, None);
+    }
+
+    #[test]
     fn test_parse_id_with_wildcard_schema() {
         // Test parse_id with wildcard pattern matching instances of a schema
-        // Note: gts.vendor.package.namespace.type.v1~* matches instances, not schemas
+        // A wildcard pattern is not itself a canonical type identifier.
         let result = GtsOps::parse_id("gts.vendor.package.namespace.type.v1~*");
         assert!(result.ok, "Parsing valid wildcard should succeed");
         assert!(result.is_wildcard);
@@ -3380,7 +3356,7 @@ mod tests {
         assert_eq!(
             result.is_type,
             Some(false),
-            "Pattern matches instances, not schemas"
+            "A wildcard pattern is not itself a canonical type identifier"
         );
     }
 

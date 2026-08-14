@@ -1,0 +1,37 @@
+{
+  "$id": "gts://gts.x.test.golden.explicitopen.v1~",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "ExtensionPoint": {
+      "additionalProperties": true,
+      "properties": {
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "Host with an explicitly open nested extension point",
+  "properties": {
+    "extension": {
+      "$ref": "#/definitions/ExtensionPoint"
+    },
+    "type": {
+      "description": "GTS type identifier",
+      "format": "gts-type-id",
+      "title": "GTS Type ID",
+      "type": "string",
+      "x-gts-ref": "gts.*"
+    }
+  },
+  "required": [
+    "type",
+    "extension"
+  ],
+  "type": "object"
+}

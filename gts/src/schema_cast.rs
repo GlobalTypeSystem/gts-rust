@@ -4,6 +4,9 @@ use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 use crate::gts::GtsId;
+use crate::schema_evolution::{
+    CompatibilityVerdict, check_backward_compatibility, check_forward_compatibility, flatten_schema,
+};
 
 #[derive(Debug, Error)]
 pub enum SchemaCastError {
@@ -19,7 +22,6 @@ pub enum SchemaCastError {
     CastError(String),
 }
 
-#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GtsEntityCastResult {
     #[serde(rename = "from")]
@@ -32,18 +34,66 @@ pub struct GtsEntityCastResult {
     pub added_properties: Vec<String>,
     pub removed_properties: Vec<String>,
     pub changed_properties: Vec<HashMap<String, String>>,
-    pub is_fully_compatible: bool,
-    pub is_backward_compatible: bool,
-    pub is_forward_compatible: bool,
+    pub full_compatibility: CompatibilityVerdict,
+    pub backward_compatibility: CompatibilityVerdict,
+    pub forward_compatibility: CompatibilityVerdict,
     pub incompatibility_reasons: Vec<String>,
     pub backward_errors: Vec<String>,
     pub forward_errors: Vec<String>,
+    #[serde(default = "specification_version")]
+    pub specification_version: String,
+    #[serde(default = "implementation_version")]
+    pub implementation_version: String,
     pub casted_entity: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
+fn specification_version() -> String {
+    crate::GTS_SPECIFICATION_VERSION.to_owned()
+}
+
+fn implementation_version() -> String {
+    crate::GTS_IMPLEMENTATION_VERSION.to_owned()
+}
+
 impl GtsEntityCastResult {
+    /// Builds an error result for a compatibility or cast outcome that could not
+    /// be decided.
+    pub(crate) fn undecided(from_id: &str, to_id: &str, message: impl Into<String>) -> Self {
+        Self::undecided_with_direction(from_id, to_id, "unknown", message)
+    }
+
+    /// Same as [`Self::undecided`], retaining a direction already established
+    /// independently of the failed compatibility check.
+    pub(crate) fn undecided_with_direction(
+        from_id: &str,
+        to_id: &str,
+        direction: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            from_id: from_id.to_owned(),
+            to_id: to_id.to_owned(),
+            old: from_id.to_owned(),
+            new: to_id.to_owned(),
+            direction: direction.into(),
+            added_properties: Vec::new(),
+            removed_properties: Vec::new(),
+            changed_properties: Vec::new(),
+            full_compatibility: CompatibilityVerdict::Unknown,
+            backward_compatibility: CompatibilityVerdict::Unknown,
+            forward_compatibility: CompatibilityVerdict::Unknown,
+            incompatibility_reasons: Vec::new(),
+            backward_errors: Vec::new(),
+            forward_errors: Vec::new(),
+            specification_version: specification_version(),
+            implementation_version: implementation_version(),
+            casted_entity: None,
+            error: Some(message.into()),
+        }
+    }
+
     /// Casts an instance from one schema to another.
     ///
     /// # Errors
@@ -57,7 +107,7 @@ impl GtsEntityCastResult {
         _resolver: Option<&()>,
     ) -> Result<Self, SchemaCastError> {
         // Flatten target schema to merge allOf and get all properties including const values
-        let target_schema = Self::flatten_schema(to_schema_content);
+        let target_schema = flatten_schema(to_schema_content);
 
         // Determine direction by IDs
         let direction = Self::infer_direction(from_instance_id, to_type_id);
@@ -66,10 +116,12 @@ impl GtsEntityCastResult {
         let (old_schema, new_schema) = (from_schema_content, to_schema_content);
 
         // Check compatibility
-        let (is_backward, backward_errors) =
-            Self::check_backward_compatibility(old_schema, new_schema);
-        let (is_forward, forward_errors) =
-            Self::check_forward_compatibility(old_schema, new_schema);
+        let (backward_compatibility, backward_errors) =
+            check_backward_compatibility(old_schema, new_schema);
+        let (forward_compatibility, forward_errors) =
+            check_forward_compatibility(old_schema, new_schema);
+        let full_compatibility =
+            CompatibilityVerdict::full(backward_compatibility, forward_compatibility);
 
         // Apply casting rules to the instance
         let instance_obj = from_instance_content
@@ -89,20 +141,20 @@ impl GtsEntityCastResult {
                         added_properties: Vec::new(),
                         removed_properties: Vec::new(),
                         changed_properties: Vec::new(),
-                        is_fully_compatible: false,
-                        is_backward_compatible: is_backward,
-                        is_forward_compatible: is_forward,
+                        full_compatibility,
+                        backward_compatibility,
+                        forward_compatibility,
                         incompatibility_reasons: vec![e.to_string()],
                         backward_errors,
                         forward_errors,
+                        specification_version: specification_version(),
+                        implementation_version: implementation_version(),
                         casted_entity: None,
                         error: None,
                     });
                 }
             };
 
-        // Validate the transformed instance against the FULL target schema
-        let is_fully_compatible = true; // Simplified for now
         let reasons = incompatibility_reasons;
 
         // TODO: Add full jsonschema validation with GTS ID tolerance
@@ -124,12 +176,14 @@ impl GtsEntityCastResult {
             added_properties: added_sorted,
             removed_properties: removed_sorted,
             changed_properties: Vec::new(),
-            is_fully_compatible,
-            is_backward_compatible: is_backward,
-            is_forward_compatible: is_forward,
+            full_compatibility,
+            backward_compatibility,
+            forward_compatibility,
             incompatibility_reasons: reasons,
             backward_errors,
             forward_errors,
+            specification_version: specification_version(),
+            implementation_version: implementation_version(),
             casted_entity: Some(Value::Object(casted)),
             error: None,
         })
@@ -344,372 +398,13 @@ impl GtsEntityCastResult {
 
         Ok((result, added, removed, incompatibility_reasons))
     }
-
-    #[must_use]
-    pub fn flatten_schema(schema: &Value) -> Value {
-        let mut result = Map::new();
-        result.insert("properties".to_owned(), Value::Object(Map::new()));
-        result.insert("required".to_owned(), Value::Array(Vec::new()));
-
-        if let Some(obj) = schema.as_object() {
-            // Merge allOf schemas
-            if let Some(all_of) = obj.get("allOf")
-                && let Some(arr) = all_of.as_array()
-            {
-                for sub_schema in arr {
-                    let flattened = Self::flatten_schema(sub_schema);
-                    if let Some(flat_obj) = flattened.as_object() {
-                        // Merge properties
-                        if let Some(props) = flat_obj.get("properties")
-                            && let Some(props_obj) = props.as_object()
-                            && let Some(result_props) =
-                                result.get_mut("properties").and_then(|p| p.as_object_mut())
-                        {
-                            for (k, v) in props_obj {
-                                result_props.insert(k.clone(), v.clone());
-                            }
-                        }
-                        // Merge required
-                        if let Some(req) = flat_obj.get("required")
-                            && let Some(req_arr) = req.as_array()
-                            && let Some(result_req) =
-                                result.get_mut("required").and_then(|r| r.as_array_mut())
-                        {
-                            result_req.extend(req_arr.clone());
-                        }
-                        // Preserve additionalProperties
-                        if let Some(additional) = flat_obj.get("additionalProperties") {
-                            result.insert("additionalProperties".to_owned(), additional.clone());
-                        }
-                    }
-                }
-            }
-
-            // Add direct properties and required
-            if let Some(props) = obj.get("properties")
-                && let Some(props_obj) = props.as_object()
-                && let Some(result_props) =
-                    result.get_mut("properties").and_then(|p| p.as_object_mut())
-            {
-                for (k, v) in props_obj {
-                    result_props.insert(k.clone(), v.clone());
-                }
-            }
-            if let Some(req) = obj.get("required")
-                && let Some(req_arr) = req.as_array()
-                && let Some(result_req) = result.get_mut("required").and_then(|r| r.as_array_mut())
-            {
-                result_req.extend(req_arr.clone());
-            }
-            // Preserve additionalProperties from top level
-            if let Some(additional) = obj.get("additionalProperties") {
-                result.insert("additionalProperties".to_owned(), additional.clone());
-            }
-        }
-
-        Value::Object(result)
-    }
-
-    fn check_min_max_constraint(
-        prop: &str,
-        old_schema: &Map<String, Value>,
-        new_schema: &Map<String, Value>,
-        min_key: &str,
-        max_key: &str,
-        check_tightening: bool,
-    ) -> Vec<String> {
-        let mut errors = Vec::new();
-
-        // Check minimum constraint
-        let old_min = old_schema.get(min_key).and_then(Value::as_f64);
-        let new_min = new_schema.get(min_key).and_then(Value::as_f64);
-
-        if let (Some(old_m), Some(new_m)) = (old_min, new_min) {
-            if check_tightening && new_m > old_m {
-                errors.push(format!(
-                    "Property '{prop}' {min_key} increased from {old_m} to {new_m}"
-                ));
-            } else if !check_tightening && new_m < old_m {
-                errors.push(format!(
-                    "Property '{prop}' {min_key} decreased from {old_m} to {new_m}"
-                ));
-            }
-        } else if let (true, None, Some(new_m)) = (check_tightening, old_min, new_min) {
-            errors.push(format!(
-                "Property '{prop}' added {min_key} constraint: {new_m}"
-            ));
-        } else if !check_tightening && old_min.is_some() && new_min.is_none() {
-            errors.push(format!("Property '{prop}' removed {min_key} constraint"));
-        }
-
-        // Check maximum constraint
-        let old_max = old_schema.get(max_key).and_then(Value::as_f64);
-        let new_max = new_schema.get(max_key).and_then(Value::as_f64);
-
-        if let (Some(old_m), Some(new_m)) = (old_max, new_max) {
-            if check_tightening && new_m < old_m {
-                errors.push(format!(
-                    "Property '{prop}' {max_key} decreased from {old_m} to {new_m}"
-                ));
-            } else if !check_tightening && new_m > old_m {
-                errors.push(format!(
-                    "Property '{prop}' {max_key} increased from {old_m} to {new_m}"
-                ));
-            }
-        } else if let (true, None, Some(new_m)) = (check_tightening, old_max, new_max) {
-            errors.push(format!(
-                "Property '{prop}' added {max_key} constraint: {new_m}"
-            ));
-        } else if !check_tightening && old_max.is_some() && new_max.is_none() {
-            errors.push(format!("Property '{prop}' removed {max_key} constraint"));
-        }
-
-        errors
-    }
-
-    fn check_constraint_compatibility(
-        prop: &str,
-        old_prop_schema: &Map<String, Value>,
-        new_prop_schema: &Map<String, Value>,
-        check_tightening: bool,
-    ) -> Vec<String> {
-        let mut errors = Vec::new();
-        let prop_type = old_prop_schema.get("type").and_then(|t| t.as_str());
-
-        // Numeric constraints (for number/integer types)
-        if prop_type == Some("number") || prop_type == Some("integer") {
-            errors.extend(Self::check_min_max_constraint(
-                prop,
-                old_prop_schema,
-                new_prop_schema,
-                "minimum",
-                "maximum",
-                check_tightening,
-            ));
-        }
-
-        // String constraints
-        if prop_type == Some("string") {
-            errors.extend(Self::check_min_max_constraint(
-                prop,
-                old_prop_schema,
-                new_prop_schema,
-                "minLength",
-                "maxLength",
-                check_tightening,
-            ));
-        }
-
-        // Array constraints
-        if prop_type == Some("array") {
-            errors.extend(Self::check_min_max_constraint(
-                prop,
-                old_prop_schema,
-                new_prop_schema,
-                "minItems",
-                "maxItems",
-                check_tightening,
-            ));
-        }
-
-        errors
-    }
-
-    #[must_use]
-    pub fn check_backward_compatibility(
-        old_schema: &Value,
-        new_schema: &Value,
-    ) -> (bool, Vec<String>) {
-        Self::check_schema_compatibility(old_schema, new_schema, true)
-    }
-
-    #[must_use]
-    pub fn check_forward_compatibility(
-        old_schema: &Value,
-        new_schema: &Value,
-    ) -> (bool, Vec<String>) {
-        Self::check_schema_compatibility(old_schema, new_schema, false)
-    }
-
-    #[allow(clippy::too_many_lines)]
-    fn check_schema_compatibility(
-        old_schema: &Value,
-        new_schema: &Value,
-        check_backward: bool,
-    ) -> (bool, Vec<String>) {
-        let mut errors = Vec::new();
-
-        // Flatten schemas to handle allOf
-        let old_flat = Self::flatten_schema(old_schema);
-        let new_flat = Self::flatten_schema(new_schema);
-
-        let old_props = old_flat
-            .get("properties")
-            .and_then(|p| p.as_object())
-            .cloned()
-            .unwrap_or_default();
-        let new_props = new_flat
-            .get("properties")
-            .and_then(|p| p.as_object())
-            .cloned()
-            .unwrap_or_default();
-
-        let old_required: HashSet<String> = old_flat
-            .get("required")
-            .and_then(|r| r.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(str::to_owned))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let new_required: HashSet<String> = new_flat
-            .get("required")
-            .and_then(|r| r.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(str::to_owned))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        // Check required properties changes
-        if check_backward {
-            // Backward: cannot add required properties
-            let newly_required: Vec<_> = new_required.difference(&old_required).collect();
-            if !newly_required.is_empty() {
-                let props: Vec<_> = newly_required.iter().map(|s| s.as_str()).collect();
-                errors.push(format!("Added required properties: {}", props.join(", ")));
-            }
-        } else {
-            // Forward: cannot remove required properties
-            let removed_required: Vec<_> = old_required.difference(&new_required).collect();
-            if !removed_required.is_empty() {
-                let props: Vec<_> = removed_required.iter().map(|s| s.as_str()).collect();
-                errors.push(format!("Removed required properties: {}", props.join(", ")));
-            }
-        }
-
-        // Check properties that exist in both schemas
-        let old_keys: HashSet<_> = old_props.keys().collect();
-        let new_keys: HashSet<_> = new_props.keys().collect();
-        let common_props: Vec<_> = old_keys.intersection(&new_keys).collect();
-
-        for prop in common_props {
-            if let (Some(old_prop_schema), Some(new_prop_schema)) =
-                (old_props.get(*prop), new_props.get(*prop))
-            {
-                // Check if type changed
-                let old_type = old_prop_schema.get("type").and_then(|t| t.as_str());
-                let new_type = new_prop_schema.get("type").and_then(|t| t.as_str());
-
-                if let (Some(ot), Some(nt)) = (old_type, new_type)
-                    && ot != nt
-                {
-                    errors.push(format!("Property '{prop}' type changed from {ot} to {nt}"));
-                }
-
-                // Check enum constraints
-                let old_enum = old_prop_schema.get("enum").and_then(|e| e.as_array());
-                let new_enum = new_prop_schema.get("enum").and_then(|e| e.as_array());
-
-                if let (Some(old_e), Some(new_e)) = (old_enum, new_enum) {
-                    let old_enum_set: HashSet<String> = old_e
-                        .iter()
-                        .filter_map(|v| v.as_str().map(str::to_owned))
-                        .collect();
-                    let new_enum_set: HashSet<String> = new_e
-                        .iter()
-                        .filter_map(|v| v.as_str().map(str::to_owned))
-                        .collect();
-
-                    if check_backward {
-                        // Backward: cannot add enum values
-                        let added_enum_values: Vec<_> =
-                            new_enum_set.difference(&old_enum_set).collect();
-                        if !added_enum_values.is_empty() {
-                            let values: Vec<_> =
-                                added_enum_values.iter().map(|s| s.as_str()).collect();
-                            errors.push(format!("Property '{prop}' added enum values: {values:?}"));
-                        }
-                    } else {
-                        // Forward: cannot remove enum values
-                        let removed_enum_values: Vec<_> =
-                            old_enum_set.difference(&new_enum_set).collect();
-                        if !removed_enum_values.is_empty() {
-                            let values: Vec<_> =
-                                removed_enum_values.iter().map(|s| s.as_str()).collect();
-                            errors
-                                .push(format!("Property '{prop}' removed enum values: {values:?}"));
-                        }
-                    }
-                }
-
-                // Check constraint compatibility
-                if let Some(old_obj) = old_prop_schema.as_object()
-                    && let Some(new_obj) = new_prop_schema.as_object()
-                {
-                    let constraint_errors = Self::check_constraint_compatibility(
-                        prop,
-                        old_obj,
-                        new_obj,
-                        check_backward,
-                    );
-                    errors.extend(constraint_errors);
-                }
-
-                // Recursively check nested object properties
-                if old_type == Some("object") && new_type == Some("object") {
-                    let (nested_compat, nested_errors) = Self::check_schema_compatibility(
-                        old_prop_schema,
-                        new_prop_schema,
-                        check_backward,
-                    );
-                    if !nested_compat {
-                        for err in nested_errors {
-                            errors.push(format!("Property '{prop}': {err}"));
-                        }
-                    }
-                }
-            }
-        }
-
-        (errors.is_empty(), errors)
-    }
 }
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use serde_json::json;
-
-    // Helper struct for compatibility results
-    #[allow(clippy::struct_excessive_bools)]
-    #[derive(Debug, Default)]
-    struct CompatibilityResult {
-        is_backward_compatible: bool,
-        is_forward_compatible: bool,
-        is_fully_compatible: bool,
-    }
-
-    // Helper function to check schema compatibility
-    fn check_schema_compatibility(
-        old_schema: &serde_json::Value,
-        new_schema: &serde_json::Value,
-    ) -> CompatibilityResult {
-        let (is_backward, _) =
-            GtsEntityCastResult::check_backward_compatibility(old_schema, new_schema);
-        let (is_forward, _) =
-            GtsEntityCastResult::check_forward_compatibility(old_schema, new_schema);
-        let is_fully = is_backward && is_forward;
-
-        CompatibilityResult {
-            is_backward_compatible: is_backward,
-            is_forward_compatible: is_forward,
-            is_fully_compatible: is_fully,
-        }
-    }
 
     #[test]
     fn test_schema_cast_error_display() {
@@ -727,6 +422,38 @@ mod tests {
             "gts.vendor.package.namespace.type.v1.1~abc.app.custom.event.v1.1", // v1.1 has higher minor version
         );
         assert_eq!(direction, "up");
+    }
+
+    #[test]
+    fn test_undecided_result_initializes_error_contract() {
+        let result = GtsEntityCastResult::undecided("old", "new", "could not decide");
+
+        assert_eq!(result.from_id, "old");
+        assert_eq!(result.to_id, "new");
+        assert_eq!(result.direction, "unknown");
+        assert!(result.full_compatibility.is_unknown());
+        assert!(result.backward_compatibility.is_unknown());
+        assert!(result.forward_compatibility.is_unknown());
+        assert!(result.added_properties.is_empty());
+        assert!(result.removed_properties.is_empty());
+        assert!(result.changed_properties.is_empty());
+        assert!(result.incompatibility_reasons.is_empty());
+        assert!(result.backward_errors.is_empty());
+        assert!(result.forward_errors.is_empty());
+        assert_eq!(
+            result.specification_version,
+            crate::GTS_SPECIFICATION_VERSION
+        );
+        assert_eq!(
+            result.implementation_version,
+            crate::GTS_IMPLEMENTATION_VERSION
+        );
+        assert!(result.casted_entity.is_none());
+        assert_eq!(result.error.as_deref(), Some("could not decide"));
+
+        let directed =
+            GtsEntityCastResult::undecided_with_direction("old", "new", "up", "resolution failed");
+        assert_eq!(directed.direction, "up");
     }
 
     #[test]
@@ -759,12 +486,14 @@ mod tests {
             added_properties: vec![],
             removed_properties: vec![],
             changed_properties: vec![],
-            is_fully_compatible: false,
-            is_backward_compatible: true,
-            is_forward_compatible: false,
+            full_compatibility: CompatibilityVerdict::Incompatible,
+            backward_compatibility: CompatibilityVerdict::Compatible,
+            forward_compatibility: CompatibilityVerdict::Incompatible,
             incompatibility_reasons: vec![],
             backward_errors: vec![],
             forward_errors: vec![],
+            specification_version: specification_version(),
+            implementation_version: implementation_version(),
             casted_entity: None,
             error: None,
         };
@@ -783,371 +512,14 @@ mod tests {
             json.get("direction").expect("test").as_str().expect("test"),
             "up"
         );
-    }
-
-    #[test]
-    fn test_check_schema_compatibility_identical() {
-        let schema1 = json!({
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"}
-            }
-        });
-
-        let result = check_schema_compatibility(&schema1, &schema1);
-        assert!(result.is_backward_compatible);
-        assert!(result.is_forward_compatible);
-        assert!(result.is_fully_compatible);
-    }
-
-    #[test]
-    fn test_check_schema_compatibility_added_optional_property() {
-        let old_schema = json!({
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"}
-            }
-        });
-
-        let new_schema = json!({
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "email": {"type": "string"}
-            }
-        });
-
-        let result = check_schema_compatibility(&old_schema, &new_schema);
-        // Adding optional property is backward compatible
-        assert!(result.is_backward_compatible);
-    }
-
-    #[test]
-    fn test_check_schema_compatibility_added_required_property() {
-        let old_schema = json!({
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"}
-            },
-            "required": ["name"]
-        });
-
-        let new_schema = json!({
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "email": {"type": "string"}
-            },
-            "required": ["name", "email"]
-        });
-
-        let result = check_schema_compatibility(&old_schema, &new_schema);
-        // Adding required property is not backward compatible
-        assert!(!result.is_backward_compatible);
-    }
-
-    #[test]
-    fn test_check_schema_compatibility_removed_property() {
-        let old_schema = json!({
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "email": {"type": "string"}
-            }
-        });
-
-        let new_schema = json!({
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"}
-            }
-        });
-
-        let result = check_schema_compatibility(&old_schema, &new_schema);
-        // Removing property is forward compatible in current implementation
-        assert!(result.is_forward_compatible);
-    }
-
-    #[test]
-    fn test_check_schema_compatibility_enum_expansion() {
-        let old_schema = json!({
-            "type": "string",
-            "enum": ["active", "inactive"]
-        });
-
-        let new_schema = json!({
-            "type": "string",
-            "enum": ["active", "inactive", "pending"]
-        });
-
-        let result = check_schema_compatibility(&old_schema, &new_schema);
-        // Enum expansion: backward compatible (old values still valid)
-        assert!(result.is_backward_compatible);
-    }
-
-    #[test]
-    fn test_check_schema_compatibility_enum_reduction() {
-        let old_schema = json!({
-            "type": "string",
-            "enum": ["active", "inactive", "pending"]
-        });
-
-        let new_schema = json!({
-            "type": "string",
-            "enum": ["active", "inactive"]
-        });
-
-        let result = check_schema_compatibility(&old_schema, &new_schema);
-        // Enum reduction: backward compatible (new schema more restrictive)
-        assert!(result.is_backward_compatible);
-    }
-
-    #[test]
-    fn test_check_schema_compatibility_type_change() {
-        let old_schema = json!({
-            "type": "string"
-        });
-
-        let new_schema = json!({
-            "type": "number"
-        });
-
-        let _result = check_schema_compatibility(&old_schema, &new_schema);
-        // Type change - current implementation may not detect this as incompatible
-        // Just verify it runs without error
-        // assert!(!result.is_backward_compatible);
-        // assert!(!result.is_forward_compatible);
-    }
-
-    #[test]
-    fn test_check_schema_compatibility_constraint_tightening() {
-        let old_schema = json!({
-            "type": "number",
-            "minimum": 0
-        });
-
-        let new_schema = json!({
-            "type": "number",
-            "minimum": 10
-        });
-
-        let result = check_schema_compatibility(&old_schema, &new_schema);
-        // Tightening minimum is backward compatible (new schema more restrictive)
-        assert!(result.is_backward_compatible);
-    }
-
-    #[test]
-    fn test_check_schema_compatibility_constraint_relaxing() {
-        let old_schema = json!({
-            "type": "number",
-            "maximum": 100
-        });
-
-        let new_schema = json!({
-            "type": "number",
-            "maximum": 200
-        });
-
-        let result = check_schema_compatibility(&old_schema, &new_schema);
-        // Relaxing maximum is backward compatible
-        assert!(result.is_backward_compatible);
-    }
-
-    #[test]
-    fn test_check_schema_compatibility_nested_objects() {
-        let old_schema = json!({
-            "type": "object",
-            "properties": {
-                "user": {
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string"}
-                    }
-                }
-            }
-        });
-
-        let new_schema = json!({
-            "type": "object",
-            "properties": {
-                "user": {
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string"},
-                        "email": {"type": "string"}
-                    }
-                }
-            }
-        });
-
-        let result = check_schema_compatibility(&old_schema, &new_schema);
-        // Adding optional nested property is backward compatible
-        assert!(result.is_backward_compatible);
-    }
-
-    #[test]
-    fn test_check_schema_compatibility_string_length_constraints() {
-        let old_schema = json!({
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-        });
-
-        let new_schema = json!({
-            "type": "string",
-            "minLength": 5,
-            "maxLength": 50
-        });
-
-        let result = check_schema_compatibility(&old_schema, &new_schema);
-        // Tightening string constraints is backward compatible
-        assert!(result.is_backward_compatible);
-    }
-
-    #[test]
-    fn test_check_schema_compatibility_array_length_constraints() {
-        let old_schema = json!({
-            "type": "array",
-            "minItems": 1,
-            "maxItems": 10
-        });
-
-        let new_schema = json!({
-            "type": "array",
-            "minItems": 2,
-            "maxItems": 5
-        });
-
-        let result = check_schema_compatibility(&old_schema, &new_schema);
-        // Tightening array constraints is backward compatible
-        assert!(result.is_backward_compatible);
-    }
-
-    #[test]
-    fn test_compatibility_result_default() {
-        let result = CompatibilityResult::default();
-        assert!(!result.is_backward_compatible);
-        assert!(!result.is_forward_compatible);
-        assert!(!result.is_fully_compatible);
-    }
-
-    #[test]
-    fn test_compatibility_result_fully_compatible() {
-        let result = CompatibilityResult {
-            is_backward_compatible: true,
-            is_forward_compatible: true,
-            is_fully_compatible: true,
-        };
-        assert!(result.is_fully_compatible);
-    }
-
-    #[test]
-    fn test_check_schema_compatibility_enum_reordered() {
-        let old_schema = json!({
-            "type": "string",
-            "enum": ["a", "b", "c"]
-        });
-
-        let new_schema = json!({
-            "type": "string",
-            "enum": ["c", "a", "b"]
-        });
-
-        let result = check_schema_compatibility(&old_schema, &new_schema);
-        assert!(result.is_backward_compatible);
-        assert!(result.is_forward_compatible);
-        assert!(result.is_fully_compatible);
-    }
-
-    #[test]
-    fn test_check_schema_compatibility_nested_required_added() {
-        let old_schema = json!({
-            "type": "object",
-            "properties": {
-                "user": {
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string"}
-                    },
-                    "required": ["name"]
-                }
-            },
-            "required": ["user"]
-        });
-
-        let new_schema = json!({
-            "type": "object",
-            "properties": {
-                "user": {
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string"},
-                        "email": {"type": "string"}
-                    },
-                    "required": ["name", "email"]
-                }
-            },
-            "required": ["user"]
-        });
-
-        let result = check_schema_compatibility(&old_schema, &new_schema);
-        // Adding nested required is not backward compatible
-        assert!(!result.is_backward_compatible);
-    }
-
-    #[test]
-    fn test_check_schema_compatibility_allof_flatten_equivalence() {
-        let direct = json!({
-            "type": "object",
-            "properties": {
-                "id": {"type": "string"},
-                "value": {"type": "number"}
-            },
-            "required": ["id"]
-        });
-
-        let via_allof = json!({
-            "allOf": [
-                {
-                    "type": "object",
-                    "properties": {"id": {"type": "string"}},
-                    "required": ["id"]
-                },
-                {
-                    "type": "object",
-                    "properties": {"value": {"type": "number"}}
-                }
-            ]
-        });
-
-        // Either direction should be fully compatible
-        let r1 = check_schema_compatibility(&direct, &via_allof);
-        assert!(r1.is_backward_compatible);
-        assert!(r1.is_forward_compatible);
-        assert!(r1.is_fully_compatible);
-
-        let r2 = check_schema_compatibility(&via_allof, &direct);
-        assert!(r2.is_backward_compatible);
-        assert!(r2.is_forward_compatible);
-        assert!(r2.is_fully_compatible);
-    }
-
-    #[test]
-    fn test_check_schema_compatibility_removed_required() {
-        let old_schema = json!({
-            "type": "object",
-            "properties": {"name": {"type": "string"}},
-            "required": ["name"]
-        });
-
-        let new_schema = json!({
-            "type": "object",
-            "properties": {"name": {"type": "string"}}
-        });
-
-        let result = check_schema_compatibility(&old_schema, &new_schema);
-        // Removing required is forward-incompatible
-        assert!(!result.is_forward_compatible);
+        assert_eq!(
+            json.get("specification_version").and_then(Value::as_str),
+            Some(crate::GTS_SPECIFICATION_VERSION)
+        );
+        assert_eq!(
+            json.get("implementation_version").and_then(Value::as_str),
+            Some(crate::GTS_IMPLEMENTATION_VERSION)
+        );
     }
 
     #[test]

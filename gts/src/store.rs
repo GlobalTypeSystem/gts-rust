@@ -6,6 +6,10 @@ use thiserror::Error;
 use crate::entities::GtsEntity;
 use crate::gts::{GtsId, GtsIdError, GtsIdPattern};
 use crate::schema_cast::GtsEntityCastResult;
+use crate::schema_evolution::{
+    CompatibilityDiagnostic, CompatibilityVerdict, ObjectLevel, check_backward_diagnostics,
+    check_forward_diagnostics, classify_object_levels,
+};
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -40,6 +44,84 @@ pub struct GtsStoreQueryResult {
     pub count: usize,
     pub limit: usize,
     pub results: Vec<Value>,
+}
+
+/// Result of comparing two Type Schema documents for schema evolution.
+///
+/// Produced by [`GtsStore::compare_documents`], which resolves both documents
+/// first. Both directions are computed in one pass; which one gates publication
+/// is a policy decision for the caller, and gts-spec §6 leaves the enforced mode
+/// to the implementation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchemaComparison {
+    /// `Valid(old) ⊆ Valid(new)`: the new definition accepts every instance the
+    /// old one accepted.
+    pub backward_compatibility: CompatibilityVerdict,
+    /// `Valid(new) ⊆ Valid(old)`: the old definition accepts every instance the
+    /// new one accepts.
+    pub forward_compatibility: CompatibilityVerdict,
+    /// Evidence for an incompatible or unknown backward verdict, with the
+    /// offending schema location on each entry.
+    pub backward_diagnostics: Vec<CompatibilityDiagnostic>,
+    /// Evidence for an incompatible or unknown forward verdict.
+    pub forward_diagnostics: Vec<CompatibilityDiagnostic>,
+    /// Content model of every object level of the resolved **new** document.
+    ///
+    /// A caller admitting the new definition uses this to report, per level,
+    /// whether a later definition will be able to add an optional property
+    /// there - see [`crate::schema_evolution::ContentModel::is_evolvable_in_place`].
+    /// One flag for the
+    /// whole document would not do: in the closed-envelope shape recommended by
+    /// §4.4.1 the level that decides evolvability is inside an extension
+    /// container, not the document root.
+    pub candidate_object_levels: Vec<ObjectLevel>,
+}
+
+impl SchemaComparison {
+    /// `Valid(old) = Valid(new)`: both directions hold.
+    #[must_use]
+    pub const fn full_compatibility(&self) -> CompatibilityVerdict {
+        CompatibilityVerdict::full(self.backward_compatibility, self.forward_compatibility)
+    }
+
+    /// Compares two documents whose references are already resolved.
+    fn of_resolved(old_schema: &Value, new_schema: &Value) -> Self {
+        let (backward_compatibility, backward_diagnostics) =
+            check_backward_diagnostics(old_schema, new_schema);
+        let (forward_compatibility, forward_diagnostics) =
+            check_forward_diagnostics(old_schema, new_schema);
+        Self {
+            backward_compatibility,
+            forward_compatibility,
+            backward_diagnostics,
+            forward_diagnostics,
+            candidate_object_levels: classify_object_levels(new_schema),
+        }
+    }
+
+    /// Object levels of the candidate that a later definition cannot extend
+    /// with an optional property.
+    #[must_use]
+    pub fn levels_not_evolvable_in_place(&self) -> Vec<&ObjectLevel> {
+        self.candidate_object_levels
+            .iter()
+            .filter(|level| !level.content_model.is_evolvable_in_place())
+            .collect()
+    }
+
+    fn backward_messages(&self) -> Vec<String> {
+        self.backward_diagnostics
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
+    fn forward_messages(&self) -> Vec<String> {
+        self.forward_diagnostics
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
 }
 
 /// Fully-resolved, self-contained view of a GTS type.
@@ -385,7 +467,7 @@ impl GtsStore {
     /// - B (derived from A) is compatible with A
     /// - C (derived from A~B) is compatible with A~B
     ///
-    /// The heavy lifting is delegated to [`crate::schema_compat`].
+    /// The heavy lifting is delegated to [`crate::schema_derivation`].
     ///
     /// # Errors
     /// Returns `StoreError::ValidationError` if any derived schema loosens base constraints.
@@ -441,7 +523,7 @@ impl GtsStore {
                 StoreError::ValidationError(format!("Schema '{derived_id}' has {e}"))
             })?;
 
-            let errors = crate::schema_compat::validate_schema_compatibility(
+            let errors = crate::schema_derivation::validate_derivation_compatibility(
                 &base_resolved,
                 &derived_resolved,
                 base_id,
@@ -737,9 +819,29 @@ impl GtsStore {
         let instance_type_id = instance.type_id.clone().ok_or_else(|| {
             StoreError::InvalidEntity(format!("Instance '{instance_id}' has no type_id"))
         })?;
-        let from_schema = self.get_schema_entity(&instance_type_id)?.clone();
+        let mut from_schema = self.get_schema_entity(&instance_type_id)?.clone();
+        let mut target_schema = self.get_schema_entity(target_type_id)?.clone();
 
-        let target_schema = self.get_schema_entity(target_type_id)?.clone();
+        // Resolve both schemas before casting, exactly as `is_compatible` does.
+        // The compatibility verdicts this result carries are a property of the
+        // effective resolved schemas (sec 4.4); comparing unresolved documents
+        // here would let the same pair of schemas get one verdict through OP#8
+        // and a different one through OP#9. Resolution also makes a base type's
+        // properties and `const` values visible to the cast itself.
+        from_schema.content = self
+            .resolve_schema_refs(&from_schema.content)
+            .map_err(|e| {
+                StoreError::SchemaNotFound(format!(
+                    "Could not resolve source schema '{instance_type_id}': {e}"
+                ))
+            })?;
+        target_schema.content = self
+            .resolve_schema_refs(&target_schema.content)
+            .map_err(|e| {
+                StoreError::SchemaNotFound(format!(
+                    "Could not resolve target schema '{target_type_id}': {e}"
+                ))
+            })?;
 
         // Create a resolver to handle $ref in schemas
         // TODO: Implement custom resolver
@@ -750,43 +852,77 @@ impl GtsStore {
             .map_err(|e| StoreError::SchemaNotFound(e.to_string()))
     }
 
-    pub fn is_minor_compatible(
-        &mut self,
-        old_type_id: &str,
-        new_type_id: &str,
-    ) -> GtsEntityCastResult {
-        let old_entity = self.get(old_type_id).cloned();
-        let new_entity = self.get(new_type_id).cloned();
+    /// Fetches one side of a compatibility comparison, rendering the failure as
+    /// the message the result carries.
+    ///
+    /// A missing schema keeps the historical `"Schema not found"` wording, which
+    /// clients match on; every other cause - a malformed type id, an id naming a
+    /// registered non-schema entity - reports itself, so the caller can tell an
+    /// unregistered type from a request it should not have made at all.
+    fn compared_schema_entity(&mut self, type_id: &str) -> Result<GtsEntity, String> {
+        self.get_schema_entity(type_id)
+            .cloned()
+            .map_err(|error| match error {
+                StoreError::SchemaNotFound(_) => "Schema not found".to_owned(),
+                error => error.to_string(),
+            })
+    }
 
-        let (Some(old_ent), Some(new_ent)) = (old_entity, new_entity) else {
-            return GtsEntityCastResult {
-                from_id: old_type_id.to_owned(),
-                to_id: new_type_id.to_owned(),
-                old: old_type_id.to_owned(),
-                new: new_type_id.to_owned(),
-                direction: "unknown".to_owned(),
-                added_properties: Vec::new(),
-                removed_properties: Vec::new(),
-                changed_properties: Vec::new(),
-                is_fully_compatible: false,
-                is_backward_compatible: false,
-                is_forward_compatible: false,
-                incompatibility_reasons: vec!["Schema not found".to_owned()],
-                backward_errors: vec!["Schema not found".to_owned()],
-                forward_errors: vec!["Schema not found".to_owned()],
-                casted_entity: None,
-                error: None,
-            };
+    /// Checks GTS schema-evolution compatibility using accepted-instance set inclusion.
+    pub fn is_compatible(&mut self, old_type_id: &str, new_type_id: &str) -> GtsEntityCastResult {
+        let entities = self
+            .compared_schema_entity(old_type_id)
+            .and_then(|old_ent| {
+                self.compared_schema_entity(new_type_id)
+                    .map(|new_ent| (old_ent, new_ent))
+            });
+        let (old_ent, new_ent) = match entities {
+            Ok(entities) => entities,
+            Err(message) => {
+                return GtsEntityCastResult::undecided(old_type_id, new_type_id, message);
+            }
         };
 
-        let old_schema = &old_ent.content;
-        let new_schema = &new_ent.content;
+        let resolution_failure = |message: String| {
+            GtsEntityCastResult::undecided_with_direction(
+                old_type_id,
+                new_type_id,
+                GtsEntityCastResult::infer_direction(old_type_id, new_type_id),
+                message,
+            )
+        };
+        let old_schema = match self.resolve_schema_refs(&old_ent.content) {
+            Ok(schema) => schema,
+            Err(error) => {
+                return resolution_failure(format!(
+                    "Could not resolve old schema '{old_type_id}': {error}"
+                ));
+            }
+        };
+        let new_schema = match self.resolve_schema_refs(&new_ent.content) {
+            Ok(schema) => schema,
+            Err(error) => {
+                return resolution_failure(format!(
+                    "Could not resolve new schema '{new_type_id}': {error}"
+                ));
+            }
+        };
 
-        // Use the cast method's compatibility checking logic
-        let (is_backward, backward_errors) =
-            GtsEntityCastResult::check_backward_compatibility(old_schema, new_schema);
-        let (is_forward, forward_errors) =
-            GtsEntityCastResult::check_forward_compatibility(old_schema, new_schema);
+        let comparison = SchemaComparison::of_resolved(&old_schema, &new_schema);
+        let backward_compatibility = comparison.backward_compatibility;
+        let forward_compatibility = comparison.forward_compatibility;
+        let full_compatibility = comparison.full_compatibility();
+        let backward_errors = comparison.backward_messages();
+        let forward_errors = comparison.forward_messages();
+        let incompatibility_reasons = backward_errors
+            .iter()
+            .map(|error| format!("backward: {error}"))
+            .chain(
+                forward_errors
+                    .iter()
+                    .map(|error| format!("forward: {error}")),
+            )
+            .collect();
 
         // Determine direction
         let direction = GtsEntityCastResult::infer_direction(old_type_id, new_type_id);
@@ -800,15 +936,64 @@ impl GtsStore {
             added_properties: Vec::new(),
             removed_properties: Vec::new(),
             changed_properties: Vec::new(),
-            is_fully_compatible: is_backward && is_forward,
-            is_backward_compatible: is_backward,
-            is_forward_compatible: is_forward,
-            incompatibility_reasons: Vec::new(),
+            full_compatibility,
+            backward_compatibility,
+            forward_compatibility,
+            incompatibility_reasons,
             backward_errors,
             forward_errors,
+            specification_version: crate::GTS_SPECIFICATION_VERSION.to_owned(),
+            implementation_version: crate::GTS_IMPLEMENTATION_VERSION.to_owned(),
             casted_entity: None,
             error: None,
         }
+    }
+
+    /// Compares two Type Schema **documents** rather than two registered
+    /// identifiers.
+    ///
+    /// [`Self::is_compatible`] requires both definitions to be addressable by
+    /// GTS Type Identifier, which the conformance API assumes (gts-spec §4.2).
+    /// An implementation that replaces a definition in place under an unchanged
+    /// identifier never has two such identifiers, and §4.2 leaves revision
+    /// addressing to that implementation. This entry point serves that case: it
+    /// takes the two documents, resolves their references against this store,
+    /// and returns both directions plus the per-level content model of the
+    /// candidate in one call.
+    ///
+    /// Resolution is not optional. §4.4 requires the content model to be read
+    /// from the fully resolved effective schema, so comparing authored
+    /// documents would misclassify a level that is closed only through a `$ref`
+    /// to its base.
+    ///
+    /// # Errors
+    /// [`StoreError::SchemaNotFound`] when either document has a reference this
+    /// store cannot resolve. Failing here rather than comparing unresolved
+    /// documents keeps an undecidable check from being reported as a verdict.
+    pub fn compare_documents(
+        &self,
+        old_schema: &Value,
+        new_schema: &Value,
+    ) -> Result<SchemaComparison, StoreError> {
+        let old_resolved = self.resolve_schema_refs(old_schema).map_err(|error| {
+            StoreError::SchemaNotFound(format!("Could not resolve the old document: {error}"))
+        })?;
+        let new_resolved = self.resolve_schema_refs(new_schema).map_err(|error| {
+            StoreError::SchemaNotFound(format!("Could not resolve the new document: {error}"))
+        })?;
+        Ok(SchemaComparison::of_resolved(&old_resolved, &new_resolved))
+    }
+
+    /// Legacy name retained for source compatibility.
+    ///
+    /// Compatibility is no longer defined specifically in terms of a minor
+    /// version change; callers should prefer [`Self::is_compatible`].
+    pub fn is_minor_compatible(
+        &mut self,
+        old_type_id: &str,
+        new_type_id: &str,
+    ) -> GtsEntityCastResult {
+        self.is_compatible(old_type_id, new_type_id)
     }
 
     pub fn build_schema_graph(&mut self, gts_id: &str) -> Value {
@@ -1014,7 +1199,11 @@ impl GtsStore {
         exact_gts_id: Option<&GtsId>,
     ) -> bool {
         if is_wildcard && let Some(pattern) = wildcard_pattern {
-            return entity_id.matches_pattern(pattern);
+            // OP#4 allows a final bare `~*` to match an empty suffix, while
+            // OP#10 queries require the wildcard position to be present in the
+            // stored ID. Preserve that query-specific chain-depth constraint.
+            return entity_id.segments().len() >= pattern.segments().len()
+                && entity_id.matches_pattern(pattern);
         }
 
         // For non-wildcard patterns, use matches_pattern to support version flexibility

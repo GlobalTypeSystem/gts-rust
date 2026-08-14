@@ -508,9 +508,19 @@ fn add_missing_derives(input: &mut syn::DeriveInput, base: &BaseAttr) {
         let derives_str = derives_to_add.join(", ");
         let derives_tokens: proc_macro2::TokenStream =
             derives_str.parse().expect("Failed to parse derive tokens");
-        input
+        let derive_attr = syn::parse_quote!(#[derive(#derives_tokens)]);
+
+        // `schemars` is a derive-helper attribute. Keep the derive that
+        // introduces it before a container-level `#[schemars(...)]`; placing
+        // the automatically-added derive after the helper triggers
+        // `legacy_derive_helpers` in crates that deny future-incompatible
+        // lints.
+        let insert_at = input
             .attrs
-            .push(syn::parse_quote!(#[derive(#derives_tokens)]));
+            .iter()
+            .position(|attr| attr.path().is_ident("schemars"))
+            .unwrap_or(input.attrs.len());
+        input.attrs.insert(insert_at, derive_attr);
     }
 }
 
@@ -1463,6 +1473,400 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         quote! {}
     };
 
+    // Keep only definitions that remain reachable after the macro rewrites
+    // property schemas (notably replacing a generic extension slot with a
+    // plain object schema). Draft-07 `definitions` must otherwise retain the
+    // concrete generic argument even though the generated GTS base schema no
+    // longer references it.
+    let inline_gts_id_definitions = quote! {
+        fn inline_gts_id_refs(value: &mut serde_json::Value) {
+            let reference = value
+                .get("$ref")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            match reference.as_deref() {
+                Some("#/$defs/GtsInstanceId" | "#/definitions/GtsInstanceId") => {
+                    *value = ::gts::GtsInstanceId::json_schema_value();
+                    return;
+                }
+                Some(
+                    "#/$defs/GtsTypeId"
+                    | "#/$defs/GtsSchemaId"
+                    | "#/definitions/GtsTypeId"
+                    | "#/definitions/GtsSchemaId",
+                ) => {
+                    *value = ::gts::GtsTypeId::json_schema_value();
+                    return;
+                }
+                _ => {}
+            }
+
+            match value {
+                serde_json::Value::Object(object) => {
+                    for nested in object.values_mut() {
+                        inline_gts_id_refs(nested);
+                    }
+                }
+                serde_json::Value::Array(values) => {
+                    for nested in values {
+                        inline_gts_id_refs(nested);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        inline_gts_id_refs(&mut properties);
+        if let Some(definitions) = definitions.as_mut() {
+            inline_gts_id_refs(definitions);
+        }
+    };
+
+    let prune_unused_definitions = quote! {
+        if let Some(definitions_object) =
+            definitions.as_mut().and_then(serde_json::Value::as_object_mut)
+        {
+            fn collect_definition_refs(
+                value: &serde_json::Value,
+                referenced: &mut ::std::collections::HashSet<String>,
+            ) {
+                match value {
+                    serde_json::Value::Object(object) => {
+                        if let Some(reference) = object.get("$ref").and_then(|v| v.as_str()) {
+                            let name = reference
+                                .strip_prefix("#/definitions/")
+                                .or_else(|| reference.strip_prefix("#/$defs/"));
+                            if let Some(name) = name.and_then(|name| name.split('/').next()) {
+                                referenced.insert(name.replace("~1", "/").replace("~0", "~"));
+                            }
+                        }
+                        for nested in object.values() {
+                            collect_definition_refs(nested, referenced);
+                        }
+                    }
+                    serde_json::Value::Array(values) => {
+                        for nested in values {
+                            collect_definition_refs(nested, referenced);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            let mut referenced = ::std::collections::HashSet::new();
+            collect_definition_refs(&properties, &mut referenced);
+            loop {
+                let count = referenced.len();
+                for name in referenced.clone() {
+                    if let Some(definition) = definitions_object.get(&name) {
+                        collect_definition_refs(definition, &mut referenced);
+                    }
+                }
+                if referenced.len() == count {
+                    break;
+                }
+            }
+            definitions_object.retain(|name, _| referenced.contains(name));
+        }
+    };
+
+    // Close the object levels Schemars leaves open.
+    //
+    // Under GTS 0.13 an open object level cannot gain an optional property
+    // backward compatibly, because the old schema already accepted arbitrary
+    // values under that name (gts-spec sec 4.4-4.5). By default, the macro
+    // closes every level it builds itself - the document root of a base type
+    // and the level carrying a derived type's own properties - but preserves an
+    // `additionalProperties` content model explicitly emitted by Schemars for
+    // either level. Property subschemas come from `schemars::JsonSchema`, which emits
+    // `additionalProperties: false` only for a struct declaring
+    // `#[serde(deny_unknown_fields)]`. Closing those levels here makes
+    // macro-generated types evolvable in place without asking every nested data
+    // struct to opt into strict Serde handling, which would also change
+    // deserialization at runtime.
+    //
+    // Deliberately skipped:
+    //
+    // * a level that already states its content model through
+    //   `additionalProperties` or `unevaluatedProperties`. This is the opt-out:
+    //   `#[schemars(extend("additionalProperties" = true))]` keeps a level open
+    //   as an extension point, and Schemars already emits
+    //   `additionalProperties: true` for a struct that flattens a map, where
+    //   closing would be wrong.
+    // * a level carrying a combinator (`allOf`/`anyOf`/`oneOf`/`not`/`if`) and
+    //   the immediate branches of one. `additionalProperties` only sees
+    //   `properties` declared in the same schema object, so closing a branch
+    //   would reject the properties its sibling branches declare. Schemars
+    //   already closes the branches of an externally tagged enum itself.
+    // * a `definitions` entry a combinator branch resolves to, because such an
+    //   entry *is* the branch and closing it would reject the sibling branches'
+    //   properties just the same. Reachability is computed first, over both the
+    //   property subschemas and `definitions` itself, and is followed through
+    //   chains of aliasing definitions (a top-level `$ref`). The granularity is
+    //   the whole entry, so a definition used both as a combinator branch and as
+    //   an ordinary property schema stays open everywhere: keeping the
+    //   composition satisfiable wins over closing the ordinary use, which merely
+    //   forfeits in-place evolution for that one level.
+    // * the generic extension field, which this macro replaces with a bare
+    //   `{"type": "object"}` before this pass runs and which sec 4.4.1 requires
+    //   to stay open so derived types can extend it.
+    let close_nested_object_levels = quote! {
+        {
+            // Keyword classification, so that a property literally named
+            // `properties` is never mistaken for a schema keyword.
+            const COMBINATORS: &[&str] =
+                &["allOf", "anyOf", "oneOf", "not", "if", "then", "else"];
+            const SINGLE_SCHEMA: &[&str] = &[
+                "additionalProperties",
+                "unevaluatedProperties",
+                "additionalItems",
+                "contains",
+                "propertyNames",
+                "not",
+                "if",
+                "then",
+                "else",
+            ];
+            const SCHEMA_MAP: &[&str] = &[
+                "properties",
+                "patternProperties",
+                "definitions",
+                "$defs",
+                "dependentSchemas",
+            ];
+            const SCHEMA_LIST: &[&str] = &["allOf", "anyOf", "oneOf", "prefixItems"];
+
+            fn local_definition_name(reference: &str) -> Option<String> {
+                reference
+                    .strip_prefix("#/definitions/")
+                    .or_else(|| reference.strip_prefix("#/$defs/"))
+                    .and_then(|name| name.split('/').next())
+                    .map(|name| name.replace("~1", "/").replace("~0", "~"))
+            }
+
+            fn collect_combinator_definition_refs(
+                value: &serde_json::Value,
+                is_combinator_branch: bool,
+                referenced: &mut ::std::collections::HashSet<String>,
+            ) {
+                let Some(object) = value.as_object() else {
+                    return;
+                };
+
+                if is_combinator_branch
+                    && let Some(name) = object
+                        .get("$ref")
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(local_definition_name)
+                {
+                    referenced.insert(name);
+                }
+
+                for (keyword, nested) in object {
+                    let branch = COMBINATORS.contains(&keyword.as_str());
+                    if SINGLE_SCHEMA.contains(&keyword.as_str()) {
+                        collect_combinator_definition_refs(nested, branch, referenced);
+                    } else if SCHEMA_MAP.contains(&keyword.as_str()) {
+                        collect_combinator_definition_refs_map(nested, branch, referenced);
+                    } else if SCHEMA_LIST.contains(&keyword.as_str()) {
+                        collect_combinator_definition_refs_list(nested, branch, referenced);
+                    } else if keyword == "items" {
+                        if nested.is_array() {
+                            collect_combinator_definition_refs_list(nested, branch, referenced);
+                        } else {
+                            collect_combinator_definition_refs(nested, branch, referenced);
+                        }
+                    }
+                }
+            }
+
+            fn collect_combinator_definition_refs_map(
+                value: &serde_json::Value,
+                is_combinator_branch: bool,
+                referenced: &mut ::std::collections::HashSet<String>,
+            ) {
+                if let Some(object) = value.as_object() {
+                    for nested in object.values() {
+                        collect_combinator_definition_refs(
+                            nested,
+                            is_combinator_branch,
+                            referenced,
+                        );
+                    }
+                }
+            }
+
+            fn collect_combinator_definition_refs_list(
+                value: &serde_json::Value,
+                is_combinator_branch: bool,
+                referenced: &mut ::std::collections::HashSet<String>,
+            ) {
+                if let Some(values) = value.as_array() {
+                    for nested in values {
+                        collect_combinator_definition_refs(
+                            nested,
+                            is_combinator_branch,
+                            referenced,
+                        );
+                    }
+                }
+            }
+
+            fn close_schema(value: &mut serde_json::Value, is_combinator_branch: bool) {
+                let Some(object) = value.as_object_mut() else {
+                    return;
+                };
+
+                let has_combinator = COMBINATORS
+                    .iter()
+                    .any(|keyword| object.contains_key(*keyword));
+                let states_content_model = object.contains_key("additionalProperties")
+                    || object.contains_key("unevaluatedProperties");
+                if object
+                    .get("properties")
+                    .is_some_and(serde_json::Value::is_object)
+                    && !states_content_model
+                    && !has_combinator
+                    && !is_combinator_branch
+                {
+                    object.insert(
+                        "additionalProperties".to_owned(),
+                        serde_json::Value::Bool(false),
+                    );
+                }
+
+                for (keyword, nested) in object.iter_mut() {
+                    let branch = COMBINATORS.contains(&keyword.as_str());
+                    if SINGLE_SCHEMA.contains(&keyword.as_str()) {
+                        close_schema(nested, branch);
+                    } else if SCHEMA_MAP.contains(&keyword.as_str()) {
+                        close_schema_map(nested, branch);
+                    } else if SCHEMA_LIST.contains(&keyword.as_str()) {
+                        close_schema_list(nested, branch);
+                    } else if keyword == "items" {
+                        // Draft-07 allows both the single-schema and the tuple form.
+                        if nested.is_array() {
+                            close_schema_list(nested, branch);
+                        } else {
+                            close_schema(nested, branch);
+                        }
+                    }
+                }
+            }
+
+            fn close_schema_map(value: &mut serde_json::Value, is_combinator_branch: bool) {
+                if let Some(object) = value.as_object_mut() {
+                    for nested in object.values_mut() {
+                        close_schema(nested, is_combinator_branch);
+                    }
+                }
+            }
+
+            fn close_schema_list(value: &mut serde_json::Value, is_combinator_branch: bool) {
+                if let Some(values) = value.as_array_mut() {
+                    for nested in values {
+                        close_schema(nested, is_combinator_branch);
+                    }
+                }
+            }
+
+            let mut combinator_definitions = ::std::collections::HashSet::new();
+            collect_combinator_definition_refs_map(
+                &properties,
+                false,
+                &mut combinator_definitions,
+            );
+            if let Some(definitions) = definitions.as_ref() {
+                collect_combinator_definition_refs_map(
+                    definitions,
+                    false,
+                    &mut combinator_definitions,
+                );
+            }
+
+            // A definition whose top level is a bare `$ref` only aliases another
+            // one - Schemars emits that for a newtype struct carrying no doc
+            // comment - so the alias target is what actually contributes the
+            // branch's content model and has to stay open as well. Chase the
+            // alias chain to a fixed point; a name is enqueued only when it was
+            // newly inserted, so the walk terminates even on a `$ref` cycle.
+            let mut alias_queue: Vec<String> =
+                combinator_definitions.iter().cloned().collect();
+            while let Some(name) = alias_queue.pop() {
+                let alias = definitions
+                    .as_ref()
+                    .and_then(serde_json::Value::as_object)
+                    .and_then(|object| object.get(&name))
+                    .and_then(|definition| definition.get("$ref"))
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(local_definition_name);
+                if let Some(alias) = alias
+                    && combinator_definitions.insert(alias.clone())
+                {
+                    alias_queue.push(alias);
+                }
+            }
+
+            close_schema_map(&mut properties, false);
+            if let Some(definitions_object) = definitions
+                .as_mut()
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                for (name, definition) in definitions_object {
+                    close_schema(definition, combinator_definitions.contains(name));
+                }
+            }
+        }
+    };
+
+    // A derived Rust struct is emitted as an overlay inside its parent's
+    // generic extension path rather than at the JSON document root. Preserve a
+    // content model explicitly declared on that struct by applying it to the
+    // object level that actually carries the struct's own properties.
+    let apply_declared_additional_properties_to_derived_level = quote! {
+        if let Some(declared_additional_properties) = declared_additional_properties {
+            fn set_additional_properties_at_path(
+                properties: &mut serde_json::Value,
+                path: &[&str],
+                additional_properties: serde_json::Value,
+            ) {
+                let Some((field, remaining)) = path.split_first() else {
+                    return;
+                };
+                let Some(schema) = properties
+                    .as_object_mut()
+                    .and_then(|object| object.get_mut(*field))
+                else {
+                    return;
+                };
+
+                if remaining.is_empty() {
+                    if let Some(object) = schema.as_object_mut() {
+                        object.insert(
+                            "additionalProperties".to_owned(),
+                            additional_properties,
+                        );
+                    }
+                    return;
+                }
+
+                if let Some(nested_properties) = schema.get_mut("properties") {
+                    set_additional_properties_at_path(
+                        nested_properties,
+                        remaining,
+                        additional_properties,
+                    );
+                }
+            }
+
+            set_additional_properties_at_path(
+                &mut nested_properties,
+                &path_refs,
+                declared_additional_properties,
+            );
+        }
+    };
+
     let gts_schema_impl = if has_generic {
         let generic_param = input.generics.type_params().next().unwrap();
         let generic_ident = &generic_param.ident;
@@ -1491,7 +1895,9 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 // If inner is just {"type": "object"} (from ()), return our own schema
                 // schemars RootSchema serializes at root level (not under "schema" field)
                 if inner.get("properties").is_none() {
-                    let root_schema = schemars::schema_for!(Self);
+                    let root_schema = schemars::generate::SchemaSettings::draft07()
+                        .into_generator()
+                        .into_root_schema_for::<Self>();
                     return serde_json::to_value(&root_schema).expect("schemars");
                 }
                 inner
@@ -1545,10 +1951,15 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 };
 
                 // Get THIS struct's schema (schemars will expand generic fields automatically)
-                let root_schema = schemars::schema_for!(Self);
+                let root_schema = schemars::generate::SchemaSettings::draft07()
+                    .into_generator()
+                    .into_root_schema_for::<Self>();
                 let schema_val = serde_json::to_value(&root_schema).expect("schemars");
                 let mut properties = schema_val.get("properties").cloned().unwrap_or(serde_json::json!({}));
                 let required = schema_val.get("required").cloned().unwrap_or(serde_json::json!([]));
+                let mut definitions = schema_val.get("definitions").cloned();
+                let declared_additional_properties =
+                    schema_val.get("additionalProperties").cloned();
 
                 // Replace the generic field with a simple {"type": "object"} placeholder
                 // The generic field should not be expanded, regardless of the concrete type parameter
@@ -1568,20 +1979,26 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 // dangling. Inline the canonical schema fragment instead so the
                 // generated document is self-contained (same fix as the
                 // non-generic branch below).
-                if let Some(props_obj) = properties.as_object_mut() {
-                    for (_key, value) in props_obj.iter_mut() {
-                        if let Some(ref_str) = value.get("$ref").and_then(|v| v.as_str()) {
-                            if ref_str == "#/$defs/GtsInstanceId" {
-                                *value = gts::GtsInstanceId::json_schema_value();
-                            } else if ref_str == "#/$defs/GtsTypeId" || ref_str == "#/$defs/GtsSchemaId" {
-                                *value = gts::GtsTypeId::json_schema_value();
-                            }
-                        }
-                    }
+                #inline_gts_id_definitions
+                #prune_unused_definitions
+                #close_nested_object_levels
+                let definitions_are_empty = if let Some(definitions_object) =
+                    definitions.as_mut().and_then(serde_json::Value::as_object_mut)
+                {
+                    definitions_object.remove("GtsInstanceId");
+                    definitions_object.remove("GtsTypeId");
+                    definitions_object.remove("GtsSchemaId");
+                    definitions_object.is_empty()
+                } else {
+                    false
+                };
+                if definitions_are_empty {
+                    definitions = None;
                 }
 
                 // If no parent (base type), return simple schema without allOf
-                // Base types have additionalProperties: false at root level
+                // Base types are closed by default, while an explicit Schemars
+                // content model on the source struct is preserved.
                 // Generic fields are just {"type": "object"} (will be extended by children)
                 if parent_type_id.is_empty() {
                     let mut schema = serde_json::json!({
@@ -1589,11 +2006,16 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                         "$schema": ::gts::JSON_SCHEMA_DRAFT_07,
                         "description": #description,
                         "type": "object",
-                        "additionalProperties": false,
+                        "additionalProperties": declared_additional_properties
+                            .clone()
+                            .unwrap_or(serde_json::Value::Bool(false)),
                         "properties": properties
                     });
                     if !required.as_array().map(|a| a.is_empty()).unwrap_or(true) {
                         schema["required"] = required;
+                    }
+                    if let Some(definitions) = definitions {
+                        schema["definitions"] = definitions;
                     }
                     #inject_root_traits
                     return schema;
@@ -1612,12 +2034,13 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 let path_refs: Vec<&str> = owned_path.iter().copied().collect();
                 let innermost_generic_field =
                     <#generic_ident as ::gts::GtsSchema>::GENERIC_FIELD;
-                let nested_properties = Self::wrap_in_nesting_path(
+                let mut nested_properties = Self::wrap_in_nesting_path(
                     &path_refs,
                     properties,
                     required.clone(),
                     innermost_generic_field,
                 );
+                #apply_declared_additional_properties_to_derived_level
 
                 // Child type - use allOf with $ref to parent.
                 //
@@ -1645,6 +2068,9 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                         }
                     ]
                 });
+                if let Some(definitions) = definitions {
+                    schema["definitions"] = definitions;
+                }
                 // Trait/modifier keywords go at the document top level, never in
                 // the allOf overlay.
                 #inject_root_traits
@@ -1663,7 +2089,9 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
             }
             fn innermost_schema() -> serde_json::Value {
                 // Return this type's schemars schema (RootSchema serializes at root level)
-                let root_schema = schemars::schema_for!(Self);
+                let root_schema = schemars::generate::SchemaSettings::draft07()
+                    .into_generator()
+                    .into_root_schema_for::<Self>();
                 serde_json::to_value(&root_schema).expect("schemars")
             }
             fn gts_schema_with_refs_allof() -> serde_json::Value {
@@ -1682,39 +2110,55 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 };
 
                 // Get this type's schemars schema (RootSchema serializes at root level)
-                let root_schema = schemars::schema_for!(Self);
+                let root_schema = schemars::generate::SchemaSettings::draft07()
+                    .into_generator()
+                    .into_root_schema_for::<Self>();
                 let schema_val = serde_json::to_value(&root_schema).expect("schemars");
                 let mut properties = schema_val.get("properties").cloned().unwrap_or_else(|| serde_json::json!({}));
                 let required = schema_val.get("required").cloned().unwrap_or_else(|| serde_json::json!([]));
+                let mut definitions = schema_val.get("definitions").cloned();
+                let declared_additional_properties =
+                    schema_val.get("additionalProperties").cloned();
 
                 // Resolve internal $ref references to GtsInstanceId and GtsTypeId at compile time
                 // This is needed for schemas validated directly (not through GtsStore)
                 // Runtime resolution in GtsStore::resolve_schema_refs provides additional coverage
-                if let Some(props_obj) = properties.as_object_mut() {
-                    for (_key, value) in props_obj.iter_mut() {
-                        if let Some(ref_str) = value.get("$ref").and_then(|v| v.as_str()) {
-                            if ref_str == "#/$defs/GtsInstanceId" {
-                                *value = gts::GtsInstanceId::json_schema_value();
-                            } else if ref_str == "#/$defs/GtsTypeId" || ref_str == "#/$defs/GtsSchemaId" {
-                                *value = gts::GtsTypeId::json_schema_value();
-                            }
-                        }
-                    }
+                #inline_gts_id_definitions
+                #prune_unused_definitions
+                #close_nested_object_levels
+                let definitions_are_empty = if let Some(definitions_object) =
+                    definitions.as_mut().and_then(serde_json::Value::as_object_mut)
+                {
+                    definitions_object.remove("GtsInstanceId");
+                    definitions_object.remove("GtsTypeId");
+                    definitions_object.remove("GtsSchemaId");
+                    definitions_object.is_empty()
+                } else {
+                    false
+                };
+                if definitions_are_empty {
+                    definitions = None;
                 }
 
                 // If no parent (base type), return simple schema without allOf
-                // Non-generic base types have additionalProperties: false at root level
+                // Non-generic base types are closed by default, while an
+                // explicit Schemars content model on the source struct is preserved.
                 if parent_type_id.is_empty() {
                     let mut schema = serde_json::json!({
                         "$id": format!("gts://{}", type_id),
                         "$schema": ::gts::JSON_SCHEMA_DRAFT_07,
                         "description": #description,
                         "type": "object",
-                        "additionalProperties": false,
+                        "additionalProperties": declared_additional_properties
+                            .clone()
+                            .unwrap_or(serde_json::Value::Bool(false)),
                         "properties": properties
                     });
                     if !required.as_array().map(|a| a.is_empty()).unwrap_or(true) {
                         schema["required"] = required;
+                    }
+                    if let Some(definitions) = definitions {
+                        schema["definitions"] = definitions;
                     }
                     #inject_root_traits
                     return schema;
@@ -1727,7 +2171,8 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 // chain's `additionalProperties: false` honoured.
                 let owned_path = Self::outer_generic_path();
                 let path_refs: Vec<&str> = owned_path.iter().copied().collect();
-                let nested_properties = Self::wrap_in_nesting_path(&path_refs, properties, required, None);
+                let mut nested_properties = Self::wrap_in_nesting_path(&path_refs, properties, required, None);
+                #apply_declared_additional_properties_to_derived_level
                 // No top-level `additionalProperties: false` here either -
                 // see the matching comment in `gts_schema_for!` above.
                 let mut schema = serde_json::json!({
@@ -1743,6 +2188,9 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                         }
                     ]
                 });
+                if let Some(definitions) = definitions {
+                    schema["definitions"] = definitions;
+                }
                 // Trait/modifier keywords go at the document top level, never in
                 // the allOf overlay.
                 #inject_root_traits

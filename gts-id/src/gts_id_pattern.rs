@@ -87,12 +87,21 @@ impl GtsIdPattern {
     /// [`GtsId::matches_pattern`]: crate::GtsId::matches_pattern
     pub(crate) fn matches_views<C: SegmentView>(&self, candidate: &[C]) -> bool {
         let pattern_segs = &self.segments;
-        // If pattern is longer than candidate, no match
-        if pattern_segs.len() > candidate.len() {
+        // A final bare `~*` may match an empty chain suffix. A wildcard that
+        // already specifies part of the next segment (for example `~abc.*`)
+        // still requires that segment to exist.
+        let matches_empty_suffix = pattern_segs
+            .last()
+            .is_some_and(|seg| seg.is_wildcard() && seg.raw() == "*");
+        let required_candidate_len = pattern_segs.len() - usize::from(matches_empty_suffix);
+        if required_candidate_len > candidate.len() {
             return false;
         }
 
         for (i, p_seg) in pattern_segs.iter().enumerate() {
+            if i == candidate.len() {
+                return matches_empty_suffix && i == pattern_segs.len() - 1;
+            }
             let c_seg = &candidate[i];
 
             // If pattern segment is a wildcard, only its specified (non-empty)
@@ -110,7 +119,9 @@ impl GtsIdPattern {
                 if !p_seg.type_name().is_empty() && p_seg.type_name() != c_seg.type_name() {
                     return false;
                 }
-                if p_seg.ver_major() != 0 && p_seg.ver_major() != c_seg.ver_major() {
+                if let Some(p_major) = p_seg.ver_major_opt()
+                    && Some(p_major) != c_seg.ver_major_opt()
+                {
                     return false;
                 }
                 if let Some(p_minor) = p_seg.ver_minor()
@@ -147,7 +158,7 @@ impl GtsIdPattern {
             }
 
             // Check version matching
-            if p_seg.ver_major() != c_seg.ver_major() {
+            if p_seg.ver_major_opt() != c_seg.ver_major_opt() {
                 return false;
             }
 
@@ -307,6 +318,35 @@ mod tests {
 
         assert!(type_candidate.matches_pattern(&pattern));
         assert!(instance_candidate.matches_pattern(&pattern));
+    }
+
+    #[test]
+    fn test_trailing_chain_wildcard_matches_empty_suffix() {
+        let pattern = GtsIdPattern::try_new(&gts_id("x.core.events.topic.v1~*")).expect("test");
+        let exact = GtsId::try_new(&gts_id("x.core.events.topic.v1~")).expect("test");
+        let specific_minor = GtsId::try_new(&gts_id("x.core.events.topic.v1.1~")).expect("test");
+
+        assert!(exact.matches_pattern(&pattern));
+        assert!(specific_minor.matches_pattern(&pattern));
+    }
+
+    #[test]
+    fn test_prefixed_chain_wildcard_requires_a_suffix() {
+        let pattern = GtsIdPattern::try_new(&gts_id("x.core.events.topic.v1~abc.*")).expect("test");
+        let base = GtsId::try_new(&gts_id("x.core.events.topic.v1~")).expect("test");
+
+        assert!(!base.matches_pattern(&pattern));
+    }
+
+    #[test]
+    fn test_zero_major_minor_wildcard_is_scoped_to_v0() {
+        let pattern = GtsIdPattern::try_new(&gts_id("x.core.events.topic.v0.*")).expect("test");
+        let v0 = GtsId::try_new(&gts_id("x.core.events.topic.v0.2~")).expect("test");
+        let v1 = GtsId::try_new(&gts_id("x.core.events.topic.v1.2~")).expect("test");
+
+        assert_eq!(pattern.segments()[0].ver_major_opt(), Some(0));
+        assert!(v0.matches_pattern(&pattern));
+        assert!(!v1.matches_pattern(&pattern));
     }
 
     #[test]

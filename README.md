@@ -300,7 +300,7 @@ gts --path ../gts-spec/examples resolve-relationships --gts-id "gts.x.core.event
 
 #### OP#8 - Compatibility Checking
 
-Verify that schemas with different MINOR versions are compatible.
+Verify schema evolution using GTS 0.13 accepted-instance set inclusion.
 
 ```bash
 # Check compatibility between schema versions
@@ -325,12 +325,14 @@ gts --path ../gts-spec/examples compatibility \
   "added_properties": [],
   "removed_properties": [],
   "changed_properties": [],
-  "is_fully_compatible": true,
-  "is_backward_compatible": true,
-  "is_forward_compatible": true,
+  "full_compatibility": "compatible",
+  "backward_compatibility": "compatible",
+  "forward_compatibility": "compatible",
   "incompatibility_reasons": [],
   "backward_errors": [],
-  "forward_errors": []
+  "forward_errors": [],
+  "specification_version": "0.13",
+  "implementation_version": "0.11.0"
 }
 ```
 
@@ -359,9 +361,9 @@ gts --path ../gts-spec/examples cast \
   "direction": "unknown",
   "added_properties": ["payload.new_field_in_v1_1"],
   "removed_properties": [],
-  "is_fully_compatible": true,
-  "is_backward_compatible": true,
-  "is_forward_compatible": true,
+  "full_compatibility": "compatible",
+  "backward_compatibility": "compatible",
+  "forward_compatibility": "compatible",
   "casted_entity": {
     "id": "7a1d2f34-5678-49ab-9012-abcdef123456",
     "type": "gts.x.core.events.type.v1~x.commerce.orders.order_placed.v1.1~",
@@ -505,7 +507,7 @@ All operations are available through the `GtsOps` API.
 #### Setup
 
 ```rust
-use gts::{GtsId, GtsOps, GtsConfig, GtsIdPattern};
+use gts::{CompatibilityVerdict, GtsConfig, GtsId, GtsIdPattern, GtsOps};
 use serde_json::json;
 
 // Initialize GTS operations with data paths
@@ -677,27 +679,21 @@ let result = ops.compatibility(
 );
 
 // OP#8.1 - Backward compatibility
-if result.is_backward_compatible {
-    println!("Old instances work with new schema");
-} else {
-    println!("Backward incompatible:");
-    for error in result.backward_errors {
-        println!("  - {}", error);
-    }
+match result.backward_compatibility {
+    CompatibilityVerdict::Compatible => println!("Old instances work with new schema"),
+    CompatibilityVerdict::Incompatible => println!("Known backward-incompatible"),
+    CompatibilityVerdict::Unknown => println!("Backward compatibility could not be determined"),
 }
 
 // OP#8.2 - Forward compatibility
-if result.is_forward_compatible {
-    println!("New instances work with old schema");
-} else {
-    println!("Forward incompatible:");
-    for error in result.forward_errors {
-        println!("  - {}", error);
-    }
+match result.forward_compatibility {
+    CompatibilityVerdict::Compatible => println!("New instances work with old schema"),
+    CompatibilityVerdict::Incompatible => println!("Known forward-incompatible"),
+    CompatibilityVerdict::Unknown => println!("Forward compatibility could not be determined"),
 }
 
 // OP#8.3 - Full compatibility
-if result.is_fully_compatible {
+if result.full_compatibility.is_compatible() {
     println!("Fully compatible in both directions");
 }
 ```
@@ -722,8 +718,8 @@ if let Some(casted) = result.casted_entity {
 }
 
 // Check compatibility
-if !result.is_backward_compatible {
-    println!("Warning: Not backward compatible");
+if !result.backward_compatibility.is_compatible() {
+    println!("Warning: backward compatibility is not established");
     for reason in result.incompatibility_reasons {
         println!("  - {}", reason);
     }
@@ -834,7 +830,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "gts.x.core.events.type.v1~x.commerce.orders.order_placed.v1.0~",
         "gts.x.core.events.type.v1~x.commerce.orders.order_placed.v1.1~"
     );
-    println!("Backward compatible: {}", compat.is_backward_compatible);
+    println!("Backward compatible: {}", compat.backward_compatibility);
 
     // OP#9: Cast instance (instance identified by UUID)
     let cast = ops.cast(

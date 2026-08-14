@@ -78,6 +78,144 @@ pub struct SimplePayloadV1 {
     pub severity: u8,
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct NestedContact {
+    pub email: String,
+}
+
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = true,
+    type_id = gts_id!("x.test.nested.definition.v1~"),
+    description = "Schema containing an ordinary nested Rust struct",
+    properties = "schema_type,contact"
+)]
+#[derive(Debug)]
+pub struct SchemaWithNestedContactV1 {
+    #[serde(rename = "type")]
+    pub schema_type: GtsTypeId,
+    pub contact: NestedContact,
+}
+
+fn composed_contact_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    let contact = generator.subschema_for::<NestedContact>();
+    serde_json::from_value(serde_json::json!({
+        "allOf": [
+            contact,
+            {
+                "type": "object",
+                "properties": {
+                    "label": {"type": "string"}
+                },
+                "required": ["label"]
+            }
+        ]
+    }))
+    .expect("test schema")
+}
+
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = true,
+    type_id = gts_id!("x.test.nested.composed_definition.v1~"),
+    description = "Schema composing a definition with sibling properties",
+    properties = "schema_type,composed"
+)]
+#[derive(Debug)]
+pub struct SchemaWithComposedDefinitionV1 {
+    #[serde(rename = "type")]
+    pub schema_type: GtsTypeId,
+    #[schemars(schema_with = "composed_contact_schema")]
+    pub composed: serde_json::Value,
+}
+
+// Newtype structs without a doc comment: Schemars emits each definition as a
+// bare `{"$ref": ...}` alias, so the combinator branch only reaches
+// `NestedContact` through two hops of aliasing.
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct ContactAlias(pub NestedContact);
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct ContactAliasAlias(pub ContactAlias);
+
+fn composed_alias_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    let alias = generator.subschema_for::<ContactAliasAlias>();
+    serde_json::from_value(serde_json::json!({
+        "allOf": [
+            alias,
+            {
+                "type": "object",
+                "properties": {
+                    "label": {"type": "string"}
+                },
+                "required": ["label"]
+            }
+        ]
+    }))
+    .expect("test schema")
+}
+
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = true,
+    type_id = gts_id!("x.test.nested.aliased_definition.v1~"),
+    description = "Schema composing an aliased definition with sibling properties",
+    properties = "schema_type,composed"
+)]
+#[derive(Debug)]
+pub struct SchemaWithAliasedDefinitionV1 {
+    #[serde(rename = "type")]
+    pub schema_type: GtsTypeId,
+    #[schemars(schema_with = "composed_alias_schema")]
+    pub composed: serde_json::Value,
+}
+
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = true,
+    type_id = gts_id!("x.test.nested.shared_definition.v1~"),
+    description = "Schema using one definition as a combinator branch and as a property",
+    properties = "schema_type,composed,plain"
+)]
+#[derive(Debug)]
+pub struct SchemaWithSharedDefinitionV1 {
+    #[serde(rename = "type")]
+    pub schema_type: GtsTypeId,
+    #[schemars(schema_with = "composed_contact_schema")]
+    pub composed: serde_json::Value,
+    pub plain: NestedContact,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[schemars(extend("additionalProperties" = true))]
+pub struct OpenExtensionPoint {
+    pub label: String,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum UntaggedChoice {
+    First { a: String },
+    Second { b: String },
+}
+
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = true,
+    type_id = gts_id!("x.test.nested.content_model.v1~"),
+    description = "Schema exercising nested content-model closure",
+    properties = "schema_type,contact,extension_point,choice,labels"
+)]
+#[derive(Debug)]
+pub struct SchemaWithNestedContentModelV1 {
+    #[serde(rename = "type")]
+    pub schema_type: GtsTypeId,
+    pub contact: NestedContact,
+    pub extension_point: OpenExtensionPoint,
+    pub choice: UntaggedChoice,
+    pub labels: std::collections::HashMap<String, String>,
+}
+
 /* ============================================================
 Base struct ID field validation tests
 ============================================================ */
@@ -394,6 +532,169 @@ mod tests {
             "`type` property should be the inlined GtsTypeId fragment, got:\n{}",
             serde_json::to_string_pretty(type_prop).unwrap()
         );
+    }
+
+    #[test]
+    fn test_ordinary_nested_struct_keeps_draft_07_definition() {
+        let schema = SchemaWithNestedContactV1::gts_schema_with_refs();
+        assert_eq!(
+            schema.get("$schema").and_then(serde_json::Value::as_str),
+            Some(gts::JSON_SCHEMA_DRAFT_07)
+        );
+        assert_eq!(
+            schema
+                .pointer("/properties/contact/$ref")
+                .and_then(serde_json::Value::as_str),
+            Some("#/definitions/NestedContact")
+        );
+        assert!(
+            schema.pointer("/definitions/NestedContact").is_some(),
+            "nested definition is missing:\n{}",
+            serde_json::to_string_pretty(&schema).unwrap()
+        );
+        jsonschema::validator_for(&schema).expect("emitted Draft-07 schema must compile");
+    }
+
+    #[test]
+    fn test_definition_referenced_by_combinator_branch_stays_open() {
+        let schema = SchemaWithComposedDefinitionV1::gts_schema_with_refs();
+        assert_eq!(
+            schema.pointer("/properties/composed/allOf/0/$ref"),
+            Some(&serde_json::json!("#/definitions/NestedContact"))
+        );
+        assert!(
+            schema
+                .pointer("/definitions/NestedContact/additionalProperties")
+                .is_none(),
+            "a definition composed with sibling properties must stay open:\n{}",
+            serde_json::to_string_pretty(&schema).unwrap()
+        );
+
+        let validator =
+            jsonschema::validator_for(&schema).expect("emitted Draft-07 schema must compile");
+        let instance = serde_json::json!({
+            "type": "gts.x.test.nested.composed_definition.v1~",
+            "composed": {
+                "email": "dev@example.com",
+                "label": "primary"
+            }
+        });
+        assert!(
+            validator.is_valid(&instance),
+            "combinator siblings should not be rejected by a closed definition"
+        );
+    }
+
+    /// The branch may reach its definition through a chain of aliasing
+    /// definitions, which Schemars emits for newtype structs.
+    #[test]
+    fn test_definition_aliased_by_combinator_branch_stays_open() {
+        let schema = SchemaWithAliasedDefinitionV1::gts_schema_with_refs();
+        assert_eq!(
+            schema.pointer("/definitions/ContactAlias/$ref"),
+            Some(&serde_json::json!("#/definitions/NestedContact")),
+            "test relies on Schemars emitting a bare $ref alias:\n{}",
+            serde_json::to_string_pretty(&schema).unwrap()
+        );
+        assert!(
+            schema
+                .pointer("/definitions/NestedContact/additionalProperties")
+                .is_none(),
+            "a definition an alias chain composes with sibling properties must stay open:\n{}",
+            serde_json::to_string_pretty(&schema).unwrap()
+        );
+
+        let validator =
+            jsonschema::validator_for(&schema).expect("emitted Draft-07 schema must compile");
+        let instance = serde_json::json!({
+            "type": "gts.x.test.nested.aliased_definition.v1~",
+            "composed": {
+                "email": "dev@example.com",
+                "label": "primary"
+            }
+        });
+        assert!(
+            validator.is_valid(&instance),
+            "combinator siblings should not be rejected through an alias chain"
+        );
+    }
+
+    /// Reachability is tracked per `definitions` entry, not per use site, so one
+    /// composed use keeps the entry open for its ordinary uses too. That trades
+    /// the in-place evolvability of the ordinary level for a satisfiable
+    /// composition - see the pass documentation in `gts-macros/src/lib.rs`.
+    #[test]
+    fn test_shared_definition_stays_open_for_its_ordinary_use() {
+        let schema = SchemaWithSharedDefinitionV1::gts_schema_with_refs();
+        assert_eq!(
+            schema.pointer("/properties/plain/$ref"),
+            Some(&serde_json::json!("#/definitions/NestedContact"))
+        );
+        assert!(
+            schema
+                .pointer("/definitions/NestedContact/additionalProperties")
+                .is_none(),
+            "a definition shared with a combinator branch must stay open:\n{}",
+            serde_json::to_string_pretty(&schema).unwrap()
+        );
+
+        let validator =
+            jsonschema::validator_for(&schema).expect("emitted Draft-07 schema must compile");
+        let instance = serde_json::json!({
+            "type": "gts.x.test.nested.shared_definition.v1~",
+            "composed": {
+                "email": "dev@example.com",
+                "label": "primary"
+            },
+            "plain": {
+                "email": "ops@example.com"
+            }
+        });
+        assert!(
+            validator.is_valid(&instance),
+            "both uses of the shared definition must still accept valid instances"
+        );
+    }
+
+    /// Nested object levels are closed so that a later definition of the type
+    /// can add an optional property backward compatibly (gts-spec sec 4.4-4.5),
+    /// while the levels where closing would be wrong are left alone.
+    #[test]
+    fn test_nested_object_levels_are_closed_except_where_unsafe() {
+        let schema = SchemaWithNestedContentModelV1::gts_schema_with_refs();
+        let additional = |pointer: &str| {
+            schema
+                .pointer(pointer)
+                .unwrap_or_else(|| panic!("missing level '{pointer}' in {schema}"))
+                .get("additionalProperties")
+                .cloned()
+        };
+
+        // An ordinary nested struct is closed, so it stays evolvable in place.
+        assert_eq!(
+            additional("/definitions/NestedContact"),
+            Some(serde_json::json!(false))
+        );
+
+        // `#[schemars(extend(...))]` is the per-level opt-out for a deliberate
+        // extension point.
+        assert_eq!(
+            additional("/definitions/OpenExtensionPoint"),
+            Some(serde_json::json!(true))
+        );
+
+        // Closing an `anyOf` branch would reject the properties its sibling
+        // branches declare, so combinator branches are left untouched.
+        assert_eq!(additional("/definitions/UntaggedChoice/anyOf/0"), None);
+        assert_eq!(additional("/definitions/UntaggedChoice/anyOf/1"), None);
+
+        // A map level is partially open; its existing constraint is preserved.
+        assert_eq!(
+            additional("/properties/labels"),
+            Some(serde_json::json!({"type": "string"}))
+        );
+
+        jsonschema::validator_for(&schema).expect("emitted Draft-07 schema must compile");
     }
 
     #[test]
