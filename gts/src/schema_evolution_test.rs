@@ -29,6 +29,22 @@ fn check_schema_compatibility(
     }
 }
 
+/// Asserts that the machine-readable classification - not just the verdict -
+/// is what the test says it is, at the location it says.
+#[track_caller]
+fn assert_finding(
+    diagnostics: &[CompatibilityDiagnostic],
+    path: &str,
+    finding: CompatibilityFinding,
+) {
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.path == path && diagnostic.finding == finding),
+        "expected {finding:?} at '{path}': {diagnostics:?}"
+    );
+}
+
 #[test]
 fn test_compatibility_verdict_serialization_and_full_derivation() {
     assert_eq!(
@@ -129,6 +145,11 @@ fn test_check_schema_compatibility_added_required_property() {
     let result = check_schema_compatibility(&old_schema, &new_schema);
     // Adding required property is not backward compatible
     assert!(result.backward_compatibility.is_incompatible());
+    assert_finding(
+        &check_backward_diagnostics(&old_schema, &new_schema).1,
+        "$",
+        CompatibilityFinding::RequiredChanged,
+    );
 }
 
 #[test]
@@ -187,6 +208,11 @@ fn test_check_schema_compatibility_enum_reduction() {
     assert!(result.backward_compatibility.is_incompatible());
     assert!(result.forward_compatibility.is_compatible());
     assert!(result.full_compatibility.is_incompatible());
+    assert_finding(
+        &check_backward_diagnostics(&old_schema, &new_schema).1,
+        "$",
+        CompatibilityFinding::EnumChanged,
+    );
 }
 
 #[test]
@@ -202,6 +228,12 @@ fn test_check_schema_compatibility_type_change() {
     let result = check_schema_compatibility(&old_schema, &new_schema);
     assert!(result.backward_compatibility.is_incompatible());
     assert!(result.forward_compatibility.is_incompatible());
+    for diagnostics in [
+        check_backward_diagnostics(&old_schema, &new_schema).1,
+        check_forward_diagnostics(&old_schema, &new_schema).1,
+    ] {
+        assert_finding(&diagnostics, "$", CompatibilityFinding::TypeChanged);
+    }
 }
 
 #[test]
@@ -803,6 +835,11 @@ fn test_dialect_change_is_not_proven_compatible() {
     let result = check_schema_compatibility(&old_schema, &new_schema);
     assert!(result.backward_compatibility.is_unknown());
     assert!(result.forward_compatibility.is_unknown());
+    assert_finding(
+        &check_backward_diagnostics(&old_schema, &new_schema).1,
+        "$",
+        CompatibilityFinding::DialectChanged,
+    );
 }
 
 #[test]
@@ -862,6 +899,29 @@ fn test_all_of_intersects_duplicate_property_schemas() {
         flattened.pointer("/properties/value/maxLength"),
         Some(&json!(10))
     );
+}
+
+/// An instance must satisfy every `allOf` branch, so the flattened level
+/// requires every name any branch requires - not the names of one branch.
+#[test]
+fn test_all_of_unions_required_across_branches() {
+    let schema = json!({
+        "allOf": [
+            {"type": "object", "required": ["a"]},
+            {"type": "object", "required": ["b"]}
+        ]
+    });
+
+    let flattened = flatten_schema(&schema);
+    let mut required: Vec<&str> = flattened
+        .pointer("/required")
+        .and_then(Value::as_array)
+        .expect("both branches declare 'required', so the flattened level has it")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    required.sort_unstable();
+    assert_eq!(required, ["a", "b"]);
 }
 
 #[test]
@@ -956,15 +1016,22 @@ fn test_identical_unresolved_ref_needs_no_resolution() {
 }
 
 fn property_change(old_property: Value, new_property: Value) -> CompatibilityResult {
-    let document = |property: Value| {
-        json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {"value": property},
-            "required": ["value"]
-        })
-    };
-    check_schema_compatibility(&document(old_property), &document(new_property))
+    check_schema_compatibility(
+        &property_document(old_property),
+        &property_document(new_property),
+    )
+}
+
+/// A closed object whose single required property carries the schema under test.
+// By-value `json!(...)` literals read cleaner at the call sites.
+#[allow(clippy::needless_pass_by_value)]
+fn property_document(property: Value) -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {"value": property},
+        "required": ["value"]
+    })
 }
 
 /// Bound keywords must be compared whenever present, never gated on `type`.
@@ -975,6 +1042,15 @@ fn test_numeric_bounds_are_checked_without_a_type_keyword() {
     let result = property_change(json!({"minimum": 0}), json!({"minimum": 5}));
     assert!(result.backward_compatibility.is_incompatible());
     assert!(result.forward_compatibility.is_compatible());
+    assert_finding(
+        &check_backward_diagnostics(
+            &property_document(json!({"minimum": 0})),
+            &property_document(json!({"minimum": 5})),
+        )
+        .1,
+        "$.value",
+        CompatibilityFinding::BoundChanged,
+    );
 
     let result = property_change(
         json!({"type": ["integer"], "minimum": 0}),
@@ -1494,15 +1570,15 @@ fn test_unprovable_intersection_leaves_no_synthetic_keyword() {
         ]
     }));
 
-    let keys: Vec<&String> = flattened
+    // An exact key set, because bookkeeping that leaks under any name at all
+    // is what this guards against.
+    let keys: Vec<&str> = flattened
         .as_object()
         .expect("flattening object branches yields an object")
         .keys()
+        .map(String::as_str)
         .collect();
-    assert!(
-        keys.iter().all(|key| !key.starts_with("x-gts-internal")),
-        "{keys:?}"
-    );
+    assert_eq!(keys, ["additionalProperties", "type"]);
 }
 
 /// The undecidable branch must stay local: reporting it must not swallow a
@@ -1538,5 +1614,151 @@ fn test_unprovable_property_does_not_mask_sibling_incompatibility() {
             .iter()
             .any(|diagnostic| diagnostic.path == "$.sibling"),
         "{diagnostics:?}"
+    );
+}
+
+/// `depth` object levels, each holding the next under `next`.
+fn nested_objects(depth: usize) -> Value {
+    let mut schema = json!({"type": "string"});
+    for _ in 0..depth {
+        schema = json!({"type": "object", "properties": {"next": schema}});
+    }
+    schema
+}
+
+/// `depth` `allOf` wrappers around one object level.
+fn nested_all_of(depth: usize) -> Value {
+    let mut schema = json!({"type": "object", "properties": {"v": {"type": "string"}}});
+    for _ in 0..depth {
+        schema = json!({"allOf": [schema]});
+    }
+    schema
+}
+
+/// `$ref` resolution can hand the checker a tree deeper than anything a client
+/// authored, so the walk stops - and says so, rather than reporting the levels
+/// it never compared as compatible.
+#[test]
+fn test_nesting_beyond_the_walk_is_reported_as_not_provable() {
+    let (verdict, diagnostics) =
+        check_backward_diagnostics(&nested_objects(200), &nested_objects(200));
+    assert!(verdict.is_unknown(), "{diagnostics:?}");
+    assert!(
+        diagnostics.iter().any(|diagnostic| diagnostic.finding
+            == CompatibilityFinding::NotProvable
+            && diagnostic.detail.contains("nests deeper")),
+        "{diagnostics:?}"
+    );
+}
+
+/// The flattener has its own bound, driven by nested `allOf` rather than by
+/// nested properties, so it needs its own case: a branch it stopped merging
+/// must read as an unproven intersection and never as a proven one.
+#[test]
+fn test_all_of_nested_beyond_the_flattener_is_not_provable() {
+    let (verdict, diagnostics) =
+        check_backward_diagnostics(&nested_all_of(200), &nested_all_of(200));
+    assert!(verdict.is_unknown(), "{diagnostics:?}");
+    assert!(
+        diagnostics.iter().any(|diagnostic| diagnostic.finding
+            == CompatibilityFinding::NotProvable
+            && diagnostic.detail.contains("allOf intersection")),
+        "{diagnostics:?}"
+    );
+}
+
+/// The level classification stops at the same bound and, unlike every other
+/// bounded walk here, reports nothing for what it skipped - `ContentModel` has
+/// no "not looked at" variant. That is safe only because it is advisory: the
+/// relation over the very same document is refused rather than decided.
+#[test]
+fn test_object_levels_stop_at_the_walk_bound_while_the_verdict_refuses() {
+    let deep = nested_objects(200);
+
+    let levels = classify_object_levels(&deep);
+    assert_eq!(levels.len(), MAX_RECURSION_DEPTH, "{}", levels.len());
+    assert!(
+        levels
+            .iter()
+            .all(|level| level.content_model == ContentModel::Open),
+        "{levels:?}"
+    );
+
+    let (verdict, diagnostics) = check_backward_diagnostics(&deep, &deep);
+    assert!(
+        verdict.is_unknown(),
+        "the advisory truncation must not be the only signal: {diagnostics:?}"
+    );
+}
+
+/// A finite accepted-value set proves inclusion for the *whole* subtree, so it
+/// discharges nested findings and not only this level's keywords.
+///
+/// This is what fixes the order of the node walk: the enumerated proof is
+/// attempted only once something needs discharging, which means the nested
+/// comparison has to have run already.
+#[test]
+fn test_enumerated_source_discharges_a_nested_narrowing() {
+    let old_schema = json!({
+        "type": "object",
+        "properties": {"x": {"type": "integer"}},
+        "const": {"x": 1}
+    });
+    // Narrower on the nested property, but every value `old` accepts still
+    // validates against it.
+    let new_schema = json!({
+        "type": "object",
+        "properties": {"x": {"type": "integer", "minimum": 0, "maximum": 10}}
+    });
+
+    let (verdict, diagnostics) = check_backward_diagnostics(&old_schema, &new_schema);
+    assert!(verdict.is_compatible(), "{diagnostics:?}");
+
+    // Without the enumerated value the same narrowing is reported, so the
+    // assertion above is about the proof and not about a checker that ignores
+    // nested bounds.
+    let mut unconstrained = old_schema;
+    unconstrained.as_object_mut().expect("test").remove("const");
+    let (verdict, diagnostics) = check_backward_diagnostics(&unconstrained, &new_schema);
+    assert!(verdict.is_incompatible(), "{diagnostics:?}");
+    assert_finding(&diagnostics, "$.x", CompatibilityFinding::BoundChanged);
+}
+
+/// Bounds are intersected by exact numeric order, not through `f64`.
+///
+/// `2^53 + 1` and `2^53` are the same double, so rounding both sides would order
+/// them equal and keep the looser branch - the flattened level would then claim
+/// a weaker `minimum` than the real intersection.
+#[test]
+fn test_all_of_intersects_bounds_beyond_f64_precision() {
+    // Both round to the same f64, so an f64 comparison cannot tell them apart.
+    const TIGHTER: u64 = (1_u64 << 53) + 1;
+    const LOOSER: u64 = 1_u64 << 53;
+
+    // The tighter minimum arrives second, so an f64 comparison reports "not
+    // greater" and discards it.
+    let flattened = flatten_schema(&json!({
+        "allOf": [
+            {"type": "integer", "minimum": LOOSER},
+            {"type": "integer", "minimum": TIGHTER}
+        ]
+    }));
+    assert_eq!(
+        flattened.pointer("/minimum").and_then(Value::as_u64),
+        Some(TIGHTER),
+        "{flattened}"
+    );
+
+    // And the reverse order must not loosen an already tighter bound.
+    let flattened = flatten_schema(&json!({
+        "allOf": [
+            {"type": "integer", "minimum": TIGHTER},
+            {"type": "integer", "minimum": LOOSER}
+        ]
+    }));
+    assert_eq!(
+        flattened.pointer("/minimum").and_then(Value::as_u64),
+        Some(TIGHTER),
+        "{flattened}"
     );
 }

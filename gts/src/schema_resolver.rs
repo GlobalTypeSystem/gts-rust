@@ -26,6 +26,25 @@ pub(crate) trait SchemaProvider {
     fn schema_content(&self, type_id: &str) -> Option<&Value>;
 }
 
+/// Longest chain of nested `$ref`s that will be inlined.
+///
+/// A single posted document is bounded by the JSON parser's own nesting limit,
+/// but inlining walks from one registered document into the next, so the
+/// resolved body's depth is the product of the chain length and each link's
+/// depth. Bounding the chain bounds the tree every later walk - compatibility,
+/// flattening, content-model classification - has to descend.
+///
+/// `visited` holds exactly the refs whose resolution is in progress on the
+/// current path, so its size *is* the current chain depth.
+///
+/// This is a hard refusal, not a truncation: a chain longer than the budget is
+/// reported as [`StoreError::UnresolvedRefs`], so a document that resolved
+/// before this bound existed no longer does. The budget is deliberately far
+/// above any authored `$id` derivation chain - the gts-spec conformance suite
+/// resolves well inside it - and no caller can raise it, because the tree it
+/// bounds is what every later walk has to descend.
+const MAX_REF_CHAIN_DEPTH: usize = 32;
+
 /// Inlines `$ref`s in a JSON Schema using a [`SchemaProvider`] for lookups.
 pub(crate) struct SchemaResolver<'a> {
     provider: &'a dyn SchemaProvider,
@@ -99,6 +118,13 @@ impl<'a> SchemaResolver<'a> {
                                     format!("local:{:p}:{ref_uri}", std::ptr::from_ref(local_root));
                                 if visited.contains(&local_ref_key) {
                                     *cycle_found = true;
+                                    return Value::Object(map.clone());
+                                }
+                                if visited.len() >= MAX_REF_CHAIN_DEPTH {
+                                    unresolved_refs.push(format!(
+                                        "{ref_uri} (nested deeper than \
+                                         {MAX_REF_CHAIN_DEPTH} chained $refs)"
+                                    ));
                                     return Value::Object(map.clone());
                                 }
                                 if let Some(target) = local_root.pointer(pointer) {
@@ -183,6 +209,14 @@ impl<'a> SchemaResolver<'a> {
                             );
                         }
                         return Value::Object(new_map);
+                    }
+
+                    if visited.len() >= MAX_REF_CHAIN_DEPTH {
+                        unresolved_refs.push(format!(
+                            "{canonical_ref} (nested deeper than \
+                             {MAX_REF_CHAIN_DEPTH} chained $refs)"
+                        ));
+                        return Value::Object(map.clone());
                     }
 
                     // Try to resolve the reference using the canonical ID

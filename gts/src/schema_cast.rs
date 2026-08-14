@@ -23,6 +23,7 @@ pub enum SchemaCastError {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[must_use = "the compatibility verdict must be inspected"]
 pub struct GtsEntityCastResult {
     #[serde(rename = "from")]
     pub from_id: String,
@@ -40,19 +41,30 @@ pub struct GtsEntityCastResult {
     pub incompatibility_reasons: Vec<String>,
     pub backward_errors: Vec<String>,
     pub forward_errors: Vec<String>,
-    #[serde(default = "specification_version")]
-    pub specification_version: String,
-    #[serde(default = "implementation_version")]
-    pub implementation_version: String,
+    /// Spec version of the implementation that *produced* this result, absent
+    /// when the payload it was read from did not carry one.
+    ///
+    /// Deliberately not defaulted to this build's constants: a result produced
+    /// by an older or foreign implementation would then silently claim our
+    /// versions, destroying the provenance these two fields exist to record.
+    #[serde(default)]
+    pub specification_version: Option<String>,
+    /// Version of the implementation that *produced* this result; see
+    /// [`Self::specification_version`] for why an absent value stays absent.
+    #[serde(default)]
+    pub implementation_version: Option<String>,
     pub casted_entity: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
+/// The spec version to stamp on a result produced by *this* build. Wrapped in
+/// `Some` at each use, so a result read from elsewhere can stay unstamped.
 fn specification_version() -> String {
     crate::GTS_SPECIFICATION_VERSION.to_owned()
 }
 
+/// The implementation version to stamp on a result produced by *this* build.
 fn implementation_version() -> String {
     crate::GTS_IMPLEMENTATION_VERSION.to_owned()
 }
@@ -87,8 +99,8 @@ impl GtsEntityCastResult {
             incompatibility_reasons: Vec::new(),
             backward_errors: Vec::new(),
             forward_errors: Vec::new(),
-            specification_version: specification_version(),
-            implementation_version: implementation_version(),
+            specification_version: Some(specification_version()),
+            implementation_version: Some(implementation_version()),
             casted_entity: None,
             error: Some(message.into()),
         }
@@ -147,8 +159,8 @@ impl GtsEntityCastResult {
                         incompatibility_reasons: vec![e.to_string()],
                         backward_errors,
                         forward_errors,
-                        specification_version: specification_version(),
-                        implementation_version: implementation_version(),
+                        specification_version: Some(specification_version()),
+                        implementation_version: Some(implementation_version()),
                         casted_entity: None,
                         error: None,
                     });
@@ -182,8 +194,8 @@ impl GtsEntityCastResult {
             incompatibility_reasons: reasons,
             backward_errors,
             forward_errors,
-            specification_version: specification_version(),
-            implementation_version: implementation_version(),
+            specification_version: Some(specification_version()),
+            implementation_version: Some(implementation_version()),
             casted_entity: Some(Value::Object(casted)),
             error: None,
         })
@@ -441,12 +453,12 @@ mod tests {
         assert!(result.backward_errors.is_empty());
         assert!(result.forward_errors.is_empty());
         assert_eq!(
-            result.specification_version,
-            crate::GTS_SPECIFICATION_VERSION
+            result.specification_version.as_deref(),
+            Some(crate::GTS_SPECIFICATION_VERSION)
         );
         assert_eq!(
-            result.implementation_version,
-            crate::GTS_IMPLEMENTATION_VERSION
+            result.implementation_version.as_deref(),
+            Some(crate::GTS_IMPLEMENTATION_VERSION)
         );
         assert!(result.casted_entity.is_none());
         assert_eq!(result.error.as_deref(), Some("could not decide"));
@@ -492,8 +504,8 @@ mod tests {
             incompatibility_reasons: vec![],
             backward_errors: vec![],
             forward_errors: vec![],
-            specification_version: specification_version(),
-            implementation_version: implementation_version(),
+            specification_version: Some(specification_version()),
+            implementation_version: Some(implementation_version()),
             casted_entity: None,
             error: None,
         };
@@ -519,6 +531,34 @@ mod tests {
         assert_eq!(
             json.get("implementation_version").and_then(Value::as_str),
             Some(crate::GTS_IMPLEMENTATION_VERSION)
+        );
+    }
+
+    /// A result read back from a payload that carries no versions must not
+    /// acquire this build's, or the provenance the two fields exist to record
+    /// is replaced by a claim nobody made.
+    #[test]
+    fn test_absent_versions_are_not_stamped_on_deserialization() {
+        let mut payload = serde_json::to_value(GtsEntityCastResult::undecided(
+            "gts.vendor.pkg.ns.type.v1.0",
+            "gts.vendor.pkg.ns.type.v2.0",
+            "produced elsewhere",
+        ))
+        .expect("test");
+        let object = payload.as_object_mut().expect("test");
+        object.remove("specification_version");
+        object.remove("implementation_version");
+
+        let foreign: GtsEntityCastResult = serde_json::from_value(payload).expect("test");
+        assert_eq!(foreign.specification_version, None);
+        assert_eq!(foreign.implementation_version, None);
+
+        // A locally produced result still stamps them, so the wire format of
+        // our own output is unchanged.
+        let local = GtsEntityCastResult::undecided("a", "b", "produced here");
+        assert_eq!(
+            local.specification_version.as_deref(),
+            Some(crate::GTS_SPECIFICATION_VERSION)
         );
     }
 
