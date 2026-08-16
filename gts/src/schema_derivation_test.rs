@@ -1,6 +1,23 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 use serde_json::json;
+/// Asserts that some error names both the offending location and the keyword
+/// the test is about.
+///
+/// Admission fails closed and turns every diagnostic - including
+/// `NotProvable` - into an error string, so a bare "the vector is not empty"
+/// passes on any undecidable result and proves nothing about the rule under
+/// test.
+#[track_caller]
+fn assert_reports(errors: &[String], path: &str, keyword: &str) {
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains(path) && error.contains(keyword)),
+        "expected an error naming '{path}' and '{keyword}': {errors:?}"
+    );
+}
+
 // -- effective schema --------------------------------------------------
 
 /// Closedness must survive `allOf` composition: a permissive overlay may
@@ -135,6 +152,50 @@ fn test_compatible_tightening() {
     assert!(errs.is_empty(), "tightening should be ok: {errs:?}");
 }
 
+/// GTS pins no draft (spec sec 11), so a derivation may declare a newer dialect
+/// than the base it tightens - the dialect difference alone is not an admission
+/// failure.
+#[test]
+fn test_newer_dialect_alone_is_admitted() {
+    let base = json!({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {"v": {"type": "string", "maxLength": 100}}
+    });
+    let derived = json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {"v": {"type": "string", "maxLength": 50}}
+    });
+    let errs = validate_derivation_compatibility(&base, &derived, "base~", "derived~");
+    assert!(
+        errs.is_empty(),
+        "a newer dialect is not a failure: {errs:?}"
+    );
+}
+
+/// The exemption is scoped to the dialect diagnostic: a real violation
+/// alongside a dialect change is still reported.
+#[test]
+fn test_newer_dialect_does_not_excuse_loosening() {
+    let base = json!({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {"v": {"type": "string", "maxLength": 100}}
+    });
+    let derived = json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {"v": {"type": "string", "maxLength": 200}}
+    });
+    let errs = validate_derivation_compatibility(&base, &derived, "base~", "derived~");
+    assert_reports(&errs, "$.v", "maxLength");
+    assert!(
+        !errs.iter().any(|e| e.contains("dialect")),
+        "the dialect change itself must stay exempt: {errs:?}"
+    );
+}
+
 #[test]
 fn test_incompatible_loosening_max_length() {
     let base = json!({
@@ -150,7 +211,7 @@ fn test_incompatible_loosening_max_length() {
         }
     });
     let errs = validate_derivation_compatibility(&base, &derived, "base~", "derived~");
-    assert!(!errs.is_empty());
+    assert_reports(&errs, "$.v", "maxLength");
 }
 
 #[test]
@@ -168,7 +229,7 @@ fn test_incompatible_loosening_maximum() {
         }
     });
     let errs = validate_derivation_compatibility(&base, &derived, "b", "d");
-    assert!(!errs.is_empty());
+    assert_reports(&errs, "$.n", "maximum");
 }
 
 #[test]
@@ -186,7 +247,7 @@ fn test_incompatible_loosening_minimum() {
         }
     });
     let errs = validate_derivation_compatibility(&base, &derived, "b", "d");
-    assert!(!errs.is_empty());
+    assert_reports(&errs, "$.n", "minimum");
 }
 
 #[test]
@@ -204,7 +265,7 @@ fn test_enum_expansion_fails() {
         }
     });
     let errs = validate_derivation_compatibility(&base, &derived, "b", "d");
-    assert!(!errs.is_empty());
+    assert_reports(&errs, "$.s", "enum");
 }
 
 #[test]
@@ -240,7 +301,7 @@ fn test_additional_properties_false_blocks_new_prop() {
         }
     });
     let errs = validate_derivation_compatibility(&base, &derived, "b", "d");
-    assert!(!errs.is_empty());
+    assert_reports(&errs, "'b'", "closed");
 }
 
 #[test]
@@ -375,11 +436,12 @@ fn test_open_base_allows_new_prop() {
     assert!(errs.is_empty(), "{errs:?}");
 }
 
+/// The base declares no `required`, so switching the property off is the only
+/// thing the derivation changes and the only thing that may be reported.
 #[test]
 fn test_property_disabled_fails() {
     let base = json!({
         "type": "object",
-        "required": ["x"],
         "properties": {"x": {"type": "string"}}
     });
     let derived = json!({
@@ -387,7 +449,11 @@ fn test_property_disabled_fails() {
         "properties": {"x": false}
     });
     let errs = validate_derivation_compatibility(&base, &derived, "b", "d");
-    assert!(!errs.is_empty());
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("disables property defined in") && e.contains("'x'")),
+        "{errs:?}"
+    );
 }
 
 #[test]
@@ -415,7 +481,7 @@ fn test_nested_object_loosening_caught() {
         }
     });
     let errs = validate_derivation_compatibility(&base, &derived, "b", "d");
-    assert!(!errs.is_empty());
+    assert_reports(&errs, "$.inner.v", "maximum");
 }
 
 #[test]
@@ -435,10 +501,7 @@ fn test_boolean_true_schema_loosens_constrained_property() {
         }
     });
     let errs = validate_derivation_compatibility(&base, &derived, "b", "d");
-    assert!(
-        !errs.is_empty(),
-        "Boolean true schema should be flagged as loosening: {errs:?}"
-    );
+    assert_reports(&errs, "$.age", "boolean schema");
 }
 
 #[test]
@@ -457,10 +520,7 @@ fn test_boolean_true_schema_loosens_typed_property() {
         }
     });
     let errs = validate_derivation_compatibility(&base, &derived, "b", "d");
-    assert!(
-        !errs.is_empty(),
-        "Boolean true schema replaces typed property - should flag"
-    );
+    assert_reports(&errs, "$.name", "boolean schema");
 }
 
 #[test]
@@ -547,10 +607,7 @@ fn test_omitting_bounds_without_enum_or_const_still_fails() {
         }
     });
     let errs = validate_derivation_compatibility(&base, &derived, "b", "d");
-    assert!(
-        !errs.is_empty(),
-        "Omitting maxLength without enum/const should still fail"
-    );
+    assert_reports(&errs, "$.code", "maxLength");
 }
 
 #[test]
@@ -578,7 +635,7 @@ fn test_derived_const_must_be_in_base_enum() {
         }
     });
     let errs = validate_derivation_compatibility(&base, &derived_bad, "b", "d");
-    assert!(!errs.is_empty(), "const NOT in base enum should fail");
+    assert_reports(&errs, "$.status", "enum");
 }
 
 #[test]
@@ -597,15 +654,7 @@ fn test_const_violates_minimum() {
         }
     });
     let errs = validate_derivation_compatibility(&base, &derived, "base~", "derived~");
-    assert!(
-        !errs.is_empty(),
-        "const 32 < minimum 42 should fail: {errs:?}"
-    );
-    assert!(
-        errs.iter()
-            .any(|e| e.contains("$.score") && e.contains("minimum")),
-        "error should name the offending property and constraint: {errs:?}"
-    );
+    assert_reports(&errs, "$.score", "minimum");
 }
 
 #[test]
@@ -646,10 +695,7 @@ fn test_enum_value_violates_maximum() {
         }
     });
     let errs = validate_derivation_compatibility(&base, &derived, "base~", "derived~");
-    assert!(
-        !errs.is_empty(),
-        "enum value 200 > maximum 100 should fail: {errs:?}"
-    );
+    assert_reports(&errs, "$.score", "maximum");
 }
 
 #[test]
@@ -690,8 +736,46 @@ fn test_const_string_violates_max_length() {
         }
     });
     let errs = validate_derivation_compatibility(&base, &derived, "base~", "derived~");
+    assert_reports(&errs, "$.code", "maxLength");
+}
+
+/// Admission must fail closed on a document nested past the shared bound.
+///
+/// `declared_schema` returns such a schema unreduced and `flatten_schema`
+/// stops merging its deepest branches, so the disabled-property rule alone
+/// could miss a violation down there. It never gets the chance: the bounded
+/// walks report the nesting first and every diagnostic becomes an error, so a
+/// derivation this deep is refused rather than admitted unchecked.
+#[test]
+fn test_derivation_nested_beyond_the_bound_is_refused() {
+    let nested_all_of = |leaf: Value| {
+        let mut schema = leaf;
+        for _ in 0..70 {
+            schema = json!({"allOf": [schema]});
+        }
+        schema
+    };
+    let base = nested_all_of(json!({"type": "object", "properties": {"x": {"type": "string"}}}));
+    // Disables a base property - the violation the shallow case reports by name.
+    let derived = nested_all_of(json!({"type": "object", "properties": {"x": false}}));
+
+    let errs = validate_derivation_compatibility(&base, &derived, "b", "d");
     assert!(
-        !errs.is_empty(),
-        "const 'toolong' exceeds maxLength 5: {errs:?}"
+        errs.iter().any(|error| error.contains("nesting depth")),
+        "the bound must be reported, not silently applied: {errs:?}"
+    );
+
+    // The same violation without the nesting is still named precisely, so the
+    // test above is about the bound and not about a broken rule.
+    let errs = validate_derivation_compatibility(
+        &json!({"type": "object", "properties": {"x": {"type": "string"}}}),
+        &json!({"type": "object", "properties": {"x": false}}),
+        "b",
+        "d",
+    );
+    assert!(
+        errs.iter()
+            .any(|error| error.contains("disables property defined in") && error.contains("'x'")),
+        "{errs:?}"
     );
 }

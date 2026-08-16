@@ -10,6 +10,7 @@ use crate::schema_evolution::{
     CompatibilityDiagnostic, CompatibilityVerdict, ObjectLevel, check_backward_diagnostics,
     check_forward_diagnostics, classify_object_levels,
 };
+use crate::schema_resolver::SchemaProvider;
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -53,13 +54,8 @@ pub struct GtsStoreQueryResult {
 /// is a policy decision for the caller, and gts-spec §6 leaves the enforced mode
 /// to the implementation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[must_use = "the compatibility verdict must be inspected"]
 pub struct SchemaComparison {
-    /// `Valid(old) ⊆ Valid(new)`: the new definition accepts every instance the
-    /// old one accepted.
-    pub backward_compatibility: CompatibilityVerdict,
-    /// `Valid(new) ⊆ Valid(old)`: the old definition accepts every instance the
-    /// new one accepts.
-    pub forward_compatibility: CompatibilityVerdict,
     /// Evidence for an incompatible or unknown backward verdict, with the
     /// offending schema location on each entry.
     pub backward_diagnostics: Vec<CompatibilityDiagnostic>,
@@ -78,21 +74,36 @@ pub struct SchemaComparison {
 }
 
 impl SchemaComparison {
+    /// `Valid(old) ⊆ Valid(new)`: the new definition accepts every instance the
+    /// old one accepted.
+    ///
+    /// Recomputed from [`Self::backward_diagnostics`] rather than stored beside
+    /// them. A verdict is entirely a reading of its evidence, so keeping a copy
+    /// would let a value exist - most easily one that was deserialized - that
+    /// reports `Compatible` next to a non-empty diagnostic list.
+    #[must_use]
+    pub fn backward_compatibility(&self) -> CompatibilityVerdict {
+        CompatibilityVerdict::from_diagnostics(&self.backward_diagnostics)
+    }
+
+    /// `Valid(new) ⊆ Valid(old)`: the old definition accepts every instance the
+    /// new one accepts. Recomputed like [`Self::backward_compatibility`].
+    #[must_use]
+    pub fn forward_compatibility(&self) -> CompatibilityVerdict {
+        CompatibilityVerdict::from_diagnostics(&self.forward_diagnostics)
+    }
+
     /// `Valid(old) = Valid(new)`: both directions hold.
     #[must_use]
-    pub const fn full_compatibility(&self) -> CompatibilityVerdict {
-        CompatibilityVerdict::full(self.backward_compatibility, self.forward_compatibility)
+    pub fn full_compatibility(&self) -> CompatibilityVerdict {
+        CompatibilityVerdict::full(self.backward_compatibility(), self.forward_compatibility())
     }
 
     /// Compares two documents whose references are already resolved.
     fn of_resolved(old_schema: &Value, new_schema: &Value) -> Self {
-        let (backward_compatibility, backward_diagnostics) =
-            check_backward_diagnostics(old_schema, new_schema);
-        let (forward_compatibility, forward_diagnostics) =
-            check_forward_diagnostics(old_schema, new_schema);
+        let (_, backward_diagnostics) = check_backward_diagnostics(old_schema, new_schema);
+        let (_, forward_diagnostics) = check_forward_diagnostics(old_schema, new_schema);
         Self {
-            backward_compatibility,
-            forward_compatibility,
             backward_diagnostics,
             forward_diagnostics,
             candidate_object_levels: classify_object_levels(new_schema),
@@ -852,16 +863,21 @@ impl GtsStore {
             .map_err(|e| StoreError::SchemaNotFound(e.to_string()))
     }
 
-    /// Fetches one side of a compatibility comparison, rendering the failure as
-    /// the message the result carries.
+    /// Admits one side of a compatibility comparison and warms the reader
+    /// cache, rendering the failure as the message the result carries.
+    ///
+    /// Returns nothing on success on purpose: the entity is read back through a
+    /// shared borrow afterwards, so both documents can be reached at once
+    /// without cloning either. The `&mut self` here is only what the lazy
+    /// reader fallback in [`Self::get`] needs.
     ///
     /// A missing schema keeps the historical `"Schema not found"` wording, which
     /// clients match on; every other cause - a malformed type id, an id naming a
     /// registered non-schema entity - reports itself, so the caller can tell an
     /// unregistered type from a request it should not have made at all.
-    fn compared_schema_entity(&mut self, type_id: &str) -> Result<GtsEntity, String> {
+    fn admit_compared_schema(&mut self, type_id: &str) -> Result<(), String> {
         self.get_schema_entity(type_id)
-            .cloned()
+            .map(|_| ())
             .map_err(|error| match error {
                 StoreError::SchemaNotFound(_) => "Schema not found".to_owned(),
                 error => error.to_string(),
@@ -869,19 +885,14 @@ impl GtsStore {
     }
 
     /// Checks GTS schema-evolution compatibility using accepted-instance set inclusion.
+    #[must_use = "the compatibility verdict and its diagnostics are the result of the check"]
     pub fn is_compatible(&mut self, old_type_id: &str, new_type_id: &str) -> GtsEntityCastResult {
-        let entities = self
-            .compared_schema_entity(old_type_id)
-            .and_then(|old_ent| {
-                self.compared_schema_entity(new_type_id)
-                    .map(|new_ent| (old_ent, new_ent))
-            });
-        let (old_ent, new_ent) = match entities {
-            Ok(entities) => entities,
-            Err(message) => {
-                return GtsEntityCastResult::undecided(old_type_id, new_type_id, message);
-            }
-        };
+        if let Err(message) = self
+            .admit_compared_schema(old_type_id)
+            .and_then(|()| self.admit_compared_schema(new_type_id))
+        {
+            return GtsEntityCastResult::undecided(old_type_id, new_type_id, message);
+        }
 
         let resolution_failure = |message: String| {
             GtsEntityCastResult::undecided_with_direction(
@@ -891,7 +902,21 @@ impl GtsStore {
                 message,
             )
         };
-        let old_schema = match self.resolve_schema_refs(&old_ent.content) {
+        // Both ids named a registered schema above and are now cached, so a
+        // shared borrow reaches each document in place. `resolve_schema_refs`
+        // also takes `&self` and returns a fresh owned document, so neither
+        // side needs a clone of the registered entity.
+        let (Some(old_content), Some(new_content)) = (
+            self.schema_content(old_type_id),
+            self.schema_content(new_type_id),
+        ) else {
+            return GtsEntityCastResult::undecided(
+                old_type_id,
+                new_type_id,
+                "Schema not found".to_owned(),
+            );
+        };
+        let old_schema = match self.resolve_schema_refs(old_content) {
             Ok(schema) => schema,
             Err(error) => {
                 return resolution_failure(format!(
@@ -899,7 +924,7 @@ impl GtsStore {
                 ));
             }
         };
-        let new_schema = match self.resolve_schema_refs(&new_ent.content) {
+        let new_schema = match self.resolve_schema_refs(new_content) {
             Ok(schema) => schema,
             Err(error) => {
                 return resolution_failure(format!(
@@ -909,8 +934,8 @@ impl GtsStore {
         };
 
         let comparison = SchemaComparison::of_resolved(&old_schema, &new_schema);
-        let backward_compatibility = comparison.backward_compatibility;
-        let forward_compatibility = comparison.forward_compatibility;
+        let backward_compatibility = comparison.backward_compatibility();
+        let forward_compatibility = comparison.forward_compatibility();
         let full_compatibility = comparison.full_compatibility();
         let backward_errors = comparison.backward_messages();
         let forward_errors = comparison.forward_messages();
@@ -942,8 +967,9 @@ impl GtsStore {
             incompatibility_reasons,
             backward_errors,
             forward_errors,
-            specification_version: crate::GTS_SPECIFICATION_VERSION.to_owned(),
-            implementation_version: crate::GTS_IMPLEMENTATION_VERSION.to_owned(),
+            // Produced here, so this build's versions are the provenance.
+            specification_version: Some(crate::GTS_SPECIFICATION_VERSION.to_owned()),
+            implementation_version: Some(crate::GTS_IMPLEMENTATION_VERSION.to_owned()),
             casted_entity: None,
             error: None,
         }
@@ -988,6 +1014,7 @@ impl GtsStore {
     ///
     /// Compatibility is no longer defined specifically in terms of a minor
     /// version change; callers should prefer [`Self::is_compatible`].
+    #[must_use = "the compatibility verdict and its diagnostics are the result of the check"]
     pub fn is_minor_compatible(
         &mut self,
         old_type_id: &str,

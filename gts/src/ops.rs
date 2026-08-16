@@ -43,15 +43,16 @@ pub struct GtsIdSegmentInfo {
 
 impl From<&crate::gts::GtsIdSegment> for GtsIdSegmentInfo {
     fn from(seg: &crate::gts::GtsIdSegment) -> Self {
-        // A concrete segment always carries a real major version (including a
-        // legitimate `v0`), so `ver_major` is never the wildcard "unspecified"
-        // sentinel here.
+        // A *named* concrete segment always carries a real major version,
+        // including a legitimate `v0`. A UUID-tail segment carries none at all,
+        // and reporting that as `v0` would be the same conflation the pattern
+        // matcher had to stop making, so the absence is passed through.
         Self {
             vendor: seg.vendor().to_owned(),
             package: seg.package().to_owned(),
             namespace: seg.namespace().to_owned(),
             type_name: seg.type_name().to_owned(),
-            ver_major: Some(seg.ver_major()),
+            ver_major: seg.ver_major_opt(),
             ver_minor: seg.ver_minor(),
             is_type: seg.is_type(),
         }
@@ -822,6 +823,22 @@ mod tests {
         let result = GtsOps::parse_id("invalid");
         assert!(result.segments.is_empty());
         assert!(!result.error.is_empty());
+    }
+
+    /// A UUID-tail segment carries no version at all, so it must report
+    /// absence rather than a `v0` it never declared - the same conflation
+    /// `GtsIdPattern::matches_views` had to stop making.
+    #[test]
+    fn test_parse_id_uuid_tail_has_no_major_version() {
+        let result =
+            GtsOps::parse_id("gts.x.core.events.event.v1~7a1d2f34-5678-49ab-9012-abcdef123456");
+        assert!(result.ok, "{:?}", result.error);
+        assert_eq!(result.segments.len(), 2);
+        assert_eq!(result.segments[0].ver_major, Some(1));
+        assert_eq!(
+            result.segments[1].ver_major, None,
+            "a UUID tail must not claim v0"
+        );
     }
 
     #[test]
@@ -1813,8 +1830,8 @@ mod tests {
             incompatibility_reasons: vec![],
             backward_errors: vec![],
             forward_errors: vec![],
-            specification_version: crate::GTS_SPECIFICATION_VERSION.to_owned(),
-            implementation_version: crate::GTS_IMPLEMENTATION_VERSION.to_owned(),
+            specification_version: Some(crate::GTS_SPECIFICATION_VERSION.to_owned()),
+            implementation_version: Some(crate::GTS_IMPLEMENTATION_VERSION.to_owned()),
             casted_entity: Some(json!({"name": "test"})),
             error: None,
         };

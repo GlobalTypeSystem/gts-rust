@@ -6039,12 +6039,27 @@ fn test_compare_documents_resolves_and_reports_levels() {
     // Adding an optional property at a closed level is backward compatible and
     // not forward compatible (sec 4.5).
     assert!(
-        comparison.backward_compatibility.is_compatible(),
+        comparison.backward_compatibility().is_compatible(),
         "{:?}",
         comparison.backward_diagnostics
     );
-    assert!(comparison.forward_compatibility.is_incompatible());
+    assert!(comparison.forward_compatibility().is_incompatible());
     assert!(comparison.full_compatibility().is_incompatible());
+
+    // Both directions report separately: the added property is invisible to the
+    // backward check and is the whole of the forward one.
+    assert!(
+        comparison.backward_diagnostics.is_empty(),
+        "{:?}",
+        comparison.backward_diagnostics
+    );
+    let forward = comparison
+        .forward_diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.path == "$.payload")
+        .expect("the forward diagnostic must name the level that gained the property");
+    assert_eq!(forward.finding, crate::CompatibilityFinding::PropertyAdded);
+    assert!(forward.to_string().contains("'b'"), "{forward}");
 
     // The root is closed only through the resolved `$ref` to the envelope.
     let levels: std::collections::HashMap<&str, crate::ContentModel> = comparison
@@ -6083,7 +6098,7 @@ fn test_compare_documents_names_the_open_level() {
         .compare_documents(&revision(false), &revision(true))
         .expect("documents without references resolve trivially");
 
-    assert!(comparison.backward_compatibility.is_incompatible());
+    assert!(comparison.backward_compatibility().is_incompatible());
     let diagnostic = comparison
         .backward_diagnostics
         .iter()
@@ -6312,5 +6327,54 @@ fn test_validate_instance_reports_unresolvable_ref() {
     assert!(
         err.to_string()
             .contains("Unresolved $ref(s): gts://gts.vendor.package.namespace.nonexistent.v1.0~")
+    );
+}
+
+/// A `SchemaComparison` read back from a payload cannot report a verdict its
+/// diagnostics contradict, because there is no verdict field to contradict
+/// through - both directions are derived on read.
+#[test]
+fn test_comparison_verdicts_are_derived_from_diagnostics() {
+    let comparison: SchemaComparison = serde_json::from_value(json!({
+        "backward_diagnostics": [],
+        "forward_diagnostics": [
+            {"path": "$.payload", "finding": "property_added", "detail": "declares property 'b'"}
+        ],
+        "candidate_object_levels": []
+    }))
+    .expect("a comparison is fully described by its evidence");
+
+    assert!(comparison.backward_compatibility().is_compatible());
+    assert!(comparison.forward_compatibility().is_incompatible());
+    assert!(comparison.full_compatibility().is_incompatible());
+
+    // An inconclusive finding leaves the relation undecided rather than broken.
+    let unproven: SchemaComparison = serde_json::from_value(json!({
+        "backward_diagnostics": [
+            {"path": "$", "finding": "not_provable", "detail": "cannot prove"}
+        ],
+        "forward_diagnostics": [],
+        "candidate_object_levels": []
+    }))
+    .expect("test");
+    assert!(unproven.backward_compatibility().is_unknown());
+    assert!(unproven.full_compatibility().is_unknown());
+
+    // The verdict is absent from the serialized form, so nothing can carry a
+    // stale copy of it forward.
+    let json = serde_json::to_value(&comparison).expect("test");
+    let keys: Vec<&str> = json
+        .as_object()
+        .expect("test")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            "backward_diagnostics",
+            "candidate_object_levels",
+            "forward_diagnostics"
+        ]
     );
 }

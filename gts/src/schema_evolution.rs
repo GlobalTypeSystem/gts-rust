@@ -15,7 +15,19 @@ use crate::schema_semantics::boolean_schema_value;
 use num_cmp::NumCmp;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::borrow::Cow;
+use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashSet};
+
+/// Nesting depth at which every walk in this crate stops descending.
+///
+/// A single posted document cannot nest deeply enough to matter, but
+/// `$ref` resolution inlines other registered documents before any of these
+/// walks run, so the resolved tree can be far deeper than anything authored.
+/// Stopping is always reported - as `NotProvable` by the comparison walk and as
+/// an unproven location by the flattener - so a truncated walk never reads as a
+/// proof.
+pub(crate) const MAX_RECURSION_DEPTH: usize = 64;
 
 /// Result of attempting to establish one schema-compatibility relation.
 ///
@@ -57,16 +69,24 @@ impl CompatibilityVerdict {
     }
 
     /// Derives full compatibility from the two directional verdicts.
+    ///
+    /// Every pair is spelled out: a verdict added later must fail to compile
+    /// here rather than default to `Unknown`, which is a claim about the
+    /// relation and not the absence of one.
     #[must_use]
     pub const fn full(backward: Self, forward: Self) -> Self {
         match (backward, forward) {
             (Self::Compatible, Self::Compatible) => Self::Compatible,
-            (Self::Incompatible, _) | (_, Self::Incompatible) => Self::Incompatible,
-            _ => Self::Unknown,
+            (Self::Incompatible, Self::Compatible | Self::Incompatible | Self::Unknown)
+            | (Self::Compatible | Self::Unknown, Self::Incompatible) => Self::Incompatible,
+            (Self::Compatible | Self::Unknown, Self::Unknown)
+            | (Self::Unknown, Self::Compatible) => Self::Unknown,
         }
     }
 
-    fn from_diagnostics(diagnostics: &[CompatibilityDiagnostic]) -> Self {
+    /// Reads a verdict off its evidence: no diagnostics is a proof, only
+    /// inconclusive ones leave the relation undecided, anything else breaks it.
+    pub(crate) fn from_diagnostics(diagnostics: &[CompatibilityDiagnostic]) -> Self {
         if diagnostics.is_empty() {
             Self::Compatible
         } else if diagnostics
@@ -233,6 +253,28 @@ struct DialectSupport {
     new_unevaluated: bool,
 }
 
+/// What stays fixed for one directional comparison, plus how deep it has gone.
+#[derive(Debug, Clone, Copy)]
+struct Walk {
+    /// Backward checks `Valid(old) ⊆ Valid(new)`, forward the reverse inclusion.
+    check_backward: bool,
+    dialects: DialectSupport,
+    depth: usize,
+}
+
+impl Walk {
+    fn deeper(self) -> Self {
+        Self {
+            depth: self.depth + 1,
+            ..self
+        }
+    }
+
+    const fn exhausted(self) -> bool {
+        self.depth >= MAX_RECURSION_DEPTH
+    }
+}
+
 /// Narrows `unproven` to the locations inside `child`, rebased so that the
 /// empty string denotes `child` itself.
 fn unproven_below(unproven: &UnprovenPaths, child: &str) -> UnprovenPaths {
@@ -249,6 +291,28 @@ fn merge_schema_map(
     candidate: &Map<String, Value>,
     path: &str,
     unproven: &mut UnprovenPaths,
+    depth: usize,
+) {
+    for (keyword, candidate_value) in candidate {
+        merge_keyword(target, keyword, candidate_value, path, unproven, depth);
+    }
+}
+
+/// Intersects one keyword of a candidate branch into the accumulated level.
+///
+/// Separate from [`merge_schema_map`] because [`flatten_effective`] merges a
+/// level's own keywords while skipping its `allOf` - which it has already
+/// folded in - and a filtered copy of that map to hide one key would deep-copy
+/// the whole level. Nested `allOf` reached through a property is *not* skipped:
+/// it belongs to a subschema this pass does not flatten, and dropping it would
+/// silently weaken the level.
+fn merge_keyword(
+    target: &mut Map<String, Value>,
+    keyword: &str,
+    candidate_value: &Value,
+    path: &str,
+    unproven: &mut UnprovenPaths,
+    depth: usize,
 ) {
     const ANNOTATIONS: &[&str] = &[
         "$id",
@@ -284,99 +348,142 @@ fn merge_schema_map(
         "maxContains",
     ];
 
-    for (keyword, candidate_value) in candidate {
-        if ANNOTATIONS.contains(&keyword.as_str()) {
-            target.insert(keyword.clone(), candidate_value.clone());
-            continue;
-        }
-        let Some(current) = target.get_mut(keyword) else {
-            target.insert(keyword.clone(), candidate_value.clone());
-            continue;
-        };
-        if current == candidate_value {
-            continue;
-        }
+    if ANNOTATIONS.contains(&keyword) {
+        target.insert(keyword.to_owned(), candidate_value.clone());
+        return;
+    }
+    let Some(current) = target.get_mut(keyword) else {
+        target.insert(keyword.to_owned(), candidate_value.clone());
+        return;
+    };
+    if current == candidate_value {
+        return;
+    }
 
-        match keyword.as_str() {
-            "properties" | "patternProperties" => {
-                // The checker descends into named properties, so an unprovable
-                // property intersection stays local to that property. Pattern
-                // properties are compared as a node-level constraint instead.
-                let named = keyword == "properties";
-                if let (Some(current_map), Some(candidate_map)) =
-                    (current.as_object_mut(), candidate_value.as_object())
-                {
-                    for (name, candidate_schema) in candidate_map {
-                        if let Some(current_schema) = current_map.get_mut(name) {
-                            let property_path = if named {
-                                format!("{path}.{name}")
-                            } else {
-                                path.to_owned()
-                            };
-                            merge_schema_intersection(
-                                current_schema,
-                                candidate_schema,
-                                &property_path,
-                                unproven,
-                            );
+    match keyword {
+        "properties" | "patternProperties" => {
+            // The checker descends into named properties, so an unprovable
+            // property intersection stays local to that property. Pattern
+            // properties are compared as a node-level constraint instead.
+            let named = keyword == "properties";
+            if let (Some(current_map), Some(candidate_map)) =
+                (current.as_object_mut(), candidate_value.as_object())
+            {
+                for (name, candidate_schema) in candidate_map {
+                    if let Some(current_schema) = current_map.get_mut(name) {
+                        let property_path = if named {
+                            format!("{path}.{name}")
                         } else {
-                            current_map.insert(name.clone(), candidate_schema.clone());
-                        }
-                    }
-                } else {
-                    unproven.insert(path.to_owned());
-                }
-            }
-            "required" => {
-                if let (Some(current_items), Some(candidate_items)) =
-                    (current.as_array_mut(), candidate_value.as_array())
-                {
-                    for item in candidate_items {
-                        if !current_items.contains(item) {
-                            current_items.push(item.clone());
-                        }
+                            path.to_owned()
+                        };
+                        merge_schema_intersection(
+                            current_schema,
+                            candidate_schema,
+                            &property_path,
+                            unproven,
+                            depth + 1,
+                        );
+                    } else {
+                        current_map.insert(name.clone(), candidate_schema.clone());
                     }
                 }
-            }
-            "items" => {
-                merge_schema_intersection(current, candidate_value, &format!("{path}[]"), unproven);
-            }
-            "additionalProperties" | "unevaluatedProperties" | "propertyNames" | "contains" => {
-                merge_schema_intersection(current, candidate_value, path, unproven);
-            }
-            "enum" => {
-                if let (Some(current_values), Some(candidate_values)) =
-                    (current.as_array_mut(), candidate_value.as_array())
-                {
-                    current_values.retain(|value| candidate_values.contains(value));
-                    if current_values.is_empty() {
-                        unproven.insert(path.to_owned());
-                    }
-                }
-            }
-            keyword if MINIMUMS.contains(&keyword) => {
-                if candidate_value.as_f64() > current.as_f64() {
-                    *current = candidate_value.clone();
-                }
-            }
-            keyword if MAXIMUMS.contains(&keyword) => {
-                if candidate_value.as_f64() < current.as_f64() {
-                    *current = candidate_value.clone();
-                }
-            }
-            "type" => {
-                if current.as_str() == Some("number") && candidate_value.as_str() == Some("integer")
-                {
-                    *current = candidate_value.clone();
-                } else if !(current.as_str() == Some("integer")
-                    && candidate_value.as_str() == Some("number"))
-                {
-                    unproven.insert(path.to_owned());
-                }
-            }
-            _ => {
+            } else {
                 unproven.insert(path.to_owned());
             }
+        }
+        // `required` and `enum` are arrays in every dialect. A value that is
+        // not one carries a constraint this merge cannot represent, and
+        // keeping the accumulated side would claim an intersection nobody
+        // proved.
+        "required" => {
+            if let (Some(current_items), Some(candidate_items)) =
+                (current.as_array_mut(), candidate_value.as_array())
+            {
+                for item in candidate_items {
+                    if !current_items.contains(item) {
+                        current_items.push(item.clone());
+                    }
+                }
+            } else {
+                unproven.insert(path.to_owned());
+            }
+        }
+        "items" => {
+            merge_schema_intersection(
+                current,
+                candidate_value,
+                &format!("{path}[]"),
+                unproven,
+                depth + 1,
+            );
+        }
+        "additionalProperties" | "unevaluatedProperties" | "propertyNames" | "contains" => {
+            merge_schema_intersection(current, candidate_value, path, unproven, depth + 1);
+        }
+        "enum" => {
+            if let (Some(current_values), Some(candidate_values)) =
+                (current.as_array_mut(), candidate_value.as_array())
+            {
+                current_values.retain(|value| candidate_values.contains(value));
+                if current_values.is_empty() {
+                    unproven.insert(path.to_owned());
+                }
+            } else {
+                unproven.insert(path.to_owned());
+            }
+        }
+        // A bound is only ordered when both sides are numbers. Draft-04
+        // spells `exclusiveMinimum`/`exclusiveMaximum` as booleans that
+        // modify their sibling bound, and `Option<f64>` ordering would read
+        // that absent number as the weaker bound and drop the modifier.
+        keyword if MINIMUMS.contains(&keyword) => {
+            merge_numeric_bound(current, candidate_value, path, unproven, Ordering::Greater);
+        }
+        keyword if MAXIMUMS.contains(&keyword) => {
+            merge_numeric_bound(current, candidate_value, path, unproven, Ordering::Less);
+        }
+        "type" => {
+            if current.as_str() == Some("number") && candidate_value.as_str() == Some("integer") {
+                *current = candidate_value.clone();
+            } else if !(current.as_str() == Some("integer")
+                && candidate_value.as_str() == Some("number"))
+            {
+                unproven.insert(path.to_owned());
+            }
+        }
+        _ => {
+            unproven.insert(path.to_owned());
+        }
+    }
+}
+
+/// Keeps the tighter of two numeric bounds, or marks the location unprovable
+/// when either side is not a number or the pair cannot be ordered.
+///
+/// `tighter` is the ordering of candidate against held that means "adopt the
+/// candidate": [`Ordering::Greater`] for a minimum, [`Ordering::Less`] for a
+/// maximum.
+fn merge_numeric_bound(
+    current: &mut Value,
+    candidate: &Value,
+    path: &str,
+    unproven: &mut UnprovenPaths,
+    tighter: Ordering,
+) {
+    let ordering = match (current.as_number(), candidate.as_number()) {
+        (Some(held), Some(offered)) => json_numbers_cmp(offered, held),
+        _ => None,
+    };
+    match ordering {
+        Some(ordering) => {
+            if ordering == tighter {
+                *current = candidate.clone();
+            }
+        }
+        // Either side is not a number, or the pair has no exact order. Keeping
+        // the accumulated bound would claim an intersection nobody proved.
+        None => {
+            unproven.insert(path.to_owned());
         }
     }
 }
@@ -386,13 +493,21 @@ fn merge_schema_intersection(
     candidate: &Value,
     path: &str,
     unproven: &mut UnprovenPaths,
+    depth: usize,
 ) {
+    if depth >= MAX_RECURSION_DEPTH {
+        // Stop rather than merge deeper: the accumulated node keeps whatever it
+        // already holds, so the location must not be read as a proven
+        // intersection.
+        unproven.insert(path.to_owned());
+        return;
+    }
     match (&mut *target, candidate) {
         (Value::Bool(false), _) | (_, Value::Bool(true)) => {}
         (Value::Bool(true), value) => *target = value.clone(),
         (_, Value::Bool(false)) => *target = Value::Bool(false),
         (Value::Object(target_map), Value::Object(candidate_map)) => {
-            merge_schema_map(target_map, candidate_map, path, unproven);
+            merge_schema_map(target_map, candidate_map, path, unproven, depth);
         }
         _ => {
             // Two branches that are not both object schemas have no
@@ -405,7 +520,7 @@ fn merge_schema_intersection(
 }
 #[must_use]
 pub fn flatten_schema(schema: &Value) -> Value {
-    flatten_effective(schema).0
+    flatten_effective(schema, 0).0
 }
 
 /// Flattens `allOf` and reports where the intersection could not be proven.
@@ -413,27 +528,35 @@ pub fn flatten_schema(schema: &Value) -> Value {
 /// The flattened schema is always a usable approximation; the returned
 /// [`UnprovenPaths`] tell a compatibility checker which locations it must
 /// not draw conclusions about.
-fn flatten_effective(schema: &Value) -> (Value, UnprovenPaths) {
+fn flatten_effective(schema: &Value, depth: usize) -> (Value, UnprovenPaths) {
     let mut unproven = UnprovenPaths::new();
     let Some(schema_map) = schema.as_object() else {
         return (schema.clone(), unproven);
     };
-    let mut result = Value::Bool(true);
+    if depth >= MAX_RECURSION_DEPTH {
+        unproven.insert(String::new());
+        return (schema.clone(), unproven);
+    }
+    // An empty object is the same schema as `true` and starting from it saves
+    // copying this level's own keywords through the boolean arm below.
+    let mut result = Value::Object(Map::new());
     if let Some(all_of) = schema_map.get("allOf").and_then(Value::as_array) {
         for branch in all_of {
-            let (flattened_branch, branch_unproven) = flatten_effective(branch);
+            let (flattened_branch, branch_unproven) = flatten_effective(branch, depth + 1);
             unproven.extend(branch_unproven);
-            merge_schema_intersection(&mut result, &flattened_branch, "", &mut unproven);
+            merge_schema_intersection(&mut result, &flattened_branch, "", &mut unproven, depth);
         }
     }
-    let direct = Value::Object(
-        schema_map
-            .iter()
-            .filter(|(keyword, _)| keyword.as_str() != "allOf")
-            .map(|(keyword, value)| (keyword.clone(), value.clone()))
-            .collect(),
-    );
-    merge_schema_intersection(&mut result, &direct, "", &mut unproven);
+    if let Value::Object(result_map) = &mut result {
+        for (keyword, value) in schema_map {
+            // Already folded above; the remaining keywords are this level's own
+            // declaration.
+            if keyword == "allOf" {
+                continue;
+            }
+            merge_keyword(result_map, keyword, value, "", &mut unproven, depth);
+        }
+    }
     (result, unproven)
 }
 
@@ -835,7 +958,7 @@ fn check_type_compatibility(
                 let values = accepted_value_set(schema);
                 values.map_or(TypeSet::Any, |values| {
                     let mut names = Vec::new();
-                    for value in &values {
+                    for value in values {
                         let name = value_type(value).to_owned();
                         if !names.contains(&name) {
                             names.push(name);
@@ -890,19 +1013,18 @@ fn check_type_compatibility(
 ///
 /// An instance must satisfy every keyword present, so two coexisting
 /// keywords accept their intersection - possibly nothing at all.
-fn accepted_value_set(schema: &Map<String, Value>) -> Option<Vec<Value>> {
+fn accepted_value_set(schema: &Map<String, Value>) -> Option<Vec<&Value>> {
     // A non-array `enum` is not a valid constraint and nothing can be read
     // from it, which is what `as_array` returning `None` expresses here.
     let enumeration = schema.get("enum").and_then(Value::as_array);
     match (schema.get("const"), enumeration) {
         (None, None) => None,
-        (Some(constant), None) => Some(vec![constant.clone()]),
-        (None, Some(values)) => Some(values.clone()),
+        (Some(constant), None) => Some(vec![constant]),
+        (None, Some(values)) => Some(values.iter().collect()),
         (Some(constant), Some(values)) => Some(
             values
                 .iter()
                 .filter(|value| json_values_equal(value, constant))
-                .cloned()
                 .collect(),
         ),
     }
@@ -926,7 +1048,7 @@ fn enumerated_source_is_included(source: &Map<String, Value>, target: &Value) ->
     let Ok(validator) = jsonschema::validator_for(target) else {
         return false;
     };
-    values.iter().all(|value| validator.is_valid(value))
+    values.into_iter().all(|value| validator.is_valid(value))
 }
 
 /// Compares the value sets `const` and `enum` impose, as one set.
@@ -972,6 +1094,7 @@ fn check_value_set_compatibility(
         (Some(source), Some(target)) => {
             let incompatible_values: Vec<&Value> = source
                 .iter()
+                .copied()
                 .filter(|value| {
                     !target
                         .iter()
@@ -1081,30 +1204,39 @@ fn check_schema_node_compatibility(
     old_schema: &Value,
     new_schema: &Value,
     path: &str,
-    check_backward: bool,
-    dialects: DialectSupport,
+    walk: Walk,
     inherited_unproven: UnprovenPaths,
     errors: &mut Vec<CompatibilityDiagnostic>,
 ) {
+    let check_backward = walk.check_backward;
+    if walk.exhausted() {
+        errors.push(CompatibilityDiagnostic::new(
+            path,
+            CompatibilityFinding::NotProvable,
+            format!("nests deeper than the checker walks ({MAX_RECURSION_DEPTH} levels)"),
+        ));
+        return;
+    }
+
     // Locations an ancestor could not prove stay unprovable here; add
     // whatever this node's own `allOf` composition leaves undecided.
     let mut unproven = inherited_unproven;
     let old_effective = if old_schema.get("allOf").is_some() {
-        let (effective, paths) = flatten_effective(old_schema);
+        let (effective, paths) = flatten_effective(old_schema, walk.depth);
         unproven.extend(paths);
-        effective
+        Cow::Owned(effective)
     } else {
-        old_schema.clone()
+        Cow::Borrowed(old_schema)
     };
     let new_effective = if new_schema.get("allOf").is_some() {
-        let (effective, paths) = flatten_effective(new_schema);
+        let (effective, paths) = flatten_effective(new_schema, walk.depth);
         unproven.extend(paths);
-        effective
+        Cow::Owned(effective)
     } else {
-        new_schema.clone()
+        Cow::Borrowed(new_schema)
     };
 
-    let (source, target) = if check_backward {
+    let (source, target): (&Value, &Value) = if check_backward {
         (&old_effective, &new_effective)
     } else {
         (&new_effective, &old_effective)
@@ -1143,32 +1275,35 @@ fn check_schema_node_compatibility(
         return;
     }
 
-    let source_map = if check_backward { old_map } else { new_map };
-    if enumerated_source_is_included(source_map, target) {
-        return;
-    }
+    // Everything this node and its subtree find is collected locally first.
+    // `enumerated_source_is_included` can discharge all of it at once, but it
+    // costs a JSON Schema compilation of the whole counterpart subtree, so it
+    // is consulted only once there is something to discharge - otherwise a
+    // document carrying `const`/`enum` at every level pays one compilation per
+    // level to confirm what the cheap keyword comparison already showed.
+    let mut node_errors = Vec::new();
 
-    errors.extend(check_type_compatibility(
+    node_errors.extend(check_type_compatibility(
         path,
         old_map,
         new_map,
         check_backward,
     ));
-    errors.extend(check_value_set_compatibility(
+    node_errors.extend(check_value_set_compatibility(
         path,
         old_map,
         new_map,
         check_backward,
     ));
-    errors.extend(check_exact_constraints(path, old_map, new_map));
-    errors.extend(check_unresolved_ref(path, old_map, new_map));
-    errors.extend(check_narrowing_constraints(
+    node_errors.extend(check_exact_constraints(path, old_map, new_map));
+    node_errors.extend(check_unresolved_ref(path, old_map, new_map));
+    node_errors.extend(check_narrowing_constraints(
         path,
         old_map,
         new_map,
         check_backward,
     ));
-    errors.extend(check_constraint_compatibility(
+    node_errors.extend(check_constraint_compatibility(
         path,
         old_map,
         new_map,
@@ -1185,15 +1320,7 @@ fn check_schema_node_compatibility(
             || schema.contains_key("propertyNames")
     };
     if is_object_schema(old_map) || is_object_schema(new_map) {
-        check_object_compatibility(
-            old_map,
-            new_map,
-            path,
-            check_backward,
-            dialects,
-            &unproven,
-            errors,
-        );
+        check_object_compatibility(old_map, new_map, path, walk, &unproven, &mut node_errors);
     }
 
     match (old_map.get("items"), new_map.get("items")) {
@@ -1201,36 +1328,51 @@ fn check_schema_node_compatibility(
             old_items,
             new_items,
             &format!("{path}[]"),
-            check_backward,
-            dialects,
+            walk.deeper(),
             unproven_below(&unproven, "[]"),
-            errors,
+            &mut node_errors,
         ),
         (None, Some(_)) if check_backward => {
-            errors.push(CompatibilityDiagnostic::new(
+            node_errors.push(CompatibilityDiagnostic::new(
                 path,
                 CompatibilityFinding::ConstraintChanged,
                 "adds an array items constraint".to_owned(),
             ));
         }
-        (Some(_), None) if !check_backward => errors.push(CompatibilityDiagnostic::new(
+        (Some(_), None) if !check_backward => node_errors.push(CompatibilityDiagnostic::new(
             path,
             CompatibilityFinding::ConstraintChanged,
             "removes an array items constraint".to_owned(),
         )),
         _ => {}
     }
+
+    if node_errors.is_empty() {
+        return;
+    }
+    // The enumerated set covers the subtree as well as this level, so proving
+    // it discharges the nested findings too - which is why the whole walk is
+    // collected before this point rather than after it.
+    let source_map = if check_backward { old_map } else { new_map };
+    if enumerated_source_is_included(source_map, target) {
+        return;
+    }
+    errors.append(&mut node_errors);
 }
 
 fn check_object_compatibility(
     old_schema: &Map<String, Value>,
     new_schema: &Map<String, Value>,
     path: &str,
-    check_backward: bool,
-    dialects: DialectSupport,
+    walk: Walk,
     unproven: &UnprovenPaths,
     errors: &mut Vec<CompatibilityDiagnostic>,
 ) {
+    let Walk {
+        check_backward,
+        dialects,
+        ..
+    } = walk;
     let empty = Map::new();
     let old_props = old_schema
         .get("properties")
@@ -1314,8 +1456,7 @@ fn check_object_compatibility(
                 old_property,
                 new_property,
                 &property_path,
-                check_backward,
-                dialects,
+                walk.deeper(),
                 unproven_below(unproven, &format!(".{name}")),
                 errors,
             );
@@ -1327,8 +1468,7 @@ fn check_object_compatibility(
                 old_property,
                 counterpart,
                 &property_path,
-                check_backward,
-                dialects,
+                walk.deeper(),
                 UnprovenPaths::new(),
                 errors,
             );
@@ -1358,8 +1498,7 @@ fn check_object_compatibility(
                 counterpart,
                 new_property,
                 &property_path,
-                check_backward,
-                dialects,
+                walk.deeper(),
                 UnprovenPaths::new(),
                 errors,
             );
@@ -1433,13 +1572,19 @@ fn classify_content_model(schema: &Map<String, Value>, supports_unevaluated: boo
     }
 }
 
+/// Every pair is spelled out: a content model added later must fail to compile
+/// here rather than default to being a subset of everything.
 const fn content_model_is_subset(source: ContentModel, target: ContentModel) -> bool {
-    matches!(
-        (source, target),
-        (ContentModel::Closed, _)
-            | (_, ContentModel::Open)
-            | (ContentModel::Partial, ContentModel::Partial)
-    )
+    match (source, target) {
+        (
+            ContentModel::Closed,
+            ContentModel::Closed | ContentModel::Partial | ContentModel::Open,
+        )
+        | (ContentModel::Partial, ContentModel::Partial | ContentModel::Open)
+        | (ContentModel::Open, ContentModel::Open) => true,
+        (ContentModel::Partial | ContentModel::Open, ContentModel::Closed)
+        | (ContentModel::Open, ContentModel::Partial) => false,
+    }
 }
 
 fn partial_content_constraints_equal(
@@ -1597,10 +1742,13 @@ fn check_inclusion(
         old_schema,
         new_schema,
         "$",
-        check_backward,
-        DialectSupport {
-            old_unevaluated: dialect_supports_unevaluated(effective_old),
-            new_unevaluated: dialect_supports_unevaluated(effective_new),
+        Walk {
+            check_backward,
+            dialects: DialectSupport {
+                old_unevaluated: dialect_supports_unevaluated(effective_old),
+                new_unevaluated: dialect_supports_unevaluated(effective_new),
+            },
+            depth: 0,
         },
         UnprovenPaths::new(),
         &mut errors,
@@ -1643,20 +1791,34 @@ pub fn classify_object_levels(schema: &Value) -> Vec<ObjectLevel> {
     let dialect = schema.get("$schema").and_then(Value::as_str);
     let supports_unevaluated = dialect_supports_unevaluated(dialect);
     let mut levels = Vec::new();
-    collect_object_levels(schema, "$", supports_unevaluated, &mut levels);
+    collect_object_levels(schema, "$", supports_unevaluated, 0, &mut levels);
     levels
 }
 
+/// Levels below [`MAX_RECURSION_DEPTH`] are not reported.
+///
+/// This is the one bounded walk that truncates without a marker, because
+/// [`ContentModel`] spells the three models gts-spec §4.4 defines and "not
+/// looked at" is not one of them. It is safe only because the classification is
+/// advisory - it tells an owner where a later definition can still add an
+/// optional property, and never decides a compatibility relation. The relation
+/// itself is decided by [`check_inclusion`], whose own guard reports the same
+/// nesting as [`CompatibilityFinding::NotProvable`], so a document deep enough
+/// to truncate here is already refused there.
 fn collect_object_levels(
     schema: &Value,
     path: &str,
     supports_unevaluated: bool,
+    depth: usize,
     levels: &mut Vec<ObjectLevel>,
 ) {
+    if depth >= MAX_RECURSION_DEPTH {
+        return;
+    }
     let effective = if schema.get("allOf").is_some() {
-        flatten_schema(schema)
+        Cow::Owned(flatten_schema(schema))
     } else {
-        schema.clone()
+        Cow::Borrowed(schema)
     };
     let Some(map) = effective.as_object() else {
         return;
@@ -1682,11 +1844,23 @@ fn collect_object_levels(
             } else {
                 format!("{path}.{name}")
             };
-            collect_object_levels(property, &property_path, supports_unevaluated, levels);
+            collect_object_levels(
+                property,
+                &property_path,
+                supports_unevaluated,
+                depth + 1,
+                levels,
+            );
         }
     }
     if let Some(items) = map.get("items") {
-        collect_object_levels(items, &format!("{path}[]"), supports_unevaluated, levels);
+        collect_object_levels(
+            items,
+            &format!("{path}[]"),
+            supports_unevaluated,
+            depth + 1,
+            levels,
+        );
     }
 }
 /// Compares two JSON values the way JSON Schema compares instances.
@@ -1767,6 +1941,44 @@ fn json_numbers_equal(left: &serde_json::Number, right: &serde_json::Number) -> 
         // to compare.
         _ => left == right,
     }
+}
+
+/// Orders two JSON numbers exactly, or reports that the pair has no order.
+///
+/// The `f64` shortcut [`json_numbers_equal`] avoids for equality is just as
+/// wrong for ordering: rounding both sides would order `2^53 + 1` and `2^53` as
+/// equal, so a genuinely tighter bound would not be adopted and the flattened
+/// level would claim a looser intersection than the real one.
+fn json_numbers_cmp(left: &serde_json::Number, right: &serde_json::Number) -> Option<Ordering> {
+    if let (Some(left), Some(right)) = (left.as_u64(), right.as_u64()) {
+        return Some(left.cmp(&right));
+    }
+    if let (Some(left), Some(right)) = (left.as_i64(), right.as_i64()) {
+        return Some(left.cmp(&right));
+    }
+    // A mixed pair - one integer and one float, or the two integers no pair-up
+    // above could hold (one negative, one past `i64::MAX`). `num_cmp` orders
+    // these across representations without routing either through the other.
+    if let Some(left) = left.as_u64() {
+        return right
+            .as_f64()
+            .and_then(|right| NumCmp::num_cmp(left, right));
+    }
+    if let Some(left) = left.as_i64() {
+        return right
+            .as_f64()
+            .and_then(|right| NumCmp::num_cmp(left, right));
+    }
+    let left = left.as_f64()?;
+    if let Some(right) = right.as_u64() {
+        return NumCmp::num_cmp(left, right);
+    }
+    if let Some(right) = right.as_i64() {
+        return NumCmp::num_cmp(left, right);
+    }
+    // Neither side is representable as anything but a float, so this is the
+    // exact comparison; a value needing `arbitrary_precision` yields `None`.
+    left.partial_cmp(&right.as_f64()?)
 }
 
 /// Compares an integer-valued JSON number to a float, exactly.

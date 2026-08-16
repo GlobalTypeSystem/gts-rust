@@ -226,7 +226,7 @@ mod tests {
         assert_eq!(seg.package(), "core");
         assert_eq!(seg.namespace(), "events");
         assert_eq!(seg.type_name(), "event");
-        assert_eq!(seg.ver_major(), 1);
+        assert_eq!(seg.ver_major_opt(), Some(1));
         assert_eq!(seg.ver_minor(), Some(2));
     }
 
@@ -359,14 +359,14 @@ mod tests {
     #[test]
     fn test_gts_id_version_without_minor() {
         let id = GtsId::try_new(&gts_id("x.core.events.event.v1~")).expect("test");
-        assert_eq!(id.segments[0].ver_major(), 1);
+        assert_eq!(id.segments[0].ver_major_opt(), Some(1));
         assert_eq!(id.segments[0].ver_minor(), None);
     }
 
     #[test]
     fn test_gts_id_version_with_large_numbers() {
         let id = GtsId::try_new(&gts_id("x.core.events.event.v99.999~")).expect("test");
-        assert_eq!(id.segments[0].ver_major(), 99);
+        assert_eq!(id.segments[0].ver_major_opt(), Some(99));
         assert_eq!(id.segments[0].ver_minor(), Some(999));
     }
 

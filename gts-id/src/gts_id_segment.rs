@@ -72,15 +72,6 @@ impl GtsIdSegmentParts {
         &self.type_name
     }
 
-    /// The major version, or `0` when unspecified in a wildcard segment.
-    ///
-    /// Use [`Self::ver_major_opt`] when the distinction between an unspecified
-    /// version and a real `v0` matters.
-    #[must_use]
-    pub fn ver_major(&self) -> u32 {
-        self.ver_major.unwrap_or(0)
-    }
-
     /// The major version when one was specified.
     #[must_use]
     pub fn ver_major_opt(&self) -> Option<u32> {
@@ -205,15 +196,6 @@ impl GtsIdSegment {
     #[must_use]
     pub fn type_name(&self) -> &str {
         self.parts().map_or("", |p| &p.type_name)
-    }
-
-    /// The major version, or `0` for a UUID tail.
-    ///
-    /// Use [`Self::ver_major_opt`] when the distinction between an absent
-    /// version and a real `v0` matters.
-    #[must_use]
-    pub fn ver_major(&self) -> u32 {
-        self.parts().map_or(0, GtsIdSegmentParts::ver_major)
     }
 
     /// The major version when this is a named GTS segment.
@@ -344,18 +326,6 @@ impl GtsIdPatternSegment {
         match self {
             GtsIdPatternSegment::Segment(s) => s.type_name(),
             GtsIdPatternSegment::Wildcard(p) => &p.type_name,
-        }
-    }
-
-    /// The major version, or `0` when unspecified.
-    ///
-    /// Use [`Self::ver_major_opt`] when the distinction between an unspecified
-    /// version wildcard and a real `v0` matters.
-    #[must_use]
-    pub fn ver_major(&self) -> u32 {
-        match self {
-            GtsIdPatternSegment::Segment(s) => s.ver_major(),
-            GtsIdPatternSegment::Wildcard(p) => p.ver_major(),
         }
     }
 
@@ -661,7 +631,7 @@ mod tests {
         assert_eq!(parsed.package(), "core");
         assert_eq!(parsed.namespace(), "events");
         assert_eq!(parsed.type_name(), "event");
-        assert_eq!(parsed.ver_major(), 1);
+        assert_eq!(parsed.ver_major_opt(), Some(1));
         assert_eq!(parsed.ver_minor(), None);
         assert!(parsed.is_type());
     }
@@ -669,7 +639,7 @@ mod tests {
     #[test]
     fn test_valid_segment_with_minor() {
         let parsed = GtsIdSegment::parse(1, "x.core.events.event.v1.2~").unwrap();
-        assert_eq!(parsed.ver_major(), 1);
+        assert_eq!(parsed.ver_major_opt(), Some(1));
         assert_eq!(parsed.ver_minor(), Some(2));
     }
 
@@ -835,7 +805,7 @@ mod tests {
         assert_eq!(parsed.package(), "pkg");
         assert_eq!(parsed.namespace(), "ns");
         assert_eq!(parsed.type_name(), "type");
-        assert_eq!(parsed.ver_major(), 0);
+        assert_eq!(parsed.ver_major_opt(), None);
         assert_eq!(parsed.ver_minor(), None);
     }
 
@@ -882,7 +852,7 @@ mod tests {
         assert_eq!(seg.raw(), UUID_TAIL);
         assert!(!seg.is_type());
         assert_eq!(seg.vendor(), "");
-        assert_eq!(seg.ver_major(), 0);
+        assert_eq!(seg.ver_major_opt(), None);
         assert_eq!(seg.ver_minor(), None);
 
         #[cfg(feature = "uuid")]
@@ -920,7 +890,7 @@ mod tests {
         assert_eq!(parts.package(), "core");
         assert_eq!(parts.namespace(), "events");
         assert_eq!(parts.type_name(), "event");
-        assert_eq!(parts.ver_major(), 1);
+        assert_eq!(parts.ver_major_opt(), Some(1));
         assert_eq!(parts.ver_minor(), Some(2));
         assert!(parts.is_type());
     }

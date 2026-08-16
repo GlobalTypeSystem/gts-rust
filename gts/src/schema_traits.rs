@@ -667,7 +667,10 @@ fn materialize_traits(trait_schema: &Value, traits: &Value) -> Value {
 
 /// Per-property materialization view: (most-derived declaration, nearest
 /// `default`).
-type PropResolution = (Value, Option<Value>);
+///
+/// Borrowed from the collected declarations, which already own one deep copy
+/// each: the only owning clone is the value actually inserted into the result.
+type PropResolution<'a> = (&'a Value, Option<&'a Value>);
 
 fn materialize_traits_recursive(trait_schema: &Value, traits: &Value, depth: usize) -> Value {
     if depth >= MAX_RECURSION_DEPTH {
@@ -691,32 +694,32 @@ fn materialize_traits_recursive(trait_schema: &Value, traits: &Value, depth: usi
     // to descendants even when a descendant redeclares the property without one
     // (gts-spec §9.7.2, ADR-0003). The most-derived declaration also drives the
     // "recurse into nested object" decision.
-    let mut order: Vec<String> = Vec::new();
-    let mut resolved: std::collections::HashMap<String, PropResolution> =
+    let mut order: Vec<&str> = Vec::new();
+    let mut resolved: std::collections::HashMap<&str, PropResolution<'_>> =
         std::collections::HashMap::new();
     for (name, sch) in all_props.iter().rev() {
         let obj = sch.as_object();
-        let entry = resolved.entry(name.clone()).or_insert_with(|| {
-            order.push(name.clone());
-            (sch.clone(), None)
+        let entry = resolved.entry(name.as_str()).or_insert_with(|| {
+            order.push(name.as_str());
+            (sch, None)
         });
         if entry.1.is_none()
             && let Some(default_val) = obj.and_then(|o| o.get("default"))
         {
-            entry.1 = Some(default_val.clone());
+            entry.1 = Some(default_val);
         }
     }
 
     for name in &order {
-        let (prop_schema, nearest_default) = &resolved[name];
-        if !result.contains_key(name.as_str()) {
+        let (prop_schema, nearest_default) = resolved[name];
+        if !result.contains_key(*name) {
             // Property is absent — fill from the nearest `default` up the chain.
             // A `const` is not substituted here: it asserts the value of a
             // present property, it does not supply a missing one.
             if let Some(default_val) = nearest_default {
-                result.insert(name.clone(), default_val.clone());
+                result.insert((*name).to_owned(), default_val.clone());
             }
-        } else if result.get(name.as_str()).is_some_and(Value::is_object)
+        } else if result.get(*name).is_some_and(Value::is_object)
             && prop_schema.as_object().is_some_and(|o| {
                 o.get("type") == Some(&Value::String("object".to_owned()))
                     && o.contains_key("properties")
@@ -728,10 +731,10 @@ fn materialize_traits_recursive(trait_schema: &Value, traits: &Value, depth: usi
             // object doesn't mask the type error from later validation.
             let nested = materialize_traits_recursive(
                 prop_schema,
-                result.get(name.as_str()).unwrap_or(&Value::Null),
+                result.get(*name).unwrap_or(&Value::Null),
                 depth + 1,
             );
-            result.insert(name.clone(), nested);
+            result.insert((*name).to_owned(), nested);
         }
     }
 

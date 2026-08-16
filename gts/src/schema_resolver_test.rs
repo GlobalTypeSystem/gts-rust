@@ -793,3 +793,53 @@ fn test_resolve_circular_ref_does_not_hang() {
         StoreError::CircularRef
     ));
 }
+
+/// Builds `links` registered documents, each `$ref`ing the next, and resolves a
+/// root pointing at the first.
+///
+/// Each link wraps the next one, so the resolved root nests `links` levels deep
+/// even though no single document nests at all - which is the shape
+/// [`super::MAX_REF_CHAIN_DEPTH`] exists to bound.
+fn resolve_ref_chain(links: usize) -> Result<Value, StoreError> {
+    let id = |index: usize| format!("gts.x.test.chain.n{index}.v1~");
+    let mut provider = MapProvider::new();
+    for index in 0..links {
+        let content = if index + 1 == links {
+            json!({"type": "object"})
+        } else {
+            json!({
+                "type": "object",
+                "properties": {"next": {"$ref": format!("gts://{}", id(index + 1))}}
+            })
+        };
+        provider = provider.with(&id(index), content);
+    }
+    SchemaResolver::new(&provider).resolve(&json!({"$ref": format!("gts://{}", id(0))}))
+}
+
+/// A long `$ref` chain multiplies each link's own nesting into the resolved
+/// body, so it is refused rather than inlined - every later walk descends the
+/// tree this produces.
+///
+/// Both sides of the budget are asserted, so it can be neither silently
+/// tightened (which would refuse documents that must resolve) nor loosened.
+#[test]
+fn test_resolve_refuses_a_ref_chain_past_the_budget() {
+    let resolved = resolve_ref_chain(super::MAX_REF_CHAIN_DEPTH)
+        .expect("a chain exactly at the budget must still resolve");
+    // Fully inlined: nothing is left pointing outwards.
+    assert!(
+        !resolved.to_string().contains("$ref"),
+        "chain at the budget must be inlined: {resolved}"
+    );
+
+    let error = resolve_ref_chain(super::MAX_REF_CHAIN_DEPTH + 1)
+        .expect_err("one link past the budget must not resolve");
+    let StoreError::UnresolvedRefs(refs) = error else {
+        panic!("expected the over-long chain to be reported as unresolved: {error:?}");
+    };
+    assert!(
+        refs.iter().any(|entry| entry.contains("chained $refs")),
+        "{refs:?}"
+    );
+}

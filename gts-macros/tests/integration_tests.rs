@@ -731,7 +731,7 @@ fn test_gts_id_segments_match_schema() {
     assert_eq!(segment.package(), "core");
     assert_eq!(segment.namespace(), "events");
     assert_eq!(segment.type_name(), "topic");
-    assert_eq!(segment.ver_major(), 1);
+    assert_eq!(segment.ver_major_opt(), Some(1));
     assert!(
         segment.is_type(),
         "Schema ID should be a type (ends with ~)"
@@ -759,7 +759,7 @@ fn test_gts_id_segments_match_instance() {
     assert_eq!(type_segment.package(), "core");
     assert_eq!(type_segment.namespace(), "events");
     assert_eq!(type_segment.type_name(), "topic");
-    assert_eq!(type_segment.ver_major(), 1);
+    assert_eq!(type_segment.ver_major_opt(), Some(1));
     assert!(type_segment.is_type(), "First segment should be a type");
 
     // Second segment is the instance segment
@@ -768,7 +768,7 @@ fn test_gts_id_segments_match_instance() {
     assert_eq!(instance_segment.package(), "commerce");
     assert_eq!(instance_segment.namespace(), "orders");
     assert_eq!(instance_segment.type_name(), "orders");
-    assert_eq!(instance_segment.ver_major(), 1);
+    assert_eq!(instance_segment.ver_major_opt(), Some(1));
     assert_eq!(instance_segment.ver_minor(), Some(0));
 }
 
@@ -796,8 +796,8 @@ fn test_schema_and_instance_segments_relationship() {
         instance_type_segment.type_name()
     );
     assert_eq!(
-        schema_segment.ver_major(),
-        instance_type_segment.ver_major()
+        schema_segment.ver_major_opt(),
+        instance_type_segment.ver_major_opt()
     );
 
     // get_type_id() should return the schema ID (without the instance segment)
@@ -849,7 +849,7 @@ fn test_entity_and_gts_id_vendor_package_namespace_match() {
         assert_eq!(entity_seg.package(), direct_seg.package());
         assert_eq!(entity_seg.namespace(), direct_seg.namespace());
         assert_eq!(entity_seg.type_name(), direct_seg.type_name());
-        assert_eq!(entity_seg.ver_major(), direct_seg.ver_major());
+        assert_eq!(entity_seg.ver_major_opt(), direct_seg.ver_major_opt());
         assert_eq!(entity_seg.ver_minor(), direct_seg.ver_minor());
         assert_eq!(entity_seg.is_type(), direct_seg.is_type());
     }
