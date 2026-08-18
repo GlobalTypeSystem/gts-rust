@@ -198,3 +198,27 @@ colored = "3.0"
 
 # Format parsing
 serde-saphyr = "0.0.24"
+
+# --- Local dev speed -----------------------------------------------------------
+# Drop debuginfo on dependencies (the main source of target/ bloat) and keep only
+# line tables on workspace crates so panic backtraces still carry file:line.
+# Affects dev/test builds only; the release profile is untouched.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+# Escape hatch: `cargo build --profile debugging` gives full debuginfo for the
+# workspace and its dependencies. Builds into target/debugging/, safe to delete.
+[profile.debugging]
+inherits = "dev"
+debug = true
+
+[profile.debugging.package."*"]
+debug = true
+
+# Build scripts and the proc-macro copies rustc loads during macro expansion are
+# governed by build-override, not by the package overrides above.
+[profile.debugging.build-override]
+debug = true
