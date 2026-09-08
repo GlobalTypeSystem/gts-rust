@@ -3117,6 +3117,33 @@ mod tests {
         assert!(result.is_type_schema);
     }
 
+    #[test]
+    fn test_add_entity_schema_with_gts_uri_invalid_body_fails() {
+        let mut ops = GtsOps::new(None, None, 0);
+        // gts:// URI scheme is correct, but the body starts with "gtx."
+        // instead of "gts." — must be rejected.
+        let content = json!({
+            "$id": "gts://gtx.x.test6.invalid_uri_body.bad_prefix.v1~",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"}
+            },
+            "required": ["id"]
+        });
+
+        let result = ops.add_entity(&content, false);
+        assert!(
+            !result.ok,
+            "Schema with gts:// URI but non-gts body should fail"
+        );
+        assert!(
+            result.error.contains("Unable to detect GTS ID"),
+            "Error should mention missing GTS ID, got: {}",
+            result.error
+        );
+    }
+
     // =============================================================================
     // Additional test coverage for ops.rs functions
     // =============================================================================
