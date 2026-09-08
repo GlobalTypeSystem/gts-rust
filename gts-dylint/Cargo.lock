@@ -635,7 +635,7 @@ dependencies = [
 
 [[package]]
 name = "gts"
-version = "0.11.0"
+version = "0.12.1"
 dependencies = [
  "gts-id",
  "jsonschema",
@@ -652,7 +652,7 @@ dependencies = [
 
 [[package]]
 name = "gts-dylint"
-version = "0.11.0"
+version = "0.12.1"
 dependencies = [
  "dylint_linting",
  "dylint_testing",
@@ -666,7 +666,7 @@ dependencies = [
 
 [[package]]
 name = "gts-id"
-version = "0.11.0"
+version = "0.12.1"
 dependencies = [
  "thiserror 2.0.18",
  "uuid",
@@ -674,7 +674,7 @@ dependencies = [
 
 [[package]]
 name = "gts-macros"
-version = "0.11.0"
+version = "0.12.1"
 dependencies = [
  "gts-id",
  "proc-macro2",

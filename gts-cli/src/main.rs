@@ -12,6 +12,7 @@
 
 mod cli;
 mod gen_schemas;
+mod json_validation;
 mod logging;
 mod server;
 

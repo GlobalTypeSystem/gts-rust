@@ -52,6 +52,12 @@ pub enum Commands {
         #[arg(long, default_value = "major")]
         scope: String,
     },
+    /// Validate all JSON documents in a file or directory
+    ValidateJson {
+        /// JSON file or directory to scan
+        #[arg(long)]
+        path: Option<String>,
+    },
     /// Validate an instance against its schema
     ValidateInstance {
         #[arg(long)]
@@ -173,6 +179,7 @@ pub async fn run_with_cli(cli: Cli) -> Result<()> {
 /// Execute a command with the given CLI configuration
 async fn run_command(cli: Cli) -> Result<()> {
     // Parse path into Vec<String>
+    let cli_path = cli.path.clone();
     let path = cli.path.map(|p| vec![p]);
 
     // Create GtsOps
@@ -196,6 +203,21 @@ async fn run_command(cli: Cli) -> Result<()> {
                 "out": out
             });
             println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Commands::ValidateJson { path: scan_path } => {
+            let scan = scan_path
+                .or(cli_path)
+                .ok_or_else(|| anyhow::anyhow!("validate-json requires --path"))?;
+            let result =
+                crate::json_validation::GtsJsonValidator::new(&scan, ops.cfg.clone()).validate();
+            for issue in &result.issues {
+                let suffix = issue.index.map(|i| format!("#{i}")).unwrap_or_default();
+                eprintln!(
+                    "{}{}: {}: {}",
+                    issue.file, suffix, issue.stage, issue.message
+                );
+            }
+            print_result(&result)?;
         }
         Commands::ValidateId { gts_id } => {
             let result = GtsOps::validate_id(&gts_id);
