@@ -19,6 +19,10 @@ workspace = true
 name = "gts"
 path = "src/main.rs"
 
+[[bin]]
+name = "cargo-gts"
+path = "src/cargo_main.rs"
+
 [dependencies]
 gts.workspace = true
 serde.workspace = true
