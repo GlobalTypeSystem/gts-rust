@@ -210,13 +210,6 @@ async fn run_command(cli: Cli) -> Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("validate-json requires --path"))?;
             let result =
                 crate::json_validation::GtsJsonValidator::new(&scan, ops.cfg.clone()).validate();
-            for issue in &result.issues {
-                let suffix = issue.index.map(|i| format!("#{i}")).unwrap_or_default();
-                eprintln!(
-                    "{}{}: {}: {}",
-                    issue.file, suffix, issue.stage, issue.message
-                );
-            }
             print_result(&result)?;
         }
         Commands::ValidateId { gts_id } => {
