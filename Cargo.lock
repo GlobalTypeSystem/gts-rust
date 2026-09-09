@@ -540,7 +540,7 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "gts"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "gts-id",
  "jsonschema",
@@ -558,7 +558,7 @@ dependencies = [
 
 [[package]]
 name = "gts-cli"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -580,7 +580,7 @@ dependencies = [
 
 [[package]]
 name = "gts-id"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "thiserror",
  "uuid",
@@ -588,7 +588,7 @@ dependencies = [
 
 [[package]]
 name = "gts-macros"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "gts",
  "gts-id",
@@ -605,7 +605,7 @@ dependencies = [
 
 [[package]]
 name = "gts-macros-cli"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -620,7 +620,7 @@ dependencies = [
 
 [[package]]
 name = "gts-validator"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "anyhow",
  "clap",
