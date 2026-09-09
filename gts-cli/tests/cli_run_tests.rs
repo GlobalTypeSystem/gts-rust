@@ -1,7 +1,77 @@
 use anyhow::Result;
+use gts::gts::{GTS_ID_PREFIX, GTS_ID_URI_PREFIX};
 use gts_cli::{Cli, Commands, run_with_cli};
 use std::fs;
 use tempfile::TempDir;
+
+/// A valid, standalone GTS base Type Schema, built from the compile-time
+/// `GTS_ID_PREFIX` so the test also passes under a custom prefix.
+fn base_schema() -> String {
+    format!(
+        r#"{{
+            "$id": "{GTS_ID_URI_PREFIX}{GTS_ID_PREFIX}cli.run.test.base.v1~",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": {{ "name": {{ "type": "string" }} }},
+            "required": ["name"]
+        }}"#
+    )
+}
+
+fn validate_all_cli(path: &str) -> Cli {
+    Cli {
+        verbose: 0,
+        config: None,
+        path: None,
+        command: Commands::ValidateAll {
+            path: Some(path.to_owned()),
+        },
+    }
+}
+
+#[tokio::test]
+async fn test_run_validate_all_valid_set_succeeds() -> Result<()> {
+    let dir = TempDir::new()?;
+    fs::write(dir.path().join("base.schema.json"), base_schema())?;
+
+    // The actual command path (not GtsOps::add_entity) must accept a valid set.
+    run_with_cli(validate_all_cli(dir.path().to_str().unwrap())).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_run_validate_all_malformed_id_returns_error() -> Result<()> {
+    let dir = TempDir::new()?;
+    // gts:// URI scheme is correct, but the body uses a non-GTS prefix (gtx.).
+    let malformed = r#"{
+        "$id": "gts://gtx.cli.run.test.bad.v1~",
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object"
+    }"#;
+    fs::write(dir.path().join("bad.schema.json"), malformed)?;
+
+    // A failed validation must propagate as a nonzero exit (Err).
+    let result = run_with_cli(validate_all_cli(dir.path().to_str().unwrap())).await;
+    assert!(
+        result.is_err(),
+        "validate-all should fail when a GTS entity is malformed"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_run_validate_all_requires_path() -> Result<()> {
+    let cli = Cli {
+        verbose: 0,
+        config: None,
+        path: None,
+        command: Commands::ValidateAll { path: None },
+    };
+
+    let result = run_with_cli(cli).await;
+    assert!(result.is_err(), "validate-all without --path should error");
+    Ok(())
+}
 
 #[tokio::test]
 async fn test_run_validate_id_command() -> Result<()> {
