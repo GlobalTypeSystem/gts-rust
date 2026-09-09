@@ -1728,7 +1728,7 @@ fn check_inclusion(
     // starting to declare a dialect that was already in effect would be
     // reported as incompatible in both directions.
     if let (Some(old_dialect), Some(new_dialect)) = (declared_old, declared_new)
-        && old_dialect != new_dialect
+        && canonical_dialect(old_dialect) != canonical_dialect(new_dialect)
     {
         errors.push(CompatibilityDiagnostic::new(
             "$",
@@ -1754,6 +1754,17 @@ fn check_inclusion(
         &mut errors,
     );
     (CompatibilityVerdict::from_diagnostics(&errors), errors)
+}
+
+/// The dialect a `$schema` value names, with the spellings that carry no
+/// semantic content removed: the empty fragment and the URI scheme. All four
+/// spellings of the Draft-07 URI are in common use, and a respelling is not a
+/// dialect change.
+fn canonical_dialect(declared: &str) -> &str {
+    let body = declared.strip_suffix('#').unwrap_or(declared);
+    body.strip_prefix("https://")
+        .or_else(|| body.strip_prefix("http://"))
+        .unwrap_or(body)
 }
 
 /// Whether `unevaluatedProperties` is evaluated under `dialect`.
