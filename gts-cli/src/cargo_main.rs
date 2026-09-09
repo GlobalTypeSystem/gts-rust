@@ -17,7 +17,7 @@ use gts_cli::{Cli, run_with_cli};
 #[tokio::main]
 async fn main() {
     // Strip the "gts" token that Cargo injects as argv[1].
-    // Direct invocation (`cargo-gts validate-json`) still works because the
+    // Direct invocation (`cargo-gts validate-all`) still works because the
     // filter only fires when argv[1] is exactly "gts".
     let args: Vec<std::ffi::OsString> = std::env::args_os()
         .enumerate()

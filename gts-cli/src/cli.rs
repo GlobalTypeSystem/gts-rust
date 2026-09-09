@@ -52,8 +52,8 @@ pub enum Commands {
         #[arg(long, default_value = "major")]
         scope: String,
     },
-    /// Validate all JSON documents in a file or directory
-    ValidateJson {
+    /// Batch-validate GTS schemas and instances found in JSON files under a file or directory
+    ValidateAll {
         /// JSON file or directory to scan
         #[arg(long)]
         path: Option<String>,
@@ -204,13 +204,16 @@ async fn run_command(cli: Cli) -> Result<()> {
             });
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
-        Commands::ValidateJson { path: scan_path } => {
+        Commands::ValidateAll { path: scan_path } => {
             let scan = scan_path
                 .or(cli_path)
-                .ok_or_else(|| anyhow::anyhow!("validate-json requires --path"))?;
+                .ok_or_else(|| anyhow::anyhow!("validate-all requires --path"))?;
             let result =
                 crate::json_validation::GtsJsonValidator::new(&scan, ops.cfg.clone()).validate();
             print_result(&result)?;
+            if !result.ok {
+                anyhow::bail!("validation failed: {} issue(s) found", result.issues.len());
+            }
         }
         Commands::ValidateId { gts_id } => {
             let result = GtsOps::validate_id(&gts_id);
