@@ -192,16 +192,46 @@ pub struct GtsOps {
     pub cfg: GtsConfig,
     pub path: Option<Vec<String>>,
     pub store: GtsStore,
+    /// Directory names to skip when scanning `path`. `None` means the
+    /// `GtsFileReader` default is used.
+    pub exclude: Option<Vec<String>>,
 }
 
 impl GtsOps {
     #[must_use]
     pub fn new(path: Option<Vec<String>>, config: Option<String>, verbose: usize) -> Self {
+        Self::build(path, config, verbose, None)
+    }
+
+    /// Like [`GtsOps::new`] but with an explicit list of directory names to skip
+    /// while scanning `path` (e.g. from the CLI `--exclude` option).
+    #[must_use]
+    pub fn new_with_exclude(
+        path: Option<Vec<String>>,
+        config: Option<String>,
+        verbose: usize,
+        exclude: Vec<String>,
+    ) -> Self {
+        Self::build(path, config, verbose, Some(exclude))
+    }
+
+    fn build(
+        path: Option<Vec<String>>,
+        config: Option<String>,
+        verbose: usize,
+        exclude: Option<Vec<String>>,
+    ) -> Self {
         let cfg = Self::load_config(config);
         let store = match path.as_ref() {
             Some(p) => {
-                let reader = Box::new(GtsFileReader::new(p, Some(cfg.clone())))
-                    as Box<dyn crate::store::GtsReader>;
+                let reader: Box<dyn crate::store::GtsReader> = match exclude.as_ref() {
+                    Some(ex) => Box::new(GtsFileReader::new_with_exclude(
+                        p,
+                        Some(cfg.clone()),
+                        ex.clone(),
+                    )),
+                    None => Box::new(GtsFileReader::new(p, Some(cfg.clone()))),
+                };
                 GtsStore::with_reader(reader)
             }
             None => GtsStore::new(),
@@ -212,6 +242,7 @@ impl GtsOps {
             cfg,
             path,
             store,
+            exclude,
         }
     }
 
@@ -271,8 +302,14 @@ impl GtsOps {
 
     pub fn reload_from_path(&mut self, path: &[String]) {
         self.path = Some(path.to_vec());
-        let reader = Box::new(GtsFileReader::new(path, Some(self.cfg.clone())))
-            as Box<dyn crate::store::GtsReader>;
+        let reader: Box<dyn crate::store::GtsReader> = match self.exclude.as_ref() {
+            Some(ex) => Box::new(GtsFileReader::new_with_exclude(
+                path,
+                Some(self.cfg.clone()),
+                ex.clone(),
+            )),
+            None => Box::new(GtsFileReader::new(path, Some(self.cfg.clone()))),
+        };
         self.store = GtsStore::with_reader(reader);
     }
 

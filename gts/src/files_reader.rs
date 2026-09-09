@@ -6,19 +6,38 @@ use walkdir::WalkDir;
 use crate::entities::{GtsConfig, GtsEntity, GtsFile};
 use crate::store::GtsReader;
 
-const EXCLUDE_LIST: &[&str] = &["node_modules", "dist", "build"];
+/// Default directory names excluded from recursive file traversal when the
+/// caller does not provide an explicit exclude list (e.g. the CLI `--exclude`
+/// option). Kept here so direct library users get sensible behavior.
+const DEFAULT_EXCLUDE_LIST: &[&str] = &["node_modules", "dist", "build", ".git", "target"];
 const VALID_EXTENSIONS: &[&str] = &[".json", ".jsonc", ".gts", ".yaml", ".yml"];
 
 pub struct GtsFileReader {
     paths: Vec<PathBuf>,
     cfg: GtsConfig,
+    exclude: Vec<String>,
     files: Vec<PathBuf>,
     initialized: bool,
+}
+
+/// Default exclude list as owned strings (the CLI `--exclude` option overrides it).
+fn default_exclude() -> Vec<String> {
+    DEFAULT_EXCLUDE_LIST
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect()
 }
 
 impl GtsFileReader {
     #[must_use]
     pub fn new(path: &[String], cfg: Option<GtsConfig>) -> Self {
+        Self::new_with_exclude(path, cfg, default_exclude())
+    }
+
+    /// Like [`GtsFileReader::new`] but with an explicit list of directory names
+    /// to skip during recursive traversal (e.g. from the CLI `--exclude` option).
+    #[must_use]
+    pub fn new_with_exclude(path: &[String], cfg: Option<GtsConfig>, exclude: Vec<String>) -> Self {
         let paths = path
             .iter()
             .map(|p| PathBuf::from(shellexpand::tilde(p).to_string()))
@@ -27,6 +46,7 @@ impl GtsFileReader {
         GtsFileReader {
             paths,
             cfg: cfg.unwrap_or_default(),
+            exclude,
             files: Vec::new(),
             initialized: false,
         }
@@ -63,7 +83,10 @@ impl GtsFileReader {
                     // Skip excluded directories
                     if path.is_dir()
                         && let Some(name) = path.file_name()
-                        && EXCLUDE_LIST.contains(&name.to_string_lossy().as_ref())
+                        && self
+                            .exclude
+                            .iter()
+                            .any(|e| e.as_str() == name.to_string_lossy())
                     {
                         continue;
                     }

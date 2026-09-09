@@ -35,6 +35,7 @@ pub struct GtsJsonValidationResult {
 pub struct GtsJsonValidator {
     path: PathBuf,
     cfg: GtsConfig,
+    exclude: Vec<String>,
     files: usize,
     documents: usize,
     entities: Vec<GtsEntity>,
@@ -43,11 +44,12 @@ pub struct GtsJsonValidator {
 
 impl GtsJsonValidator {
     #[must_use]
-    pub fn new(path: &str, cfg: GtsConfig) -> Self {
+    pub fn new(path: &str, cfg: GtsConfig, exclude: Vec<String>) -> Self {
         let expanded = shellexpand::tilde(path).to_string();
         GtsJsonValidator {
             path: PathBuf::from(expanded),
             cfg,
+            exclude,
             files: 0,
             documents: 0,
             entities: Vec::new(),
@@ -62,10 +64,10 @@ impl GtsJsonValidator {
             self.read_file(file_path);
         }
         self.check_schema_field_type();
-        let mut store = self.register_gts_entities();
+        let (mut store, registered) = self.register_gts_entities();
         let (schemas_count, instances_count) = self.count_schema_instance();
         self.validate_schemas(&mut store);
-        self.validate_instances(&mut store);
+        self.validate_instances(&mut store, &registered);
 
         let ok = self.issues.is_empty();
         GtsJsonValidationResult {
@@ -108,11 +110,22 @@ impl GtsJsonValidator {
         let mut files: Vec<PathBuf> = Vec::new();
         let mut seen = HashSet::new();
 
-        // No hard-coded directory exclusions: unrelated files (in `target/`,
-        // `node_modules/`, ...) are cheaply skipped by the GTS marker heuristic
-        // in `read_file` instead. This keeps the walk dependency-free of any
-        // baked-in path list.
-        for entry in WalkDir::new(&resolved).follow_links(true) {
+        // Clone into a local so the traversal closure does not borrow `self`
+        // (the loop body needs `&mut self` to record issues).
+        let exclude = self.exclude.clone();
+        for entry in WalkDir::new(&resolved)
+            .follow_links(true)
+            .into_iter()
+            .filter_entry(move |e| {
+                // Prune excluded directories before descending into them.
+                if e.file_type().is_dir()
+                    && let Some(name) = e.file_name().to_str()
+                {
+                    return !exclude.iter().any(|x| x == name);
+                }
+                true
+            })
+        {
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(e) => {
@@ -247,11 +260,12 @@ impl GtsJsonValidator {
         self.issues.extend(new_issues);
     }
 
-    fn register_gts_entities(&mut self) -> GtsStore {
+    fn register_gts_entities(&mut self) -> (GtsStore, HashSet<usize>) {
         let mut store = GtsStore::new();
         let mut keys: HashSet<String> = HashSet::new();
+        let mut registered: HashSet<usize> = HashSet::new();
 
-        for entity in &mut self.entities {
+        for (idx, entity) in self.entities.iter_mut().enumerate() {
             let Some(mut key) = Self::registry_key(entity) else {
                 // A schema ($schema present) that yields no registrable GTS id
                 // has a malformed or non-GTS $id — report it instead of
@@ -297,10 +311,12 @@ impl GtsJsonValidator {
                     message: e.to_string(),
                     index: entity.list_sequence,
                 });
+            } else {
+                registered.insert(idx);
             }
         }
 
-        store
+        (store, registered)
     }
 
     fn count_schema_instance(&self) -> (usize, usize) {
@@ -368,7 +384,7 @@ impl GtsJsonValidator {
         }
     }
 
-    fn validate_instances(&mut self, store: &mut GtsStore) {
+    fn validate_instances(&mut self, store: &mut GtsStore, registered: &HashSet<usize>) {
         // Validate instances after all schemas, using the same total order as
         // schemas: (derivation level, GTS ID, file name, array index). The
         // level is the GTS-ID chain depth (falling back to the declared type's
@@ -383,13 +399,17 @@ impl GtsJsonValidator {
         }
 
         let mut pending: Vec<Pending> = Vec::new();
-        for entity in &self.entities {
+        for (idx, entity) in self.entities.iter().enumerate() {
             if entity.is_schema {
                 continue;
             }
             let Some(registry_key) = Self::registry_key(entity) else {
                 continue;
             };
+            // Skip rejected duplicates: only validate successfully registered entities
+            if !registered.contains(&idx) {
+                continue;
+            }
             pending.push(Pending {
                 depth: Self::entity_depth(entity),
                 id: entity
@@ -515,7 +535,7 @@ mod tests {
     }
 
     fn run(dir: &Path) -> GtsJsonValidationResult {
-        GtsJsonValidator::new(dir.to_str().unwrap(), GtsConfig::default()).validate()
+        GtsJsonValidator::new(dir.to_str().unwrap(), GtsConfig::default(), vec![]).validate()
     }
 
     #[test]
