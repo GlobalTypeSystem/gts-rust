@@ -22,6 +22,14 @@ pub struct Cli {
     #[arg(long)]
     pub path: Option<String>,
 
+    /// Comma-separated directory names to exclude when scanning `--path`
+    #[arg(
+        long,
+        value_delimiter = ',',
+        default_value = "node_modules,dist,build,.git,target"
+    )]
+    pub exclude: Vec<String>,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -181,9 +189,10 @@ async fn run_command(cli: Cli) -> Result<()> {
     // Parse path into Vec<String>
     let cli_path = cli.path.clone();
     let path = cli.path.map(|p| vec![p]);
+    let exclude = cli.exclude.clone();
 
     // Create GtsOps
-    let mut ops = GtsOps::new(path, cli.config, cli.verbose as usize);
+    let mut ops = GtsOps::new_with_exclude(path, cli.config, cli.verbose as usize, exclude.clone());
 
     match cli.command {
         Commands::Server { host, port } => {
@@ -209,7 +218,8 @@ async fn run_command(cli: Cli) -> Result<()> {
                 .or(cli_path)
                 .ok_or_else(|| anyhow::anyhow!("validate-all requires --path"))?;
             let result =
-                crate::json_validation::GtsJsonValidator::new(&scan, ops.cfg.clone()).validate();
+                crate::json_validation::GtsJsonValidator::new(&scan, ops.cfg.clone(), exclude)
+                    .validate();
             print_result(&result)?;
             if !result.ok {
                 anyhow::bail!("validation failed: {} issue(s) found", result.issues.len());
