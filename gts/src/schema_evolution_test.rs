@@ -842,6 +842,59 @@ fn test_dialect_change_is_not_proven_compatible() {
     );
 }
 
+/// The four spellings of the Draft-07 URI all name one dialect, so a
+/// respelling must not degrade the verdict.
+#[test]
+fn test_equivalent_dialect_spellings_are_not_a_dialect_change() {
+    let doc = |dialect: &str| {
+        json!({
+            "$schema": dialect,
+            "type": "object",
+            "properties": {"a": {"type": "string"}},
+            "additionalProperties": false
+        })
+    };
+    let spellings = [
+        "http://json-schema.org/draft-07/schema#",
+        "http://json-schema.org/draft-07/schema",
+        "https://json-schema.org/draft-07/schema#",
+        "https://json-schema.org/draft-07/schema",
+    ];
+
+    for old in spellings {
+        for new in spellings {
+            let (old_schema, new_schema) = (doc(old), doc(new));
+            let (verdict, diagnostics) = check_backward_diagnostics(&old_schema, &new_schema);
+            assert_eq!(
+                verdict,
+                CompatibilityVerdict::Compatible,
+                "{old} -> {new}: {diagnostics:?}"
+            );
+            assert!(diagnostics.is_empty(), "{old} -> {new}: {diagnostics:?}");
+
+            let result = check_schema_compatibility(&old_schema, &new_schema);
+            assert!(result.full_compatibility.is_compatible());
+        }
+    }
+}
+
+/// Normalizing the spelling must not disarm the finding.
+#[test]
+fn test_dialect_change_survives_spelling_normalization() {
+    let old_schema = json!({
+        "$schema": "https://json-schema.org/draft-07/schema",
+        "type": "string"
+    });
+    let new_schema = json!({
+        "$schema": "http://json-schema.org/draft/2020-12/schema#",
+        "type": "string"
+    });
+
+    let (verdict, diagnostics) = check_backward_diagnostics(&old_schema, &new_schema);
+    assert!(verdict.is_unknown(), "{diagnostics:?}");
+    assert_finding(&diagnostics, "$", CompatibilityFinding::DialectChanged);
+}
+
 #[test]
 fn test_all_of_inherited_closure_controls_property_addition() {
     let old_schema = json!({
