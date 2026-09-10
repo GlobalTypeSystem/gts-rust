@@ -103,9 +103,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.102"
+version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "arraydeque"
@@ -540,7 +540,7 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "gts"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "gts-id",
  "jsonschema",
@@ -558,7 +558,7 @@ dependencies = [
 
 [[package]]
 name = "gts-cli"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -568,17 +568,19 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "shellexpand",
  "tempfile",
  "tokio",
  "tower",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "walkdir",
 ]
 
 [[package]]
 name = "gts-id"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "thiserror",
  "uuid",
@@ -586,7 +588,7 @@ dependencies = [
 
 [[package]]
 name = "gts-macros"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "gts",
  "gts-id",
@@ -603,7 +605,7 @@ dependencies = [
 
 [[package]]
 name = "gts-macros-cli"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -618,7 +620,7 @@ dependencies = [
 
 [[package]]
 name = "gts-validator"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "anyhow",
  "clap",

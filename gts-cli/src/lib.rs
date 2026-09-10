@@ -3,6 +3,7 @@ pub mod logging;
 
 // Other modules needed by CLI
 pub mod gen_schemas;
+pub mod json_validation;
 pub mod server;
 
 // Re-export CLI types and functions for testing
