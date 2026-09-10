@@ -361,7 +361,7 @@ impl GtsOps {
                     )
                 } else {
                     format!(
-                        "Unable to detect ID in instance entity. Instances must have an 'id' field (or one of the configured entity_id_fields):\n{}",
+                        "Unable to detect GTS ID in instance entity. Instances must have an 'id' field (or one of the configured entity_id_fields):\n{}",
                         self.get_details(&entity)
                     )
                 },
