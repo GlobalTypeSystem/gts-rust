@@ -285,6 +285,7 @@ impl GtsJsonValidator {
             // For anonymous instances (no GTS id, no selected entity field),
             // derive a stable UUID from the raw instance id.
             if !entity.is_schema
+                && entity.gts_id.is_none()
                 && entity.selected_entity_field.is_none()
                 && let Some(ref instance_id) = entity.instance_id
             {
