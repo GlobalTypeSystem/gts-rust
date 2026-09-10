@@ -2932,7 +2932,7 @@ mod tests {
         let result = ops.add_entity(&content, false);
         assert!(!result.ok, "Instance without id should fail");
         assert!(
-            result.error.contains("Unable to detect ID"),
+            result.error.contains("Unable to detect GTS ID"),
             "Error should mention missing ID"
         );
         assert!(
