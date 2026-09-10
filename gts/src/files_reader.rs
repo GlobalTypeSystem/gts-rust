@@ -80,7 +80,8 @@ impl GtsFileReader {
                     .into_iter()
                     .filter_entry(move |e| {
                         // Prune excluded directories before descending into them.
-                        if e.file_type().is_dir()
+                        if e.depth() > 0
+                            && e.file_type().is_dir()
                             && let Some(name) = e.file_name().to_str()
                         {
                             return !exclude.iter().any(|x| x == name);
@@ -374,6 +375,20 @@ mod tests {
             reader.files[0].to_string_lossy().ends_with("file1.json"),
             "Should find the main file"
         );
+    }
+
+    #[test]
+    fn test_collect_files_scans_explicitly_requested_excluded_root() {
+        let temp_dir = TempDir::new().unwrap();
+        let build = temp_dir.path().join("build");
+        fs::create_dir(&build).unwrap();
+        fs::write(build.join("schema.json"), r#"{"$id": "test"}"#).unwrap();
+
+        let paths = vec![build.to_string_lossy().to_string()];
+        let mut reader = GtsFileReader::new(&paths, None);
+        reader.collect_files();
+
+        assert_eq!(reader.files.len(), 1);
     }
 
     #[test]
