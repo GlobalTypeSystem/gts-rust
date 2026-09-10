@@ -6,19 +6,38 @@ use walkdir::WalkDir;
 use crate::entities::{GtsConfig, GtsEntity, GtsFile};
 use crate::store::GtsReader;
 
-const EXCLUDE_LIST: &[&str] = &["node_modules", "dist", "build"];
+/// Default directory names excluded from recursive file traversal when the
+/// caller does not provide an explicit exclude list (e.g. the CLI `--exclude`
+/// option). Kept here so direct library users get sensible behavior.
+const DEFAULT_EXCLUDE_LIST: &[&str] = &["node_modules", "dist", "build", ".git", "target"];
 const VALID_EXTENSIONS: &[&str] = &[".json", ".jsonc", ".gts", ".yaml", ".yml"];
 
 pub struct GtsFileReader {
     paths: Vec<PathBuf>,
     cfg: GtsConfig,
+    exclude: Vec<String>,
     files: Vec<PathBuf>,
     initialized: bool,
+}
+
+/// Default exclude list as owned strings (the CLI `--exclude` option overrides it).
+fn default_exclude() -> Vec<String> {
+    DEFAULT_EXCLUDE_LIST
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect()
 }
 
 impl GtsFileReader {
     #[must_use]
     pub fn new(path: &[String], cfg: Option<GtsConfig>) -> Self {
+        Self::new_with_exclude(path, cfg, default_exclude())
+    }
+
+    /// Like [`GtsFileReader::new`] but with an explicit list of directory names
+    /// to skip during recursive traversal (e.g. from the CLI `--exclude` option).
+    #[must_use]
+    pub fn new_with_exclude(path: &[String], cfg: Option<GtsConfig>, exclude: Vec<String>) -> Self {
         let paths = path
             .iter()
             .map(|p| PathBuf::from(shellexpand::tilde(p).to_string()))
@@ -27,6 +46,7 @@ impl GtsFileReader {
         GtsFileReader {
             paths,
             cfg: cfg.unwrap_or_default(),
+            exclude,
             files: Vec::new(),
             initialized: false,
         }
@@ -53,20 +73,24 @@ impl GtsFileReader {
                     }
                 }
             } else if resolved_path.is_dir() {
+                // Clone into a local so the closure does not borrow `self`.
+                let exclude = self.exclude.clone();
                 for entry in WalkDir::new(&resolved_path)
                     .follow_links(true)
                     .into_iter()
+                    .filter_entry(move |e| {
+                        // Prune excluded directories before descending into them.
+                        if e.depth() > 0
+                            && e.file_type().is_dir()
+                            && let Some(name) = e.file_name().to_str()
+                        {
+                            return !exclude.iter().any(|x| x == name);
+                        }
+                        true
+                    })
                     .flatten()
                 {
                     let path = entry.path();
-
-                    // Skip excluded directories
-                    if path.is_dir()
-                        && let Some(name) = path.file_name()
-                        && EXCLUDE_LIST.contains(&name.to_string_lossy().as_ref())
-                    {
-                        continue;
-                    }
 
                     if path.is_file()
                         && let Some(ext) = path.extension()
@@ -339,20 +363,32 @@ mod tests {
         let mut reader = GtsFileReader::new(&paths, None);
         reader.collect_files();
 
-        // Should find the main file
-        assert!(
-            !reader.files.is_empty(),
-            "Should find at least the main file"
+        // Only the top-level file should be collected; files inside excluded
+        // directories (node_modules, dist, build) must be pruned by filter_entry.
+        assert_eq!(
+            reader.files.len(),
+            1,
+            "Should find only the non-excluded file, got: {:?}",
+            reader.files
         );
+        assert!(
+            reader.files[0].to_string_lossy().ends_with("file1.json"),
+            "Should find the main file"
+        );
+    }
 
-        // Count files in excluded directories - the current implementation
-        // still collects files from these directories but we're verifying
-        // that the main file is collected. This test verifies the basic behavior.
-        let main_file_found = reader.files.iter().any(|f| {
-            let path_str = f.to_string_lossy();
-            path_str.ends_with("file1.json")
-        });
-        assert!(main_file_found, "Should find the main file");
+    #[test]
+    fn test_collect_files_scans_explicitly_requested_excluded_root() {
+        let temp_dir = TempDir::new().unwrap();
+        let build = temp_dir.path().join("build");
+        fs::create_dir(&build).unwrap();
+        fs::write(build.join("schema.json"), r#"{"$id": "test"}"#).unwrap();
+
+        let paths = vec![build.to_string_lossy().to_string()];
+        let mut reader = GtsFileReader::new(&paths, None);
+        reader.collect_files();
+
+        assert_eq!(reader.files.len(), 1);
     }
 
     #[test]
