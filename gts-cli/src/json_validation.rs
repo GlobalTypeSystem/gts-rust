@@ -65,8 +65,8 @@ impl GtsJsonValidator {
         }
         self.check_schema_field_type();
         let (mut store, registered) = self.register_gts_entities();
-        let (schemas_count, instances_count) = self.count_schema_instance();
-        self.validate_schemas(&mut store);
+        let (schemas_count, instances_count) = self.count_schema_instance(&registered);
+        self.validate_schemas(&mut store, &registered);
         self.validate_instances(&mut store, &registered);
 
         let ok = self.issues.is_empty();
@@ -118,7 +118,8 @@ impl GtsJsonValidator {
             .into_iter()
             .filter_entry(move |e| {
                 // Prune excluded directories before descending into them.
-                if e.file_type().is_dir()
+                if e.depth() > 0
+                    && e.file_type().is_dir()
                     && let Some(name) = e.file_name().to_str()
                 {
                     return !exclude.iter().any(|x| x == name);
@@ -271,11 +272,15 @@ impl GtsJsonValidator {
                 // has a malformed or non-GTS $id — report it instead of
                 // silently dropping it. Non-schema documents without an id are
                 // simply ignored.
-                if entity.is_schema {
+                if entity.is_schema || entity.selected_entity_field.is_some() {
                     self.issues.push(GtsJsonValidationIssue {
                         file: Self::entity_file(entity),
                         stage: "registry".to_owned(),
-                        message: "GTS schema has a malformed or non-GTS $id".to_owned(),
+                        message: if entity.is_schema {
+                            "GTS schema has a malformed or non-GTS $id".to_owned()
+                        } else {
+                            "GTS instance has a malformed or non-GTS ID".to_owned()
+                        },
                         index: entity.list_sequence,
                     });
                 }
@@ -320,11 +325,11 @@ impl GtsJsonValidator {
         (store, registered)
     }
 
-    fn count_schema_instance(&self) -> (usize, usize) {
+    fn count_schema_instance(&self, registered: &HashSet<usize>) -> (usize, usize) {
         let mut schemas = 0;
         let mut instances = 0;
-        for entity in &self.entities {
-            if Self::registry_key(entity).is_none() {
+        for (idx, entity) in self.entities.iter().enumerate() {
+            if !registered.contains(&idx) {
                 continue;
             }
             if entity.is_schema {
@@ -336,7 +341,7 @@ impl GtsJsonValidator {
         (schemas, instances)
     }
 
-    fn validate_schemas(&mut self, store: &mut GtsStore) {
+    fn validate_schemas(&mut self, store: &mut GtsStore, registered: &HashSet<usize>) {
         // Validate schemas ordered by (derivation level, GTS ID, file name,
         // array index): base types (level 1) first, then level-2 derivations,
         // level-3, and so on — each level a total order on the remaining keys.
@@ -349,7 +354,10 @@ impl GtsJsonValidator {
         }
 
         let mut schemas: Vec<Pending> = Vec::new();
-        for entity in &self.entities {
+        for (idx, entity) in self.entities.iter().enumerate() {
+            if !registered.contains(&idx) {
+                continue;
+            }
             if entity.is_schema
                 && let Some(ref gts_id) = entity.gts_id
             {
@@ -632,6 +640,72 @@ mod tests {
             "expected a duplicate diagnostic, got: {:?}",
             result.issues
         );
+    }
+
+    #[test]
+    fn test_duplicate_invalid_schema_is_not_revalidated_or_counted() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "a.schema.json", &invalid_base("duplicate"));
+        write(dir.path(), "b.schema.json", &invalid_base("duplicate"));
+
+        let result = run(dir.path());
+
+        assert_eq!(result.schemas, 1);
+        assert_eq!(result.gts_entities, 1);
+        assert_eq!(
+            result
+                .issues
+                .iter()
+                .filter(|issue| issue.stage == "base-type")
+                .count(),
+            1,
+            "issues: {:?}",
+            result.issues
+        );
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.stage == "registry" && issue.message.contains("Duplicate"))
+        );
+    }
+
+    #[test]
+    fn test_malformed_gts_instance_id_is_reported() {
+        let dir = TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "bad.json",
+            r#"{ "id": "gts://gtx.cli.core.test.bad.v1~", "value": 42 }"#,
+        );
+
+        let result = run(dir.path());
+
+        assert!(!result.ok, "issues: {:?}", result.issues);
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.stage == "registry" && issue.message.contains("malformed"))
+        );
+    }
+
+    #[test]
+    fn test_explicitly_requested_excluded_root_is_scanned() {
+        let dir = TempDir::new().unwrap();
+        let build = dir.path().join("build");
+        fs::create_dir(&build).unwrap();
+        write(&build, "base.schema.json", &base_schema());
+
+        let result = GtsJsonValidator::new(
+            build.to_str().unwrap(),
+            GtsConfig::default(),
+            vec!["build".to_owned()],
+        )
+        .validate();
+
+        assert!(result.ok, "issues: {:?}", result.issues);
+        assert_eq!(result.schemas, 1);
     }
 
     #[test]
