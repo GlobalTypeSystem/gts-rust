@@ -197,7 +197,7 @@ glob = "0.3"
 colored = "3.0"
 
 # Format parsing
-serde-saphyr = "0.0.24"
+serde-saphyr = "1.3.0"
 
 # --- Local dev speed -----------------------------------------------------------
 # Drop debuginfo on dependencies (the main source of target/ bloat) and keep only
