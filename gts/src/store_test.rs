@@ -6678,6 +6678,91 @@ fn test_trait_ref_into_an_unknown_type_is_tolerated() {
         .expect("an unverifiable reference must not fail validation");
 }
 
+/// A registry that answers point lookups but cannot be enumerated - the shape
+/// of a network- or database-backed [`GtsReader`]. `GtsFileReader` is the
+/// mirror image (enumerable, no random access), so only a reader like this one
+/// can hold a type the eager `populate_from_reader` pass never cached.
+struct LazyLookupReader {
+    entities: Vec<GtsEntity>,
+}
+
+impl GtsReader for LazyLookupReader {
+    fn iter(&mut self) -> Box<dyn Iterator<Item = GtsEntity> + '_> {
+        Box::new(std::iter::empty())
+    }
+
+    fn read_by_id(&self, entity_id: &str) -> Option<GtsEntity> {
+        self.entities
+            .iter()
+            .find(|entity| entity.effective_id().as_deref() == Some(entity_id))
+            .cloned()
+    }
+
+    fn reset(&mut self) {}
+}
+
+#[test]
+fn test_trait_ref_into_a_reader_supplied_type_is_not_tolerated() {
+    let cfg = GtsConfig::default();
+    let schema_entity = |content: &Value| {
+        GtsEntity::new(
+            None,
+            None,
+            content,
+            Some(&cfg),
+            None,
+            false,
+            String::new(),
+            None,
+            None,
+        )
+    };
+
+    // The owning type reaches the store only through the reader.
+    let mut store = GtsStore::with_reader(Box::new(LazyLookupReader {
+        entities: vec![schema_entity(&json!({
+            "$id": "gts://gts.x.tv.pkg.target.v1~",
+            "$schema": DRAFT7,
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+        }))],
+    }));
+
+    for content in [
+        json!({
+            "$id": "gts://gts.x.tv.pkg.event.v1~",
+            "$schema": DRAFT7,
+            "type": "object",
+            "x-gts-traits-schema": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "x-gts-ref": "gts.x.tv.pkg.target.v1~"},
+                },
+            },
+            "properties": {"id": {"type": "string"}},
+        }),
+        json!({
+            "$id": "gts://gts.x.tv.pkg.event.v1~x.tv._.leaf.v1~",
+            "$schema": DRAFT7,
+            "type": "object",
+            "allOf": [{"$ref": "gts://gts.x.tv.pkg.event.v1~"}],
+            "x-gts-traits": {"topic": "gts.x.tv.pkg.target.v1~x.tv._.missing.v1"},
+        }),
+    ] {
+        store.register(schema_entity(&content)).expect("registers");
+    }
+
+    assert!(
+        !store.by_id.contains_key("gts.x.tv.pkg.target.v1~"),
+        "the owning type must stay uncached, or the check below proves nothing"
+    );
+
+    let err = store
+        .validate_schema("gts.x.tv.pkg.event.v1~x.tv._.leaf.v1~")
+        .expect_err("a dangling reference into a reader-supplied type must fail");
+    assert!(err.to_string().contains("not registered"), "{err}");
+}
+
 #[test]
 fn test_trait_branch_that_does_not_apply_cannot_reject_the_values() {
     let constrained = json!({

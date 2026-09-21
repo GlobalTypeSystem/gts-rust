@@ -791,7 +791,14 @@ impl GtsStore {
         })
     }
 
-    /// Checks local references; accepts unverifiable external registries.
+    /// Checks references the store can reach; accepts unverifiable external
+    /// registries.
+    ///
+    /// Reachability is decided through [`Self::get`] for both the owning type
+    /// and the reference itself, so a [`GtsReader`] that serves the type must
+    /// serve the instance too. Gating the type on `by_id` alone would wave a
+    /// dangling reference through whenever the type is only lazily readable.
+    /// Both lookups warm the reader cache - that is what the `&mut self` is for.
     fn reference_is_satisfied(&mut self, reference: &str) -> bool {
         let Ok(gid) = GtsId::try_new(reference) else {
             return true;
@@ -801,7 +808,7 @@ impl GtsStore {
             return true;
         };
 
-        if !self.by_id.contains_key(&owning_type) {
+        if self.get(&owning_type).is_none() {
             return true;
         }
 
