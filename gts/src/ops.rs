@@ -662,6 +662,20 @@ impl GtsOps {
     }
 
     pub fn add_schema(&mut self, type_id: String, schema: &Value) -> GtsAddSchemaResult {
+        // The structural keyword guard `add_entity` applies is enforced at
+        // every ingest, and this route is one. Skipping it let `/type-schemas`
+        // admit schemas `/entities` refuses, leaving the store holding a
+        // document `validate_schema` then reports as invalid. Pure check, so it
+        // runs before `register_schema` for the same reason it does there.
+        if let Err(error) = crate::schema_modifiers::validate_gts_keywords(schema) {
+            return GtsAddSchemaResult {
+                ok: false,
+                id: String::new(),
+                error,
+                rejection: None,
+            };
+        }
+
         match self.store.register_schema(&type_id, schema) {
             Ok(()) => GtsAddSchemaResult {
                 ok: true,
@@ -3614,6 +3628,44 @@ mod tests {
             Some(schema("string")),
             "the committed schema must stay"
         );
+    }
+
+    #[test]
+    fn test_add_schema_refuses_a_misplaced_keyword_like_add_entity() {
+        let mut ops = GtsOps::new(None, None, 0);
+        let type_id = "gts.x.parity._.misplaced.v1~";
+        let schema = json!({
+            "type": "object",
+            "properties": {"a": {"type": "string", "x-gts-traits": {"k": "v"}}},
+        });
+
+        let refused = ops.add_schema(type_id.to_owned(), &schema);
+        assert!(!refused.ok, "a misplaced trait keyword must be refused");
+        assert!(
+            refused.rejection.is_none(),
+            "a malformed schema is not an id conflict"
+        );
+        assert_eq!(
+            refused.error,
+            "x-gts-traits must be at the schema top level"
+        );
+        assert!(
+            ops.get_entity(type_id).content.is_none(),
+            "the refused schema must not reach the store"
+        );
+
+        // The same content through the other ingest gives the same verdict.
+        let via_entity = ops.add_entity(
+            &json!({
+                "$id": "gts://gts.x.parity._.viaentity.v1~",
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "properties": {"a": {"type": "string", "x-gts-traits": {"k": "v"}}},
+            }),
+            false,
+        );
+        assert!(!via_entity.ok);
+        assert_eq!(via_entity.error, refused.error);
     }
 
     #[test]

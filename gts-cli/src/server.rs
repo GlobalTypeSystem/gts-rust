@@ -270,10 +270,10 @@ async fn add_schema(
         Err(response) => return response.into_response(),
     };
     let result = ops.add_schema(body.type_id, &body.type_schema);
-    let status = if result.rejection == Some(AddEntityRejection::Conflict) {
-        StatusCode::CONFLICT
-    } else {
-        StatusCode::OK
+    let status = match (result.ok, result.rejection) {
+        (true, _) => StatusCode::OK,
+        (false, Some(AddEntityRejection::Conflict)) => StatusCode::CONFLICT,
+        (false, None) => StatusCode::UNPROCESSABLE_ENTITY,
     };
     (status, Json(result)).into_response()
 }
