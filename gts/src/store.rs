@@ -22,6 +22,8 @@ pub enum StoreError {
     InvalidEntity(String),
     #[error("Invalid GTS type id: {0}")]
     InvalidTypeId(GtsIdError),
+    #[error("Entity ID '{0}' is already registered with different content")]
+    ImmutableConflict(String),
     #[error("{0}")]
     ValidationError(String),
     #[error("Invalid $ref: {0}")]
@@ -223,12 +225,25 @@ impl GtsStore {
 
     /// Registers an entity in the store.
     ///
+    /// Ids are immutable: resubmitting identical content is a no-op that
+    /// leaves the committed entity in place, and rebinding an id to different
+    /// content is refused.
+    ///
     /// # Errors
-    /// Returns `StoreError::InvalidEntity` if the entity has no effective ID.
+    /// Returns `StoreError::InvalidEntity` if the entity has no effective ID,
+    /// or `StoreError::ImmutableConflict` if the id is already bound to
+    /// different content.
     pub fn register(&mut self, entity: GtsEntity) -> Result<(), StoreError> {
         let id = entity
             .effective_id()
             .ok_or_else(|| StoreError::InvalidEntity("Entity has no effective ID".to_owned()))?;
+        if let Some(existing) = self.get(&id) {
+            return if existing.content == entity.content {
+                Ok(())
+            } else {
+                Err(StoreError::ImmutableConflict(id))
+            };
+        }
         self.by_id.insert(id, entity);
         Ok(())
     }

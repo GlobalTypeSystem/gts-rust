@@ -161,6 +161,16 @@ pub struct GtsAddEntityResult {
     pub is_type_schema: bool,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub error: String,
+    /// Machine-readable rejection reason, omitted from serialized responses.
+    #[serde(skip)]
+    pub rejection: Option<AddEntityRejection>,
+}
+
+/// Reason an entity registration was rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddEntityRejection {
+    /// The ID is already bound to different content.
+    Conflict,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -370,6 +380,7 @@ impl GtsOps {
                         self.get_details(&entity)
                     )
                 },
+                rejection: None,
             };
         };
 
@@ -387,11 +398,13 @@ impl GtsOps {
                 type_id: None,
                 is_type_schema: entity.is_schema,
                 error: e,
+                rejection: None,
             };
         }
 
-        // Register the entity
         if let Err(e) = self.store.register(entity.clone()) {
+            let rejection = matches!(e, crate::store::StoreError::ImmutableConflict(_))
+                .then_some(AddEntityRejection::Conflict);
             return GtsAddEntityResult {
                 ok: false,
                 id: String::new(),
@@ -401,6 +414,7 @@ impl GtsOps {
                     "Unable to register entity: {e}\n{}",
                     self.get_details(&entity)
                 ),
+                rejection,
             };
         }
 
@@ -425,6 +439,7 @@ impl GtsOps {
                         "Schema validation failed: {e}\n{}",
                         self.get_details(&entity)
                     ),
+                    rejection: None,
                 };
             }
         }
@@ -443,6 +458,7 @@ impl GtsOps {
                     "Instance validation failed: {e}\n{}",
                     self.get_details(&entity)
                 ),
+                rejection: None,
             };
         }
 
@@ -454,6 +470,7 @@ impl GtsOps {
             type_id: entity.type_id,
             is_type_schema: entity.is_schema,
             error: String::new(),
+            rejection: None,
         }
     }
 
@@ -1603,6 +1620,7 @@ mod tests {
             type_id: None,
             is_type_schema: false,
             error: String::new(),
+            rejection: None,
         };
 
         let json = to_json_obj(&result);
@@ -1624,6 +1642,7 @@ mod tests {
                 type_id: None,
                 is_type_schema: false,
                 error: String::new(),
+                rejection: None,
             },
             GtsAddEntityResult {
                 ok: true,
@@ -1631,6 +1650,7 @@ mod tests {
                 type_id: None,
                 is_type_schema: false,
                 error: String::new(),
+                rejection: None,
             },
         ];
 

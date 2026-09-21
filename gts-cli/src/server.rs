@@ -7,6 +7,7 @@ use axum::{
     routing::{get, post},
 };
 use gts::GtsOps;
+use gts::ops::AddEntityRejection;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -240,11 +241,12 @@ async fn add_entity(
         Err(response) => return response.into_response(),
     };
     let result = ops.add_entity(&body, params.validate);
-    if result.ok {
-        (StatusCode::OK, Json(result)).into_response()
-    } else {
-        (StatusCode::UNPROCESSABLE_ENTITY, Json(result)).into_response()
-    }
+    let status = match (result.ok, result.rejection) {
+        (true, _) => StatusCode::OK,
+        (false, Some(AddEntityRejection::Conflict)) => StatusCode::CONFLICT,
+        (false, None) => StatusCode::UNPROCESSABLE_ENTITY,
+    };
+    (status, Json(result)).into_response()
 }
 
 async fn add_entities(

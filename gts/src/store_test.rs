@@ -519,8 +519,84 @@ fn test_gts_store_register_duplicate() {
     store.register(entity1).expect("test");
     let result = store.register(entity2);
 
-    // Should still succeed (overwrites)
     assert!(result.is_ok());
+}
+
+#[test]
+fn test_gts_store_register_identical_content_keeps_committed_entity() {
+    let mut store = GtsStore::new();
+    let cfg = GtsConfig::default();
+
+    let content = json!({
+        "id": "gts.vendor.package.namespace.type.v1.0",
+        "name": "test"
+    });
+    // `list_sequence` tells the two otherwise identical entities apart.
+    let make = |sequence: usize| {
+        GtsEntity::new(
+            None,
+            Some(sequence),
+            &content,
+            Some(&cfg),
+            None,
+            false,
+            String::new(),
+            None,
+            None,
+        )
+    };
+
+    store.register(make(1)).expect("test");
+    store.register(make(2)).expect("test");
+
+    assert_eq!(store.items().count(), 1);
+    assert_eq!(
+        store
+            .get("gts.vendor.package.namespace.type.v1.0")
+            .expect("test")
+            .list_sequence,
+        Some(1)
+    );
+}
+
+#[test]
+fn test_gts_store_register_rejects_changed_content() {
+    let mut store = GtsStore::new();
+    let cfg = GtsConfig::default();
+
+    let make = |name: &str| {
+        let content = json!({
+            "id": "gts.vendor.package.namespace.type.v1.0",
+            "name": name
+        });
+        GtsEntity::new(
+            None,
+            None,
+            &content,
+            Some(&cfg),
+            None,
+            false,
+            String::new(),
+            None,
+            None,
+        )
+    };
+
+    store.register(make("first")).expect("test");
+    let err = store.register(make("second")).expect_err("test");
+
+    assert!(
+        matches!(&err, StoreError::ImmutableConflict(id)
+            if id == "gts.vendor.package.namespace.type.v1.0"),
+        "unexpected error: {err}"
+    );
+    assert_eq!(
+        store
+            .get("gts.vendor.package.namespace.type.v1.0")
+            .expect("test")
+            .content["name"],
+        json!("first")
+    );
 }
 
 #[test]
