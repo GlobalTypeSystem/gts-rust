@@ -11,7 +11,7 @@ use crate::path_resolver::JsonPathResolver;
 use crate::schema_cast::GtsEntityCastResult;
 #[cfg(test)]
 use crate::schema_evolution::CompatibilityVerdict;
-use crate::store::{GtsStore, GtsStoreQueryResult};
+use crate::store::{GtsStore, GtsStoreQueryResult, Registration};
 
 /// `is_schema` is `Some(true)` for schema/type IDs (ending with `~`),
 /// `Some(false)` for instance IDs and wildcard patterns that match instances,
@@ -186,6 +186,9 @@ pub struct GtsAddSchemaResult {
     pub id: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub error: String,
+    /// Machine-readable rejection reason, omitted from serialized responses.
+    #[serde(skip)]
+    pub rejection: Option<AddEntityRejection>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -402,21 +405,24 @@ impl GtsOps {
             };
         }
 
-        if let Err(e) = self.store.register(entity.clone()) {
-            let rejection = matches!(e, crate::store::StoreError::ImmutableConflict(_))
-                .then_some(AddEntityRejection::Conflict);
-            return GtsAddEntityResult {
-                ok: false,
-                id: String::new(),
-                type_id: None,
-                is_type_schema: entity.is_schema,
-                error: format!(
-                    "Unable to register entity: {e}\n{}",
-                    self.get_details(&entity)
-                ),
-                rejection,
-            };
-        }
+        let registration = match self.store.register_with_outcome(entity.clone()) {
+            Ok(registration) => registration,
+            Err(e) => {
+                let rejection = matches!(e, crate::store::StoreError::ImmutableConflict(_))
+                    .then_some(AddEntityRejection::Conflict);
+                return GtsAddEntityResult {
+                    ok: false,
+                    id: String::new(),
+                    type_id: None,
+                    is_type_schema: entity.is_schema,
+                    error: format!(
+                        "Unable to register entity: {e}\n{}",
+                        self.get_details(&entity)
+                    ),
+                    rejection,
+                };
+            }
+        };
 
         // Validate schemas. Without `validate` we only check `$ref`/`x-gts-ref`
         // structure — no dependency resolution, so forward-reference batches can
@@ -430,17 +436,12 @@ impl GtsOps {
                 self.store.validate_schema_refs(&entity_id)
             };
             if let Err(e) = validation {
-                return GtsAddEntityResult {
-                    ok: false,
-                    id: String::new(),
-                    type_id: None,
-                    is_type_schema: entity.is_schema,
-                    error: format!(
-                        "Schema validation failed: {e}\n{}",
-                        self.get_details(&entity)
-                    ),
-                    rejection: None,
-                };
+                return self.reject_registration(
+                    &entity,
+                    &entity_id,
+                    registration,
+                    &format!("Schema validation failed: {e}"),
+                );
             }
         }
 
@@ -449,17 +450,12 @@ impl GtsOps {
             && !entity.is_schema
             && let Err(e) = self.store.validate_instance(&entity_id)
         {
-            return GtsAddEntityResult {
-                ok: false,
-                id: String::new(),
-                type_id: None,
-                is_type_schema: entity.is_schema,
-                error: format!(
-                    "Instance validation failed: {e}\n{}",
-                    self.get_details(&entity)
-                ),
-                rejection: None,
-            };
+            return self.reject_registration(
+                &entity,
+                &entity_id,
+                registration,
+                &format!("Instance validation failed: {e}"),
+            );
         }
 
         // println!("submitted: {}", self.get_content_pretty(&entity));
@@ -470,6 +466,29 @@ impl GtsOps {
             type_id: entity.type_id,
             is_type_schema: entity.is_schema,
             error: String::new(),
+            rejection: None,
+        }
+    }
+
+    /// Rejects an entity whose post-registration validation failed, undoing the
+    /// insert this call made. An id already committed with identical content
+    /// keeps its entity.
+    fn reject_registration(
+        &mut self,
+        entity: &GtsEntity,
+        entity_id: &str,
+        registration: Registration,
+        error: &str,
+    ) -> GtsAddEntityResult {
+        if registration == Registration::Inserted {
+            self.store.unregister(entity_id);
+        }
+        GtsAddEntityResult {
+            ok: false,
+            id: String::new(),
+            type_id: None,
+            is_type_schema: entity.is_schema,
+            error: format!("{error}\n{}", self.get_details(entity)),
             rejection: None,
         }
     }
@@ -648,6 +667,7 @@ impl GtsOps {
                 ok: true,
                 id: type_id,
                 error: String::new(),
+                rejection: None,
             },
             Err(e) => GtsAddSchemaResult {
                 ok: false,
@@ -666,6 +686,8 @@ impl GtsOps {
                         None,
                     ))
                 ),
+                rejection: matches!(e, crate::store::StoreError::ImmutableConflict(_))
+                    .then_some(AddEntityRejection::Conflict),
             },
         }
     }
@@ -1669,6 +1691,7 @@ mod tests {
             ok: true,
             id: "gts.vendor.package.namespace.type.v1.0~".to_owned(),
             error: String::new(),
+            rejection: None,
         };
 
         let json = to_json_obj(&result);
@@ -3424,6 +3447,173 @@ mod tests {
         assert!(result.ok, "Schema with valid $id should succeed");
         assert_eq!(result.id, "gts.vendor.package.namespace.type.v1.0~");
         assert!(result.is_type_schema);
+    }
+
+    #[test]
+    fn test_add_entity_rolls_back_a_schema_that_fails_validation() {
+        let mut ops = GtsOps::new(None, None, 0);
+        let schema = |reference: &str| {
+            json!({
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "$id": "gts://gts.x.rollback._.schema.v1~",
+                "type": "object",
+                "properties": {"child": {"$ref": reference}}
+            })
+        };
+
+        let rejected = ops.add_entity(&schema("https://example.com/other.json"), false);
+        assert!(!rejected.ok, "a malformed $ref must be rejected");
+        assert!(rejected.rejection.is_none());
+        assert!(
+            !ops.get_entity("gts.x.rollback._.schema.v1~").ok,
+            "the rejected schema must not stay registered"
+        );
+
+        let accepted = ops.add_entity(&schema("#"), false);
+        assert!(
+            accepted.ok,
+            "a corrected body for the same id must be accepted: {}",
+            accepted.error
+        );
+        assert_eq!(
+            ops.get_entity("gts.x.rollback._.schema.v1~").content,
+            Some(schema("#"))
+        );
+    }
+
+    #[test]
+    fn test_add_entity_rolls_back_an_instance_that_fails_validation() {
+        let mut ops = GtsOps::new(None, None, 0);
+        let schema = json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "$id": "gts://gts.x.rollback._.instance.v1~",
+            "type": "object",
+            "required": ["value"],
+            "properties": {"value": {"type": "string"}}
+        });
+        assert!(ops.add_entity(&schema, true).ok, "the type must register");
+
+        let instance_id = "gts.x.rollback._.instance.v1~x.rollback._.example.v1";
+        let instance = |value: Value| {
+            json!({
+                "id": instance_id,
+                "type": "gts.x.rollback._.instance.v1~",
+                "value": value
+            })
+        };
+
+        let rejected = ops.add_entity(&instance(json!(1)), true);
+        assert!(
+            !rejected.ok,
+            "an instance violating its type must be rejected"
+        );
+        assert!(rejected.rejection.is_none());
+        assert!(
+            !ops.get_entity(instance_id).ok,
+            "the rejected instance must not stay registered"
+        );
+
+        let accepted = ops.add_entity(&instance(json!("fixed")), true);
+        assert!(
+            accepted.ok,
+            "a corrected body for the same id must be accepted: {}",
+            accepted.error
+        );
+        assert_eq!(
+            ops.get_entity(instance_id).content,
+            Some(instance(json!("fixed")))
+        );
+    }
+
+    #[test]
+    fn test_add_entity_keeps_a_committed_instance_when_revalidation_fails() {
+        let mut ops = GtsOps::new(None, None, 0);
+        let instance_id = "gts.x.rollback._.orphan.v1~x.rollback._.example.v1";
+        let instance = json!({
+            "id": instance_id,
+            "type": "gts.x.rollback._.orphan.v1~",
+            "value": "kept"
+        });
+
+        assert!(
+            ops.add_entity(&instance, false).ok,
+            "unvalidated add stores"
+        );
+
+        let revalidated = ops.add_entity(&instance, true);
+        assert!(
+            !revalidated.ok,
+            "validation must fail while the type is unregistered"
+        );
+
+        let stored = ops.get_entity(instance_id);
+        assert!(
+            stored.ok,
+            "the committed instance must survive: {}",
+            stored.error
+        );
+        assert_eq!(stored.content, Some(instance));
+    }
+
+    #[test]
+    fn test_add_entity_keeps_a_committed_schema_when_revalidation_fails() {
+        let mut ops = GtsOps::new(None, None, 0);
+        let schema = json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "$id": "gts://gts.x.rollback._.forward.v1~",
+            "type": "object",
+            "properties": {"child": {"$ref": "gts://gts.x.rollback._.absent.v1~"}}
+        });
+
+        assert!(
+            ops.add_entity(&schema, false).ok,
+            "a forward reference registers without validation"
+        );
+
+        let revalidated = ops.add_entity(&schema, true);
+        assert!(
+            !revalidated.ok,
+            "validation must fail while the target is unregistered"
+        );
+
+        let stored = ops.get_entity("gts.x.rollback._.forward.v1~");
+        assert!(
+            stored.ok,
+            "the committed schema must survive: {}",
+            stored.error
+        );
+        assert_eq!(stored.content, Some(schema));
+    }
+
+    #[test]
+    fn test_add_schema_rejects_changed_content_for_a_registered_id() {
+        let mut ops = GtsOps::new(None, None, 0);
+        let type_id = "gts.x.rollback._.explicit.v1~";
+        let schema = |value_type: &str| {
+            json!({
+                "type": "object",
+                "properties": {"value": {"type": value_type}}
+            })
+        };
+
+        let first = ops.add_schema(type_id.to_owned(), &schema("string"));
+        assert!(first.ok, "{}", first.error);
+        assert_eq!(first.id, type_id);
+        assert!(first.rejection.is_none());
+
+        let resubmitted = ops.add_schema(type_id.to_owned(), &schema("string"));
+        assert!(resubmitted.ok, "identical content is accepted");
+        assert!(resubmitted.rejection.is_none());
+
+        let conflict = ops.add_schema(type_id.to_owned(), &schema("integer"));
+        assert!(!conflict.ok, "changed content must be refused");
+        assert_eq!(conflict.rejection, Some(AddEntityRejection::Conflict));
+        assert!(conflict.id.is_empty());
+        assert_eq!(
+            ops.get_entity(type_id).content,
+            Some(schema("string")),
+            "the committed schema must stay"
+        );
     }
 
     #[test]

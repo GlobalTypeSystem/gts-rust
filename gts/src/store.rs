@@ -142,9 +142,8 @@ impl SchemaComparison {
 /// A pure value computed from store contents — the library holds **no cache**
 /// of these. Because schemas are append-only by versioned id (a new version is
 /// a new `type_id`), a `ResolvedType` is safe for a *consumer* to cache forever
-/// keyed by `type_id`. Note this relies on callers honoring id immutability:
-/// `register_schema` does not itself reject re-registering an existing id, so a
-/// consumer that overwrites ids in place must invalidate its own cache.
+/// keyed by `type_id`: [`GtsStore::register_schema`] refuses to rebind an id to
+/// different content.
 #[derive(Debug, Clone)]
 pub struct ResolvedType {
     /// The type id this resolution is for (the `type_id` passed to
@@ -161,6 +160,15 @@ pub struct ResolvedType {
     pub effective_traits: Value,
     /// Dialect-pinned, `allOf`-composed, `$ref`-inlined effective traits schema.
     pub effective_traits_schema: Value,
+}
+
+/// Whether a [`GtsStore::register`] call changed the store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Registration {
+    /// The id was unbound and now holds the submitted entity.
+    Inserted,
+    /// The id already held identical content; the store is untouched.
+    Unchanged,
 }
 
 pub struct GtsStore {
@@ -234,18 +242,34 @@ impl GtsStore {
     /// or `StoreError::ImmutableConflict` if the id is already bound to
     /// different content.
     pub fn register(&mut self, entity: GtsEntity) -> Result<(), StoreError> {
+        self.register_with_outcome(entity).map(|_| ())
+    }
+
+    /// [`Self::register`], reporting whether the store changed.
+    ///
+    /// # Errors
+    /// See [`Self::register`].
+    pub(crate) fn register_with_outcome(
+        &mut self,
+        entity: GtsEntity,
+    ) -> Result<Registration, StoreError> {
         let id = entity
             .effective_id()
             .ok_or_else(|| StoreError::InvalidEntity("Entity has no effective ID".to_owned()))?;
         if let Some(existing) = self.get(&id) {
             return if existing.content == entity.content {
-                Ok(())
+                Ok(Registration::Unchanged)
             } else {
                 Err(StoreError::ImmutableConflict(id))
             };
         }
         self.by_id.insert(id, entity);
-        Ok(())
+        Ok(Registration::Inserted)
+    }
+
+    /// Drops an id's binding, undoing a [`Registration::Inserted`].
+    pub(crate) fn unregister(&mut self, entity_id: &str) {
+        self.by_id.remove(entity_id);
     }
 
     /// Runs `action` with a temporary entity and restores the store on exit.
@@ -281,8 +305,12 @@ impl GtsStore {
 
     /// Registers a schema in the store.
     ///
+    /// Ids are immutable here too: see [`Self::register`].
+    ///
     /// # Errors
-    /// Returns `StoreError::InvalidTypeId` if `type_id` is not a valid GTS type id.
+    /// Returns `StoreError::InvalidTypeId` if `type_id` is not a valid GTS type
+    /// id, or `StoreError::ImmutableConflict` if the id is already bound to
+    /// different content.
     pub fn register_schema(&mut self, type_id: &str, schema: &Value) -> Result<(), StoreError> {
         let gts_id = GtsId::try_new(type_id).map_err(StoreError::InvalidTypeId)?;
         if !gts_id.is_type() {
@@ -304,8 +332,7 @@ impl GtsStore {
         );
         // The API declares schema intent even without `$schema`.
         entity.is_schema = true;
-        self.by_id.insert(type_id.to_owned(), entity);
-        Ok(())
+        self.register(entity)
     }
 
     pub fn get(&mut self, entity_id: &str) -> Option<&GtsEntity> {

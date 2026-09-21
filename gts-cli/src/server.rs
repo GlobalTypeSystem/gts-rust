@@ -270,7 +270,12 @@ async fn add_schema(
         Err(response) => return response.into_response(),
     };
     let result = ops.add_schema(body.type_id, &body.type_schema);
-    Json(result).into_response()
+    let status = if result.rejection == Some(AddEntityRejection::Conflict) {
+        StatusCode::CONFLICT
+    } else {
+        StatusCode::OK
+    };
+    (status, Json(result)).into_response()
 }
 
 async fn validate_id(

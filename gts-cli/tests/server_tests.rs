@@ -518,13 +518,17 @@ async fn test_attr_endpoint() {
 }
 
 #[allow(clippy::unwrap_used)]
-async fn post_entity(app: &Router, body: &serde_json::Value) -> (StatusCode, serde_json::Value) {
+async fn post_json(
+    app: &Router,
+    uri: &str,
+    body: &serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
     let response = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/entities")
+                .uri(uri)
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(body).unwrap()))
                 .unwrap(),
@@ -537,6 +541,25 @@ async fn post_entity(app: &Router, body: &serde_json::Value) -> (StatusCode, ser
         .await
         .unwrap();
     (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+#[allow(clippy::unwrap_used)]
+async fn get_json(app: &Router, uri: &str) -> (StatusCode, serde_json::Value) {
+    let response = app
+        .clone()
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+async fn post_entity(app: &Router, body: &serde_json::Value) -> (StatusCode, serde_json::Value) {
+    post_json(app, "/entities", body).await
 }
 
 #[tokio::test]
@@ -588,4 +611,84 @@ async fn test_add_entity_type_schema_resubmission() {
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["ok"], serde_json::json!(false));
     assert!(body.get("conflict").is_none());
+}
+
+#[tokio::test]
+async fn test_add_schema_resubmission() {
+    let app = create_test_router(create_test_ops(), 0);
+    let type_id = "gts.x.test6.schemapost.type.v1~";
+    let request = |value_type: &str| {
+        serde_json::json!({
+            "type_id": type_id,
+            "type_schema": {
+                "type": "object",
+                "properties": {"value": {"type": value_type}}
+            }
+        })
+    };
+
+    let (status, body) = post_json(&app, "/type-schemas", &request("string")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["ok"], serde_json::json!(true));
+
+    let (status, body) = post_json(&app, "/type-schemas", &request("string")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["ok"], serde_json::json!(true));
+    assert_eq!(body["id"], serde_json::json!(type_id));
+
+    let (status, body) = post_json(&app, "/type-schemas", &request("integer")).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["ok"], serde_json::json!(false));
+    assert!(body.get("rejection").is_none());
+    assert!(body.get("id").is_none());
+
+    let (status, body) = get_json(&app, &format!("/entities/{type_id}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["content"]["properties"]["value"]["type"],
+        serde_json::json!("string"),
+        "the committed schema must stay"
+    );
+}
+
+#[tokio::test]
+async fn test_add_entity_accepts_corrected_body_after_failed_validation() {
+    let app = create_test_router(create_test_ops(), 0);
+    let schema = serde_json::json!({
+        "$id": "gts://gts.x.test6.rollback.type.v1~",
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "required": ["value"],
+        "properties": {"value": {"type": "string"}}
+    });
+    let (status, body) = post_json(&app, "/entities?validate=true", &schema).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let instance_id = "gts.x.test6.rollback.type.v1~x.test6._.example.v1";
+    let instance = |value: serde_json::Value| {
+        serde_json::json!({
+            "id": instance_id,
+            "type": "gts.x.test6.rollback.type.v1~",
+            "value": value
+        })
+    };
+
+    let (status, body) = post_json(
+        &app,
+        "/entities?validate=true",
+        &instance(serde_json::json!(7)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["ok"], serde_json::json!(false));
+
+    let (status, body) = post_json(
+        &app,
+        "/entities?validate=true",
+        &instance(serde_json::json!("fixed")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["ok"], serde_json::json!(true));
+    assert_eq!(body["id"], serde_json::json!(instance_id));
 }

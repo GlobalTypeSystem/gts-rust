@@ -1193,44 +1193,85 @@ fn test_gts_store_error_variants() {
 }
 
 #[test]
-fn test_gts_store_register_schema_overwrite() {
+fn test_gts_store_register_schema_rejects_changed_content() {
     let mut store = GtsStore::new();
 
-    let schema1 = json!({
-        "$id": "gts://gts.vendor.package.namespace.type.v1.0~",
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "type": "object",
-        "properties": {
-            "name": {"type": "string"}
+    let schema = |extra: Option<&str>| {
+        let mut properties = json!({"name": {"type": "string"}});
+        if let Some(extra) = extra {
+            properties[extra] = json!({"type": "string"});
         }
-    });
-
-    let schema2 = json!({
-        "$id": "gts://gts.vendor.package.namespace.type.v1.0~",
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "type": "object",
-        "properties": {
-            "name": {"type": "string"},
-            "email": {"type": "string"}
-        }
-    });
+        json!({
+            "$id": "gts://gts.vendor.package.namespace.type.v1.0~",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": properties
+        })
+    };
 
     store
-        .register_schema("gts.vendor.package.namespace.type.v1.0~", &schema1)
+        .register_schema("gts.vendor.package.namespace.type.v1.0~", &schema(None))
         .expect("test");
     store
-        .register_schema("gts.vendor.package.namespace.type.v1.0~", &schema2)
-        .expect("test");
+        .register_schema("gts.vendor.package.namespace.type.v1.0~", &schema(None))
+        .expect("resubmitting identical content is accepted");
 
-    let result = store.get_schema_content("gts.vendor.package.namespace.type.v1.0~");
-    assert!(result.is_ok());
-    let schema = result.expect("test");
+    let err = store
+        .register_schema(
+            "gts.vendor.package.namespace.type.v1.0~",
+            &schema(Some("email")),
+        )
+        .expect_err("test");
     assert!(
+        matches!(&err, StoreError::ImmutableConflict(id)
+            if id == "gts.vendor.package.namespace.type.v1.0~"),
+        "unexpected error: {err}"
+    );
+
+    let committed = store
+        .get_schema_content("gts.vendor.package.namespace.type.v1.0~")
+        .expect("test");
+    assert_eq!(committed, schema(None));
+}
+
+#[test]
+fn test_gts_store_register_schema_conflicts_with_registered_entity() {
+    let mut store = GtsStore::new();
+    let cfg = GtsConfig::default();
+
+    let schema = json!({
+        "$id": "gts://gts.vendor.package.namespace.type.v1.0~",
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object"
+    });
+    let entity = GtsEntity::new(
+        None,
+        None,
+        &schema,
+        Some(&cfg),
+        None,
+        false,
+        String::new(),
+        None,
+        None,
+    );
+    store.register(entity).expect("test");
+
+    let mut changed = schema.clone();
+    changed["type"] = json!("array");
+    let err = store
+        .register_schema("gts.vendor.package.namespace.type.v1.0~", &changed)
+        .expect_err("test");
+    assert!(
+        matches!(&err, StoreError::ImmutableConflict(id)
+            if id == "gts.vendor.package.namespace.type.v1.0~"),
+        "unexpected error: {err}"
+    );
+    assert_eq!(
+        store
+            .get_schema_content("gts.vendor.package.namespace.type.v1.0~")
+            .expect("test"),
         schema
-            .get("properties")
-            .expect("test")
-            .get("email")
-            .is_some()
     );
 }
 
