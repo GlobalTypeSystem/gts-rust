@@ -74,6 +74,8 @@ impl GtsHttpServer {
             .route("/validate-instance", post(validate_instance))
             .route("/validate-type-schema", post(validate_schema))
             .route("/validate-entity", post(validate_entity))
+            .route("/validate-json", post(validate_json))
+            .route("/validate-json/{gts_type}", post(validate_json_as_type))
             .route("/resolve-relationships", get(schema_graph))
             .route("/compatibility", get(compatibility))
             .route("/cast", post(cast))
@@ -359,6 +361,31 @@ async fn validate_entity(
         Err(response) => return response.into_response(),
     };
     let result = ops.validate_entity(&body.entity_id);
+    Json(result).into_response()
+}
+
+async fn validate_json(
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Map<String, Value>>,
+) -> impl IntoResponse {
+    let mut ops = match lock_ops(&state.ops) {
+        Ok(guard) => guard,
+        Err(response) => return response.into_response(),
+    };
+    let result = ops.validate_json(&Value::Object(body));
+    Json(result).into_response()
+}
+
+async fn validate_json_as_type(
+    State(state): State<AppState>,
+    Path(gts_type): Path<String>,
+    Json(body): Json<serde_json::Map<String, Value>>,
+) -> impl IntoResponse {
+    let mut ops = match lock_ops(&state.ops) {
+        Ok(guard) => guard,
+        Err(response) => return response.into_response(),
+    };
+    let result = ops.validate_json_as_type(&gts_type, &Value::Object(body));
     Json(result).into_response()
 }
 

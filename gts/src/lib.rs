@@ -1,6 +1,7 @@
 pub mod entities;
 pub mod files_reader;
 pub mod gts;
+mod json_schema;
 pub mod ops;
 pub mod path_resolver;
 pub mod schema;

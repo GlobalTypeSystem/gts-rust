@@ -25,7 +25,7 @@ serde = { version = "1.0", features = ["derive"] }
 ```rust
 use gts_macros::struct_to_gts_schema;
 use uuid::Uuid;
-use gts::gts::{GtsInstanceId, GtsSchemaId};
+use gts::GtsTypeId;
 
 // Base event type (root of the hierarchy)
 // Note: Base structs get Serialize/Deserialize/JsonSchema automatically.
@@ -33,13 +33,13 @@ use gts::gts::{GtsInstanceId, GtsSchemaId};
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.core.events.type.v1~",
+    type_id = "gts.x.core.events.type.v1~",
     description = "Base event type with common fields",
     properties = "id,tenant_id,payload"
 )]
 pub struct BaseEventV1<P> {
     pub id: Uuid,
-    pub r#type: GtsSchemaId,
+    pub r#type: GtsTypeId,
     pub tenant_id: Uuid,
     pub payload: P,
 }
@@ -49,7 +49,7 @@ pub struct BaseEventV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = BaseEventV1,
-    schema_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~",
+    type_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~",
     description = "Audit event with user context",
     properties = "user_id,action"
 )]
@@ -60,9 +60,9 @@ pub struct AuditEventV1 {
 
 // Runtime usage:
 fn example() {
-    // Access schema IDs
-    let base_id = BaseEventV1::<()>::gts_schema_id();
-    let audit_id = AuditEventV1::gts_schema_id();
+    // Access type IDs
+    let base_id = BaseEventV1::<()>::gts_type_id();
+    let audit_id = AuditEventV1::gts_type_id();
 
     // Get schemas as JSON
     let base_schema = BaseEventV1::<()>::gts_schema_with_refs_as_string_pretty();
@@ -163,11 +163,11 @@ should reject unknown fields at deserialization time as well, not just during sc
 
 | Check | Description |
 |-------|-------------|
-| **Required parameters** | All of `dir_path`, `base`, `schema_id`, `description`, `properties` must be present |
-| **Base consistency** | `base = true` requires single-segment schema_id; `base = Parent` requires multi-segment |
-| **Parent schema match** | When `base = Parent`, Parent's SCHEMA_ID must match the parent segment in schema_id |
+| **Required parameters** | All of `dir_path`, `base`, `type_id`, `description`, `properties` must be present |
+| **Base consistency** | `base = true` requires single-segment type_id; `base = Parent` requires multi-segment |
+| **Parent type match** | When `base = Parent`, Parent's `TYPE_ID` must match the parent segment in `type_id` |
 | **Property existence** | Every property in the list must exist as a field in the struct |
-| **Struct type** | Only structs with named fields are supported (no tuple structs) |
+| **Struct type** | Named-field structs, plus unit structs when `properties = ""`; tuple structs and enums are rejected |
 | **Generic type constraints** | Generic type parameters must implement `GtsSchema` (only `()` or other GTS structs allowed) |
 | **Base struct field validation** | Base structs (`base = true`) must have either ID fields OR GTS Type fields, but not both (see below) |
 
@@ -178,51 +178,53 @@ should reject unknown fields at deserialization time as well, not just during sc
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.core.events.type.v1~",
+    type_id = "gts.x.core.events.type.v1~",
     description = "Base event",
     properties = "id,nonexistent"  // ❌ Error!
 )]
 pub struct BaseEventV1<P> {
     pub id: Uuid,
-    pub r#type: GtsSchemaId,
+    pub r#type: GtsTypeId,
     pub payload: P,
 }
 ```
 ```
 error: struct_to_gts_schema: Property 'nonexistent' not found in struct.
-       Available fields: ["id", "payload"]
+       Available fields: ["id", "r#type", "payload"]
 ```
 
-**Base mismatch (base = true with multi-segment schema_id):**
+**Base mismatch (base = true with multi-segment type_id):**
 ```rust
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,  // ❌ Error! base = true requires single-segment
-    schema_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~",
+    type_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~",
     description = "Audit event",
     properties = "user_id"
 )]
 pub struct AuditEventV1 { /* ... */ }
 ```
 ```
-error: struct_to_gts_schema: base = true requires single-segment schema_id,
-       but found 2 segments
+error: struct_to_gts_schema: 'base = true' but type_id
+       'gts.x.core.events.type.v1~x.core.audit.event.v1~' has 2 segments.
+       A base type must have exactly 1 segment (no parent).
+       Either use 'base = ParentStruct' or fix the type_id.
 ```
 
-**Parent schema ID mismatch:**
+**Parent type ID mismatch:**
 ```rust
 #[struct_to_gts_schema(
     dir_path = "schemas",
-    base = WrongParent,  // ❌ Error! Parent's SCHEMA_ID doesn't match
-    schema_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~",
+    base = WrongParent,  // ❌ Error! Parent's TYPE_ID doesn't match
+    type_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~",
     description = "Audit event",
     properties = "user_id"
 )]
 pub struct AuditEventV1 { /* ... */ }
 ```
 ```
-error: struct_to_gts_schema: Base struct 'WrongParent' schema ID must match
-       parent segment 'gts.x.core.events.type.v1~' from schema_id
+error: struct_to_gts_schema: Base struct 'WrongParent' TYPE_ID must match
+       parent segment 'gts.x.core.events.type.v1~' from this struct's type_id
 ```
 
 **Tuple struct:**
@@ -231,7 +233,8 @@ error: struct_to_gts_schema: Base struct 'WrongParent' schema ID must match
 pub struct Data(String);  // ❌ Tuple struct not supported
 ```
 ```
-error: struct_to_gts_schema: Only structs with named fields are supported
+error: struct_to_gts_schema: Tuple structs are not supported.
+       Use a struct with named fields or a unit struct (for empty nested types)
 ```
 
 **Non-GTS struct as generic argument:**
@@ -252,12 +255,12 @@ error[E0277]: the trait bound `MyStruct: GtsSchema` is not satisfied
 
 **Base struct field validation - ID fields:**
 ```rust
-use gts::gts::GtsInstanceId;
+use gts::GtsInstanceId;
 
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.core.events.topic.v1~",
+    type_id = "gts.x.core.events.topic.v1~",
     description = "Base event with ID field",
     properties = "id,name"
 )]
@@ -270,18 +273,18 @@ pub struct BaseEventTopicV1<P> {
 
 **Base struct field validation - GTS Type fields:**
 ```rust
-use gts::gts::GtsSchemaId;
+use gts::GtsTypeId;
 
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.core.events.type.v1~",
+    type_id = "gts.x.core.events.type.v1~",
     description = "Base event with type field",
     properties = "r#type,name"
 )]
 pub struct BaseEventV1<P> {
     pub id: Uuid,             // Event UUID
-    pub r#type: GtsSchemaId,  // Event Type - ✅ Valid GTS Type field
+    pub r#type: GtsTypeId,  // Event Type - ✅ Valid GTS Type field
     pub name: String,
     pub payload: P,
 }
@@ -292,13 +295,22 @@ pub struct BaseEventV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.core.events.topic.v1~",
+    type_id = "gts.x.core.events.topic.v1~",
     description = "Invalid base with both ID and type",
     properties = "id,r#type,name"  // ❌ Error! Both ID and GTS Type fields
 )]
 pub struct BaseEventV1<P> {
-    pub id: GtsInstanceId,     // Event topic ID field
-    pub r#type: GtsSchemaId,   // Event type (schema) ID field - ❌ Cannot have both!
+    pub id: GtsInstanceId,   // Event topic ID field
+    pub r#type: GtsTypeId,   // Event type ID field - ❌ Cannot have both!
+    pub name: String,
+    pub payload: P,
+}
+```
+```
+error: struct_to_gts_schema: Base structs must have either an ID field
+       (one of: $id, id, gts_id, or gtsId) of type GtsInstanceId OR a GTS Type
+       field (one of: type, gts_type, gtsType, or schema) of type GtsTypeId,
+       but not both. Found both valid ID and GTS Type fields.
 ```
 
 **Invalid base struct - wrong GTS Type field type:**
@@ -306,19 +318,21 @@ pub struct BaseEventV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.core.events.type.v1~",
+    type_id = "gts.x.core.events.type.v1~",
     description = "Base event with wrong type field",
     properties = "r#type,name"
 )]
 pub struct BaseEventV1<P> {
     pub id: Uuid,        // Event UUID
-    pub r#type: String,  // Event type (schema) - ❌ Should be GtsSchemaId
+    pub r#type: String,  // Event type (schema) - ❌ Should be GtsTypeId
     pub name: String,
     pub payload: P,
 }
 ```
 ```
-error: struct_to_gts_schema: Base structs with GTS Type fields must have at least one GTS Type field (type, gts_type, gtsType, or schema) of type GtsSchemaId
+error: struct_to_gts_schema: Base structs must have either an ID field
+       (one of: $id, id, gts_id, or gtsId) of type GtsInstanceId OR a GTS Type
+       field (one of: type, gts_type, gtsType, or schema) of type GtsTypeId
 ```
 
 ### Base Struct Field Validation Rules
@@ -328,26 +342,26 @@ Base structs (`base = true`) must follow **exactly one** of these patterns:
 #### Option 1: ID Fields
 - **Supported field names**: `$id`, `id`, `gts_id`, `gtsId`
 - **Required type**: `GtsInstanceId` (or `gts::GtsInstanceId`)
-- **Use case**: Instance-based identification
+- **Use case**: Instance-based identification (well-known instances)
 
 #### Option 2: GTS Type Fields
 - **Supported field names**: `type`, `r#type`, `gts_type`, `gtsType`, `schema`
 - **Supported serde renames**: Fields with `#[serde(rename = "type")]`, `#[serde(rename = "gts_type")]`, `#[serde(rename = "gtsType")]`, or `#[serde(rename = "schema")]`
-- **Required type**: `GtsSchemaId` (or `gts::GtsSchemaId`)
-- **Use case**: Schema-based identification
+- **Required type**: `GtsTypeId` (or `gts::GtsTypeId`)
+- **Use case**: Type-based identification (anonymous instances)
 
 **Serde rename example:**
 ```rust
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.core.events.type.v1~",
+    type_id = "gts.x.core.events.type.v1~",
     description = "Base event with serde(rename = \"type\")",
     properties = "event_type,id,tenant_id,sequence_id,payload"
 )]
 pub struct BaseEventV1<P> {
     #[serde(rename = "type")]
-    pub event_type: GtsSchemaId,  // ✅ Valid - renamed to "type"
+    pub event_type: GtsTypeId,  // ✅ Valid - renamed to "type"
     pub id: Uuid,
     pub tenant_id: Uuid,
     pub sequence_id: u64,
@@ -403,9 +417,9 @@ use gts_macros::struct_to_gts_schema;
 ### What the CLI Does
 
 1. Scans source files for `#[struct_to_gts_schema]` annotations
-2. Extracts metadata (schema_id, description, properties)
+2. Extracts metadata (type_id, description, properties)
 3. Maps Rust types to JSON Schema types
-4. Generates valid JSON Schema files at the specified `dir_path/<schema_id>.schema.json`
+4. Generates valid JSON Schema files at the specified `dir_path/<type_id>.schema.json`
 
 ### Generated Schema Examples
 
@@ -466,16 +480,21 @@ The CLI automatically maps Rust types to JSON Schema types:
 | `f32`, `f64` | `number` | - | Yes |
 | `bool` | `boolean` | - | Yes |
 | `Vec<T>` | `array` | - | Yes |
-| `Option<T>` | Same as `T` | - | **No** |
-| `Uuid` | `string` | `uuid` | Yes |
-| `DateTime`, `NaiveDateTime` | `string` | `date-time` | Yes |
-| `NaiveDate` | `string` | `date` | Yes |
+| `Option<T>` | `[<T>, "null"]` | - | **No** |
+| `Uuid` (any type whose name contains `Uuid`/`uuid`) | `string` | `uuid` | Yes |
 | `HashMap<K,V>`, `BTreeMap<K,V>` | `object` | - | Yes |
 | `GtsInstanceId` | `string` | `gts-instance-id` | Yes |
-| `GtsSchemaId` | `string` | `gts-schema-id` | Yes |
+| `GtsTypeId` | `string` | `gts-type-id` | Yes |
+| Anything else (nested structs, `DateTime`, ...) | `object` | - | Yes |
 
 **Notes**:
-- `Option<T>` fields are not marked as `required` in the generated schema
+- `Option<T>` fields are not marked as `required` in the generated schema. The generated
+  schema is `{"type": ["<T>", "null"]}`, so any other keyword of `T` (`format`,
+  `items`, `x-gts-ref`) is dropped; when `T` has no scalar `type`, the result is
+  `{"oneOf": [<T>, {"type": "null"}]}`
+- The deprecated alias `GtsSchemaId` is accepted and maps to `gts-type-id`, same as `GtsTypeId`
+- There is no special handling for date/time types — `DateTime`, `NaiveDate` and friends fall
+  into the `object` catch-all
 - Generic type parameters (e.g., `P` in `BaseEventV1<P>`) are mapped to `{"type": "object"}` placeholders
 
 ---
@@ -484,39 +503,39 @@ The CLI automatically maps Rust types to JSON Schema types:
 
 The macro generates associated constants, methods, and implements the `GtsSchema` trait for runtime use.
 
-### Getting Schema IDs
+### Getting Type IDs
 
-**Get the struct's GTS schema ID:**
+**Get the struct's GTS type ID:**
 
 ```rust
-// Using gts_schema_id() - returns &'static GtsSchemaId
-let schema_id: &gts::gts::GtsSchemaId = AuditEventV1::gts_schema_id();
-println!("Schema ID: {}", schema_id.as_ref());
+// Using gts_type_id() - returns &'static GtsTypeId
+let type_id: &gts::GtsTypeId = AuditEventV1::gts_type_id();
+println!("Type ID: {}", type_id.as_ref());
 // Output: gts.x.core.events.type.v1~x.core.audit.event.v1~
 
 // For generic structs, use () as type parameter
-let base_id = BaseEventV1::<()>::gts_schema_id();
-println!("Base schema ID: {}", base_id.as_ref());
+let base_id = BaseEventV1::<()>::gts_type_id();
+println!("Base type ID: {}", base_id.as_ref());
 // Output: gts.x.core.events.type.v1~
 ```
 
-**Get the parent (base) schema ID:**
+**Get the parent (base) type ID:**
 
 ```rust
-// Using gts_base_schema_id() - returns Option<&'static GtsSchemaId>
-let parent_id: Option<&gts::gts::GtsSchemaId> = AuditEventV1::gts_base_schema_id();
+// Using gts_base_type_id() - returns Option<&'static GtsTypeId>
+let parent_id: Option<&gts::GtsTypeId> = AuditEventV1::gts_base_type_id();
 match parent_id {
-    Some(id) => println!("Parent schema ID: {}", id.as_ref()),
+    Some(id) => println!("Parent type ID: {}", id.as_ref()),
     // Output: gts.x.core.events.type.v1~
     None => println!("This is a base struct (no parent)"),
 }
 
 // Base structs return None
-assert!(BaseEventV1::<()>::gts_base_schema_id().is_none());
+assert!(BaseEventV1::<()>::gts_base_type_id().is_none());
 
-// Child structs return Some(&GtsSchemaId)
+// Child structs return Some(&GtsTypeId)
 assert_eq!(
-    AuditEventV1::gts_base_schema_id().map(|id| id.as_ref()),
+    AuditEventV1::gts_base_type_id().map(|id| id.as_ref()),
     Some("gts.x.core.events.type.v1~")
 );
 ```
@@ -550,7 +569,7 @@ assert_eq!(schema1, schema2);  // OK. Identical schemas
 
 **Schema structure:**
 
-- **Base structs** (single-segment schema_id): Direct properties, no `allOf`; closed by default
+- **Base structs** (single-segment type_id): Direct properties, no `allOf`; closed by default
   unless the source struct explicitly declares an `additionalProperties` content model
   ```json
   {
@@ -561,7 +580,7 @@ assert_eq!(schema1, schema2);  // OK. Identical schemas
   }
   ```
 
-- **Child structs** (multi-segment schema_id): Uses `allOf` with `$ref` to parent
+- **Child structs** (multi-segment type_id): Uses `allOf` with `$ref` to parent
   ```json
   {
     "$id": "gts://gts.x.core.events.type.v1~x.core.audit.event.v1~",
@@ -586,7 +605,7 @@ use uuid::Uuid;
 // Create a complete event with nested payloads
 // BaseEventV1 -> AuditPayloadV1 -> PlaceOrderDataV1
 let event = BaseEventV1 {
-    event_type: PlaceOrderDataV1::gts_schema_id().clone(),
+    event_type: PlaceOrderDataV1::gts_type_id().clone(),
     id: Uuid::new_v4(),
     tenant_id: Uuid::new_v4(),
     sequence_id: 42,
@@ -681,7 +700,7 @@ type SimpleEvent = BaseEventV1<()>;
 
 // Create and serialize different event types
 let order_event: OrderEvent = BaseEventV1 {
-    event_type: PlaceOrderDataV1::gts_schema_id().clone(),
+    event_type: PlaceOrderDataV1::gts_type_id().clone(),
     id: Uuid::new_v4(),
     tenant_id: Uuid::new_v4(),
     sequence_id: 1,
@@ -705,7 +724,7 @@ let deserialized: OrderEvent = serde_json::from_str(&json).unwrap();
 
 ### Generating Instance IDs
 
-Generate instance IDs by appending a segment to the schema ID:
+Generate instance IDs by appending a segment to the type ID:
 
 ```rust
 // Generate event instance ID
@@ -757,42 +776,63 @@ let schema = BaseEventV1::<AuditPayloadV1<PlaceOrderDataV1>>::gts_schema_with_re
 
 | API | Type | Description |
 |-----|------|-------------|
-| `gts_schema_id()` | `&'static GtsSchemaId` | Get the struct's GTS schema ID |
-| `gts_base_schema_id()` | `Option<&'static GtsSchemaId>` | Get parent schema ID (None for base structs) |
+| `gts_type_id()` | `&'static GtsTypeId` | Get the struct's GTS type ID |
+| `gts_base_type_id()` | `Option<&'static GtsTypeId>` | Get parent type ID (`None` for base structs) |
 | `gts_schema_with_refs()` | `serde_json::Value` | Get schema as JSON value with `$ref` |
 | `gts_schema_with_refs_as_string()` | `String` | Get schema as compact JSON string |
 | `gts_schema_with_refs_as_string_pretty()` | `String` | Get schema as pretty-printed JSON string |
-| `gts_instance_json(&self)` | `serde_json::Value` | Serialize instance to JSON value |
-| `gts_instance_json_as_string(&self)` | `String` | Serialize instance to compact JSON string |
-| `gts_instance_json_as_string_pretty(&self)` | `String` | Serialize instance to pretty-printed JSON string |
+| `gts_instance_json(&self)` | `serde_json::Value` | Serialize instance to JSON value (base structs only) |
+| `gts_instance_json_as_string(&self)` | `String` | Serialize instance to compact JSON string (base structs only) |
+| `gts_instance_json_as_string_pretty(&self)` | `String` | Serialize instance to pretty-printed JSON string (base structs only) |
 | `gts_make_instance_id(segment)` | `GtsInstanceId` | Generate instance ID by appending segment |
+
+The three `gts_instance_json*` methods are emitted only for base structs (`base = true`);
+nested structs have no direct `Serialize` and must be serialized through their base.
+
+`gts_schema_id()` and `gts_base_schema_id()` are still emitted as `#[deprecated]` aliases of
+`gts_type_id()` / `gts_base_type_id()` for code written against the pre-0.10 names.
 
 ---
 
 ## Macro Parameters
 
-All parameters are **required** (5 total):
+Five parameters are **required**:
 
 | Parameter | Description | Example |
 |-----------|-------------|---------|
 | `dir_path` | Output directory for generated schema | `"schemas"` |
 | `base` | Inheritance declaration (see below) | `true` or `ParentStruct` |
-| `schema_id` | GTS identifier | `"gts.x.app.entities.user.v1~"` |
+| `type_id` | GTS identifier | `"gts.x.app.entities.user.v1~"` |
 | `description` | Human-readable description | `"User entity"` |
 | `properties` | Comma-separated field list | `"id,email,name"` |
+
+`schema_id = "..."` is still accepted in place of `type_id`, but it triggers a compile-time
+deprecation warning (`` `schema_id` macro attribute is deprecated; rename it to `type_id` ``).
+
+Four parameters are **optional** — they emit the corresponding GTS schema keywords:
+
+| Parameter | Emits | Values |
+|-----------|-------|--------|
+| `traits_schema` | `x-gts-traits-schema` | `true` / `false`, `inline(T)` to embed `T`'s subschema, or a bare GTS type `T` for `allOf` + `$ref` to its `TYPE_ID` |
+| `traits` | `x-gts-traits` | Any expression whose serde output is a JSON object |
+| `gts_abstract` | `x-gts-abstract: true` | `true` |
+| `gts_final` | `x-gts-final: true` | `true` |
+
+`gts_abstract = true` and `gts_final = true` are mutually exclusive — declaring both is a
+compile error, and deriving from a type marked `gts_final = true` fails the parent const-assert.
 
 ### The `base` Attribute
 
 The `base` attribute explicitly declares the struct's position in the inheritance hierarchy:
 
-| Value | Meaning | Schema ID Requirement |
+| Value | Meaning | Type ID Requirement |
 |-------|---------|----------------------|
 | `base = true` | This is a root/base type (no parent) | Single-segment (e.g., `gts.x.core.events.type.v1~`) |
 | `base = ParentStruct` | This inherits from `ParentStruct` | Multi-segment (e.g., `gts.x.core.events.type.v1~x.core.audit.event.v1~`) |
 
 **Compile-time validation**: The macro validates that:
-- `base = true` requires a single-segment `schema_id`
-- `base = ParentStruct` requires a multi-segment `schema_id` where the parent segment matches `ParentStruct`'s `SCHEMA_ID`
+- `base = true` requires a single-segment `type_id`
+- `base = ParentStruct` requires a multi-segment `type_id` where the parent segment matches `ParentStruct`'s `TYPE_ID`
 
 ### GTS ID Format
 
@@ -824,8 +864,8 @@ overridden at compile time, the same code automatically uses the new prefix.
 
 #### Marker form inside other macros
 
-`gts_id!("...")` is also recognized as a **marker** inside the `type_id` /
-`schema_id` / `id` arguments of `#[struct_to_gts_schema]`, `gts_instance!`,
+`gts_id!("...")` is also recognized as a **marker** inside the `type_id`
+(or its deprecated alias `schema_id`) / `id` arguments of `#[struct_to_gts_schema]`, `gts_instance!`,
 and `gts_instance_raw!`. The macros intercept it syntactically and prepend
 the configured prefix themselves (the compiler does not expand macros
 inside another macro's input):
@@ -864,6 +904,7 @@ Qualified paths such as `gts_macros::gts_id!("...")` are also recognized.
 
 ```rust
 // src/events.rs
+use gts::GtsTypeId;
 use gts_macros::struct_to_gts_schema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -873,13 +914,13 @@ use uuid::Uuid;
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.core.events.type.v1~",
+    type_id = "gts.x.core.events.type.v1~",
     description = "Base event type with common fields",
     properties = "id,tenant_id,timestamp,payload"
 )]
 pub struct BaseEventV1<P> {
     pub id: Uuid,
-    pub r#type: GtsSchemaId,
+    pub r#type: GtsTypeId,
     pub tenant_id: Uuid,
     pub timestamp: String,
     pub payload: P,
@@ -890,7 +931,7 @@ pub struct BaseEventV1<P> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = BaseEventV1,
-    schema_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~",
+    type_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~",
     description = "Audit event with user tracking",
     properties = "user_id,ip_address,action"
 )]
@@ -905,7 +946,7 @@ pub struct AuditEventV1<D> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = AuditEventV1,
-    schema_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~x.shop.orders.placed.v1~",
+    type_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~x.shop.orders.placed.v1~",
     description = "Order placement event",
     properties = "order_id,total"
 )]
@@ -957,28 +998,28 @@ The macro supports **explicit inheritance declaration** through the `base` attri
 See `tests/inheritance_tests.rs` for a complete working example:
 
 ```rust
-// Base event type (base = true, single-segment schema_id)
+// Base event type (base = true, single-segment type_id)
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.core.events.type.v1~",
+    type_id = "gts.x.core.events.type.v1~",
     description = "Base event type definition",
     properties = "event_type,id,tenant_id,sequence_id,payload"
 )]
 pub struct BaseEventV1<P> {
     #[serde(rename = "type")]
-    pub event_type: GtsSchemaId,
+    pub event_type: GtsTypeId,
     pub id: Uuid,
     pub tenant_id: Uuid,
     pub sequence_id: u64,
     pub payload: P,
 }
 
-// Extends BaseEventV1 (base = ParentStruct, multi-segment schema_id)
+// Extends BaseEventV1 (base = ParentStruct, multi-segment type_id)
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = BaseEventV1,
-    schema_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~",
+    type_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~",
     description = "Audit event with user context",
     properties = "user_agent,user_id,ip_address,data"
 )]
@@ -993,7 +1034,7 @@ pub struct AuditPayloadV1<D> {
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = AuditPayloadV1,
-    schema_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~",
+    type_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~",
     description = "Order placement audit event",
     properties = "order_id,product_id"
 )]
@@ -1050,13 +1091,13 @@ The macro validates your configuration at compile time, preventing runtime error
 
 | ✅ Guaranteed | ❌ Prevented |
 |--------------|-------------|
-| **All required attributes exist** | Missing `dir_path`, `base`, `schema_id`, `description`, or `properties` |
-| **Base attribute consistency** | `base = true` with multi-segment schema_id, or `base = Parent` with single-segment |
-| **Parent schema ID match** | `base = Parent` where Parent's SCHEMA_ID doesn't match the parent segment |
+| **All required attributes exist** | Missing `dir_path`, `base`, `type_id`, `description`, or `properties` |
+| **Base attribute consistency** | `base = true` with multi-segment type_id, or `base = Parent` with single-segment |
+| **Parent type ID match** | `base = Parent` where Parent's `TYPE_ID` doesn't match the parent segment |
 | **Properties exist in struct** | Referencing non-existent fields in `properties` list |
-| **Valid struct types** | Tuple structs, unit structs, enums |
+| **Valid struct types** | Tuple structs, enums (unit structs are allowed with `properties = ""`) |
 | **Single generic parameter** | Multiple type generics (prevents inheritance ambiguity) |
-| **Valid GTS ID format** | Malformed schema identifiers |
+| **Valid GTS ID format** | Malformed type identifiers |
 | **Memory efficiency** | No unnecessary allocations in generated constants |
 | **Strict generic field validation** | Generic fields have `additionalProperties: false` to ensure only nested inherited structs are allowed |
 | **GTS-only generic arguments** | Using non-GTS structs as generic type parameters (see below) |
@@ -1117,9 +1158,9 @@ let schema_value = AuditEventV1::<()>::gts_schema_with_refs();
 let schema_compact = AuditEventV1::<()>::gts_schema_with_refs_as_string();
 let schema_pretty = AuditEventV1::<()>::gts_schema_with_refs_as_string_pretty();
 
-// Schema IDs use LazyLock for efficient one-time initialization
-let schema_id = AuditEventV1::gts_schema_id();
-let parent_id = AuditEventV1::gts_base_schema_id();
+// Type IDs use LazyLock for efficient one-time initialization
+let type_id = AuditEventV1::gts_type_id();
+let parent_id = AuditEventV1::gts_base_type_id();
 ```
 
 ---

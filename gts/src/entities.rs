@@ -206,13 +206,9 @@ impl GtsEntity {
     /// Check if the JSON has a "$schema" field - this is the ONLY way to determine if it's a schema.
     /// Per GTS spec: "if json has "$schema" - it's a schema, always. Otherwise, it's instance, always!"
     fn has_schema_field(&self) -> bool {
-        if let Some(obj) = self.content.as_object()
-            && let Some(schema_val) = obj.get("$schema")
-            && let Some(schema_str) = schema_val.as_str()
-        {
-            return !schema_str.is_empty();
-        }
-        false
+        self.content
+            .as_object()
+            .is_some_and(|obj| obj.contains_key("$schema"))
     }
 
     /// Extract IDs for a schema entity (Type Schema).
@@ -1241,6 +1237,34 @@ mod tests {
             !entity_without_schema.is_schema,
             "Document without $schema should be an instance"
         );
+    }
+
+    #[test]
+    fn test_schema_detection_uses_dollar_schema_field_presence() {
+        for schema_marker in [json!(null), json!(1), json!("")] {
+            let content = json!({
+                "$schema": schema_marker,
+                "$id": "gts://gts.vendor.package.namespace.type.v1.0~",
+                "type": "object"
+            });
+
+            let entity = GtsEntity::new(
+                None,
+                None,
+                &content,
+                None,
+                None,
+                false,
+                String::new(),
+                None,
+                None,
+            );
+
+            assert!(
+                entity.is_schema,
+                "the presence of $schema must classify the document as a schema"
+            );
+        }
     }
 
     #[test]

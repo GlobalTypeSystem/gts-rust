@@ -251,11 +251,9 @@ fn parse_macro_attrs(attr_body: &str) -> Option<MacroAttrs> {
     // Parse base attribute
     let base = if base_true_re.is_match(attr_body) {
         BaseAttr::IsBase
-    } else if let Some(cap) = base_parent_re.captures(attr_body) {
-        BaseAttr::Parent(cap.get(1)?.as_str().to_owned())
     } else {
-        // base is required but not found
-        return None;
+        let cap = base_parent_re.captures(attr_body)?;
+        BaseAttr::Parent(cap.get(1)?.as_str().to_owned())
     };
 
     Some(MacroAttrs {

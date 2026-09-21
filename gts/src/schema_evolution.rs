@@ -12,6 +12,7 @@
 //! neither relation.
 
 use crate::schema_semantics::boolean_schema_value;
+use jsonschema::Draft;
 use num_cmp::NumCmp;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -259,6 +260,8 @@ struct Walk {
     /// Backward checks `Valid(old) ⊆ Valid(new)`, forward the reverse inclusion.
     check_backward: bool,
     dialects: DialectSupport,
+    /// Whether equal local `$ref`s share a root.
+    roots_identical: bool,
     depth: usize,
 }
 
@@ -1045,7 +1048,7 @@ fn enumerated_source_is_included(source: &Map<String, Value>, target: &Value) ->
     let Some(values) = accepted_value_set(source) else {
         return false;
     };
-    let Ok(validator) = jsonschema::validator_for(target) else {
+    let Ok(validator) = crate::json_schema::validator_for(target) else {
         return false;
     };
     values.into_iter().all(|value| validator.is_valid(value))
@@ -1129,16 +1132,12 @@ fn check_exact_constraints(
     // listing either here would report both directions as incompatible and
     // contradict the "Relaxing / Tightening constraints" rows of sec 4.5.
     //
-    // `patternProperties`, `unevaluatedProperties` and `propertyNames` stay
-    // here on purpose: they also decide the content model in
-    // [`classify_content_model`], and a level whose classification can
-    // change between two definitions is not something this checker attempts
-    // to reason about.
+    // Pattern-based object constraints are compared only for equality.
+    // `unevaluatedProperties` is handled by the content-model comparison.
     const EXACT_CONSTRAINTS: &[&str] = &[
         "additionalItems",
         "prefixItems",
         "patternProperties",
-        "unevaluatedProperties",
         "contains",
         "propertyNames",
         "dependentRequired",
@@ -1160,8 +1159,8 @@ fn check_exact_constraints(
         .map(|keyword| {
             CompatibilityDiagnostic::new(
                 path,
-                CompatibilityFinding::ConstraintChanged,
-                format!("changes '{keyword}' constraint"),
+                CompatibilityFinding::NotProvable,
+                format!("changes '{keyword}' constraint, so inclusion cannot be established"),
             )
         })
         .collect()
@@ -1177,16 +1176,33 @@ fn check_exact_constraints(
 /// [`crate::store::GtsStore::is_compatible`] resolves references before
 /// comparing. A `$ref` that is still present therefore means this node was
 /// never resolved and nothing can be proven about its target - unless both
-/// definitions name the same reference, which needs no resolution.
+/// definitions name the same reference.
+///
+/// Equal local refs are equivalent only when their root documents match.
 fn check_unresolved_ref(
     path: &str,
     old_schema: &Map<String, Value>,
     new_schema: &Map<String, Value>,
+    roots_identical: bool,
 ) -> Vec<CompatibilityDiagnostic> {
     let old_ref = old_schema.get("$ref").and_then(Value::as_str);
     let new_ref = new_schema.get("$ref").and_then(Value::as_str);
     if old_ref == new_ref {
-        return Vec::new();
+        let Some(reference) = old_ref.filter(|reference| reference.starts_with('#')) else {
+            return Vec::new();
+        };
+        if roots_identical {
+            return Vec::new();
+        }
+        return vec![CompatibilityDiagnostic::new(
+            path,
+            CompatibilityFinding::NotProvable,
+            format!(
+                "keeps an unresolved local '$ref' ({reference}) while the documents differ; \
+                 the subschema it names is compared on neither side, so nothing here can be \
+                 proven about the values each definition accepts"
+            ),
+        )];
     }
     vec![CompatibilityDiagnostic::new(
         path,
@@ -1296,7 +1312,12 @@ fn check_schema_node_compatibility(
         check_backward,
     ));
     node_errors.extend(check_exact_constraints(path, old_map, new_map));
-    node_errors.extend(check_unresolved_ref(path, old_map, new_map));
+    node_errors.extend(check_unresolved_ref(
+        path,
+        old_map,
+        new_map,
+        walk.roots_identical,
+    ));
     node_errors.extend(check_narrowing_constraints(
         path,
         old_map,
@@ -1720,6 +1741,8 @@ fn check_inclusion(
     let mut errors = Vec::new();
     let declared_old = old_schema.get("$schema").and_then(Value::as_str);
     let declared_new = new_schema.get("$schema").and_then(Value::as_str);
+    let detected_old = Draft::default().detect(old_schema);
+    let detected_new = Draft::default().detect(new_schema);
 
     // Only a genuine change of declared dialect is reported. An omitted
     // `$schema` means "whatever dialect the implementation applies" (sec 11
@@ -1728,7 +1751,7 @@ fn check_inclusion(
     // starting to declare a dialect that was already in effect would be
     // reported as incompatible in both directions.
     if let (Some(old_dialect), Some(new_dialect)) = (declared_old, declared_new)
-        && canonical_dialect(old_dialect) != canonical_dialect(new_dialect)
+        && !same_declared_dialect(old_dialect, detected_old, new_dialect, detected_new)
     {
         errors.push(CompatibilityDiagnostic::new(
             "$",
@@ -1736,8 +1759,16 @@ fn check_inclusion(
             format!("changes JSON Schema dialect from {old_dialect} to {new_dialect}"),
         ));
     }
-    let effective_old = declared_old.or(declared_new);
-    let effective_new = declared_new.or(declared_old);
+    let effective_old = if declared_old.is_some() {
+        detected_old
+    } else {
+        detected_new
+    };
+    let effective_new = if declared_new.is_some() {
+        detected_new
+    } else {
+        detected_old
+    };
     check_schema_node_compatibility(
         old_schema,
         new_schema,
@@ -1745,9 +1776,10 @@ fn check_inclusion(
         Walk {
             check_backward,
             dialects: DialectSupport {
-                old_unevaluated: dialect_supports_unevaluated(effective_old),
-                new_unevaluated: dialect_supports_unevaluated(effective_new),
+                old_unevaluated: draft_supports_unevaluated(effective_old),
+                new_unevaluated: draft_supports_unevaluated(effective_new),
             },
+            roots_identical: json_values_equal(old_schema, new_schema),
             depth: 0,
         },
         UnprovenPaths::new(),
@@ -1767,7 +1799,15 @@ fn canonical_dialect(declared: &str) -> &str {
         .unwrap_or(body)
 }
 
-/// Whether `unevaluatedProperties` is evaluated under `dialect`.
+fn same_declared_dialect(old: &str, old_draft: Draft, new: &str, new_draft: Draft) -> bool {
+    if old_draft == Draft::Unknown && new_draft == Draft::Unknown {
+        canonical_dialect(old) == canonical_dialect(new)
+    } else {
+        old_draft == new_draft
+    }
+}
+
+/// Whether `unevaluatedProperties` is evaluated under `draft`.
 ///
 /// The keyword exists from Draft 2019-09 on; earlier dialects ignore it as
 /// an unknown annotation. An omitted `$schema` means "whatever dialect the
@@ -1778,8 +1818,11 @@ fn canonical_dialect(declared: &str) -> &str {
 /// contradict the validator running in the same process: a level closed by
 /// `unevaluatedProperties: false` would be classified open, which reverses
 /// both verdicts for an added optional property.
-fn dialect_supports_unevaluated(dialect: Option<&str>) -> bool {
-    dialect.is_none_or(|value| value.contains("2019-09") || value.contains("2020-12"))
+fn draft_supports_unevaluated(draft: Draft) -> bool {
+    matches!(
+        draft,
+        Draft::Draft201909 | Draft::Draft202012 | Draft::Unknown
+    )
 }
 
 /// Classifies the content model of every object level of a schema.
@@ -1799,8 +1842,7 @@ fn dialect_supports_unevaluated(dialect: Option<&str>) -> bool {
 /// rather than all of them, so such a level has no single content model.
 #[must_use]
 pub fn classify_object_levels(schema: &Value) -> Vec<ObjectLevel> {
-    let dialect = schema.get("$schema").and_then(Value::as_str);
-    let supports_unevaluated = dialect_supports_unevaluated(dialect);
+    let supports_unevaluated = draft_supports_unevaluated(Draft::default().detect(schema));
     let mut levels = Vec::new();
     collect_object_levels(schema, "$", supports_unevaluated, 0, &mut levels);
     levels

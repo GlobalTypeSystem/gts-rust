@@ -89,10 +89,14 @@
 /// ```
 ///
 /// In this case, the `type` field must match the schema's `$id` value.
+use std::sync::Arc;
+
+use jsonschema::error::ValidationErrorKind;
 use serde_json::Value;
 use std::fmt;
 
 use crate::gts::{GTS_ID_PREFIX, GTS_ID_URI_PREFIX, GtsId, GtsIdPattern};
+use crate::schema_modifiers::X_GTS_REF;
 
 /// Error type for x-gts-ref validation failures
 #[derive(Debug, Clone)]
@@ -127,7 +131,244 @@ impl fmt::Display for XGtsRefValidationError {
 
 impl std::error::Error for XGtsRefValidationError {}
 
-/// Validator for x-gts-ref constraints in GTS schemas
+/// Checks whether a pattern-matching reference names a registered entity.
+///
+/// Callers precompute results because validation cannot borrow the store.
+pub(crate) type ReferenceExists = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
+/// Collects strings for prefetching reference existence.
+pub(crate) fn candidate_reference_values(instance: &Value) -> Vec<String> {
+    let mut found = std::collections::BTreeSet::new();
+    let mut pending = vec![instance];
+    while let Some(node) = pending.pop() {
+        match node {
+            Value::String(text) => {
+                found.insert(text.clone());
+            }
+            Value::Object(map) => pending.extend(map.values()),
+            Value::Array(items) => pending.extend(items),
+            _ => {}
+        }
+    }
+    found.into_iter().collect()
+}
+
+/// The pattern a declaration denotes, or why it is not a usable declaration.
+///
+/// Accepts a GTS pattern or a JSON Pointer resolving to one.
+fn resolve_declaration(declared: &Value, root: &Value) -> Result<GtsIdPattern, String> {
+    let Some(declared) = declared.as_str() else {
+        return Err(format!("x-gts-ref value must be a string, got {declared}"));
+    };
+
+    if declared.starts_with(GTS_ID_PREFIX) {
+        return GtsIdPattern::try_new(declared)
+            .map_err(|e| format!("Invalid GTS identifier: {declared}: {}", e.cause));
+    }
+
+    if declared.starts_with('/') {
+        let Some(resolved) = XGtsRefValidator::resolve_pointer(root, declared) else {
+            return Err(format!("Cannot resolve reference path '{declared}'"));
+        };
+        return GtsIdPattern::try_new(&resolved).map_err(|e| {
+            format!(
+                "Resolved reference '{declared}' -> '{resolved}' is not a valid GTS identifier: {}",
+                e.cause
+            )
+        });
+    }
+
+    Err(format!(
+        "Invalid x-gts-ref value: '{declared}' must start with '{GTS_ID_PREFIX}' or '/'"
+    ))
+}
+
+/// Registers `x-gts-ref` as a native keyword for dialect-aware applicability.
+///
+/// Invalid declarations fail compilation. Relative references resolve in `root`.
+pub(crate) fn with_x_gts_ref(
+    options: jsonschema::ValidationOptions,
+    root: &Value,
+    exists: Option<ReferenceExists>,
+) -> jsonschema::ValidationOptions {
+    let root = Arc::new(root.clone());
+    options.with_keyword(X_GTS_REF, move |_parent, declared, _location| {
+        let pattern =
+            resolve_declaration(declared, &root).map_err(jsonschema::ValidationError::schema)?;
+        Ok(Box::new(XGtsRefKeyword {
+            pattern,
+            exists: exists.clone(),
+        }))
+    })
+}
+
+/// One compiled `x-gts-ref` declaration.
+struct XGtsRefKeyword {
+    /// The pattern the declaration resolved to.
+    pattern: GtsIdPattern,
+    exists: Option<ReferenceExists>,
+}
+
+impl XGtsRefKeyword {
+    /// Returns the violation for a string instance; ignores other value types.
+    fn violation(&self, instance: &Value) -> Option<String> {
+        let value = instance.as_str()?;
+        let pattern = self.pattern.pattern();
+
+        let Ok(id) = GtsId::try_new(value) else {
+            return Some(format!("Value '{value}' is not a valid GTS identifier"));
+        };
+        if !id.matches_pattern(&self.pattern) {
+            return Some(format!(
+                "Value '{value}' does not match pattern '{pattern}'"
+            ));
+        }
+        // Existence participates in branch selection like any other constraint.
+        match &self.exists {
+            Some(exists) if !exists(value) => Some(format!(
+                "'{value}' references an entity that is not registered"
+            )),
+            _ => None,
+        }
+    }
+}
+
+impl jsonschema::Keyword for XGtsRefKeyword {
+    fn validate<'i>(&self, instance: &'i Value) -> Result<(), jsonschema::ValidationError<'i>> {
+        match self.violation(instance) {
+            Some(reason) => Err(jsonschema::ValidationError::custom(reason)),
+            None => Ok(()),
+        }
+    }
+
+    fn is_valid(&self, instance: &Value) -> bool {
+        self.violation(instance).is_none()
+    }
+}
+
+/// Whether `error` was raised by the `x-gts-ref` keyword rather than by the
+/// standard vocabulary.
+pub(crate) fn is_x_gts_ref_error(error: &jsonschema::ValidationError<'_>) -> bool {
+    matches!(error.kind(), ValidationErrorKind::Custom { keyword, .. } if keyword == X_GTS_REF)
+}
+
+/// Extracts reference violations only when they fully explain `error`.
+fn attributed_refs(
+    schema: &Value,
+    error: &jsonschema::ValidationError<'_>,
+) -> Option<Vec<XGtsRefValidationError>> {
+    if is_x_gts_ref_error(error) {
+        return Some(vec![describe_error(schema, error)]);
+    }
+
+    // Multiple matching branches are a composition error, not a ref error.
+    let (ValidationErrorKind::AnyOf { context: branches }
+    | ValidationErrorKind::OneOfNotValid { context: branches }
+    | ValidationErrorKind::OneOfMultipleValid { context: branches }) = error.kind()
+    else {
+        return None;
+    };
+
+    let mut attributed = Vec::new();
+    for cause in branches.iter().flatten() {
+        attributed.extend(attributed_refs(schema, cause)?);
+    }
+    (!attributed.is_empty()).then_some(attributed)
+}
+
+/// Splits standard and `x-gts-ref` diagnostics.
+pub(crate) fn split_errors<'i>(
+    schema: &Value,
+    errors: impl Iterator<Item = jsonschema::ValidationError<'i>>,
+) -> (Vec<String>, Vec<XGtsRefValidationError>) {
+    let mut standard = Vec::new();
+    let mut references = Vec::new();
+    for error in errors {
+        match attributed_refs(schema, &error) {
+            Some(attributed) => references.extend(attributed),
+            None => standard.push(crate::json_schema::render_error(&error)),
+        }
+    }
+    (standard, references)
+}
+
+/// Builds an `x-gts-ref` diagnostic from the validator error paths.
+fn describe_error(
+    schema: &Value,
+    error: &jsonschema::ValidationError<'_>,
+) -> XGtsRefValidationError {
+    let declared = schema
+        .pointer(error.schema_path().as_str())
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let value = match error.instance().as_ref() {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    };
+    XGtsRefValidationError::new(
+        error.instance_path().to_string(),
+        value,
+        declared.to_owned(),
+        error.to_string(),
+    )
+}
+
+/// Reports applicable `x-gts-ref` violations and fails closed.
+///
+/// `exists` enables store-aware checks; `None` checks patterns only.
+pub(crate) fn validate_instance_refs(
+    instance: &Value,
+    schema: &Value,
+    instance_path: &str,
+    exists: Option<ReferenceExists>,
+) -> Vec<XGtsRefValidationError> {
+    let validator = match crate::json_schema::gts_validator_for(schema, exists) {
+        Ok(validator) => validator,
+        Err(e) => {
+            return vec![XGtsRefValidationError::new(
+                instance_path.to_owned(),
+                String::new(),
+                String::new(),
+                format!("x-gts-ref checking needs a compilable schema: {e}"),
+            )];
+        }
+    };
+
+    let diagnosis = crate::json_schema::diagnose(&validator, schema, instance);
+    let mut references = diagnosis.references;
+
+    // An unexplained rejection must not look like a clean reference check.
+    if let Some(reason) = diagnosis.unexplained {
+        references.push(XGtsRefValidationError::new(
+            instance_path.to_owned(),
+            String::new(),
+            String::new(),
+            format!("the references here were not verified: {reason}"),
+        ));
+        return references;
+    }
+
+    if instance_path.is_empty() {
+        return references;
+    }
+    references
+        .into_iter()
+        .map(|mut error| {
+            error.field_path = format!("{instance_path}{}", error.field_path);
+            error
+        })
+        .collect()
+}
+
+/// Joins the caller prefix, subschema location, and keyword name.
+fn declaration_path(prefix: &str, location: &str) -> String {
+    [prefix, location, X_GTS_REF]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct XGtsRefValidator;
 
@@ -146,7 +387,7 @@ impl XGtsRefValidator {
     /// # Arguments
     /// * `instance` - The data instance to validate
     /// * `schema` - The JSON schema with x-gts-ref extensions
-    /// * `instance_path` - Current path in instance (for error reporting)
+    /// * `instance_path` - Prefix for the reported instance locations
     ///
     /// # Returns
     /// List of validation errors (empty if valid)
@@ -157,124 +398,16 @@ impl XGtsRefValidator {
         schema: &Value,
         instance_path: &str,
     ) -> Vec<XGtsRefValidationError> {
-        let mut errors = Vec::new();
-        self.visit_instance(instance, schema, schema, instance_path, &mut errors);
-        errors
+        validate_instance_refs(instance, schema, instance_path, None)
     }
 
-    fn visit_instance(
-        &self,
-        inst: &Value,
-        sch: &Value,
-        root_schema: &Value,
-        path: &str,
-        errors: &mut Vec<XGtsRefValidationError>,
-    ) {
-        let Some(sch_obj) = sch.as_object() else {
-            return;
-        };
-
-        // Check for x-gts-ref constraint
-        if let Some(x_gts_ref) = sch_obj.get("x-gts-ref")
-            && let Some(inst_str) = inst.as_str()
-            && let Some(ref_pattern) = x_gts_ref.as_str()
-            && let Some(error) = self.validate_ref_value(inst_str, ref_pattern, path, root_schema)
-        {
-            errors.push(error);
-        }
-
-        // Handle oneOf combinator: exactly one branch must match (zero errors)
-        if let Some(Value::Array(branches)) = sch_obj.get("oneOf") {
-            let mut matching_count = 0usize;
-            for branch in branches {
-                let mut branch_errors = Vec::new();
-                self.visit_instance(inst, branch, root_schema, path, &mut branch_errors);
-                if branch_errors.is_empty() {
-                    matching_count += 1;
-                }
-            }
-            if matching_count == 0 {
-                errors.push(XGtsRefValidationError::new(
-                    path.to_owned(),
-                    inst.to_string(),
-                    String::new(),
-                    "oneOf: no branch matched".to_owned(),
-                ));
-            } else if matching_count > 1 {
-                errors.push(XGtsRefValidationError::new(
-                    path.to_owned(),
-                    inst.to_string(),
-                    String::new(),
-                    format!("oneOf: {matching_count} branches matched, expected exactly 1"),
-                ));
-            }
-        }
-
-        // Handle anyOf combinator: at least one branch must match (zero errors)
-        if let Some(Value::Array(branches)) = sch_obj.get("anyOf") {
-            let any_match = branches.iter().any(|branch| {
-                let mut branch_errors = Vec::new();
-                self.visit_instance(inst, branch, root_schema, path, &mut branch_errors);
-                branch_errors.is_empty()
-            });
-            if !any_match {
-                errors.push(XGtsRefValidationError::new(
-                    path.to_owned(),
-                    inst.to_string(),
-                    String::new(),
-                    "anyOf: no branch matched".to_owned(),
-                ));
-            }
-        }
-
-        // Handle allOf combinator: all branches must match (zero errors)
-        if let Some(Value::Array(branches)) = sch_obj.get("allOf") {
-            for branch in branches {
-                self.visit_instance(inst, branch, root_schema, path, errors);
-            }
-        }
-
-        // Recurse into object properties
-        if let Some(Value::String(type_str)) = sch_obj.get("type") {
-            if type_str == "object" {
-                if let Some(properties) = sch_obj.get("properties")
-                    && let Some(properties_obj) = properties.as_object()
-                    && let Some(inst_obj) = inst.as_object()
-                {
-                    for (prop_name, prop_schema) in properties_obj {
-                        if let Some(prop_value) = inst_obj.get(prop_name) {
-                            let prop_path = if path.is_empty() {
-                                prop_name.clone()
-                            } else {
-                                format!("{path}.{prop_name}")
-                            };
-                            self.visit_instance(
-                                prop_value,
-                                prop_schema,
-                                root_schema,
-                                &prop_path,
-                                errors,
-                            );
-                        }
-                    }
-                }
-            } else if type_str == "array"
-                && let Some(items) = sch_obj.get("items")
-                && let Some(inst_arr) = inst.as_array()
-            {
-                for (idx, item) in inst_arr.iter().enumerate() {
-                    let item_path = format!("{path}[{idx}]");
-                    self.visit_instance(item, items, root_schema, &item_path, errors);
-                }
-            }
-        }
-    }
-
-    /// Validate x-gts-ref fields in a schema definition
+    /// Validate x-gts-ref declarations in a schema definition
+    ///
+    /// Visits only schema positions defined by the document's dialect.
     ///
     /// # Arguments
     /// * `schema` - The JSON schema to validate
-    /// * `schema_path` - Current path in schema (for error reporting)
+    /// * `schema_path` - Prefix for the reported declaration locations
     /// * `root_schema` - The root schema (for resolving relative refs)
     ///
     /// # Returns
@@ -288,213 +421,32 @@ impl XGtsRefValidator {
     ) -> Vec<XGtsRefValidationError> {
         let root = root_schema.unwrap_or(schema);
         let mut errors = Vec::new();
-        self.visit_schema(schema, schema_path, root, &mut errors);
+
+        crate::schema_modifiers::for_each_schema_node(schema, &mut |node, location| {
+            let Some(declared) = node.get(X_GTS_REF) else {
+                return;
+            };
+            if let Err(reason) = resolve_declaration(declared, root) {
+                // Non-string declarations have no pattern to report.
+                let (value, ref_pattern) = declared.as_str().map_or_else(
+                    || (format!("{declared:?}"), String::new()),
+                    |spelling| (spelling.to_owned(), spelling.to_owned()),
+                );
+                errors.push(XGtsRefValidationError::new(
+                    declaration_path(schema_path, location),
+                    value,
+                    ref_pattern,
+                    reason,
+                ));
+            }
+        });
+
         errors
     }
 
-    fn visit_schema(
-        &self,
-        sch: &Value,
-        path: &str,
-        root_schema: &Value,
-        errors: &mut Vec<XGtsRefValidationError>,
-    ) {
-        let Some(sch_obj) = sch.as_object() else {
-            return;
-        };
-
-        // Check for x-gts-ref field
-        if let Some(x_gts_ref) = sch_obj.get("x-gts-ref") {
-            let ref_path = if path.is_empty() {
-                "x-gts-ref".to_owned()
-            } else {
-                format!("{path}/x-gts-ref")
-            };
-
-            if let Some(ref_value) = x_gts_ref.as_str() {
-                if let Some(error) = self.validate_ref_pattern(ref_value, &ref_path, root_schema) {
-                    errors.push(error);
-                }
-            } else {
-                errors.push(XGtsRefValidationError::new(
-                    ref_path,
-                    format!("{x_gts_ref:?}"),
-                    String::new(),
-                    format!("x-gts-ref value must be a string, got {x_gts_ref}"),
-                ));
-            }
-        }
-
-        // Recurse into nested structures
-        for (key, value) in sch_obj {
-            if key == "x-gts-ref" {
-                continue;
-            }
-            let nested_path = if path.is_empty() {
-                key.clone()
-            } else {
-                format!("{path}/{key}")
-            };
-
-            if value.is_object() {
-                self.visit_schema(value, &nested_path, root_schema, errors);
-            } else if let Some(arr) = value.as_array() {
-                for (idx, item) in arr.iter().enumerate() {
-                    if item.is_object() {
-                        let item_path = format!("{nested_path}[{idx}]");
-                        self.visit_schema(item, &item_path, root_schema, errors);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Validate an instance value against its x-gts-ref constraint
-    fn validate_ref_value(
-        &self,
-        value: &str,
-        ref_pattern: &str,
-        field_path: &str,
-        schema: &Value,
-    ) -> Option<XGtsRefValidationError> {
-        // Resolve pattern if it's a relative reference
-        let resolved_pattern = if ref_pattern.starts_with('/') {
-            match Self::resolve_pointer(schema, ref_pattern) {
-                Some(resolved) => {
-                    if !resolved.starts_with(GTS_ID_PREFIX) {
-                        return Some(XGtsRefValidationError::new(
-                            field_path.to_owned(),
-                            value.to_owned(),
-                            ref_pattern.to_owned(),
-                            format!(
-                                "Resolved reference '{ref_pattern}' -> '{resolved}' is not a GTS pattern"
-                            ),
-                        ));
-                    }
-                    resolved
-                }
-                None => {
-                    return Some(XGtsRefValidationError::new(
-                        field_path.to_owned(),
-                        value.to_owned(),
-                        ref_pattern.to_owned(),
-                        format!("Cannot resolve reference path '{ref_pattern}'"),
-                    ));
-                }
-            }
-        } else {
-            ref_pattern.to_owned()
-        };
-
-        // Validate against GTS pattern
-        self.validate_value_matches_gts_pattern(value, &resolved_pattern, field_path)
-    }
-
-    /// Validate an x-gts-ref pattern in a schema definition
-    fn validate_ref_pattern(
-        &self,
-        ref_pattern: &str,
-        field_path: &str,
-        root_schema: &Value,
-    ) -> Option<XGtsRefValidationError> {
-        // Case 1: Absolute GTS pattern. A valid `x-gts-ref` literal is either a
-        // concrete GTS identifier or a trailing-`*` wildcard pattern; both forms
-        // are validated by the canonical pattern parser, which rejects malformed
-        // patterns such as `gts.x.*.events.*` (mid-string / multiple wildcards).
-        if ref_pattern.starts_with(GTS_ID_PREFIX) {
-            return GtsIdPattern::try_new(ref_pattern).err().map(|e| {
-                XGtsRefValidationError::new(
-                    field_path.to_owned(),
-                    ref_pattern.to_owned(),
-                    ref_pattern.to_owned(),
-                    format!("Invalid GTS identifier: {ref_pattern}: {}", e.cause),
-                )
-            });
-        }
-
-        // Case 2: Relative reference
-        if ref_pattern.starts_with('/') {
-            match Self::resolve_pointer(root_schema, ref_pattern) {
-                Some(resolved) => {
-                    // The resolved target may be a concrete id or a trailing-`*`
-                    // wildcard pattern, exactly like the absolute branch above;
-                    // validate it through the canonical pattern parser so a
-                    // resolved wildcard (e.g. `gts.x.core.*`) is accepted here
-                    // just as a literal one is.
-                    if let Err(e) = GtsIdPattern::try_new(&resolved) {
-                        return Some(XGtsRefValidationError::new(
-                            field_path.to_owned(),
-                            ref_pattern.to_owned(),
-                            ref_pattern.to_owned(),
-                            format!(
-                                "Resolved reference '{ref_pattern}' -> '{resolved}' is not a valid GTS identifier: {}",
-                                e.cause
-                            ),
-                        ));
-                    }
-                    None
-                }
-                None => Some(XGtsRefValidationError::new(
-                    field_path.to_owned(),
-                    ref_pattern.to_owned(),
-                    ref_pattern.to_owned(),
-                    format!("Cannot resolve reference path '{ref_pattern}'"),
-                )),
-            }
-        } else {
-            Some(XGtsRefValidationError::new(
-                field_path.to_owned(),
-                ref_pattern.to_owned(),
-                ref_pattern.to_owned(),
-                format!(
-                    "Invalid x-gts-ref value: '{ref_pattern}' must start with '{GTS_ID_PREFIX}' or '/'"
-                ),
-            ))
-        }
-    }
-
-    /// Validate value matches a GTS pattern
-    fn validate_value_matches_gts_pattern(
-        &self,
-        value: &str,
-        pattern: &str,
-        field_path: &str,
-    ) -> Option<XGtsRefValidationError> {
-        let Ok(id) = GtsId::try_new(value) else {
-            return Some(XGtsRefValidationError::new(
-                field_path.to_owned(),
-                value.to_owned(),
-                pattern.to_owned(),
-                format!("Value '{value}' is not a valid GTS identifier"),
-            ));
-        };
-
-        let Ok(pat) = GtsIdPattern::try_new(pattern) else {
-            return Some(XGtsRefValidationError::new(
-                field_path.to_owned(),
-                value.to_owned(),
-                pattern.to_owned(),
-                format!("Invalid GTS pattern '{pattern}'"),
-            ));
-        };
-
-        if !id.matches_pattern(&pat) {
-            return Some(XGtsRefValidationError::new(
-                field_path.to_owned(),
-                value.to_owned(),
-                pattern.to_owned(),
-                format!("Value '{value}' does not match pattern '{pattern}'"),
-            ));
-        }
-
-        None
-    }
-
-    /// Resolve a JSON Pointer in the schema
+    /// Resolve a JSON Pointer against the schema root.
     ///
-    /// # Arguments
-    /// * `schema` - The schema to search
-    /// * `pointer` - JSON Pointer (e.g., "/$id", "/properties/type")
+    /// Uses `serde_json`'s RFC 6901 implementation, including arrays and escapes.
     ///
     /// # Returns
     /// The resolved value as a string or None if not found.
@@ -512,20 +464,7 @@ impl XGtsRefValidator {
             return None;
         }
 
-        let path = pointer.trim_start_matches('/');
-        if path.is_empty() {
-            return None;
-        }
-
-        let parts: Vec<&str> = path.split('/').collect();
-        let mut current = schema;
-
-        for part in parts {
-            if !current.is_object() {
-                return None;
-            }
-            current = current.get(part)?;
-        }
+        let current = schema.pointer(pointer)?;
 
         // If current is a string, return it (stripping gts:// prefix if present)
         if let Some(s) = current.as_str() {
@@ -534,7 +473,7 @@ impl XGtsRefValidator {
 
         // If current is an object with x-gts-ref, resolve it
         if let Some(obj) = current.as_object()
-            && let Some(ref_value) = obj.get("x-gts-ref")
+            && let Some(ref_value) = obj.get(X_GTS_REF)
             && let Some(ref_str) = ref_value.as_str()
         {
             if ref_str.starts_with('/') {
@@ -560,758 +499,5 @@ impl XGtsRefValidator {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn test_validate_value_matches_gts_pattern_matching() {
-        let validator = XGtsRefValidator::new();
-
-        // Test exact match
-        let result = validator.validate_value_matches_gts_pattern(
-            "gts.x.core.events.topic.v1~",
-            "gts.x.core.events.topic.v1~",
-            "test_field",
-        );
-        assert!(result.is_none(), "Exact match should succeed");
-
-        // Test wildcard match
-        let result = validator.validate_value_matches_gts_pattern(
-            "gts.x.core.events.topic.v1~",
-            "gts.*",
-            "test_field",
-        );
-        assert!(result.is_none(), "Wildcard match should succeed");
-
-        // Test prefix match
-        let result = validator.validate_value_matches_gts_pattern(
-            "gts.x.core.events.topic.v1~",
-            "gts.x.core.*",
-            "test_field",
-        );
-        assert!(result.is_none(), "Prefix match should succeed");
-
-        // Test mismatch
-        let result = validator.validate_value_matches_gts_pattern(
-            "gts.x.core.events.topic.v1~",
-            "gts.y.core.*",
-            "test_field",
-        );
-        assert!(result.is_some(), "Mismatch should return error");
-    }
-
-    #[test]
-    fn test_validate_schema_with_x_gts_ref() {
-        let validator = XGtsRefValidator::new();
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "topic_id": {
-                    "type": "string",
-                    "x-gts-ref": "gts.x.core.events.topic.*"
-                }
-            }
-        });
-
-        let errors = validator.validate_schema(&schema, "", None);
-        assert!(errors.is_empty());
-    }
-
-    #[test]
-    fn test_validate_instance_with_x_gts_ref() {
-        let validator = XGtsRefValidator::new();
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "topic_id": {
-                    "type": "string",
-                    "x-gts-ref": "gts.x.core.events.topic.*"
-                }
-            }
-        });
-
-        let instance = json!({
-            "topic_id": "gts.x.core.events.topic.v1~"
-        });
-
-        let errors = validator.validate_instance(&instance, &schema, "");
-        assert!(errors.is_empty());
-    }
-
-    #[test]
-    fn test_validate_schema_relative_ref_resolving_to_wildcard() {
-        // A relative `x-gts-ref` that resolves to a wildcard pattern must be
-        // accepted, matching the absolute branch (which uses `GtsIdPattern`).
-        // Previously the resolved value was checked with `GtsId::is_valid`,
-        // which rejects wildcards and produced a spurious schema error.
-        let validator = XGtsRefValidator::new();
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "anchor": {
-                    "type": "string",
-                    "x-gts-ref": "gts.x.core.events.topic.*"
-                },
-                "relative": {
-                    "type": "string",
-                    "x-gts-ref": "/properties/anchor"
-                }
-            }
-        });
-
-        let errors = validator.validate_schema(&schema, "", None);
-        assert!(
-            errors.is_empty(),
-            "relative ref resolving to a wildcard must be accepted: {errors:?}"
-        );
-    }
-
-    #[test]
-    fn test_validate_schema_relative_ref_resolving_to_invalid_still_rejected() {
-        // The pattern parser must still reject a resolved value that is neither
-        // a concrete id nor a valid wildcard pattern.
-        let validator = XGtsRefValidator::new();
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "anchor": {"type": "string", "const": "not a gts id"},
-                "relative": {
-                    "type": "string",
-                    "x-gts-ref": "/properties/anchor/const"
-                }
-            }
-        });
-
-        let errors = validator.validate_schema(&schema, "", None);
-        assert!(
-            !errors.is_empty(),
-            "relative ref resolving to an invalid identifier must be rejected"
-        );
-    }
-
-    #[test]
-    fn test_validate_instance_with_x_gts_ref_mismatch() {
-        let validator = XGtsRefValidator::new();
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "topic_id": {
-                    "type": "string",
-                    "x-gts-ref": "gts.x.core.events.topic.*"
-                }
-            }
-        });
-
-        let instance = json!({
-            "topic_id": "gts.y.core.events.topic.v1~"
-        });
-
-        let errors = validator.validate_instance(&instance, &schema, "");
-        assert!(!errors.is_empty());
-    }
-
-    #[test]
-    fn test_validate_instance_with_dollar_id_ref_strips_gts_prefix() {
-        let validator = XGtsRefValidator::new();
-        // Schema has $id with gts:// prefix
-        let schema = json!({
-            "$id": "gts://gts.x.test._.entity.v1~",
-            "$schema": "http://json-schema.org/draft-07/schema#",
-            "type": "object",
-            "properties": {
-                "id": {
-                    "type": "string",
-                    "x-gts-ref": "/$id"
-                }
-            }
-        });
-
-        // Instance value should match WITHOUT the gts:// prefix
-        let instance = json!({
-            "id": "gts.x.test._.entity.v1~"
-        });
-
-        let errors = validator.validate_instance(&instance, &schema, "");
-        assert!(errors.is_empty(), "Expected no errors but got: {errors:?}");
-    }
-
-    #[test]
-    fn test_validate_instance_with_dollar_id_ref_rejects_full_uri() {
-        let validator = XGtsRefValidator::new();
-        let schema = json!({
-            "$id": "gts://gts.x.test._.entity.v1~",
-            "$schema": "http://json-schema.org/draft-07/schema#",
-            "type": "object",
-            "properties": {
-                "id": {
-                    "type": "string",
-                    "x-gts-ref": "/$id"
-                }
-            }
-        });
-
-        // Instance value with gts:// prefix should be rejected (not a valid GTS ID)
-        let instance = json!({
-            "id": "gts://gts.x.test._.entity.v1~"
-        });
-
-        let errors = validator.validate_instance(&instance, &schema, "");
-        assert!(
-            !errors.is_empty(),
-            "Expected validation error for value with gts:// prefix"
-        );
-    }
-
-    #[test]
-    fn test_strip_gts_uri_prefix() {
-        // With prefix
-        assert_eq!(
-            XGtsRefValidator::strip_gts_uri_prefix("gts://gts.x.test._.entity.v1~"),
-            "gts.x.test._.entity.v1~"
-        );
-        // Without prefix (passthrough)
-        assert_eq!(
-            XGtsRefValidator::strip_gts_uri_prefix("gts.x.test._.entity.v1~"),
-            "gts.x.test._.entity.v1~"
-        );
-        // Empty string
-        assert_eq!(XGtsRefValidator::strip_gts_uri_prefix(""), "");
-        // Partial prefix
-        assert_eq!(
-            XGtsRefValidator::strip_gts_uri_prefix("gts:/incomplete"),
-            "gts:/incomplete"
-        );
-    }
-
-    #[test]
-    fn test_validation_error_creation_and_display() {
-        let error = XGtsRefValidationError::new(
-            "test_field".to_owned(),
-            "invalid_value".to_owned(),
-            "gts.x.*".to_owned(),
-            "Test reason".to_owned(),
-        );
-
-        // Test field access
-        assert_eq!(error.field_path, "test_field");
-        assert_eq!(error.value, "invalid_value");
-        assert_eq!(error.ref_pattern, "gts.x.*");
-        assert_eq!(error.reason, "Test reason");
-
-        // Test display formatting
-        let display = format!("{error}");
-        assert!(display.contains("test_field"));
-        assert!(display.contains("Test reason"));
-    }
-
-    #[test]
-    fn test_validate_value_matches_gts_pattern_failures() {
-        let validator = XGtsRefValidator::new();
-
-        // Test invalid GTS ID
-        let result = validator.validate_value_matches_gts_pattern(
-            "not-a-valid-gts-id",
-            "gts.*",
-            "test_field",
-        );
-        assert!(result.is_some());
-        assert!(
-            result
-                .unwrap()
-                .reason
-                .contains("not a valid GTS identifier")
-        );
-
-        // Test prefix no match
-        let result = validator.validate_value_matches_gts_pattern(
-            "gts.a.b.c.d.v1~",
-            "gts.x.y.*",
-            "test_field",
-        );
-        assert!(result.is_some());
-        assert!(result.unwrap().reason.contains("does not match pattern"));
-
-        // Test exact no match
-        let result = validator.validate_value_matches_gts_pattern(
-            "gts.a.b.c.d.v1~",
-            "gts.x.y.z.w.v1~",
-            "test_field",
-        );
-        assert!(result.is_some());
-    }
-
-    #[test]
-    fn test_validate_ref_pattern_gts_literals() {
-        let validator = XGtsRefValidator::new();
-        let no_root = json!({});
-
-        // Valid concrete id, bare wildcard, and prefix wildcard all pass.
-        for ok in ["gts.x.core.events.topic.v1~", "gts.*", "gts.x.core.*"] {
-            assert!(
-                validator
-                    .validate_ref_pattern(ok, "test_field", &no_root)
-                    .is_none(),
-                "expected '{ok}' to validate"
-            );
-        }
-
-        // Malformed wildcard patterns (mid-string / multiple wildcards) must be
-        // rejected — a naive `starts_with("gts.")` prefix check accepted these.
-        // The reason now carries the canonical parser's error text.
-        for bad in ["gts.x.*.events.*", "gts.*.*.*.*"] {
-            let result = validator.validate_ref_pattern(bad, "test_field", &no_root);
-            assert!(result.is_some(), "expected '{bad}' to be rejected");
-            assert!(!result.unwrap().reason.is_empty());
-        }
-    }
-
-    #[test]
-    fn test_validate_value_matches_gts_pattern_minor_version_flexibility() {
-        let validator = XGtsRefValidator::new();
-        // A pattern pinned to a major version (no minor) must match a value that
-        // carries a specific minor — segment-aware matching honours this; a raw
-        // string prefix would reject it (`…v1.0~` does not start with `…v1~`).
-        assert!(
-            validator
-                .validate_value_matches_gts_pattern(
-                    "gts.x.core.events.event.v1.0~",
-                    "gts.x.core.events.event.v1~",
-                    "test_field",
-                )
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn test_validate_ref_pattern() {
-        let validator = XGtsRefValidator::new();
-        let schema_with_id = json!({"$id": "gts://gts.x.test._.entity.v1~"});
-        let schema_without_id = json!({});
-
-        // Valid GTS prefix
-        assert!(
-            validator
-                .validate_ref_pattern("gts.x.y.z.w.v1~", "test_field", &schema_without_id)
-                .is_none()
-        );
-
-        // Invalid GTS prefix
-        let result =
-            validator.validate_ref_pattern("gts.INVALID", "test_field", &schema_without_id);
-        assert!(result.is_some());
-
-        // Valid JSON pointer
-        assert!(
-            validator
-                .validate_ref_pattern("/$id", "test_field", &schema_with_id)
-                .is_none()
-        );
-
-        // JSON pointer with invalid resolution
-        let schema_bad = json!({"notAnId": "not-a-valid-gts-id"});
-        let result = validator.validate_ref_pattern("/notAnId", "test_field", &schema_bad);
-        assert!(result.is_some());
-        assert!(
-            result
-                .unwrap()
-                .reason
-                .contains("not a valid GTS identifier")
-        );
-
-        // JSON pointer not found
-        let result =
-            validator.validate_ref_pattern("/nonexistent", "test_field", &schema_without_id);
-        assert!(result.is_some());
-        assert!(
-            result
-                .unwrap()
-                .reason
-                .contains("Cannot resolve reference path")
-        );
-
-        // Invalid format
-        let result =
-            validator.validate_ref_pattern("invalid-format", "test_field", &schema_without_id);
-        assert!(result.is_some());
-        assert!(
-            result
-                .unwrap()
-                .reason
-                .contains("must start with 'gts.' or '/'")
-        );
-    }
-
-    #[test]
-    fn test_validate_ref_value() {
-        let validator = XGtsRefValidator::new();
-        let schema_with_id = json!({"$id": "gts://gts.x.test._.entity.v1~"});
-        let schema_without_pattern = json!({"someField": "not-a-gts-pattern"});
-
-        // Valid GTS pattern
-        assert!(
-            validator
-                .validate_ref_value(
-                    "gts.x.test._.entity.v1~",
-                    "gts.x.test.*",
-                    "test_field",
-                    &schema_with_id,
-                )
-                .is_none()
-        );
-
-        // Valid JSON pointer
-        assert!(
-            validator
-                .validate_ref_value(
-                    "gts.x.test._.entity.v1~",
-                    "/$id",
-                    "test_field",
-                    &schema_with_id,
-                )
-                .is_none()
-        );
-
-        // JSON pointer not GTS pattern
-        let result = validator.validate_ref_value(
-            "some-value",
-            "/someField",
-            "test_field",
-            &schema_without_pattern,
-        );
-        assert!(result.is_some());
-        assert!(result.unwrap().reason.contains("is not a GTS pattern"));
-
-        // JSON pointer not found
-        let result =
-            validator.validate_ref_value("some-value", "/missing", "test_field", &json!({}));
-        assert!(result.is_some());
-        assert!(
-            result
-                .unwrap()
-                .reason
-                .contains("Cannot resolve reference path")
-        );
-    }
-
-    #[test]
-    fn test_resolve_pointer() {
-        // Simple resolution
-        let schema = json!({"$id": "gts://gts.x.test._.entity.v1~"});
-        assert_eq!(
-            XGtsRefValidator::resolve_pointer(&schema, "/$id"),
-            Some("gts.x.test._.entity.v1~".to_owned())
-        );
-
-        // Nested resolution
-        let schema = json!({
-            "properties": {
-                "name": {
-                    "x-gts-ref": "gts.x.test.*"
-                }
-            }
-        });
-        assert_eq!(
-            XGtsRefValidator::resolve_pointer(&schema, "/properties/name/x-gts-ref"),
-            Some("gts.x.test.*".to_owned())
-        );
-
-        // Not found
-        let schema = json!({"properties": {}});
-        assert_eq!(
-            XGtsRefValidator::resolve_pointer(&schema, "/nonexistent"),
-            None
-        );
-
-        // Empty path
-        let schema = json!({"$id": "test"});
-        assert_eq!(XGtsRefValidator::resolve_pointer(&schema, "/"), None);
-
-        // Non-object path
-        let schema = json!({"value": "string"});
-        assert_eq!(
-            XGtsRefValidator::resolve_pointer(&schema, "/value/nested"),
-            None
-        );
-
-        // With x-gts-ref recursion
-        let schema = json!({
-            "$id": "gts://gts.x.test._.entity.v1~",
-            "properties": {
-                "type": {
-                    "x-gts-ref": "/$id"
-                }
-            }
-        });
-        assert_eq!(
-            XGtsRefValidator::resolve_pointer(&schema, "/properties/type"),
-            Some("gts.x.test._.entity.v1~".to_owned())
-        );
-
-        // Strips gts:// URI prefix
-        let schema = json!({
-            "$id": "gts://gts.x.test._.entity.v1~",
-            "type": "gts://gts.x.another._.type.v1~"
-        });
-        assert_eq!(
-            XGtsRefValidator::resolve_pointer(&schema, "/$id"),
-            Some("gts.x.test._.entity.v1~".to_owned())
-        );
-        assert_eq!(
-            XGtsRefValidator::resolve_pointer(&schema, "/type"),
-            Some("gts.x.another._.type.v1~".to_owned())
-        );
-    }
-
-    #[test]
-    fn test_resolve_pointer_self_cycle_terminates() {
-        // A cyclic relative x-gts-ref must terminate with None, not overflow.
-        let schema = json!({
-            "properties": {
-                "a": { "x-gts-ref": "/properties/a" }
-            }
-        });
-        assert_eq!(
-            XGtsRefValidator::resolve_pointer(&schema, "/properties/a"),
-            None
-        );
-
-        // Two-node cycle: a -> b -> a.
-        let schema = json!({
-            "properties": {
-                "a": { "x-gts-ref": "/properties/b" },
-                "b": { "x-gts-ref": "/properties/a" }
-            }
-        });
-        assert_eq!(
-            XGtsRefValidator::resolve_pointer(&schema, "/properties/a"),
-            None
-        );
-    }
-
-    #[test]
-    fn test_visit_schema_non_string_x_gts_ref() {
-        let validator = XGtsRefValidator::new();
-        let schema = json!({
-            "properties": {
-                "field": {
-                    "x-gts-ref": 123
-                }
-            }
-        });
-
-        let errors = validator.validate_schema(&schema, "", None);
-        assert!(!errors.is_empty());
-        assert!(errors[0].reason.contains("must be a string"));
-    }
-
-    #[test]
-    fn test_visit_schema_nested_in_properties() {
-        let validator = XGtsRefValidator::new();
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "field1": {
-                    "type": "string",
-                    "x-gts-ref": "gts.x.test.*"
-                },
-                "field2": {
-                    "type": "string",
-                    "x-gts-ref": "gts.y.test.*"
-                }
-            }
-        });
-
-        let errors = validator.validate_schema(&schema, "", None);
-        assert!(errors.is_empty());
-    }
-
-    #[test]
-    fn test_visit_schema_nested_in_array() {
-        let validator = XGtsRefValidator::new();
-        let schema = json!({
-            "items": [
-                {
-                    "x-gts-ref": "gts.x.test.*"
-                },
-                {
-                    "x-gts-ref": "gts.y.test.*"
-                }
-            ]
-        });
-
-        let errors = validator.validate_schema(&schema, "", None);
-        assert!(errors.is_empty());
-    }
-
-    #[test]
-    fn test_visit_instance_nested_objects() {
-        let validator = XGtsRefValidator::new();
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "outer": {
-                    "type": "object",
-                    "properties": {
-                        "inner": {
-                            "type": "string",
-                            "x-gts-ref": "gts.x.test.*"
-                        }
-                    }
-                }
-            }
-        });
-
-        // Valid nested value
-        let instance_valid = json!({
-            "outer": {
-                "inner": "gts.x.test._.entity.v1~"
-            }
-        });
-        let errors = validator.validate_instance(&instance_valid, &schema, "");
-        assert!(errors.is_empty(), "Valid nested value should pass");
-
-        // Invalid nested value
-        let instance_invalid = json!({
-            "outer": {
-                "inner": "gts.y.different._.entity.v1~"
-            }
-        });
-        let errors = validator.validate_instance(&instance_invalid, &schema, "");
-        assert!(!errors.is_empty(), "Invalid nested value should fail");
-        assert!(errors[0].field_path.contains("outer.inner"));
-    }
-
-    #[test]
-    fn test_visit_instance_array() {
-        let validator = XGtsRefValidator::new();
-        let schema = json!({
-            "type": "array",
-            "items": {
-                "type": "string",
-                "x-gts-ref": "gts.x.test.*"
-            }
-        });
-
-        let instance = json!(["gts.x.test._.entity1.v1~", "gts.x.test._.entity2.v1~"]);
-
-        let errors = validator.validate_instance(&instance, &schema, "");
-        assert!(errors.is_empty());
-    }
-
-    #[test]
-    fn test_visit_instance_array_with_error() {
-        let validator = XGtsRefValidator::new();
-        let schema = json!({
-            "type": "array",
-            "items": {
-                "type": "string",
-                "x-gts-ref": "gts.x.test.*"
-            }
-        });
-
-        let instance = json!(["gts.x.test._.entity1.v1~", "gts.y.other._.entity2.v1~"]);
-
-        let errors = validator.validate_instance(&instance, &schema, "");
-        assert_eq!(errors.len(), 1);
-        assert!(errors[0].field_path.contains("[1]"));
-    }
-
-    #[test]
-    fn test_visit_instance_schema_not_object() {
-        let validator = XGtsRefValidator::new();
-        let schema = json!("not an object");
-        let instance = json!({"field": "value"});
-
-        let errors = validator.validate_instance(&instance, &schema, "");
-        assert!(errors.is_empty());
-    }
-
-    #[test]
-    fn test_visit_instance_no_x_gts_ref() {
-        let validator = XGtsRefValidator::new();
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "field": {
-                    "type": "string"
-                }
-            }
-        });
-
-        let instance = json!({
-            "field": "any value"
-        });
-
-        let errors = validator.validate_instance(&instance, &schema, "");
-        assert!(errors.is_empty());
-    }
-
-    #[test]
-    fn test_visit_instance_value_not_string() {
-        let validator = XGtsRefValidator::new();
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "field": {
-                    "type": "number",
-                    "x-gts-ref": "gts.x.test.*"
-                }
-            }
-        });
-
-        let instance = json!({
-            "field": 123
-        });
-
-        let errors = validator.validate_instance(&instance, &schema, "");
-        // No error because value is not a string, so x-gts-ref doesn't apply
-        assert!(errors.is_empty());
-    }
-
-    #[test]
-    fn test_validate_instance_empty_path() {
-        let validator = XGtsRefValidator::new();
-        let schema = json!({
-            "type": "string",
-            "x-gts-ref": "gts.x.test.*"
-        });
-
-        let instance = json!("gts.x.test._.entity.v1~");
-
-        let errors = validator.validate_instance(&instance, &schema, "");
-        assert!(errors.is_empty());
-    }
-
-    #[test]
-    fn test_validate_schema_with_root_schema() {
-        let validator = XGtsRefValidator::new();
-        let root = json!({
-            "$id": "gts://gts.x.test._.root.v1~"
-        });
-
-        let schema = json!({
-            "properties": {
-                "field": {
-                    "x-gts-ref": "/$id"
-                }
-            }
-        });
-
-        let errors = validator.validate_schema(&schema, "", Some(&root));
-        assert!(errors.is_empty());
-    }
-
-    #[test]
-    fn test_strip_gts_uri_prefix_empty_string() {
-        let result = XGtsRefValidator::strip_gts_uri_prefix("");
-        assert_eq!(result, "");
-    }
-
-    #[test]
-    fn test_strip_gts_uri_prefix_partial_prefix() {
-        let result = XGtsRefValidator::strip_gts_uri_prefix("gts:/incomplete");
-        assert_eq!(result, "gts:/incomplete");
-    }
-}
+#[path = "x_gts_ref_test.rs"]
+mod x_gts_ref_test;

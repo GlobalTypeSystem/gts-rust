@@ -546,14 +546,14 @@ mod tests {
         assert!(!reader.initialized);
 
         // First iteration should initialize and return entities
-        let entities: Vec<_> = reader.iter().collect();
+        let count = reader.iter().count();
         assert!(reader.initialized);
-        assert_eq!(entities.len(), 1);
+        assert_eq!(count, 1);
 
         // Second iteration should not reinitialize but still work
-        let entities2: Vec<_> = reader.iter().collect();
+        let count2 = reader.iter().count();
         assert!(reader.initialized);
-        assert_eq!(entities2.len(), 1);
+        assert_eq!(count2, 1);
     }
 
     #[test]
@@ -573,9 +573,9 @@ mod tests {
         let paths = vec![temp_dir.path().to_string_lossy().to_string()];
         let mut reader = GtsFileReader::new(&paths, None);
 
-        let entities: Vec<_> = reader.iter().collect();
+        let count = reader.iter().count();
 
-        assert_eq!(entities.len(), 2);
+        assert_eq!(count, 2);
     }
 
     #[test]
@@ -621,8 +621,8 @@ mod tests {
         let _: Vec<_> = reader.iter().collect();
         reader.reset();
 
-        let entities: Vec<_> = reader.iter().collect();
-        assert_eq!(entities.len(), 1);
+        let count = reader.iter().count();
+        assert_eq!(count, 1);
         assert!(reader.initialized);
     }
 }

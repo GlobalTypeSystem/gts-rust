@@ -98,7 +98,11 @@ impl EffectiveTraits {
     /// Returns `Vec<String>` of error messages if any trait schema is malformed,
     /// if traits are provided without a schema, if the schema resolves to
     /// `false` with values present, or if values don't conform.
-    pub(crate) fn validate(&self, check_unresolved: bool) -> Result<(), Vec<String>> {
+    pub(crate) fn validate(
+        &self,
+        check_unresolved: bool,
+        entity_exists: Option<crate::x_gts_ref::ReferenceExists>,
+    ) -> Result<(), Vec<String>> {
         validate_trait_schema_integrity(&self.resolved_trait_schemas)?;
         validate_trait_schema_compatibility(&self.resolved_trait_schemas)?;
 
@@ -122,7 +126,7 @@ impl EffectiveTraits {
             return Ok(());
         }
 
-        validate_trait_values(&self.schema, &self.values, check_unresolved)
+        validate_trait_values(&self.schema, &self.values, check_unresolved, entity_exists)
     }
 }
 
@@ -210,6 +214,9 @@ pub fn inline_traits_schema_of<T: schemars::JsonSchema>() -> Value {
 // Public API
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
+const REFS_UNVERIFIABLE: Option<crate::x_gts_ref::ReferenceExists> = None;
+
 /// Validates schema traits for a full inheritance chain.
 ///
 /// `chain_schemas` is an ordered list of `(schema_id, raw_schema_content)` pairs
@@ -237,7 +244,8 @@ pub fn validate_traits_chain(chain_schemas: &[(String, Value)]) -> Result<(), Ve
     let dialect = chain_schemas
         .last()
         .and_then(|(_, content)| content.get("$schema").and_then(Value::as_str));
-    build_effective_traits(&trait_schemas, &Value::Object(merged), dialect).validate(true)
+    build_effective_traits(&trait_schemas, &Value::Object(merged), dialect)
+        .validate(true, REFS_UNVERIFIABLE)
 }
 
 /// Validate each collected `x-gts-traits-schema` subschema before composition,
@@ -267,7 +275,7 @@ fn validate_trait_schema_integrity(resolved_trait_schemas: &[Value]) -> Result<(
         match ts {
             Value::Bool(_) => {}
             Value::Object(_) => {
-                if let Err(e) = jsonschema::validator_for(ts) {
+                if let Err(e) = crate::json_schema::validator_for(ts) {
                     return Err(vec![format!(
                         "x-gts-traits-schema[{i}] is not a valid JSON Schema: {e}"
                     )]);
@@ -360,32 +368,28 @@ pub(crate) fn build_effective_traits(
     }
 }
 
-/// Validate a default-filled trait values object against its composed schema:
-/// standard JSON Schema validation (plus the required-trait completeness check
-/// when `check_unresolved`) followed by GTS `x-gts-ref` enforcement, which the
-/// standard validator ignores as an unknown keyword.
+/// Validates materialized traits, including `x-gts-ref` and completeness.
 fn validate_trait_values(
     effective_traits_schema: &Value,
     effective_traits: &Value,
     check_unresolved: bool,
+    entity_exists: Option<crate::x_gts_ref::ReferenceExists>,
 ) -> Result<(), Vec<String>> {
     let mut errors = match validate_traits_against_schema(
         effective_traits_schema,
         effective_traits,
         check_unresolved,
+        entity_exists,
     ) {
         Ok(()) => Vec::new(),
         Err(e) => e,
     };
 
-    // Enforce `x-gts-ref` on trait values. The standard `jsonschema` validator
-    // ignores `x-gts-ref` as an unknown keyword, so a trait value that violates
-    // the declared GTS-prefix would otherwise slip through. Treat the effective
-    // trait-schema as the schema and the materialized effective traits as the
-    // instance.
-    let xref = crate::x_gts_ref::XGtsRefValidator::new();
-    for err in xref.validate_instance(effective_traits, effective_traits_schema, "") {
-        errors.push(format!("trait x-gts-ref: {err}"));
+    if check_unresolved {
+        errors.extend(unresolved_trait_properties(
+            effective_traits_schema,
+            effective_traits,
+        ));
     }
 
     if errors.is_empty() {
@@ -850,17 +854,13 @@ fn strip_required_recursive(schema: &mut Value, depth: usize) {
 
 /// Validate the effective traits object against the effective trait schema.
 ///
-/// Uses the `jsonschema` crate for standard JSON Schema validation.  This
-/// catches type mismatches, enum violations, `additionalProperties` errors,
-/// and any other constraint issues.
-///
-/// Additionally checks that every *required* property defined in the trait
-/// schema is resolved (has a value or default) — i.e. there are no required
-/// "holes" left after applying defaults. Optional properties may be unresolved.
+/// Validates standard and GTS constraints with dialect-aware applicability.
+/// `entity_exists` enables store-aware reference checks.
 fn validate_traits_against_schema(
     trait_schema: &Value,
     effective_traits: &Value,
     check_unresolved: bool,
+    entity_exists: Option<crate::x_gts_ref::ReferenceExists>,
 ) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
 
@@ -878,43 +878,44 @@ fn validate_traits_against_schema(
         &stripped
     };
 
-    // Standard JSON Schema validation of the traits object
-    match jsonschema::validator_for(validation_schema) {
+    match crate::json_schema::gts_validator_for(validation_schema, entity_exists) {
         Ok(validator) => {
-            for error in validator.iter_errors(effective_traits) {
-                errors.push(format!("trait validation: {error}"));
-            }
+            let diagnosis =
+                crate::json_schema::diagnose(&validator, validation_schema, effective_traits);
+            errors.extend(
+                diagnosis
+                    .standard
+                    .into_iter()
+                    .chain(diagnosis.unexplained)
+                    .map(|e| format!("trait validation: {e}")),
+            );
+            errors.extend(
+                diagnosis
+                    .references
+                    .iter()
+                    .map(|e| format!("trait {}: {e}", crate::schema_modifiers::X_GTS_REF)),
+            );
         }
         Err(e) => {
             errors.push(format!("failed to compile trait schema: {e}"));
         }
     }
 
-    // Check for unresolved (missing) trait properties that have no default.
-    // A property is "unresolved" if:
-    // - It exists in the trait schema `properties`
-    // - It has no `default`
-    // - It is absent from the effective traits object
-    // Skipped when check_unresolved is false (intermediate schema validation).
-    if !check_unresolved {
-        return if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors)
-        };
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
     }
+}
 
+/// Required trait properties still absent after materialization.
+fn unresolved_trait_properties(trait_schema: &Value, effective_traits: &Value) -> Vec<String> {
     let all_props = collect_all_properties(trait_schema);
     let required = collect_all_required(trait_schema);
     let traits_obj = effective_traits.as_object();
+    let mut errors = Vec::new();
 
     for (prop_name, prop_schema) in &all_props {
-        // Only *required* trait properties must be resolved. An optional
-        // property left unresolved is spec-valid: the GTS spec keys completeness
-        // on standard JSON Schema validation (README §9.7.5) and OP#13 requires
-        // resolution of "all required trait properties" — not every declared one.
-        // (Standard JSON Schema validation above already reports missing required
-        // members; this loop adds a type-annotated, trait-specific message.)
         if !required.contains(prop_name.as_str()) {
             continue;
         }
@@ -945,11 +946,7 @@ fn validate_traits_against_schema(
         }
     }
 
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors)
-    }
+    errors
 }
 
 // ---------------------------------------------------------------------------
@@ -1120,7 +1117,7 @@ mod tests {
             traits.values
         );
         assert!(
-            traits.validate(true).is_err(),
+            traits.validate(true, REFS_UNVERIFIABLE).is_err(),
             "a required const-only trait with no value and no default is unresolved"
         );
     }
@@ -1144,9 +1141,9 @@ mod tests {
         );
         assert_eq!(traits.values["channel"], "audit");
         assert!(
-            traits.validate(true).is_ok(),
+            traits.validate(true, REFS_UNVERIFIABLE).is_ok(),
             "const + matching default is fully resolved: {:?}",
-            traits.validate(true)
+            traits.validate(true, REFS_UNVERIFIABLE)
         );
     }
 
@@ -1171,7 +1168,7 @@ mod tests {
             "the default is materialized as declared, const does not override it"
         );
         assert!(
-            traits.validate(true).is_err(),
+            traits.validate(true, REFS_UNVERIFIABLE).is_err(),
             "a default contradicting const must fail validation"
         );
     }
@@ -1226,9 +1223,9 @@ mod tests {
             "ancestor default must ripple when a descendant redeclares without a default"
         );
         assert!(
-            traits.validate(true).is_ok(),
+            traits.validate(true, REFS_UNVERIFIABLE).is_ok(),
             "the rippled default resolves the required trait: {:?}",
-            traits.validate(true)
+            traits.validate(true, REFS_UNVERIFIABLE)
         );
     }
 
@@ -1376,7 +1373,7 @@ mod tests {
 
         let traits = build_effective_traits(&schemas, &json!({}), None);
         let err = traits
-            .validate(false)
+            .validate(false, REFS_UNVERIFIABLE)
             .expect_err("abstract types must still reject incompatible trait schemas");
         assert!(
             err.iter()
@@ -1404,7 +1401,7 @@ mod tests {
 
         let traits = build_effective_traits(&schemas, &json!({}), None);
         let err = traits
-            .validate(false)
+            .validate(false, REFS_UNVERIFIABLE)
             .expect_err("trait schema conflicts must fail without concrete values");
         assert!(
             err.iter()
@@ -1433,9 +1430,9 @@ mod tests {
 
         let traits = build_effective_traits(&schemas, &json!({}), None);
         assert!(
-            traits.validate(false).is_ok(),
+            traits.validate(false, REFS_UNVERIFIABLE).is_ok(),
             "valid narrowing must pass without values: {:?}",
-            traits.validate(false)
+            traits.validate(false, REFS_UNVERIFIABLE)
         );
     }
 
@@ -1457,7 +1454,7 @@ mod tests {
 
         let traits = build_effective_traits(&schemas, &json!({}), None);
         let err = traits
-            .validate(false)
+            .validate(false, REFS_UNVERIFIABLE)
             .expect_err("a closed descendant orphaning an ancestor trait must fail");
         assert!(
             err.iter()
@@ -1487,9 +1484,9 @@ mod tests {
 
         let traits = build_effective_traits(&schemas, &json!({}), None);
         assert!(
-            traits.validate(false).is_ok(),
+            traits.validate(false, REFS_UNVERIFIABLE).is_ok(),
             "restating the ancestor property keeps it usable: {:?}",
-            traits.validate(false)
+            traits.validate(false, REFS_UNVERIFIABLE)
         );
     }
 
@@ -1523,7 +1520,7 @@ mod tests {
 
         let traits = build_effective_traits(&schemas, &json!({}), None);
         let err = traits
-            .validate(false)
+            .validate(false, REFS_UNVERIFIABLE)
             .expect_err("a closed nested descendant orphaning an ancestor trait must fail");
         assert!(
             err.iter()
@@ -1563,9 +1560,9 @@ mod tests {
 
         let traits = build_effective_traits(&schemas, &json!({}), None);
         assert!(
-            traits.validate(false).is_ok(),
+            traits.validate(false, REFS_UNVERIFIABLE).is_ok(),
             "restating the nested ancestor property keeps it usable: {:?}",
-            traits.validate(false)
+            traits.validate(false, REFS_UNVERIFIABLE)
         );
     }
 
@@ -1610,7 +1607,7 @@ mod tests {
 
         let traits = build_effective_traits(&schemas, &json!({}), None);
         let err = traits
-            .validate(false)
+            .validate(false, REFS_UNVERIFIABLE)
             .expect_err("a closed allOf branch orphaning an ancestor trait must fail");
         assert!(
             err.iter()
@@ -2406,6 +2403,90 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_trait_values_flags_dangling_ref_into_known_type() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "topicRef": {"type": "string", "x-gts-ref": "gts.x.a.b.topic.v1~"},
+            },
+        });
+        let values = json!({"topicRef": "gts.x.a.b.topic.v1~x.c._.missing.v1"});
+
+        let res = super::validate_trait_values(
+            &schema,
+            &values,
+            false,
+            Some(std::sync::Arc::new(|_| false)),
+        );
+        let errors = res.expect_err("a dangling verifiable reference must fail");
+        assert!(
+            errors.iter().any(|e| e.contains("not registered")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_trait_values_allows_unverifiable_ref() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "topicRef": {"type": "string", "x-gts-ref": "gts.x.a.b.topic.v1~"},
+            },
+        });
+        let values = json!({"topicRef": "gts.x.a.b.topic.v1~x.c._.orders.v1"});
+
+        super::validate_trait_values(&schema, &values, false, super::REFS_UNVERIFIABLE)
+            .expect("an unverifiable reference must be tolerated");
+    }
+
+    #[test]
+    fn test_validate_trait_values_lets_an_applicable_branch_decide() {
+        let constrained = json!({
+            "required": ["other"],
+            "properties": {
+                "topicRef": {"type": "string", "x-gts-ref": "gts.x.a.b.topic.v1~"},
+                "other": {"type": "string"},
+            },
+        });
+        let open = json!({"type": "object"});
+        let values = json!({"topicRef": "gts.x.a.b.topic.v1~x.c._.missing.v1"});
+
+        for (label, branches) in [
+            ("constrained first", json!([constrained, open])),
+            ("open first", json!([open, constrained])),
+        ] {
+            let schema = json!({"type": "object", "anyOf": branches});
+            super::validate_trait_values(
+                &schema,
+                &values,
+                false,
+                Some(std::sync::Arc::new(|_| false)),
+            )
+            .unwrap_or_else(|errors| panic!("{label}: {errors:?}"));
+        }
+    }
+
+    #[test]
+    fn test_validate_trait_values_still_flags_a_dangling_ref_every_branch_imposes() {
+        let schema = json!({
+            "type": "object",
+            "anyOf": [
+                {"properties": {"topicRef": {"type": "string", "x-gts-ref": "gts.x.a.b.topic.v1~"}}},
+                {"properties": {"topicRef": {"type": "string", "x-gts-ref": "gts.x.a.b.topic.v1~"}}},
+            ],
+        });
+        let values = json!({"topicRef": "gts.x.a.b.topic.v1~x.c._.missing.v1"});
+
+        super::validate_trait_values(
+            &schema,
+            &values,
+            false,
+            Some(std::sync::Arc::new(|_| false)),
+        )
+        .expect_err("no branch tolerates the dangling reference");
+    }
+
+    #[test]
     fn test_validate_trait_values_flags_x_gts_ref_violation() {
         let schema = json!({
             "type": "object",
@@ -2416,7 +2497,7 @@ mod tests {
         // A value that does not match the required gts prefix must be reported,
         // even though the standard jsonschema validator ignores x-gts-ref.
         let values = json!({ "topicRef": "not-a-gts-id" });
-        let res = super::validate_trait_values(&schema, &values, false);
+        let res = super::validate_trait_values(&schema, &values, false, super::REFS_UNVERIFIABLE);
         assert!(
             res.is_err(),
             "x-gts-ref violation should be reported: {res:?}"
