@@ -2,7 +2,7 @@
 //!
 //! GTS asserts `uuid` on every dialect and uses ECMA 262 syntax for `regex`.
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::sync::{OnceLock, mpsc};
 use uuid::Uuid;
 
@@ -121,9 +121,7 @@ pub fn diagnose(validator: &jsonschema::Validator, schema: &Value, instance: &Va
         return Diagnosis::default();
     }
 
-    if crate::schema_modifiers::can_reenter_document(schema)
-        && !is_single_property_self_reference(schema)
-    {
+    if !has_linear_recursion(schema) {
         return Diagnosis {
             unexplained: Some(
                 "the schema can re-enter itself in a shape where explaining a rejection costs \
@@ -143,38 +141,54 @@ pub fn diagnose(validator: &jsonschema::Validator, schema: &Value, instance: &Va
     }
 }
 
-/// Whether recursion has one non-branching `#` path through named properties.
+/// Whether explaining a rejection has no recursive fan-out.
 ///
-/// This shape has no fan-out, so detailed diagnostics remain linear. Resolution
-/// may inline the property chain once, hence multiple `properties/<name>` pairs.
-fn is_single_property_self_reference(schema: &Value) -> bool {
-    let mut self_references = 0usize;
-    let mut disqualified = false;
-
-    crate::schema_modifiers::for_each_schema_node(schema, &mut |node, location| {
-        if node.contains_key("$dynamicRef") || node.contains_key("$recursiveRef") {
-            disqualified = true;
-        }
-
-        let Some(target) = node.get("$ref").and_then(Value::as_str) else {
-            return;
-        };
-        if target != "#" && !target.starts_with("#/") {
-            return;
-        }
-        self_references += 1;
-
-        // Every pair must be `properties/<name>`.
-        let steps: Vec<&str> = location.split('/').collect();
-        let along_named_properties = steps.len() >= 2
-            && steps.len().is_multiple_of(2)
-            && steps.iter().step_by(2).all(|step| *step == "properties");
-        if target != "#" || !along_named_properties {
-            disqualified = true;
+/// True without re-entry, or with a single `$ref` reached from the root only
+/// through keywords that descend into the instance: every re-entry then lands
+/// deeper in the instance, so each location is explained once (a tree through
+/// `items`, a map through `additionalProperties`). A combinator on the path
+/// re-evaluates its branches while explaining, and two re-entry points can meet
+/// at one location; either compounds per level. Every `$ref` counts, since
+/// anchors and same-document URIs re-enter as well as JSON Pointers.
+fn has_linear_recursion(schema: &Value) -> bool {
+    let mut reentries: Vec<*const Map<String, Value>> = Vec::new();
+    let mut dynamic = false;
+    crate::schema_modifiers::for_each_schema_node(schema, &mut |node, _| {
+        dynamic |= node.contains_key("$dynamicRef") || node.contains_key("$recursiveRef");
+        if node.contains_key("$ref") {
+            reentries.push(std::ptr::from_ref(node));
         }
     });
+    match (dynamic, reentries.as_slice()) {
+        (false, []) => true,
+        (false, [only]) => descends_to(schema, *only),
+        _ => false,
+    }
+}
 
-    !disqualified && self_references == 1
+/// Whether `target` lies below `node` through instance-descending keywords.
+fn descends_to(node: &Value, target: *const Map<String, Value>) -> bool {
+    let Value::Object(map) = node else {
+        return false;
+    };
+    let mut children = ["properties", "patternProperties"]
+        .into_iter()
+        .filter_map(|keyword| map.get(keyword).and_then(Value::as_object))
+        .flat_map(Map::values)
+        .chain(
+            ["items", "prefixItems"]
+                .into_iter()
+                .filter_map(|keyword| map.get(keyword).and_then(Value::as_array))
+                .flatten(),
+        )
+        .chain(
+            ["additionalProperties", "items", "additionalItems"]
+                .into_iter()
+                .filter_map(|keyword| map.get(keyword).filter(|child| child.is_object())),
+        );
+    children.any(|child| {
+        child.as_object().is_some_and(|m| std::ptr::eq(m, target)) || descends_to(child, target)
+    })
 }
 
 /// Checks for a hyphenated RFC 4122 UUID.
@@ -290,6 +304,70 @@ fn repr_instance(instance: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn diagnose_json(schema: &serde_json::Value, instance: &serde_json::Value) -> Diagnosis {
+        let validator = gts_validator_for(schema, None).expect("schema compiles");
+        diagnose(&validator, schema, instance)
+    }
+
+    #[test]
+    fn a_tree_through_items_keeps_its_detail() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "kids": {"type": "array", "items": {"$ref": "#"}}
+            }
+        });
+        let diagnosis = diagnose_json(
+            &schema,
+            &serde_json::json!({"kids": [{"name": "a"}, {"kids": [{"name": 1}]}]}),
+        );
+        assert!(diagnosis.unexplained.is_none(), "{diagnosis:?}");
+        assert_eq!(
+            diagnosis.standard,
+            vec!["1 is not of type 'string'".to_owned()]
+        );
+    }
+
+    #[test]
+    fn a_map_through_additional_properties_keeps_its_detail() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "additionalProperties": {"type": "object", "properties": {"sub": {"$ref": "#"}}}
+        });
+        let diagnosis = diagnose_json(&schema, &serde_json::json!({"a": {"sub": {"b": 1}}}));
+        assert!(diagnosis.unexplained.is_none(), "{diagnosis:?}");
+        assert_eq!(diagnosis.standard.len(), 1, "{diagnosis:?}");
+    }
+
+    #[test]
+    fn a_recursion_through_a_named_anchor_stays_unexplained() {
+        let schema = serde_json::json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$anchor": "node",
+            "type": "object",
+            "properties": {
+                "n": {"type": "integer"},
+                "child": {"anyOf": [{"$ref": "#node"}, {"$ref": "#node"}]}
+            }
+        });
+        let diagnosis = diagnose_json(&schema, &serde_json::json!({"child": {"n": "x"}}));
+        assert!(diagnosis.unexplained.is_some(), "{diagnosis:?}");
+    }
+
+    #[test]
+    fn a_single_recursion_under_a_combinator_stays_unexplained() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "child": {"anyOf": [{"$ref": "#"}, {"type": "null"}]},
+                "n": {"type": "integer"}
+            }
+        });
+        let diagnosis = diagnose_json(&schema, &serde_json::json!({"child": {"n": "x"}}));
+        assert!(diagnosis.unexplained.is_some(), "{diagnosis:?}");
+    }
 
     #[test]
     fn format_mode_uses_exact_dialect_detection() {

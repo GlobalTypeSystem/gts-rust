@@ -1712,8 +1712,8 @@ mod applicator_tests {
     }
 
     #[test]
-    fn a_reference_behind_a_defs_pointer_is_decided_but_not_detailed() {
-        // `$defs` recursion is outside the single-path exception.
+    fn a_reference_behind_a_defs_pointer_keeps_its_detail() {
+        // One non-recursive `$defs` hop has no fan-out.
         let schema = json!({
             "type": "object",
             "properties": {"ref": {"$ref": "#/$defs/TargetRef"}},
@@ -1728,7 +1728,7 @@ mod applicator_tests {
         assert!(
             errors
                 .iter()
-                .any(|e| e.reason.contains("were not verified")),
+                .any(|e| e.field_path == "/ref" && e.reason.contains("does not match pattern")),
             "{errors:?}"
         );
     }

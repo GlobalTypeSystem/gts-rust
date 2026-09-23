@@ -167,13 +167,6 @@ pub(crate) fn contains_local_ref(schema: &Value) -> bool {
     any_schema_node(schema, &mut is_local_ref)
 }
 
-/// Whether evaluation can re-enter the document through any reference keyword.
-pub(crate) fn can_reenter_document(schema: &Value) -> bool {
-    any_schema_node(schema, &mut |node| {
-        is_local_ref(node) || node.contains_key("$dynamicRef") || node.contains_key("$recursiveRef")
-    })
-}
-
 /// Whether any schema node satisfies `predicate`.
 pub(crate) fn any_schema_node(node: &Value, predicate: &mut SchemaNodePredicate<'_>) -> bool {
     let mut found = false;
