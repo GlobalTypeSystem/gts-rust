@@ -36,7 +36,7 @@ pub fn validate_schema_modifiers(content: &Value) -> Result<(), String> {
         ));
     }
 
-    visit_schema_nodes(content, "", EnterTraitSchema::Yes, &mut |map, path| {
+    visit_schema_nodes(content, "", EnterTraitSchema::Yes, &mut |map, path, _| {
         if path.is_empty() {
             return Ok(());
         }
@@ -58,7 +58,7 @@ pub fn validate_schema_modifiers(content: &Value) -> Result<(), String> {
 /// # Errors
 /// Returns an error describing the first misplaced keyword found.
 pub fn validate_trait_placement(content: &Value) -> Result<(), String> {
-    visit_schema_nodes(content, "", EnterTraitSchema::No, &mut |map, path| {
+    visit_schema_nodes(content, "", EnterTraitSchema::No, &mut |map, path, _| {
         if path.is_empty() {
             return Ok(());
         }
@@ -113,10 +113,52 @@ const KNOWN_GTS_KEYWORDS: &[&str] = &[
     X_GTS_REF,
 ];
 
+/// Where a schema node sits: the dialect it is read under, and the schema
+/// resource a same-document reference (`#...`) in it resolves from.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SchemaScope<'a> {
+    /// The dialect in effect at the node.
+    pub(crate) dialect: Draft,
+    /// The root of the innermost schema resource holding the node: the
+    /// document, or a subschema whose `$id` the dialect honours.
+    pub(crate) resource: &'a Value,
+    /// The dialect in effect at `resource`.
+    pub(crate) resource_dialect: Draft,
+}
+
+impl<'a> SchemaScope<'a> {
+    fn document(root: &'a Value) -> Self {
+        let dialect = Draft::default().detect(root);
+        Self {
+            dialect,
+            resource: root,
+            resource_dialect: dialect,
+        }
+    }
+
+    /// The scope of `subschema`, reached from a node in this scope.
+    ///
+    /// Draft-07 ignores an `$id` beside `$ref` and treats `#name` as an
+    /// anchor; neither starts a resource there.
+    fn enter(self, subschema: &'a Value) -> Self {
+        let dialect = self.dialect.detect(subschema);
+        if dialect.create_resource_ref(subschema).id().is_some() {
+            Self {
+                dialect,
+                resource: subschema,
+                resource_dialect: dialect,
+            }
+        } else {
+            Self { dialect, ..self }
+        }
+    }
+}
+
 type SchemaNodeVisitor<'a> =
-    dyn FnMut(&serde_json::Map<String, Value>, &str) -> Result<(), String> + 'a;
+    dyn FnMut(&serde_json::Map<String, Value>, &str, SchemaScope<'_>) -> Result<(), String> + 'a;
 type SchemaNodePredicate<'a> = dyn FnMut(&Map<String, Value>) -> bool + 'a;
 type SchemaNodeWalker<'a> = dyn FnMut(&Map<String, Value>, &str) + 'a;
+type ScopedSchemaNodeWalker<'a> = dyn FnMut(&Map<String, Value>, &str, SchemaScope<'_>) + 'a;
 
 /// Visits the document and dialect-defined subschemas, excluding annotation data.
 fn visit_schema_nodes(
@@ -125,34 +167,81 @@ fn visit_schema_nodes(
     enter_trait_schema: EnterTraitSchema,
     visit: &mut SchemaNodeVisitor<'_>,
 ) -> Result<(), String> {
-    visit_schema_nodes_with_draft(node, path, Draft::default(), enter_trait_schema, visit)
+    visit_schema_nodes_in_scope(
+        node,
+        path,
+        SchemaScope::document(node),
+        enter_trait_schema,
+        visit,
+    )
 }
 
-fn visit_schema_nodes_with_draft(
-    node: &Value,
+fn visit_schema_nodes_in_scope<'a>(
+    node: &'a Value,
     path: &str,
-    inherited_draft: Draft,
+    scope: SchemaScope<'a>,
     enter_trait_schema: EnterTraitSchema,
     visit: &mut SchemaNodeVisitor<'_>,
 ) -> Result<(), String> {
     let Value::Object(map) = node else {
         return Ok(());
     };
-    let draft = inherited_draft.detect(node);
 
-    visit(map, path)?;
+    visit(map, path, scope)?;
 
-    let subresources = direct_subresources(node, draft, enter_trait_schema);
-    visit_direct_subresources(node, path, &subresources, draft, enter_trait_schema, visit)
+    let subresources = direct_subresources(node, scope.dialect, enter_trait_schema);
+    visit_direct_subresources(node, path, &subresources, scope, enter_trait_schema, visit)
 }
 
 /// Visits schema nodes with their path (`""` for the root).
 pub(crate) fn for_each_schema_node(node: &Value, visit: &mut SchemaNodeWalker<'_>) {
-    let result = visit_schema_nodes(node, "", EnterTraitSchema::Yes, &mut |map, path| {
-        visit(map, path);
+    for_each_schema_node_in_scope(node, &mut |map, path, _| visit(map, path));
+}
+
+/// Visits schema nodes with their path and their [`SchemaScope`].
+pub(crate) fn for_each_schema_node_in_scope(node: &Value, visit: &mut ScopedSchemaNodeWalker<'_>) {
+    let result = visit_schema_nodes(node, "", EnterTraitSchema::Yes, &mut |map, path, scope| {
+        visit(map, path, scope);
         Ok(())
     });
     debug_assert!(result.is_ok());
+}
+
+/// The subschemas of `document` that start a schema resource of their own,
+/// by identity: those whose `$id` the dialect honours (see [`SchemaScope`]).
+///
+/// A same-document reference (`#...`) inside one resolves from it rather than
+/// from `document`.
+pub(crate) fn embedded_resources(
+    document: &Value,
+) -> std::collections::HashSet<*const Map<String, Value>> {
+    let mut found = std::collections::HashSet::new();
+    if !has_nested_id(document) {
+        return found;
+    }
+    for_each_schema_node_in_scope(document, &mut |node, _, scope| {
+        let starts_here = scope
+            .resource
+            .as_object()
+            .is_some_and(|resource| std::ptr::eq(resource, node));
+        if starts_here && !std::ptr::eq(scope.resource, document) {
+            found.insert(std::ptr::from_ref(node));
+        }
+    });
+    found
+}
+
+/// Whether any object below `document`'s root declares an `$id`: only then
+/// can a resource be embedded in it.
+fn has_nested_id(document: &Value) -> bool {
+    let children: Box<dyn Iterator<Item = &Value>> = match document {
+        Value::Object(map) => Box::new(map.values()),
+        Value::Array(items) => Box::new(items.iter()),
+        _ => return false,
+    };
+    children
+        .into_iter()
+        .any(|child| child.get("$id").is_some() || has_nested_id(child))
 }
 
 /// Whether `node` contains a local JSON Pointer reference.
@@ -170,7 +259,7 @@ pub(crate) fn contains_local_ref(schema: &Value) -> bool {
 /// Whether any schema node satisfies `predicate`.
 pub(crate) fn any_schema_node(node: &Value, predicate: &mut SchemaNodePredicate<'_>) -> bool {
     let mut found = false;
-    let result = visit_schema_nodes(node, "", EnterTraitSchema::Yes, &mut |map, _| {
+    let result = visit_schema_nodes(node, "", EnterTraitSchema::Yes, &mut |map, _, _| {
         if !found {
             found = predicate(map);
         }
@@ -180,16 +269,22 @@ pub(crate) fn any_schema_node(node: &Value, predicate: &mut SchemaNodePredicate<
     found
 }
 
-fn visit_direct_subresources(
-    value: &Value,
+fn visit_direct_subresources<'a>(
+    value: &'a Value,
     path: &str,
     subresources: &[&Value],
-    draft: Draft,
+    scope: SchemaScope<'a>,
     enter_trait_schema: EnterTraitSchema,
     visit: &mut SchemaNodeVisitor<'_>,
 ) -> Result<(), String> {
     if is_direct_subresource(value, subresources) {
-        return visit_schema_nodes_with_draft(value, path, draft, enter_trait_schema, visit);
+        return visit_schema_nodes_in_scope(
+            value,
+            path,
+            scope.enter(value),
+            enter_trait_schema,
+            visit,
+        );
     }
 
     match value {
@@ -199,7 +294,7 @@ fn visit_direct_subresources(
                     child,
                     &extend_path(path, key),
                     subresources,
-                    draft,
+                    scope,
                     enter_trait_schema,
                     visit,
                 )?;
@@ -211,7 +306,7 @@ fn visit_direct_subresources(
                     child,
                     &format!("{path}[{index}]"),
                     subresources,
-                    draft,
+                    scope,
                     enter_trait_schema,
                     visit,
                 )?;
@@ -236,7 +331,7 @@ fn extend_path(path: &str, segment: &str) -> String {
 /// # Errors
 /// Returns an error naming the first unrecognised keyword and its location.
 fn validate_known_gts_keywords(content: &Value) -> Result<(), String> {
-    visit_schema_nodes(content, "", EnterTraitSchema::Yes, &mut |map, path| {
+    visit_schema_nodes(content, "", EnterTraitSchema::Yes, &mut |map, path, _| {
         for key in map.keys() {
             if key.starts_with("x-gts-") && !KNOWN_GTS_KEYWORDS.contains(&key.as_str()) {
                 let location = if path.is_empty() {
@@ -1175,7 +1270,7 @@ mod tests {
                 "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "allOf": [
-                    {"$ref": "gts.x.testmod.abs.concinst.v1~"},
+                    {"$ref": "gts://gts.x.testmod.abs.concinst.v1~"},
                     {"type": "object"},
                 ],
             }),
@@ -1218,7 +1313,7 @@ mod tests {
                 "type": "object",
                 "x-gts-abstract": true,
                 "allOf": [
-                    {"$ref": "gts.x.testmod.abs.chain.v1~"},
+                    {"$ref": "gts://gts.x.testmod.abs.chain.v1~"},
                     {"type": "object"},
                 ],
             }),
@@ -1230,7 +1325,7 @@ mod tests {
                 "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "allOf": [
-                    {"$ref": "gts.x.testmod.abs.chain.v1~x.testmod._.mid.v1~"},
+                    {"$ref": "gts://gts.x.testmod.abs.chain.v1~x.testmod._.mid.v1~"},
                     {"type": "object"},
                 ],
             }),
@@ -1315,7 +1410,7 @@ mod tests {
                 "type": "object",
                 "x-gts-final": true,
                 "allOf": [
-                    {"$ref": "gts.x.testmod.absfinal.base.v1~"},
+                    {"$ref": "gts://gts.x.testmod.absfinal.base.v1~"},
                     {"type": "object", "properties": {"extra": {"type": "string"}}},
                 ],
             }),
@@ -1349,7 +1444,7 @@ mod tests {
                 "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "allOf": [
-                    {"$ref": "gts.x.testmod.absfinal.base.v1~x.testmod._.concrete.v1~"},
+                    {"$ref": "gts://gts.x.testmod.absfinal.base.v1~x.testmod._.concrete.v1~"},
                     {"type": "object"},
                 ],
             }),

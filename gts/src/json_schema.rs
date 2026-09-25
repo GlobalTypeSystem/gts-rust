@@ -3,12 +3,11 @@
 //! GTS asserts `uuid` on every dialect and uses ECMA 262 syntax for `regex`.
 
 use serde_json::{Map, Value};
-use std::sync::{OnceLock, mpsc};
 use uuid::Uuid;
 
 /// Configures GTS formats without asserting optional formats on newer drafts.
 #[must_use]
-fn options_for(schema: &Value) -> jsonschema::ValidationOptions {
+fn options_for(schema: &Value) -> jsonschema::ValidationOptions<'_> {
     let mut options = jsonschema::options()
         .with_format("uuid", is_valid_uuid)
         .with_format("regex", is_valid_ecma262_regex);
@@ -88,7 +87,8 @@ pub fn validator_for(
 
 /// Compiles `schema` with GTS formats and `x-gts-ref` enforcement.
 ///
-/// `exists` enables store-aware reference checks; `None` checks patterns only.
+/// `/$id` names the document's own top-level `$id`. `exists` enables
+/// store-aware reference checks; `None` checks patterns only.
 ///
 /// # Errors
 ///
@@ -98,7 +98,45 @@ pub fn gts_validator_for(
     schema: &Value,
     exists: Option<crate::x_gts_ref::ReferenceExists>,
 ) -> Result<jsonschema::Validator, jsonschema::ValidationError<'static>> {
-    crate::x_gts_ref::with_x_gts_ref(options_for(schema), schema, exists).build(schema)
+    let selected = crate::x_gts_ref::XGtsRefValidator::self_id(schema);
+    gts_validator_for_type(schema, selected.as_deref(), &[], exists)
+}
+
+/// [`gts_validator_for`] on behalf of `selected_type`, the GTS type being
+/// validated, which `/$id` names wherever it is declared (spec v0.14 §9.6).
+///
+/// `resources` are the other documents `schema` references, by URI; the
+/// validator follows every `$ref` itself, under the rules of its dialect.
+///
+/// # Errors
+///
+/// See [`gts_validator_for`].
+pub fn gts_validator_for_type(
+    schema: &Value,
+    selected_type: Option<&str>,
+    resources: &[(String, &Value)],
+    exists: Option<crate::x_gts_ref::ReferenceExists>,
+) -> Result<jsonschema::Validator, jsonschema::ValidationError<'static>> {
+    let builder = jsonschema::Registry::new()
+        .extend(resources.iter().map(|(uri, document)| (uri, *document)))
+        .map_err(jsonschema::ValidationError::from)?;
+    let builder = if let Some(uri) = schema.get("$id").and_then(Value::as_str) {
+        builder
+            .add(uri, schema)
+            .map_err(jsonschema::ValidationError::from)?
+    } else {
+        builder
+    };
+    let registry = builder
+        .prepare()
+        .map_err(jsonschema::ValidationError::from)?;
+    crate::x_gts_ref::with_x_gts_ref(
+        options_for(schema),
+        selected_type.map(str::to_owned),
+        exists,
+    )
+    .with_registry(&registry)
+    .build(schema)
 }
 
 /// A validation result split by diagnostic source.
@@ -117,11 +155,25 @@ pub struct Diagnosis {
 /// Validates exactly, omitting details when explaining recursive combinators
 /// would grow exponentially.
 pub fn diagnose(validator: &jsonschema::Validator, schema: &Value, instance: &Value) -> Diagnosis {
+    diagnose_resolved(validator, schema, Some(schema), instance)
+}
+
+/// [`diagnose`] for a `schema` whose references `validator` follows itself.
+///
+/// `resolved` is `schema` with its references inlined, the shape whose
+/// recursion bounds what explaining a rejection costs. Without it (a `$ref`
+/// cycle defeats inlining), a rejection is left unexplained.
+pub fn diagnose_resolved(
+    validator: &jsonschema::Validator,
+    schema: &Value,
+    resolved: Option<&Value>,
+    instance: &Value,
+) -> Diagnosis {
     if validator.is_valid(instance) {
         return Diagnosis::default();
     }
 
-    if !has_linear_recursion(schema) {
+    if !resolved.is_some_and(has_linear_recursion) {
         return Diagnosis {
             unexplained: Some(
                 "the schema can re-enter itself in a shape where explaining a rejection costs \
@@ -200,77 +252,11 @@ fn is_valid_uuid(value: &str) -> bool {
 /// Checks ECMA 262 regex syntax (README sec 9.2, ADR-0005).
 #[must_use]
 fn is_valid_ecma262_regex(pattern: &str) -> bool {
-    // Bound the recursive parser's input and stack usage.
-    if pattern.len() > MAX_REGEX_LEN {
-        return false;
-    }
-    if pattern.len() <= REGEX_INLINE_LEN {
-        return regress::Regex::new(pattern).is_ok();
-    }
-    parse_on_owned_stack(pattern)
+    pattern.len() <= MAX_REGEX_LEN && jsonschema_regex::is_valid_ecma_regex(pattern)
 }
 
 /// Longest accepted `format: regex` value.
 const MAX_REGEX_LEN: usize = 32 * 1024;
-
-/// Patterns safe to parse on the smallest supported worker stack.
-const REGEX_INLINE_LEN: usize = 512;
-
-/// Stack reserved for parsing larger patterns.
-const REGEX_PARSE_STACK: usize = 64 * 1024 * 1024;
-
-struct RegexParseRequest {
-    pattern: String,
-    response: mpsc::SyncSender<bool>,
-}
-
-static REGEX_WORKER: OnceLock<Option<mpsc::SyncSender<RegexParseRequest>>> = OnceLock::new();
-
-/// Parses long patterns on a reusable large-stack worker; failures reject.
-fn parse_on_owned_stack(pattern: &str) -> bool {
-    parse_with_regex_worker(pattern, regex_worker())
-}
-
-fn regex_worker() -> Option<&'static mpsc::SyncSender<RegexParseRequest>> {
-    REGEX_WORKER.get_or_init(start_regex_worker).as_ref()
-}
-
-fn start_regex_worker() -> Option<mpsc::SyncSender<RegexParseRequest>> {
-    let (sender, receiver) = mpsc::sync_channel::<RegexParseRequest>(0);
-    std::thread::Builder::new()
-        .name("gts-regex-parser".to_owned())
-        .stack_size(REGEX_PARSE_STACK)
-        .spawn(move || {
-            while let Ok(request) = receiver.recv() {
-                let valid =
-                    std::panic::catch_unwind(|| regress::Regex::new(&request.pattern).is_ok())
-                        .unwrap_or(false);
-                let _ = request.response.send(valid);
-            }
-        })
-        .ok()
-        .map(|_| sender)
-}
-
-fn parse_with_regex_worker(
-    pattern: &str,
-    worker: Option<&mpsc::SyncSender<RegexParseRequest>>,
-) -> bool {
-    let Some(worker) = worker else {
-        return false;
-    };
-    let (response, result) = mpsc::sync_channel(1);
-    if worker
-        .send(RegexParseRequest {
-            pattern: pattern.to_owned(),
-            response,
-        })
-        .is_err()
-    {
-        return false;
-    }
-    result.recv().unwrap_or(false)
-}
 
 /// Renders validator errors in the reference implementation's format.
 ///
@@ -507,10 +493,7 @@ mod tests {
     #[test]
     fn regex_format_survives_a_flat_alternation_bomb() {
         let bomb = vec!["a"; 10_000].join("|");
-        assert!(
-            bomb.len() > REGEX_INLINE_LEN,
-            "must take the owned-stack path"
-        );
+        assert!(bomb.len() <= MAX_REGEX_LEN);
         assert!(
             is_valid_ecma262_regex(&bomb),
             "an alternation of literals is a valid pattern"
@@ -524,22 +507,9 @@ mod tests {
     }
 
     #[test]
-    fn regex_worker_unavailable_fails_closed() {
-        assert!(!parse_with_regex_worker("valid", None));
-    }
-
-    #[test]
-    fn regex_worker_disconnect_fails_closed() {
-        let (worker, receiver) = std::sync::mpsc::sync_channel(0);
-        drop(receiver);
-
-        assert!(!parse_with_regex_worker("valid", Some(&worker)));
-    }
-
-    #[test]
     fn regex_format_parses_a_large_but_permitted_pattern() {
         let wide = vec!["ab"; 400].join("|");
-        assert!(wide.len() > REGEX_INLINE_LEN && wide.len() <= MAX_REGEX_LEN);
+        assert!(wide.len() <= MAX_REGEX_LEN);
         assert!(is_valid_ecma262_regex(&wide));
 
         let wide_invalid = format!("{wide}|(");

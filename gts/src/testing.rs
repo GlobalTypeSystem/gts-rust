@@ -9,6 +9,7 @@ use serde_json::Value;
 
 use crate::GTS_ID_URI_PREFIX;
 use crate::ops::GtsOps;
+use crate::x_gts_ref::GtsRefValidation;
 
 /// Register a base→leaf chain of GTS type schemas and run OP#13 trait validation
 /// on the leaf.
@@ -47,6 +48,10 @@ pub fn validate_traits_chain(chain: &[&Value]) -> Result<(), String> {
 /// when a set of macro-generated schemas (trait types, hosts, intermediates)
 /// must *all* be valid and mutually consistent in one registry.
 ///
+/// `x-gts-ref` targets are not looked up: the set under test is the whole
+/// registry here, so a constraint naming a type outside it says nothing about
+/// whether the set is self-consistent.
+///
 /// # Errors
 /// Returns an error if `schemas` is empty, or the error of the first schema that
 /// fails to register or validate, prefixed with its `$id`.
@@ -68,7 +73,7 @@ pub fn validate_all(schemas: &[&Value]) -> Result<(), String> {
             return Err("schema is missing a string `$id`".to_owned());
         };
         let gts_id = id.strip_prefix(GTS_ID_URI_PREFIX).unwrap_or(id);
-        let result = ops.validate_schema(gts_id);
+        let result = ops.validate_schema_with(gts_id, GtsRefValidation::None);
         if !result.ok {
             return Err(format!("{gts_id}: {}", result.error));
         }
