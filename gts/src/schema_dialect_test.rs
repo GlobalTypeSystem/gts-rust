@@ -193,7 +193,7 @@ fn a_local_ref_within_one_dialect_is_accepted() {
 }
 
 #[test]
-fn an_unreferenced_embedded_resource_is_not_a_reference() {
+fn an_unreferenced_embedded_resource_is_left_to_the_subschema_check() {
     let schema = json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$defs": {
@@ -205,6 +205,7 @@ fn an_unreferenced_embedded_resource_is_not_a_reference() {
         }
     });
     assert_eq!(check_references(&schema, &no_schemas()), Ok(()));
+    assert!(check_subschemas(&schema, Draft::Draft202012).is_err());
 }
 
 #[test]
@@ -273,4 +274,63 @@ fn a_ref_inside_the_trait_schema_is_checked() {
     });
     let error = check_references(&schema, &schemas).unwrap_err();
     assert!(error.contains("'x-gts-traits-schema/$ref'"), "{error}");
+}
+
+#[test]
+fn a_subschema_of_another_dialect_is_refused() {
+    let draft_07 = json!("http://json-schema.org/draft-07/schema#");
+    for (location, schema) in [
+        (
+            "x-gts-traits-schema",
+            json!({"x-gts-traits-schema": {
+                "$id": "https://example.com/gts/legacy-traits",
+                "$schema": draft_07,
+                "type": "object"
+            }}),
+        ),
+        (
+            "x-gts-traits-schema/properties/limits",
+            json!({"x-gts-traits-schema": {
+                "properties": {"limits": {"$schema": draft_07}}
+            }}),
+        ),
+        (
+            "$defs/legacy",
+            json!({"$defs": {"legacy": {"$id": "legacy", "$schema": draft_07}}}),
+        ),
+        (
+            "allOf[0]/properties/legacy",
+            json!({"allOf": [{"properties": {"legacy": {"$schema": draft_07}}}]}),
+        ),
+    ] {
+        let mut schema = schema;
+        schema["$schema"] = json!("https://json-schema.org/draft/2020-12/schema");
+        let error = check_subschemas(&schema, Draft::Draft202012).unwrap_err();
+        assert!(error.contains(&format!("'{location}'")), "{error}");
+        assert!(error.contains("declares Draft-07"), "{error}");
+        assert!(error.contains("read under Draft 2020-12"), "{error}");
+    }
+
+    let unrecognized = json!({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {"custom": {"$schema": "https://example.invalid/meta"}}
+    });
+    let error = check_subschemas(&unrecognized, Draft::Draft7).unwrap_err();
+    assert!(error.contains("'properties/custom'"), "{error}");
+}
+
+#[test]
+fn a_subschema_restating_the_dialect_is_accepted() {
+    let schema = json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+            "restated": {"$schema": "http://json-schema.org/draft/2020-12/schema#"},
+            "resource": {"$id": "resource", "type": "string"},
+            // Data, not a subschema: its `$schema` selects nothing.
+            "literal": {"const": {"$schema": "http://json-schema.org/draft-07/schema#"}}
+        },
+        "x-gts-traits-schema": true,
+        "x-gts-traits": {"$schema": "http://json-schema.org/draft-07/schema#"}
+    });
+    assert_eq!(check_subschemas(&schema, Draft::Draft202012), Ok(()));
 }

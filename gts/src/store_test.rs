@@ -7106,6 +7106,109 @@ fn test_gts_ref_validation_modes_gate_referenced_values() {
         .expect_err("any-present mode rejects an unregistered value");
 }
 
+/// A trait the type requires but nothing supplies, which makes it invalid.
+fn unsupplied_required_trait() -> Value {
+    json!({"x-gts-traits-schema": {
+        "type": "object",
+        "properties": {"retention": {"type": "string"}},
+        "required": ["retention"]
+    }})
+}
+
+#[test]
+fn test_validate_schema_decides_each_constraint_target_once() {
+    // Each type constrains `x-gts-ref` to the next two, wrapping around to the
+    // first, so type `i` is reachable along Fibonacci(i) paths: validating it
+    // once per path would not finish.
+    const LEN: usize = 40;
+    let id = |i: usize| format!("gts.x.lattice.tr.t{i}.v1~");
+    let lattice = |last: &Value| {
+        let mut store = GtsStore::new();
+        for i in 0..LEN {
+            let properties: serde_json::Map<String, Value> = [(i + 1) % LEN, (i + 2) % LEN]
+                .into_iter()
+                .map(|next| {
+                    let target = json!({"type": "string", "x-gts-ref": id(next)});
+                    (format!("t{next}"), target)
+                })
+                .collect();
+            let mut extra = if i + 1 == LEN {
+                last.clone()
+            } else {
+                json!({})
+            };
+            extra["properties"] = Value::Object(properties);
+            register_chain_schema(&mut store, &id(i), extra);
+        }
+        store
+    };
+
+    lattice(&json!({}))
+        .validate_schema(&id(0))
+        .expect("every type in the lattice is valid");
+    let err = lattice(&unsupplied_required_trait())
+        .validate_schema(&id(0))
+        .expect_err("the last type is invalid, and every type reaches it");
+    assert!(err.to_string().contains(&id(1)), "{err}");
+}
+
+#[test]
+fn test_a_verdict_resting_on_a_failed_cycle_member_is_withdrawn() {
+    // `a` and `b` constrain `x-gts-ref` to each other, and `a` is invalid on
+    // its own. Deciding `a` decides `b` on the assumption that `a` is valid;
+    // `b`'s verdict must not outlive that assumption.
+    let mut store = GtsStore::new();
+    let base = "gts.x.withdraw.tr.base.v1~";
+    let a = "gts.x.withdraw.tr.base.v1~x.withdraw._.a.v1~";
+    let b = "gts.x.withdraw.tr.base.v1~x.withdraw._.b.v1~";
+    let holder = "gts.x.withdraw.tr.holder.v1~";
+    register_chain_schema(&mut store, base, json!({}));
+    let mut a_schema = unsupplied_required_trait();
+    a_schema["properties"] = json!({"peer": {"type": "string", "x-gts-ref": b}});
+    register_chain_schema(&mut store, a, a_schema);
+    register_chain_schema(
+        &mut store,
+        b,
+        json!({"properties": {"peer": {"type": "string", "x-gts-ref": a}}}),
+    );
+    register_chain_schema(
+        &mut store,
+        holder,
+        json!({"properties": {
+            "note": {"type": "string"},
+            "target": {"type": "string", "x-gts-ref": base}
+        }}),
+    );
+
+    // Candidate values are decided in sorted order, so `a`, held by the
+    // unconstrained `note`, is decided before `b`.
+    let err = store
+        .validate_payload(holder, &json!({"note": a, "target": b}))
+        .expect_err("`b` is invalid because `a` is");
+    assert!(err.to_string().contains(b), "{err}");
+}
+
+#[test]
+fn test_a_verdict_does_not_outlive_its_validation() {
+    // `holder` needs `target` valid, and `target` constrains `x-gts-ref` to
+    // `dependency`, which is registered only after the first attempt.
+    let mut store = GtsStore::new();
+    let holder = "gts.x.session.tr.holder.v1~";
+    let target = "gts.x.session.tr.target.v1~";
+    let dependency = "gts.x.session.tr.dependency.v1~";
+    let refers_to = |id: &str| json!({"properties": {"ref": {"type": "string", "x-gts-ref": id}}});
+    register_chain_schema(&mut store, holder, refers_to(target));
+    register_chain_schema(&mut store, target, refers_to(dependency));
+
+    store
+        .validate_schema(holder)
+        .expect_err("`target` refers to an unregistered type");
+    register_chain_schema(&mut store, dependency, json!({}));
+    store
+        .validate_schema(holder)
+        .expect("`target` is valid once `dependency` is registered");
+}
+
 #[test]
 fn test_gts_ref_validation_parses_wire_spellings() {
     assert_eq!(
@@ -7222,6 +7325,58 @@ fn test_validate_schema_rejects_a_gts_ref_to_another_dialect() {
         .validate_schema(holder)
         .expect_err("a $ref must not cross dialects");
     assert!(err.to_string().contains("'properties/item/$ref'"), "{err}");
+}
+
+#[test]
+fn test_validate_schema_rejects_a_subschema_of_another_dialect() {
+    let mut store = GtsStore::new();
+    let base = "gts.x.dialect.sub.base.v1~";
+    let leaf = "gts.x.dialect.sub.base.v1~x.dialect._.leaf.v1~";
+    register_chain_schema(
+        &mut store,
+        base,
+        json!({
+            "$schema": DRAFT_2020_12,
+            "x-gts-traits-schema": {
+                "$id": "https://example.com/gts/legacy-traits",
+                "$schema": DRAFT7,
+                "type": "object"
+            }
+        }),
+    );
+    register_chain_schema(&mut store, leaf, json!({"$schema": DRAFT_2020_12}));
+    let mut cases = vec![(base, "x-gts-traits-schema")];
+    for (id, location, extra) in [
+        (
+            "gts.x.dialect.sub.resource.v1~",
+            "properties/legacy",
+            json!({"properties": {"legacy": {"$id": "legacy", "$schema": DRAFT7}}}),
+        ),
+        (
+            // A subschema switches dialect without starting a resource, too.
+            "gts.x.dialect.sub.plain.v1~",
+            "properties/count",
+            json!({"properties": {"count": {"$schema": DRAFT7, "type": "integer"}}}),
+        ),
+    ] {
+        let mut extra = extra;
+        extra["$schema"] = json!(DRAFT_2020_12);
+        register_chain_schema(&mut store, id, extra);
+        cases.push((id, location));
+    }
+
+    for (id, location) in cases {
+        let message = store
+            .validate_schema(id)
+            .expect_err("a type is read under one dialect throughout")
+            .to_string();
+        assert!(message.contains("dialect check failed"), "{message}");
+        assert!(message.contains(&format!("'{location}'")), "{message}");
+        assert!(message.contains("must not change dialect"), "{message}");
+    }
+    store
+        .validate_schema(leaf)
+        .expect_err("the leaf inherits the conflicting trait schema");
 }
 
 #[test]
@@ -7486,26 +7641,25 @@ fn test_validate_payload_rejects_violations_through_a_mutual_all_of_cycle() {
     }
 }
 
-/// A Draft 2020-12 type holding a Draft-07 embedded resource at `legacy`.
+/// A Draft 2020-12 type holding an embedded resource at `inner`.
 ///
-/// The document root has a decoy `definitions/n`: resolving `legacy`'s own
-/// references from the document root lands there instead of inside `legacy`.
-fn draft_07_embedded_in_2020_12(id: &str) -> Value {
+/// The document root has a decoy `$defs/n`: resolving `inner`'s own
+/// references from the document root lands there instead of inside `inner`.
+fn embedded_resource_in_2020_12(id: &str) -> Value {
     json!({
         "$schema": DRAFT_2020_12,
         "$id": format!("gts://{id}"),
         "type": "object",
-        "definitions": {"n": {"type": "string"}},
+        "$defs": {"n": {"type": "string"}},
         "properties": {
-            "legacy": {
-                "$id": "legacy",
-                "$schema": DRAFT7,
+            "inner": {
+                "$id": "inner",
                 "type": "object",
                 "properties": {
-                    "n": {"$ref": "#/definitions/n"},
+                    "n": {"$ref": "#/$defs/n"},
                     "next": {"$ref": "#"}
                 },
-                "definitions": {"n": {"type": "integer"}}
+                "$defs": {"n": {"type": "integer"}}
             }
         }
     })
@@ -7514,33 +7668,31 @@ fn draft_07_embedded_in_2020_12(id: &str) -> Value {
 #[test]
 fn test_local_refs_inside_an_embedded_resource_resolve_from_that_resource() {
     let mut store = GtsStore::new();
-    let id = "gts.x.embedded.legacy.type.v1~";
+    let id = "gts.x.embedded.inner.type.v1~";
     store
-        .register_schema(id, &draft_07_embedded_in_2020_12(id))
+        .register_schema(id, &embedded_resource_in_2020_12(id))
         .expect("register");
 
-    let resolved = store
-        .validate_schema(id)
-        .expect("no reference crosses a dialect, and every one resolves");
+    let resolved = store.validate_schema(id).expect("every reference resolves");
     assert_eq!(
-        resolved.schema.pointer("/properties/legacy/properties/n"),
+        resolved.schema.pointer("/properties/inner/properties/n"),
         Some(&json!({"type": "integer"})),
-        "`#/definitions/n` names legacy's definition, not the document's"
+        "`#/$defs/n` names inner's definition, not the document's"
     );
 
     for valid in [
-        json!({"legacy": {"n": 1}}),
-        json!({"legacy": {"n": 1, "next": {"n": 2, "next": {"n": 3}}}}),
+        json!({"inner": {"n": 1}}),
+        json!({"inner": {"n": 1, "next": {"n": 2, "next": {"n": 3}}}}),
     ] {
         store
             .validate_payload(id, &valid)
             .unwrap_or_else(|e| panic!("{valid}: {e}"));
     }
     for invalid in [
-        json!({"legacy": {"n": "one"}}),
-        // `#` names `legacy`, so `next` is another legacy node.
-        json!({"legacy": {"next": {"n": "two"}}}),
-        json!({"legacy": {"next": {"next": {"n": "three"}}}}),
+        json!({"inner": {"n": "one"}}),
+        // `#` names `inner`, so `next` is another inner node.
+        json!({"inner": {"next": {"n": "two"}}}),
+        json!({"inner": {"next": {"next": {"n": "three"}}}}),
     ] {
         store
             .validate_payload(id, &invalid)
@@ -7594,7 +7746,7 @@ fn test_an_embedded_resource_of_a_referenced_type_resolves_from_itself() {
     let lib = "gts.x.embedded.lib.type.v1~";
     let holder = "gts.x.embedded.lib.holder.v1~";
     store
-        .register_schema(lib, &draft_07_embedded_in_2020_12(lib))
+        .register_schema(lib, &embedded_resource_in_2020_12(lib))
         .expect("register lib");
     store
         .register_schema(
@@ -7612,13 +7764,13 @@ fn test_an_embedded_resource_of_a_referenced_type_resolves_from_itself() {
     store
         .validate_payload(
             holder,
-            &json!({"item": {"legacy": {"n": 1, "next": {"next": {"n": 2}}}}}),
+            &json!({"item": {"inner": {"n": 1, "next": {"next": {"n": 2}}}}}),
         )
-        .expect("legacy nodes all the way down");
+        .expect("inner nodes all the way down");
     for invalid in [
-        json!({"item": {"legacy": {"n": "one"}}}),
-        json!({"item": {"legacy": {"next": {"n": "two"}}}}),
-        json!({"item": {"legacy": {"next": {"next": {"n": "three"}}}}}),
+        json!({"item": {"inner": {"n": "one"}}}),
+        json!({"item": {"inner": {"next": {"n": "two"}}}}),
+        json!({"item": {"inner": {"next": {"next": {"n": "three"}}}}}),
     ] {
         store
             .validate_payload(holder, &invalid)
@@ -7658,7 +7810,7 @@ fn test_a_trait_schema_resolves_an_embedded_resource_from_itself() {
 }
 
 #[test]
-fn test_a_pointer_from_outside_into_an_embedded_resource_of_another_dialect() {
+fn test_a_pointer_from_outside_into_an_embedded_resource() {
     let mut store = GtsStore::new();
     let id = "gts.x.embedded.outside.type.v1~";
     store
@@ -7669,13 +7821,11 @@ fn test_a_pointer_from_outside_into_an_embedded_resource_of_another_dialect() {
                 "$id": format!("gts://{id}"),
                 "type": "object",
                 "properties": {
-                    // Read under Draft-07 like its target, so no dialect is crossed.
-                    "count": {"$schema": DRAFT7, "$ref": "#/$defs/legacy/definitions/n"}
+                    "count": {"$ref": "#/$defs/inner/$defs/n"}
                 },
-                "$defs": {"legacy": {
-                    "$id": "legacy",
-                    "$schema": DRAFT7,
-                    "definitions": {"n": {"type": "integer"}}
+                "$defs": {"inner": {
+                    "$id": "inner",
+                    "$defs": {"n": {"type": "integer"}}
                 }}
             }),
         )
@@ -7683,18 +7833,18 @@ fn test_a_pointer_from_outside_into_an_embedded_resource_of_another_dialect() {
 
     store
         .validate_schema(id)
-        .expect("both ends of the reference read Draft-07");
+        .expect("the pointer resolves into the embedded resource");
     store
         .validate_payload(id, &json!({"count": 3}))
         .expect("an integer");
     store
         .validate_payload(id, &json!({"count": "three"}))
-        .expect_err("the pointer still names legacy's integer definition");
+        .expect_err("the pointer still names inner's integer definition");
 }
 
 #[test]
-fn test_an_embedded_resource_of_another_dialect_stays_reachable_at_root_and_inside() {
-    // `legacy` recurses through `#`, and is reached from outside both at its
+fn test_an_embedded_resource_stays_reachable_at_root_and_inside() {
+    // `inner` recurses through `#`, and is reached from outside both at its
     // root (same document and from another type) and inside it.
     let mut store = GtsStore::new();
     let lib = "gts.x.embedded.reach.lib.v1~";
@@ -7707,18 +7857,17 @@ fn test_an_embedded_resource_of_another_dialect_stays_reachable_at_root_and_insi
                 "$id": format!("gts://{lib}"),
                 "type": "object",
                 "properties": {
-                    "count": {"$schema": DRAFT7, "$ref": "#/$defs/legacy/definitions/n"},
-                    "chain": {"$schema": DRAFT7, "$ref": "#/$defs/legacy"}
+                    "count": {"$ref": "#/$defs/inner/$defs/n"},
+                    "chain": {"$ref": "#/$defs/inner"}
                 },
-                "$defs": {"legacy": {
-                    "$id": "legacy",
-                    "$schema": DRAFT7,
+                "$defs": {"inner": {
+                    "$id": "inner",
                     "type": "object",
                     "properties": {
-                        "n": {"$ref": "#/definitions/n"},
+                        "n": {"$ref": "#/$defs/n"},
                         "next": {"$ref": "#"}
                     },
-                    "definitions": {"n": {"type": "integer"}}
+                    "$defs": {"n": {"type": "integer"}}
                 }}
             }),
         )
@@ -7726,7 +7875,10 @@ fn test_an_embedded_resource_of_another_dialect_stays_reachable_at_root_and_insi
     register_chain_schema(
         &mut store,
         user,
-        json!({"properties": {"chain": {"$ref": format!("gts://{lib}#/$defs/legacy")}}}),
+        json!({
+            "$schema": DRAFT_2020_12,
+            "properties": {"chain": {"$ref": format!("gts://{lib}#/$defs/inner")}}
+        }),
     );
 
     store.validate_schema(lib).expect("lib is valid");

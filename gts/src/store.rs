@@ -180,6 +180,11 @@ pub struct GtsStore {
     /// Ids whose validation is already on the stack. Reference cycles resolve
     /// to "valid" here so the outer validation is the one that decides.
     validating: HashSet<String>,
+    /// What [`Self::entity_is_valid`] has decided during the running
+    /// validation, so an entity reached along many paths is validated once.
+    verdicts: HashMap<String, bool>,
+    /// The ids `verdicts` holds as valid, in the order they were decided.
+    judged_valid: Vec<String>,
 }
 
 impl Default for GtsStore {
@@ -211,6 +216,8 @@ impl GtsStore {
             by_id: HashMap::new(),
             reader: None,
             validating: HashSet::new(),
+            verdicts: HashMap::new(),
+            judged_valid: Vec::new(),
         }
     }
 
@@ -222,6 +229,8 @@ impl GtsStore {
             by_id: HashMap::new(),
             reader: Some(reader),
             validating: HashSet::new(),
+            verdicts: HashMap::new(),
+            judged_valid: Vec::new(),
         };
         store.populate_from_reader();
         tracing::info!("Populated GtsStore with {} entities", store.by_id.len());
@@ -803,6 +812,25 @@ impl GtsStore {
         type_id: &str,
         refs: GtsRefValidation,
     ) -> Result<ResolvedType, StoreError> {
+        self.begin_validation();
+        self.check_schema(type_id, refs)
+    }
+
+    /// Starts a top-level validation. Verdicts are shared only within one:
+    /// registrations between calls can change what is valid. Nothing is on the
+    /// stack here, so clearing `validating` only drops what a caught panic left.
+    fn begin_validation(&mut self) {
+        self.validating.clear();
+        self.verdicts.clear();
+        self.judged_valid.clear();
+    }
+
+    /// [`Self::validate_schema_with`] as part of the running validation.
+    fn check_schema(
+        &mut self,
+        type_id: &str,
+        refs: GtsRefValidation,
+    ) -> Result<ResolvedType, StoreError> {
         let resolved = self.validate_schema_locally(type_id, refs)?;
         let mut validated = HashSet::from([type_id.to_owned()]);
         self.validate_related_types(type_id, refs, &mut validated)?;
@@ -940,8 +968,8 @@ impl GtsStore {
     }
 
     /// Checks that `type_id` declares a supported dialect, the same one as the
-    /// root of its `$id` chain, and that no `$ref` in it crosses dialects
-    /// (README §11.0).
+    /// root of its `$id` chain, that none of its subschemas switches to another
+    /// one, and that no `$ref` in it crosses dialects (README §11.0).
     ///
     /// Intermediate chain members and `gts://` targets get the same check when
     /// [`Self::validate_related_types`] validates them, so the whole hierarchy
@@ -972,6 +1000,7 @@ impl GtsStore {
             }
         }
 
+        crate::schema_dialect::check_subschemas(content, dialect).map_err(fail)?;
         crate::schema_dialect::check_references(content, self).map_err(fail)
     }
 
@@ -990,16 +1019,37 @@ impl GtsStore {
 
     /// Whether a registered entity validates. Cycles count as valid: the
     /// validation already on the stack is the one that reports the problem.
+    ///
+    /// Decided once per validation. A verdict reached while a cycle was
+    /// assumed valid is withdrawn if that assumption fails.
     fn entity_is_valid(&mut self, entity_id: &str) -> bool {
+        if let Some(&valid) = self.verdicts.get(entity_id) {
+            return valid;
+        }
         if !self.validating.insert(entity_id.to_owned()) {
             return true;
         }
+        let judged_before = self.judged_valid.len();
         let valid = match GtsId::try_new(entity_id) {
-            Ok(id) if id.is_type() => self.validate_schema(entity_id).is_ok(),
-            Ok(_) => self.validate_instance(entity_id).is_ok(),
+            Ok(id) if id.is_type() => self
+                .check_schema(entity_id, GtsRefValidation::AnyValid)
+                .is_ok(),
+            Ok(_) => self
+                .check_instance(entity_id, GtsRefValidation::AnyValid)
+                .is_ok(),
             Err(_) => true,
         };
         self.validating.remove(entity_id);
+        if valid {
+            self.judged_valid.push(entity_id.to_owned());
+        } else {
+            // Anything found valid meanwhile may have assumed this entity valid
+            // to break a cycle, so those verdicts are no longer safe to keep.
+            for withdrawn in self.judged_valid.drain(judged_before..) {
+                self.verdicts.remove(&withdrawn);
+            }
+        }
+        self.verdicts.insert(entity_id.to_owned(), valid);
         valid
     }
 
@@ -1090,6 +1140,17 @@ impl GtsStore {
         payload: &Value,
         refs: GtsRefValidation,
     ) -> Result<(), StoreError> {
+        self.begin_validation();
+        self.check_payload(type_id, payload, refs)
+    }
+
+    /// [`Self::validate_payload_with`] as part of the running validation.
+    fn check_payload(
+        &mut self,
+        type_id: &str,
+        payload: &Value,
+        refs: GtsRefValidation,
+    ) -> Result<(), StoreError> {
         let content = self.get_schema_content(type_id)?;
 
         // Abstract types cannot have direct instances (OP#6).
@@ -1101,7 +1162,7 @@ impl GtsStore {
 
         // An instance is no more valid than the type it claims.
         if !self.validating.contains(type_id) {
-            self.validate_schema_with(type_id, refs).map_err(|e| {
+            self.check_schema(type_id, refs).map_err(|e| {
                 StoreError::ValidationError(format!("type '{type_id}' is invalid: {e}"))
             })?;
         }
@@ -1159,6 +1220,16 @@ impl GtsStore {
         instance_id: &str,
         refs: GtsRefValidation,
     ) -> Result<(), StoreError> {
+        self.begin_validation();
+        self.check_instance(instance_id, refs)
+    }
+
+    /// [`Self::validate_instance_with`] as part of the running validation.
+    fn check_instance(
+        &mut self,
+        instance_id: &str,
+        refs: GtsRefValidation,
+    ) -> Result<(), StoreError> {
         let obj = self.get_instance_entity(instance_id)?;
 
         let type_id = obj.type_id.as_ref().ok_or_else(|| {
@@ -1173,7 +1244,7 @@ impl GtsStore {
 
         // A registered instance is just a stored payload; validation is identical
         // to validating a caller-supplied payload against its declared type.
-        self.validate_payload_with(type_id, &obj.content, refs)
+        self.check_payload(type_id, &obj.content, refs)
     }
 
     /// Casts an entity from one schema to another.

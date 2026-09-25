@@ -1,9 +1,10 @@
 //! The JSON Schema dialects a GTS Type Schema may declare (README §11.0).
 //!
 //! GTS admits Draft-07, Draft 2019-09 and Draft 2020-12, nothing older and no
-//! custom meta-schema. JSON Schema lets resources that declare different
-//! dialects reference each other; GTS does not, so no part of a type is read
-//! under a vocabulary other than the one its author chose.
+//! custom meta-schema. JSON Schema lets a subschema switch dialect with its
+//! own `$schema`, and resources that declare different dialects reference
+//! each other; GTS allows neither, so no part of a type is read under a
+//! vocabulary other than the one its hierarchy selects.
 
 use jsonschema::Draft;
 use serde_json::Value;
@@ -102,6 +103,31 @@ pub fn check_references(schema: &Value, provider: &dyn SchemaProvider) -> Result
                  a $ref must not cross dialects",
                 dialect_name(dialect),
                 dialect_name(target)
+            ));
+        }
+    });
+    mismatch.map_or(Ok(()), Err)
+}
+
+/// Rejects a subschema read under another dialect than `dialect`, the one
+/// `schema` declares.
+///
+/// JSON Schema lets any subschema, an embedded resource or not, switch
+/// dialect with its own `$schema`. GTS reads every part of a type, its trait
+/// schema included, under the dialect of its hierarchy, so a nested `$schema`
+/// may only restate that dialect.
+///
+/// # Errors
+/// The first subschema that switches dialect, by location.
+pub fn check_subschemas(schema: &Value, dialect: Draft) -> Result<(), String> {
+    let mut mismatch = None;
+    crate::schema_modifiers::for_each_schema_node_in_scope(schema, &mut |_, path, scope| {
+        if mismatch.is_none() && scope.dialect != dialect {
+            mismatch = Some(format!(
+                "'{path}' declares {} but the type is read under {}; \
+                 a subschema must not change dialect",
+                dialect_name(scope.dialect),
+                dialect_name(dialect)
             ));
         }
     });
