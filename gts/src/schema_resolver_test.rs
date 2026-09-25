@@ -923,3 +923,40 @@ fn test_referring_definitions_do_not_replace_the_target_s_own() {
 
     crate::json_schema::validator_for(&resolved).expect("the resolved document must still compile");
 }
+
+#[test]
+fn test_resolve_reads_a_pointer_inside_an_embedded_resource_from_that_resource() {
+    // `#/definitions/n` inside `legacy` names legacy's own definition, whether
+    // the document is resolved itself or inlined through a `gts://` reference.
+    let lib = json!({
+        "$id": "gts://gts.x.test.embedded.lib.v1~",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "definitions": {"n": {"type": "string"}},
+        "properties": {"legacy": {
+            "$id": "legacy",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "properties": {"n": {"$ref": "#/definitions/n"}},
+            "definitions": {"n": {"type": "integer"}}
+        }}
+    });
+    let p = MapProvider::new().with("gts.x.test.embedded.lib.v1~", lib.clone());
+
+    let on_its_own = resolve(&p, lib);
+    assert_eq!(
+        on_its_own.pointer("/properties/legacy/properties/n"),
+        Some(&json!({"type": "integer"}))
+    );
+
+    let inlined = resolve(
+        &p,
+        json!({
+            "$id": "gts://gts.x.test.embedded.holder.v1~",
+            "properties": {"item": {"$ref": "gts://gts.x.test.embedded.lib.v1~#/properties/legacy"}}
+        }),
+    );
+    assert_eq!(
+        inlined.pointer("/properties/item/properties/n"),
+        Some(&json!({"type": "integer"})),
+        "{inlined}"
+    );
+}

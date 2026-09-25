@@ -9,7 +9,10 @@
 //! on `GtsStore` directly; the store implements `SchemaProvider` and exposes
 //! `resolve_schema_refs` as a thin wrapper.
 
-use serde_json::Value;
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+use serde_json::{Map, Value};
 
 use crate::gts::GTS_ID_URI_PREFIX;
 
@@ -33,11 +36,21 @@ const MAX_REF_CHAIN_DEPTH: usize = 32;
 /// Inlines `$ref`s in a JSON Schema using a [`SchemaProvider`] for lookups.
 pub(crate) struct SchemaResolver<'a> {
     provider: &'a dyn SchemaProvider,
+    /// Every document the current resolution has met, and every resource
+    /// embedded in one, mapped to its document. A same-document reference
+    /// inside an embedded resource resolves from that resource.
+    documents: RefCell<HashMap<ObjectKey, ObjectKey>>,
 }
+
+/// A JSON object, by identity.
+type ObjectKey = *const Map<String, Value>;
 
 impl<'a> SchemaResolver<'a> {
     pub(crate) fn new(provider: &'a dyn SchemaProvider) -> Self {
-        Self { provider }
+        Self {
+            provider,
+            documents: RefCell::default(),
+        }
     }
 
     /// Strict `$ref` resolution that returns an error if any supported local
@@ -56,6 +69,8 @@ impl<'a> SchemaResolver<'a> {
     /// Pointer or external GTS `$ref` cannot be resolved, or
     /// [`StoreError::CircularRef`] if a circular `$ref` is detected.
     pub(crate) fn resolve(&self, schema: &Value) -> Result<Value, StoreError> {
+        self.documents.borrow_mut().clear();
+        self.register_document(schema);
         let mut visited = std::collections::HashSet::new();
         let mut cycle_found = false;
         let mut unresolved_refs = Vec::new();
@@ -89,6 +104,11 @@ impl<'a> SchemaResolver<'a> {
         // Recursively resolve $ref references in the schema
         match schema {
             Value::Object(map) => {
+                let local_root = if self.is_embedded(schema) {
+                    schema
+                } else {
+                    local_root
+                };
                 if let Some(Value::String(ref_uri)) = map.get("$ref") {
                     // Handle internal JSON Schema references like #/$defs/GtsInstanceId
                     // These should be inlined to match schemars 0.8 behavior (is_referenceable=false)
@@ -104,8 +124,9 @@ impl<'a> SchemaResolver<'a> {
                                 let local_ref_key =
                                     format!("local:{:p}:{ref_uri}", std::ptr::from_ref(local_root));
                                 if visited.contains(&local_ref_key) {
-                                    // Only root recursion keeps the same anchor.
-                                    if !std::ptr::eq(local_root, root_doc) {
+                                    // Only recursion inside the document being
+                                    // resolved keeps the same anchor.
+                                    if !self.is_in(local_root, root_doc) {
                                         *cycle_found = true;
                                     }
                                     return Value::Object(map.clone());
@@ -117,11 +138,13 @@ impl<'a> SchemaResolver<'a> {
                                     ));
                                     return Value::Object(map.clone());
                                 }
-                                if let Some(target) = local_root.pointer(pointer) {
+                                if let Some((target, target_root)) =
+                                    self.locate(local_root, pointer)
+                                {
                                     visited.insert(local_ref_key.clone());
                                     let resolved = self.resolve_inner(
                                         target,
-                                        local_root,
+                                        target_root,
                                         root_doc,
                                         visited,
                                         cycle_found,
@@ -215,20 +238,20 @@ impl<'a> SchemaResolver<'a> {
 
                     // Try to resolve the reference using the canonical ID
                     if let Some(content) = self.provider.schema_content(lookup_ref) {
+                        self.register_document(content);
                         let target_content = match pointer_fragment {
-                            Some("") => Some(content),
-                            Some(pointer) => content.pointer(pointer),
+                            Some(pointer) => self.locate(content, pointer),
                             None if canonical_ref.contains('#') => None,
-                            None => Some(content),
+                            None => Some((content, content)),
                         };
 
-                        if let Some(target_content) = target_content {
+                        if let Some((target_content, target_root)) = target_content {
                             // Mark as visited before recursing
                             visited.insert(canonical_ref.to_owned());
                             // Recursively resolve refs in the referenced schema
                             let mut resolved = self.resolve_inner(
                                 target_content,
-                                content,
+                                target_root,
                                 root_doc,
                                 visited,
                                 cycle_found,
@@ -399,6 +422,72 @@ impl<'a> SchemaResolver<'a> {
             other => other,
         }
     }
+
+    /// Records `document` and the resources embedded in it, once.
+    fn register_document(&self, document: &Value) {
+        let Some(key) = object_key(document) else {
+            return;
+        };
+        let mut documents = self.documents.borrow_mut();
+        if documents.insert(key, key).is_some() {
+            return;
+        }
+        for resource in crate::schema_modifiers::embedded_resources(document) {
+            documents.insert(resource, key);
+        }
+    }
+
+    /// Whether `node` is a resource embedded in a document.
+    fn is_embedded(&self, node: &Value) -> bool {
+        object_key(node).is_some_and(|key| {
+            self.documents
+                .borrow()
+                .get(&key)
+                .is_some_and(|document| *document != key)
+        })
+    }
+
+    /// Whether `resource` is `document` or embedded in it.
+    fn is_in(&self, resource: &Value, document: &Value) -> bool {
+        std::ptr::eq(resource, document)
+            || object_key(resource).is_some_and(|key| {
+                self.documents.borrow().get(&key).copied() == object_key(document)
+            })
+    }
+
+    /// The node JSON Pointer `pointer` names inside `resource`, and the
+    /// resource its own same-document references resolve from: the innermost
+    /// one on the way there.
+    fn locate<'v>(&self, resource: &'v Value, pointer: &str) -> Option<(&'v Value, &'v Value)> {
+        let mut node = resource;
+        let mut innermost = resource;
+        if !pointer.is_empty() {
+            for token in pointer.strip_prefix('/')?.split('/') {
+                let token = token.replace("~1", "/").replace("~0", "~");
+                node = match node {
+                    Value::Object(map) => map.get(&token)?,
+                    Value::Array(items) => items.get(array_index(&token)?)?,
+                    _ => return None,
+                };
+                if self.is_embedded(node) {
+                    innermost = node;
+                }
+            }
+        }
+        Some((node, innermost))
+    }
+}
+
+fn object_key(value: &Value) -> Option<ObjectKey> {
+    value.as_object().map(std::ptr::from_ref)
+}
+
+/// An array index token, read as `serde_json`'s own pointer lookup reads one.
+fn array_index(token: &str) -> Option<usize> {
+    if token.starts_with('+') || (token.starts_with('0') && token.len() != 1) {
+        return None;
+    }
+    token.parse().ok()
 }
 
 #[cfg(test)]

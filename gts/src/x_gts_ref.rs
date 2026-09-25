@@ -1,19 +1,19 @@
 /// x-gts-ref validation support for GTS schemas.
 ///
-/// This module implements validation for the `x-gts-ref` extension as specified
-/// in the GTS specification v0.5, section 9.5.
+/// This module implements the `x-gts-ref` extension of GTS specification v0.14,
+/// section 9.6.
 ///
 /// # Overview
 ///
-/// The `x-gts-ref` extension allows schemas to enforce that string values must be
-/// valid GTS identifiers or match specific patterns. This is useful for ensuring
-/// referential integrity in GTS-based systems.
+/// The `x-gts-ref` extension constrains a string value to a GTS identifier that
+/// matches a given pattern, keeping references in GTS-based systems sound.
 ///
 /// # Features
 ///
-/// 1. **Schema Validation**: Validates that `x-gts-ref` fields in schemas contain valid patterns
+/// 1. **Schema Validation**: Validates that `x-gts-ref` declarations name a usable pattern
 /// 2. **Instance Validation**: Validates that instance values match their `x-gts-ref` constraints
-/// 3. **JSON Pointer Resolution**: Supports JSON Pointer references (e.g., `/$id`, `/properties/name`)
+/// 3. **Registry Checks**: Presence and validity of the target, as far as
+///    [`GtsRefValidation`] asks for
 /// 4. **GTS ID Pattern Matching**: Validates GTS IDs and prefix patterns (e.g., `gts.x.y._.z.v1~`)
 ///
 /// # Examples
@@ -64,31 +64,16 @@
 /// assert!(errors.is_empty());
 /// ```
 ///
-/// # x-gts-ref Patterns
+/// # x-gts-ref Operands
 ///
 /// The `x-gts-ref` field can contain:
 ///
-/// - **GTS ID Pattern**: A full or prefix GTS identifier (e.g., `gts.x.y._.z.v1~`)
-/// - **JSON Pointer**: A reference to another field in the schema (e.g., `/$id`, `/properties/name`)
-///
-/// ## JSON Pointer Resolution
-///
-/// When an `x-gts-ref` starts with `/`, it's treated as a JSON Pointer that resolves
-/// to a value in the schema. The resolved value must be a valid GTS ID pattern.
-///
-/// Example:
-/// ```json
-/// {
-///   "$id": "gts://gts.x.example._.user.v1~",
-///   "$schema": "http://json-schema.org/draft-07/schema#",
-///   "type": "object",
-///   "properties": {
-///     "type": {"type": "string", "x-gts-ref": "/$id"}
-///   }
-/// }
-/// ```
-///
-/// In this case, the `type` field must match the schema's `$id` value.
+/// - **GTS ID Pattern**: A full or prefix GTS identifier (e.g., `gts.x.y._.z.v1~`),
+///   including a wildcard pattern (e.g., `gts.x.y.*`)
+/// - **Self-reference**: `/$id`, the identifier of the leaf type being validated,
+///   even where the constraint is inherited from a base or trait schema (for a
+///   schema validated on its own, its own `$id`). It is the only pointer operand
+///   the spec allows; every other slash-prefixed value is rejected.
 use std::sync::Arc;
 
 use jsonschema::error::ValidationErrorKind;
@@ -153,10 +138,76 @@ pub(crate) fn candidate_reference_values(instance: &Value) -> Vec<String> {
     found.into_iter().collect()
 }
 
+/// The one pointer operand a declaration may use (spec v0.14 §9.6).
+const SELF_ID_POINTER: &str = "/$id";
+
+/// How far `x-gts-ref` targets are checked (spec v0.14 §9.6).
+///
+/// Syntax and pattern conformance are checked in every mode; the mode only
+/// decides how much the registry is consulted about the target.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum GtsRefValidation {
+    /// Do not consult the registry.
+    None,
+    /// The target must be registered.
+    AnyPresent,
+    /// The target must be registered and itself valid.
+    #[default]
+    AnyValid,
+}
+
+impl GtsRefValidation {
+    /// Parses the spelling used by the `gts-ref-validation` request parameter.
+    ///
+    /// # Errors
+    /// Returns the rejected spelling when it names no mode.
+    pub fn parse(spelling: &str) -> Result<Self, String> {
+        match spelling {
+            "none" => Ok(Self::None),
+            "any-present" => Ok(Self::AnyPresent),
+            "any-valid" => Ok(Self::AnyValid),
+            other => Err(format!(
+                "unknown gts-ref-validation mode '{other}': expected \
+                 'none', 'any-present' or 'any-valid'"
+            )),
+        }
+    }
+
+    /// Whether the registry is consulted at all.
+    #[must_use]
+    pub fn checks_registry(self) -> bool {
+        self != Self::None
+    }
+
+    /// Whether the target must itself validate.
+    #[must_use]
+    pub fn checks_validity(self) -> bool {
+        self == Self::AnyValid
+    }
+}
+
+/// Every usable `x-gts-ref` pattern the document declares, by location.
+///
+/// Unusable declarations are skipped: [`XGtsRefValidator::validate_schema`]
+/// already reports them.
+pub(crate) fn declared_patterns(schema: &Value) -> Vec<(String, GtsIdPattern)> {
+    let selected = XGtsRefValidator::self_id(schema);
+    let mut declared = Vec::new();
+    crate::schema_modifiers::for_each_schema_node(schema, &mut |node, location| {
+        if let Some(value) = node.get(X_GTS_REF)
+            && let Ok(pattern) = resolve_declaration(value, selected.as_deref())
+        {
+            declared.push((declaration_path("", location), pattern));
+        }
+    });
+    declared
+}
+
 /// The pattern a declaration denotes, or why it is not a usable declaration.
 ///
-/// Accepts a GTS pattern or a JSON Pointer resolving to one.
-fn resolve_declaration(declared: &Value, root: &Value) -> Result<GtsIdPattern, String> {
+/// Accepts a GTS pattern or the `/$id` self-reference, which names `selected`:
+/// the type being validated (spec v0.14 §9.6).
+fn resolve_declaration(declared: &Value, selected: Option<&str>) -> Result<GtsIdPattern, String> {
     let Some(declared) = declared.as_str() else {
         return Err(format!("x-gts-ref value must be a string, got {declared}"));
     };
@@ -166,11 +217,11 @@ fn resolve_declaration(declared: &Value, root: &Value) -> Result<GtsIdPattern, S
             .map_err(|e| format!("Invalid GTS identifier: {declared}: {}", e.cause));
     }
 
-    if declared.starts_with('/') {
-        let Some(resolved) = XGtsRefValidator::resolve_pointer(root, declared) else {
+    if declared == SELF_ID_POINTER {
+        let Some(resolved) = selected else {
             return Err(format!("Cannot resolve reference path '{declared}'"));
         };
-        return GtsIdPattern::try_new(&resolved).map_err(|e| {
+        return GtsIdPattern::try_new(resolved).map_err(|e| {
             format!(
                 "Resolved reference '{declared}' -> '{resolved}' is not a valid GTS identifier: {}",
                 e.cause
@@ -179,22 +230,23 @@ fn resolve_declaration(declared: &Value, root: &Value) -> Result<GtsIdPattern, S
     }
 
     Err(format!(
-        "Invalid x-gts-ref value: '{declared}' must start with '{GTS_ID_PREFIX}' or '/'"
+        "Invalid x-gts-ref value: '{declared}' must start with '{GTS_ID_PREFIX}' \
+         or be the self-reference '{SELF_ID_POINTER}'"
     ))
 }
 
 /// Registers `x-gts-ref` as a native keyword for dialect-aware applicability.
 ///
-/// Invalid declarations fail compilation. Relative references resolve in `root`.
+/// Invalid declarations fail compilation. `/$id` names `selected`, the type
+/// being validated, wherever in the compiled schema it is declared.
 pub(crate) fn with_x_gts_ref(
     options: jsonschema::ValidationOptions,
-    root: &Value,
+    selected: Option<String>,
     exists: Option<ReferenceExists>,
 ) -> jsonschema::ValidationOptions {
-    let root = Arc::new(root.clone());
     options.with_keyword(X_GTS_REF, move |_parent, declared, _location| {
-        let pattern =
-            resolve_declaration(declared, &root).map_err(jsonschema::ValidationError::schema)?;
+        let pattern = resolve_declaration(declared, selected.as_deref())
+            .map_err(jsonschema::ValidationError::schema)?;
         Ok(Box::new(XGtsRefKeyword {
             pattern,
             exists: exists.clone(),
@@ -233,8 +285,8 @@ impl XGtsRefKeyword {
     }
 }
 
-impl jsonschema::Keyword for XGtsRefKeyword {
-    fn validate<'i>(&self, instance: &'i Value) -> Result<(), jsonschema::ValidationError<'i>> {
+impl<'i> jsonschema::Keyword<'i> for XGtsRefKeyword {
+    fn validate(&self, instance: &'i Value) -> Result<(), jsonschema::ValidationError<'i>> {
         match self.violation(instance) {
             Some(reason) => Err(jsonschema::ValidationError::custom(reason)),
             None => Ok(()),
@@ -419,14 +471,14 @@ impl XGtsRefValidator {
         schema_path: &str,
         root_schema: Option<&Value>,
     ) -> Vec<XGtsRefValidationError> {
-        let root = root_schema.unwrap_or(schema);
+        let selected = Self::self_id(root_schema.unwrap_or(schema));
         let mut errors = Vec::new();
 
         crate::schema_modifiers::for_each_schema_node(schema, &mut |node, location| {
             let Some(declared) = node.get(X_GTS_REF) else {
                 return;
             };
-            if let Err(reason) = resolve_declaration(declared, root) {
+            if let Err(reason) = resolve_declaration(declared, selected.as_deref()) {
                 // Non-string declarations have no pattern to report.
                 let (value, ref_pattern) = declared.as_str().map_or_else(
                     || (format!("{declared:?}"), String::new()),
@@ -444,45 +496,13 @@ impl XGtsRefValidator {
         errors
     }
 
-    /// Resolve a JSON Pointer against the schema root.
-    ///
-    /// Uses `serde_json`'s RFC 6901 implementation, including arrays and escapes.
-    ///
-    /// # Returns
-    /// The resolved value as a string or None if not found.
-    /// Note: For `/$id` references, the `gts://` prefix is stripped from the value
-    /// as per GTS specification (relative self-reference should match the $id without the prefix).
-    fn resolve_pointer(schema: &Value, pointer: &str) -> Option<String> {
-        Self::resolve_pointer_inner(schema, pointer, 0)
-    }
-
-    /// Depth-guarded pointer resolution: relative `x-gts-ref` hops recurse here,
-    /// and a self-referential chain would overflow the stack without the cap.
-    fn resolve_pointer_inner(schema: &Value, pointer: &str, depth: usize) -> Option<String> {
-        const MAX_POINTER_DEPTH: usize = 64;
-        if depth > MAX_POINTER_DEPTH {
-            return None;
-        }
-
-        let current = schema.pointer(pointer)?;
-
-        // If current is a string, return it (stripping gts:// prefix if present)
-        if let Some(s) = current.as_str() {
-            return Some(Self::strip_gts_uri_prefix(s));
-        }
-
-        // If current is an object with x-gts-ref, resolve it
-        if let Some(obj) = current.as_object()
-            && let Some(ref_value) = obj.get(X_GTS_REF)
-            && let Some(ref_str) = ref_value.as_str()
-        {
-            if ref_str.starts_with('/') {
-                return Self::resolve_pointer_inner(schema, ref_str, depth + 1);
-            }
-            return Some(ref_str.to_owned());
-        }
-
-        None
+    /// The document's own GTS identifier, as `/$id` denotes it when the
+    /// document itself is the type being validated.
+    pub(crate) fn self_id(schema: &Value) -> Option<String> {
+        schema
+            .pointer(SELF_ID_POINTER)
+            .and_then(Value::as_str)
+            .map(Self::strip_gts_uri_prefix)
     }
 
     /// Strip the `gts://` prefix from a value if present.

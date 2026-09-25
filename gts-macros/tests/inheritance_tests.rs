@@ -376,10 +376,10 @@ mod tests {
     /// Helper to register 3-level event schemas (`BaseEventV1` -> `AuditPayloadV1` -> `PlaceOrderDataV1`)
     fn register_three_level_event_schemas(ops: &mut gts::GtsOps) {
         let base_schema = BaseEventV1::<()>::gts_schema_with_refs();
-        let base_result = ops.add_schema(
-            BaseEventV1::<()>::gts_type_id().clone().into_string(),
-            &base_schema,
-        );
+        let base_result = ops
+            .add_schemas(std::slice::from_ref(&base_schema))
+            .results
+            .remove(0);
         assert!(
             base_result.ok,
             "BaseEventV1 schema registration failed: {}",
@@ -387,10 +387,10 @@ mod tests {
         );
 
         let audit_schema = AuditPayloadV1::<()>::gts_schema_with_refs();
-        let audit_result = ops.add_schema(
-            AuditPayloadV1::<()>::gts_type_id().clone().into_string(),
-            &audit_schema,
-        );
+        let audit_result = ops
+            .add_schemas(std::slice::from_ref(&audit_schema))
+            .results
+            .remove(0);
         assert!(
             audit_result.ok,
             "AuditPayloadV1 schema registration failed: {}",
@@ -398,10 +398,10 @@ mod tests {
         );
 
         let order_schema = PlaceOrderDataV1::gts_schema_with_refs();
-        let order_result = ops.add_schema(
-            PlaceOrderDataV1::gts_type_id().clone().into_string(),
-            &order_schema,
-        );
+        let order_result = ops
+            .add_schemas(std::slice::from_ref(&order_schema))
+            .results
+            .remove(0);
         assert!(
             order_result.ok,
             "PlaceOrderDataV1 schema registration failed: {}",
@@ -412,10 +412,10 @@ mod tests {
     /// Helper to register 2-level event schemas (`BaseEventV1` -> `SimplePayloadV1`)
     fn register_two_level_event_schemas(ops: &mut gts::GtsOps) {
         let base_schema = BaseEventV1::<()>::gts_schema_with_refs();
-        let base_result = ops.add_schema(
-            BaseEventV1::<()>::gts_type_id().clone().into_string(),
-            &base_schema,
-        );
+        let base_result = ops
+            .add_schemas(std::slice::from_ref(&base_schema))
+            .results
+            .remove(0);
         assert!(
             base_result.ok,
             "BaseEventV1 schema registration failed: {}",
@@ -423,10 +423,10 @@ mod tests {
         );
 
         let simple_schema = SimplePayloadV1::gts_schema_with_refs();
-        let simple_result = ops.add_schema(
-            SimplePayloadV1::gts_type_id().clone().into_string(),
-            &simple_schema,
-        );
+        let simple_result = ops
+            .add_schemas(std::slice::from_ref(&simple_schema))
+            .results
+            .remove(0);
         assert!(
             simple_result.ok,
             "SimplePayloadV1 schema registration failed: {}",
@@ -1168,10 +1168,10 @@ mod tests {
         let mut ops = gts::GtsOps::new(None, None, 0);
 
         let base_schema = TopicV1::<()>::gts_schema_with_refs();
-        let base_result = ops.add_schema(
-            TopicV1::<()>::gts_type_id().clone().into_string(),
-            &base_schema,
-        );
+        let base_result = ops
+            .add_schemas(std::slice::from_ref(&base_schema))
+            .results
+            .remove(0);
         assert!(
             base_result.ok,
             "Base schema registration should succeed: {}",
@@ -1180,10 +1180,10 @@ mod tests {
 
         // Register the OrderTopicConfigV1 schema (empty struct) using GtsOps
         let empty_schema = OrderTopicConfigV1::gts_schema_with_refs();
-        let empty_result = ops.add_schema(
-            OrderTopicConfigV1::gts_type_id().clone().into_string(),
-            &empty_schema,
-        );
+        let empty_result = ops
+            .add_schemas(std::slice::from_ref(&empty_schema))
+            .results
+            .remove(0);
         assert!(
             empty_result.ok,
             "Empty schema registration should succeed: {}",
@@ -1264,20 +1264,20 @@ mod tests {
         let base_schema = TopicV1::<()>::gts_schema_with_refs();
         let empty_schema = OrderTopicConfigV1::gts_schema_with_refs();
 
-        let base_result = ops.add_schema(
-            TopicV1::<()>::gts_type_id().clone().into_string(),
-            &base_schema,
-        );
+        let base_result = ops
+            .add_schemas(std::slice::from_ref(&base_schema))
+            .results
+            .remove(0);
         assert!(
             base_result.ok,
             "Base schema registration should succeed: {}",
             base_result.error
         );
 
-        let empty_result = ops.add_schema(
-            OrderTopicConfigV1::gts_type_id().clone().into_string(),
-            &empty_schema,
-        );
+        let empty_result = ops
+            .add_schemas(std::slice::from_ref(&empty_schema))
+            .results
+            .remove(0);
         assert!(
             empty_result.ok,
             "Empty schema registration should succeed: {}",
@@ -1448,20 +1448,20 @@ mod tests {
         // Register schemas for validation
         let mut ops = gts::GtsOps::new(None, None, 0);
         let schema = TopicV1WithIdV1::<()>::gts_schema_with_refs();
-        let result = ops.add_schema(
-            TopicV1WithIdV1::<()>::gts_type_id().clone().into_string(),
-            &schema,
-        );
+        let result = ops
+            .add_schemas(std::slice::from_ref(&schema))
+            .results
+            .remove(0);
         assert!(
             result.ok,
             "TopicV1WithIdV1 schema registration failed: {}",
             result.error
         );
         let order_schema = OrderTopicConfigV1::gts_schema_with_refs();
-        let order_result = ops.add_schema(
-            OrderTopicConfigV1::gts_type_id().clone().into_string(),
-            &order_schema,
-        );
+        let order_result = ops
+            .add_schemas(std::slice::from_ref(&order_schema))
+            .results
+            .remove(0);
         assert!(
             order_result.ok,
             "OrderTopicConfigV1 schema registration failed: {}",
@@ -1522,22 +1522,20 @@ mod tests {
         // Register schemas for validation
         let mut ops = gts::GtsOps::new(None, None, 0);
         let schema = TopicV1WithGtsIdV1::<()>::gts_schema_with_refs();
-        let result = ops.add_schema(
-            TopicV1WithGtsIdV1::<()>::gts_type_id()
-                .clone()
-                .into_string(),
-            &schema,
-        );
+        let result = ops
+            .add_schemas(std::slice::from_ref(&schema))
+            .results
+            .remove(0);
         assert!(
             result.ok,
             "TopicV1WithGtsIdV1 schema registration failed: {}",
             result.error
         );
         let order_schema = OrderTopicConfigV1::gts_schema_with_refs();
-        let order_result = ops.add_schema(
-            OrderTopicConfigV1::gts_type_id().clone().into_string(),
-            &order_schema,
-        );
+        let order_result = ops
+            .add_schemas(std::slice::from_ref(&order_schema))
+            .results
+            .remove(0);
         assert!(
             order_result.ok,
             "OrderTopicConfigV1 schema registration failed: {}",
@@ -1590,22 +1588,20 @@ mod tests {
         // Register schemas for validation
         let mut ops = gts::GtsOps::new(None, None, 0);
         let schema = TopicV1WithGtsIdCamelV1::<()>::gts_schema_with_refs();
-        let result = ops.add_schema(
-            TopicV1WithGtsIdCamelV1::<()>::gts_type_id()
-                .clone()
-                .into_string(),
-            &schema,
-        );
+        let result = ops
+            .add_schemas(std::slice::from_ref(&schema))
+            .results
+            .remove(0);
         assert!(
             result.ok,
             "TopicV1WithGtsIdCamelV1 schema registration failed: {}",
             result.error
         );
         let order_schema = OrderTopicConfigV1::gts_schema_with_refs();
-        let order_result = ops.add_schema(
-            OrderTopicConfigV1::gts_type_id().clone().into_string(),
-            &order_schema,
-        );
+        let order_result = ops
+            .add_schemas(std::slice::from_ref(&order_schema))
+            .results
+            .remove(0);
         assert!(
             order_result.ok,
             "OrderTopicConfigV1 schema registration failed: {}",
@@ -1658,12 +1654,10 @@ mod tests {
         // Register schemas for validation
         let mut ops = gts::GtsOps::new(None, None, 0);
         let schema = TopicV1WithGtsTypeV1::<()>::gts_schema_with_refs();
-        let result = ops.add_schema(
-            TopicV1WithGtsTypeV1::<()>::gts_type_id()
-                .clone()
-                .into_string(),
-            &schema,
-        );
+        let result = ops
+            .add_schemas(std::slice::from_ref(&schema))
+            .results
+            .remove(0);
         assert!(
             result.ok,
             "TopicV1WithGtsTypeV1 schema registration failed: {}",
@@ -1710,12 +1704,10 @@ mod tests {
         // Register schemas for validation
         let mut ops = gts::GtsOps::new(None, None, 0);
         let schema = TopicV1WithGtsTypeCamelV1::<()>::gts_schema_with_refs();
-        let result = ops.add_schema(
-            TopicV1WithGtsTypeCamelV1::<()>::gts_type_id()
-                .clone()
-                .into_string(),
-            &schema,
-        );
+        let result = ops
+            .add_schemas(std::slice::from_ref(&schema))
+            .results
+            .remove(0);
         assert!(
             result.ok,
             "TopicV1WithGtsTypeCamelV1 schema registration failed: {}",
@@ -1984,20 +1976,20 @@ mod tests {
         register_two_level_event_schemas(&mut ops);
         // Also register 3-level schemas (AuditPayloadV1 and PlaceOrderDataV1)
         let audit_schema = AuditPayloadV1::<()>::gts_schema_with_refs();
-        let audit_result = ops.add_schema(
-            AuditPayloadV1::<()>::gts_type_id().clone().into_string(),
-            &audit_schema,
-        );
+        let audit_result = ops
+            .add_schemas(std::slice::from_ref(&audit_schema))
+            .results
+            .remove(0);
         assert!(
             audit_result.ok,
             "AuditPayloadV1 schema registration failed: {}",
             audit_result.error
         );
         let order_schema = PlaceOrderDataV1::gts_schema_with_refs();
-        let order_result = ops.add_schema(
-            PlaceOrderDataV1::gts_type_id().clone().into_string(),
-            &order_schema,
-        );
+        let order_result = ops
+            .add_schemas(std::slice::from_ref(&order_schema))
+            .results
+            .remove(0);
         assert!(
             order_result.ok,
             "PlaceOrderDataV1 schema registration failed: {}",
@@ -2127,10 +2119,10 @@ mod tests {
 
         // Register base schema
         let base_schema = BaseEventV1::<()>::gts_schema_with_refs();
-        let base_result = ops.add_schema(
-            BaseEventV1::<()>::gts_type_id().clone().into_string(),
-            &base_schema,
-        );
+        let base_result = ops
+            .add_schemas(std::slice::from_ref(&base_schema))
+            .results
+            .remove(0);
         assert!(
             base_result.ok,
             "Base schema registration should succeed: {}",
@@ -2139,10 +2131,10 @@ mod tests {
 
         // Register SimplePayloadV1 schema
         let simple_schema = SimplePayloadV1::gts_schema_with_refs();
-        let simple_result = ops.add_schema(
-            SimplePayloadV1::gts_type_id().clone().into_string(),
-            &simple_schema,
-        );
+        let simple_result = ops
+            .add_schemas(std::slice::from_ref(&simple_schema))
+            .results
+            .remove(0);
         assert!(
             simple_result.ok,
             "SimplePayloadV1 schema registration should succeed: {}",
@@ -2175,10 +2167,10 @@ mod tests {
     /// Helper to register all schemas needed for `TopicV1` hierarchy
     fn register_topic_schemas(ops: &mut gts::GtsOps) {
         let base_schema = TopicV1::<()>::gts_schema_with_refs();
-        let base_result = ops.add_schema(
-            TopicV1::<()>::gts_type_id().clone().into_string(),
-            &base_schema,
-        );
+        let base_result = ops
+            .add_schemas(std::slice::from_ref(&base_schema))
+            .results
+            .remove(0);
         assert!(
             base_result.ok,
             "TopicV1 schema registration failed: {}",
@@ -2186,10 +2178,10 @@ mod tests {
         );
 
         let order_schema = OrderTopicConfigV1::gts_schema_with_refs();
-        let order_result = ops.add_schema(
-            OrderTopicConfigV1::gts_type_id().clone().into_string(),
-            &order_schema,
-        );
+        let order_result = ops
+            .add_schemas(std::slice::from_ref(&order_schema))
+            .results
+            .remove(0);
         assert!(
             order_result.ok,
             "OrderTopicConfigV1 schema registration failed: {}",
@@ -2286,10 +2278,10 @@ mod tests {
 
         // Register TopicV1WithIdV1 schema
         let schema = TopicV1WithIdV1::<()>::gts_schema_with_refs();
-        let result = ops.add_schema(
-            TopicV1WithIdV1::<()>::gts_type_id().clone().into_string(),
-            &schema,
-        );
+        let result = ops
+            .add_schemas(std::slice::from_ref(&schema))
+            .results
+            .remove(0);
         assert!(
             result.ok,
             "TopicV1WithIdV1 schema registration failed: {}",
@@ -2298,10 +2290,10 @@ mod tests {
 
         // Register OrderTopicConfigV1 schema (needed for nested type)
         let order_schema = OrderTopicConfigV1::gts_schema_with_refs();
-        let order_result = ops.add_schema(
-            OrderTopicConfigV1::gts_type_id().clone().into_string(),
-            &order_schema,
-        );
+        let order_result = ops
+            .add_schemas(std::slice::from_ref(&order_schema))
+            .results
+            .remove(0);
         assert!(
             order_result.ok,
             "OrderTopicConfigV1 schema registration failed: {}",
@@ -2338,12 +2330,10 @@ mod tests {
 
         // Register schemas
         let schema1 = TopicV1WithGtsIdV1::<()>::gts_schema_with_refs();
-        let result1 = ops.add_schema(
-            TopicV1WithGtsIdV1::<()>::gts_type_id()
-                .clone()
-                .into_string(),
-            &schema1,
-        );
+        let result1 = ops
+            .add_schemas(std::slice::from_ref(&schema1))
+            .results
+            .remove(0);
         assert!(
             result1.ok,
             "TopicV1WithGtsIdV1 schema registration failed: {}",
@@ -2351,10 +2341,10 @@ mod tests {
         );
 
         let order_schema = OrderTopicConfigV1::gts_schema_with_refs();
-        let order_result = ops.add_schema(
-            OrderTopicConfigV1::gts_type_id().clone().into_string(),
-            &order_schema,
-        );
+        let order_result = ops
+            .add_schemas(std::slice::from_ref(&order_schema))
+            .results
+            .remove(0);
         assert!(
             order_result.ok,
             "OrderTopicConfigV1 schema registration failed: {}",
@@ -2413,12 +2403,10 @@ mod tests {
 
         // Register schemas
         let schema1 = TopicV1WithGtsTypeV1::<()>::gts_schema_with_refs();
-        let result1 = ops.add_schema(
-            TopicV1WithGtsTypeV1::<()>::gts_type_id()
-                .clone()
-                .into_string(),
-            &schema1,
-        );
+        let result1 = ops
+            .add_schemas(std::slice::from_ref(&schema1))
+            .results
+            .remove(0);
         assert!(
             result1.ok,
             "TopicV1WithGtsTypeV1 schema registration failed: {}",
@@ -2426,10 +2414,10 @@ mod tests {
         );
 
         let order_schema = OrderTopicConfigV1::gts_schema_with_refs();
-        let order_result = ops.add_schema(
-            OrderTopicConfigV1::gts_type_id().clone().into_string(),
-            &order_schema,
-        );
+        let order_result = ops
+            .add_schemas(std::slice::from_ref(&order_schema))
+            .results
+            .remove(0);
         assert!(
             order_result.ok,
             "OrderTopicConfigV1 schema registration failed: {}",
@@ -2494,10 +2482,10 @@ mod tests {
 
         // Register schemas
         let base_schema = BaseEventV1::<()>::gts_schema_with_refs();
-        let base_result = ops.add_schema(
-            BaseEventV1::<()>::gts_type_id().clone().into_string(),
-            &base_schema,
-        );
+        let base_result = ops
+            .add_schemas(std::slice::from_ref(&base_schema))
+            .results
+            .remove(0);
         assert!(
             base_result.ok,
             "BaseEventV1 schema registration failed: {}",
@@ -2505,10 +2493,10 @@ mod tests {
         );
 
         let simple_schema = SimplePayloadV1::gts_schema_with_refs();
-        let simple_result = ops.add_schema(
-            SimplePayloadV1::gts_type_id().clone().into_string(),
-            &simple_schema,
-        );
+        let simple_result = ops
+            .add_schemas(std::slice::from_ref(&simple_schema))
+            .results
+            .remove(0);
         assert!(
             simple_result.ok,
             "SimplePayloadV1 schema registration failed: {}",
@@ -2556,10 +2544,10 @@ mod tests {
 
         // Register all schemas in the inheritance chain
         let base_schema = BaseEventV1::<()>::gts_schema_with_refs();
-        let base_result = ops.add_schema(
-            BaseEventV1::<()>::gts_type_id().clone().into_string(),
-            &base_schema,
-        );
+        let base_result = ops
+            .add_schemas(std::slice::from_ref(&base_schema))
+            .results
+            .remove(0);
         assert!(
             base_result.ok,
             "BaseEventV1 schema registration failed: {}",
@@ -2567,10 +2555,10 @@ mod tests {
         );
 
         let audit_schema = AuditPayloadV1::<()>::gts_schema_with_refs();
-        let audit_result = ops.add_schema(
-            AuditPayloadV1::<()>::gts_type_id().clone().into_string(),
-            &audit_schema,
-        );
+        let audit_result = ops
+            .add_schemas(std::slice::from_ref(&audit_schema))
+            .results
+            .remove(0);
         assert!(
             audit_result.ok,
             "AuditPayloadV1 schema registration failed: {}",
@@ -2578,10 +2566,10 @@ mod tests {
         );
 
         let order_schema = PlaceOrderDataV1::gts_schema_with_refs();
-        let order_result = ops.add_schema(
-            PlaceOrderDataV1::gts_type_id().clone().into_string(),
-            &order_schema,
-        );
+        let order_result = ops
+            .add_schemas(std::slice::from_ref(&order_schema))
+            .results
+            .remove(0);
         assert!(
             order_result.ok,
             "PlaceOrderDataV1 schema registration failed: {}",

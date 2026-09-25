@@ -7,6 +7,7 @@ use axum::{
     routing::{get, post},
 };
 use gts::GtsOps;
+use gts::GtsRefValidation;
 use gts::ops::AddEntityRejection;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -66,7 +67,7 @@ impl GtsHttpServer {
             .route("/entities", get(get_entities).post(add_entity))
             .route("/entities/{gts_id}", get(get_entity))
             .route("/entities/bulk", post(add_entities))
-            .route("/type-schemas", post(add_schema))
+            .route("/type-schemas", post(add_schemas))
             .route("/validate-id", get(validate_id))
             .route("/extract-id", post(extract_id))
             .route("/parse-id", get(parse_id))
@@ -160,16 +161,36 @@ struct LimitQuery {
 struct AddEntityQuery {
     #[serde(default)]
     validate: bool,
+    #[serde(flatten)]
+    refs: GtsRefValidationQuery,
+}
+
+/// The `gts-ref-validation` request parameter (spec v0.14 §9.6).
+#[derive(Deserialize, Default)]
+struct GtsRefValidationQuery {
+    #[serde(rename = "gts-ref-validation")]
+    mode: Option<String>,
+}
+
+impl GtsRefValidationQuery {
+    /// The requested mode, or why the spelling was rejected.
+    fn resolve(&self) -> Result<GtsRefValidation, String> {
+        self.mode
+            .as_deref()
+            .map_or_else(|| Ok(GtsRefValidation::default()), GtsRefValidation::parse)
+    }
+}
+
+fn unprocessable(error: &str) -> axum::response::Response {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(json!({"ok": false, "error": error})),
+    )
+        .into_response()
 }
 
 fn default_limit() -> usize {
     100
-}
-
-#[derive(Deserialize)]
-struct SchemaRegister {
-    type_id: String,
-    type_schema: Value,
 }
 
 #[derive(Deserialize, serde::Serialize)]
@@ -236,11 +257,15 @@ async fn add_entity(
     Query(params): Query<AddEntityQuery>,
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
+    let refs = match params.refs.resolve() {
+        Ok(refs) => refs,
+        Err(error) => return unprocessable(&error),
+    };
     let mut ops = match lock_ops(&state.ops) {
         Ok(guard) => guard,
         Err(response) => return response.into_response(),
     };
-    let result = ops.add_entity(&body, params.validate);
+    let result = ops.add_entity_with(&body, params.validate, refs);
     let status = match (result.ok, result.rejection) {
         (true, _) => StatusCode::OK,
         (false, Some(AddEntityRejection::Conflict)) => StatusCode::CONFLICT,
@@ -261,21 +286,18 @@ async fn add_entities(
     Json(result).into_response()
 }
 
-async fn add_schema(
+/// Per-entry outcomes are in the body, so a partly rejected batch is still a
+/// 200; only a body that is not an array of schemas is refused outright.
+async fn add_schemas(
     State(state): State<AppState>,
-    Json(body): Json<SchemaRegister>,
+    Json(body): Json<Vec<Value>>,
 ) -> impl IntoResponse {
     let mut ops = match lock_ops(&state.ops) {
         Ok(guard) => guard,
         Err(response) => return response.into_response(),
     };
-    let result = ops.add_schema(body.type_id, &body.type_schema);
-    let status = match (result.ok, result.rejection) {
-        (true, _) => StatusCode::OK,
-        (false, Some(AddEntityRejection::Conflict)) => StatusCode::CONFLICT,
-        (false, None) => StatusCode::UNPROCESSABLE_ENTITY,
-    };
-    (status, Json(result)).into_response()
+    let result = ops.add_schemas(&body);
+    Json(result).into_response()
 }
 
 async fn validate_id(
@@ -337,37 +359,52 @@ async fn id_to_uuid(
 
 async fn validate_instance(
     State(state): State<AppState>,
+    Query(params): Query<GtsRefValidationQuery>,
     Json(body): Json<ValidateInstanceRequest>,
 ) -> impl IntoResponse {
+    let refs = match params.resolve() {
+        Ok(refs) => refs,
+        Err(error) => return unprocessable(&error),
+    };
     let mut ops = match lock_ops(&state.ops) {
         Ok(guard) => guard,
         Err(response) => return response.into_response(),
     };
-    let result = ops.validate_instance(&body.instance_id);
+    let result = ops.validate_instance_with(&body.instance_id, refs);
     Json(result).into_response()
 }
 
 async fn validate_schema(
     State(state): State<AppState>,
+    Query(params): Query<GtsRefValidationQuery>,
     Json(body): Json<ValidateTypeSchemaRequest>,
 ) -> impl IntoResponse {
+    let refs = match params.resolve() {
+        Ok(refs) => refs,
+        Err(error) => return unprocessable(&error),
+    };
     let mut ops = match lock_ops(&state.ops) {
         Ok(guard) => guard,
         Err(response) => return response.into_response(),
     };
-    let result = ops.validate_schema(&body.type_id);
+    let result = ops.validate_schema_with(&body.type_id, refs);
     Json(result).into_response()
 }
 
 async fn validate_entity(
     State(state): State<AppState>,
+    Query(params): Query<GtsRefValidationQuery>,
     Json(body): Json<ValidateEntityRequest>,
 ) -> impl IntoResponse {
+    let refs = match params.resolve() {
+        Ok(refs) => refs,
+        Err(error) => return unprocessable(&error),
+    };
     let mut ops = match lock_ops(&state.ops) {
         Ok(guard) => guard,
         Err(response) => return response.into_response(),
     };
-    let result = ops.validate_entity(&body.entity_id);
+    let result = ops.validate_entity_with(&body.entity_id, refs);
     Json(result).into_response()
 }
 

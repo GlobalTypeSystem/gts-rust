@@ -167,7 +167,6 @@ thiserror = "2.0"
 anyhow = "1.0"
 regex = "1.12"
 # ECMAScript-grammar regex parsing for the `format: regex` assertion.
-regress = "0.12"
 uuid = { version = "1.19", features = ["serde", "v4", "v5"] }
 
 # CLI dependencies
@@ -184,7 +183,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = "0.4"
 
 # JSON Schema validation
-jsonschema = { version = "0.40", default-features = false }
+jsonschema = { version = "0.57", default-features = false }
+jsonschema-regex = "0.57"
 # Exact comparison between differently typed numbers, as used by `jsonschema`.
 num-cmp = "0.1"
 

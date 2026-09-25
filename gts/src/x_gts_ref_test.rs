@@ -139,8 +139,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_schema_relative_ref_resolving_to_wildcard() {
-        // Relative declarations accept the same wildcards as literals.
+    fn test_validate_schema_rejects_pointer_other_than_self_id() {
         let validator = XGtsRefValidator::new();
         let schema = json!({
             "type": "object",
@@ -157,10 +156,8 @@ mod tests {
         });
 
         let errors = validator.validate_schema(&schema, "", None);
-        assert!(
-            errors.is_empty(),
-            "relative ref resolving to a wildcard must be accepted: {errors:?}"
-        );
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].reason.contains("/$id"), "{:?}", errors[0]);
     }
 
     #[test]
@@ -304,18 +301,16 @@ mod tests {
 
     #[test]
     fn a_literal_declaration_is_judged_by_the_pattern_parser() {
-        let no_root = json!({});
-
         for ok in ["gts.x.core.events.topic.v1~", "gts.*", "gts.x.core.*"] {
             assert!(
-                resolve_declaration(&json!(ok), &no_root).is_ok(),
+                resolve_declaration(&json!(ok), None).is_ok(),
                 "expected '{ok}' to validate"
             );
         }
 
         // Reject malformed wildcard placement.
         for bad in ["gts.x.*.events.*", "gts.*.*.*.*"] {
-            let reason = resolve_declaration(&json!(bad), &no_root)
+            let reason = resolve_declaration(&json!(bad), None)
                 .expect_err("expected '{bad}' to be rejected");
             assert!(!reason.is_empty());
         }
@@ -336,28 +331,28 @@ mod tests {
     #[test]
     fn a_declaration_is_resolved_the_same_way_everywhere() {
         // Compilation and schema validation share declaration rules.
-        let with_id = json!({"$id": "gts://gts.x.test._.entity.v1~"});
-        let no_root = json!({});
+        let selected = Some("gts.x.test._.entity.v1~");
 
-        assert!(resolve_declaration(&json!("gts.x.y.z.w.v1~"), &no_root).is_ok());
-        assert!(resolve_declaration(&json!("/$id"), &with_id).is_ok());
+        assert!(resolve_declaration(&json!("gts.x.y.z.w.v1~"), None).is_ok());
+        assert!(resolve_declaration(&json!("/$id"), selected).is_ok());
 
-        for (declared, root, expected) in [
-            ("gts.INVALID", &no_root, "Invalid GTS identifier"),
-            ("/nonexistent", &no_root, "Cannot resolve reference path"),
-            ("invalid-format", &no_root, "must start with 'gts.' or '/'"),
+        for (declared, selected, expected) in [
+            ("gts.INVALID", None, "Invalid GTS identifier"),
+            ("/$id", None, "Cannot resolve reference path"),
+            ("/properties/anchor", selected, "self-reference '/$id'"),
+            ("./$id", selected, "self-reference '/$id'"),
+            ("invalid-format", None, "must start with 'gts.'"),
         ] {
-            let reason = resolve_declaration(&json!(declared), root)
+            let reason = resolve_declaration(&json!(declared), selected)
                 .expect_err("declaration must be rejected");
             assert!(reason.contains(expected), "{declared}: {reason}");
         }
 
-        let lands_on_junk = json!({"notAnId": "not-a-valid-gts-id"});
-        let reason = resolve_declaration(&json!("/notAnId"), &lands_on_junk)
-            .expect_err("a pointer onto a non-identifier must be rejected");
+        let reason = resolve_declaration(&json!("/$id"), Some("not-a-valid-gts-id"))
+            .expect_err("a self-reference onto a non-identifier must be rejected");
         assert!(reason.contains("not a valid GTS identifier"), "{reason}");
 
-        let reason = resolve_declaration(&json!(123), &no_root)
+        let reason = resolve_declaration(&json!(123), None)
             .expect_err("a non-string declaration must be rejected");
         assert!(reason.contains("must be a string"), "{reason}");
     }
@@ -375,13 +370,13 @@ mod tests {
                 .is_empty()
         );
 
-        // Unusable pointer targets make the schema invalid.
+        // Unusable operands make the schema invalid.
         for broken in [
             json!({
                 "someField": "not-a-gts-pattern",
                 "properties": {"r": {"type": "string", "x-gts-ref": "/someField"}}
             }),
-            json!({"properties": {"r": {"type": "string", "x-gts-ref": "/missing"}}}),
+            json!({"properties": {"r": {"type": "string", "x-gts-ref": "/$id"}}}),
         ] {
             let errors = validator.validate_instance(&json!({"r": "some-value"}), &broken, "");
             assert_eq!(errors.len(), 1, "{errors:?}");
@@ -392,7 +387,7 @@ mod tests {
             );
         }
 
-        let missing = json!({"properties": {"r": {"type": "string", "x-gts-ref": "/missing"}}});
+        let missing = json!({"properties": {"r": {"type": "string", "x-gts-ref": "/$id"}}});
         let reported = validator.validate_schema(&missing, "", None);
         assert_eq!(reported.len(), 1, "{reported:?}");
         assert_eq!(reported[0].field_path, "properties/r/x-gts-ref");
@@ -404,89 +399,15 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_pointer() {
+    fn test_self_id() {
         let schema = json!({"$id": "gts://gts.x.test._.entity.v1~"});
         assert_eq!(
-            XGtsRefValidator::resolve_pointer(&schema, "/$id"),
+            XGtsRefValidator::self_id(&schema),
             Some("gts.x.test._.entity.v1~".to_owned())
         );
 
-        let schema = json!({
-            "properties": {
-                "name": {
-                    "x-gts-ref": "gts.x.test.*"
-                }
-            }
-        });
-        assert_eq!(
-            XGtsRefValidator::resolve_pointer(&schema, "/properties/name/x-gts-ref"),
-            Some("gts.x.test.*".to_owned())
-        );
-
-        let schema = json!({"properties": {}});
-        assert_eq!(
-            XGtsRefValidator::resolve_pointer(&schema, "/nonexistent"),
-            None
-        );
-
-        let schema = json!({"$id": "test"});
-        assert_eq!(XGtsRefValidator::resolve_pointer(&schema, "/"), None);
-
-        let schema = json!({"value": "string"});
-        assert_eq!(
-            XGtsRefValidator::resolve_pointer(&schema, "/value/nested"),
-            None
-        );
-
-        let schema = json!({
-            "$id": "gts://gts.x.test._.entity.v1~",
-            "properties": {
-                "type": {
-                    "x-gts-ref": "/$id"
-                }
-            }
-        });
-        assert_eq!(
-            XGtsRefValidator::resolve_pointer(&schema, "/properties/type"),
-            Some("gts.x.test._.entity.v1~".to_owned())
-        );
-
-        let schema = json!({
-            "$id": "gts://gts.x.test._.entity.v1~",
-            "type": "gts://gts.x.another._.type.v1~"
-        });
-        assert_eq!(
-            XGtsRefValidator::resolve_pointer(&schema, "/$id"),
-            Some("gts.x.test._.entity.v1~".to_owned())
-        );
-        assert_eq!(
-            XGtsRefValidator::resolve_pointer(&schema, "/type"),
-            Some("gts.x.another._.type.v1~".to_owned())
-        );
-    }
-
-    #[test]
-    fn test_resolve_pointer_self_cycle_terminates() {
-        let schema = json!({
-            "properties": {
-                "a": { "x-gts-ref": "/properties/a" }
-            }
-        });
-        assert_eq!(
-            XGtsRefValidator::resolve_pointer(&schema, "/properties/a"),
-            None
-        );
-
-        let schema = json!({
-            "properties": {
-                "a": { "x-gts-ref": "/properties/b" },
-                "b": { "x-gts-ref": "/properties/a" }
-            }
-        });
-        assert_eq!(
-            XGtsRefValidator::resolve_pointer(&schema, "/properties/a"),
-            None
-        );
+        assert_eq!(XGtsRefValidator::self_id(&json!({"properties": {}})), None);
+        assert_eq!(XGtsRefValidator::self_id(&json!({"$id": {"a": 1}})), None);
     }
 
     #[test]
@@ -1736,130 +1657,35 @@ mod applicator_tests {
     // Relative references (RFC 6901)
 
     #[test]
-    fn a_relative_reference_resolves_escaped_pointer_tokens() {
-        // RFC 6901 escapes `/` as `~1` and `~` as `~0`.
-        let schema = json!({
-            "$defs": {
-                "a/b": {"const": "gts.x.a.b.slash.v1~"},
-                "gts.x.a.b.tilde.v1~": {"const": "gts.x.a.b.tilde.v1~"}
-            },
-            "type": "object",
-            "properties": {
-                "slash": {"type": "string", "x-gts-ref": "/$defs/a~1b/const"},
-                "tilde": {"type": "string", "x-gts-ref": "/$defs/gts.x.a.b.tilde.v1~0/const"}
-            }
-        });
-
-        assert!(
-            is_valid(
-                &json!({
-                    "slash": "gts.x.a.b.slash.v1~x.c._.i.v1",
-                    "tilde": "gts.x.a.b.tilde.v1~x.c._.i.v1"
-                }),
-                &schema
-            ),
-            "both escaped pointers must resolve to their patterns"
-        );
-
-        let mut paths = violation_paths(
-            &json!({
-                "slash": "gts.x.a.b.tilde.v1~x.c._.i.v1",
-                "tilde": "gts.x.a.b.slash.v1~x.c._.i.v1"
-            }),
-            &schema,
-        );
-        paths.sort();
-        assert_eq!(paths, ["/slash", "/tilde"]);
-    }
-
-    #[test]
-    fn an_unescaped_pointer_token_does_not_resolve() {
-        let schema = json!({
-            "$defs": {"a/b": {"const": "gts.x.a.b.slash.v1~"}},
-            "type": "object",
-            "properties": {"r": {"type": "string", "x-gts-ref": "/$defs/a/b/const"}}
-        });
-
-        let errors = XGtsRefValidator::new().validate_instance(
-            &json!({"r": "gts.x.a.b.slash.v1~x.c._.i.v1"}),
-            &schema,
-            "",
-        );
-        assert_eq!(errors.len(), 1, "{errors:?}");
-        assert!(
-            errors[0].reason.contains("Cannot resolve reference path"),
-            "{:?}",
-            errors[0]
-        );
-    }
-
-    #[test]
-    fn a_relative_reference_can_point_through_an_array() {
-        let schema = json!({
-            "type": "object",
-            "examples": ["gts.x.a.b.target.v1~"],
-            "properties": {"r": {"type": "string", "x-gts-ref": "/examples/0"}}
-        });
-
-        assert!(is_valid(&json!({"r": target_id()}), &schema));
-        assert_eq!(violation_paths(&json!({"r": other_id()}), &schema), ["/r"]);
-    }
-
-    #[test]
-    fn a_relative_reference_follows_a_pointer_chain_to_the_document_id() {
-        // Follow a pointer chain and strip `gts://` from the document ID.
-        let schema = json!({
-            "$id": "gts://gts.x.testref._.pointer.v1~",
-            "$schema": "http://json-schema.org/draft-07/schema#",
-            "type": "object",
-            "properties": {
-                "id": {"type": "string", "x-gts-ref": "/$id"},
-                "type": {"type": "string", "x-gts-ref": "/properties/id"}
-            }
-        });
-
-        assert!(
-            is_valid(
-                &json!({
-                    "id": "gts.x.testref._.pointer.v1~x.vendor._.ptr.v1",
-                    "type": "gts.x.testref._.pointer.v1~"
-                }),
-                &schema
-            ),
-            "both pointers resolve to the document id"
-        );
-
-        let mut paths = violation_paths(
-            &json!({
-                "id": "gts://gts.x.testref._.pointer.v1~",
-                "type": "gts.x.testref._.wrong.v1~"
-            }),
-            &schema,
-        );
-        paths.sort();
-        assert_eq!(
-            paths,
-            ["/id", "/type"],
-            "the `gts://` form is not an identifier, and a foreign id misses the pattern"
-        );
-    }
-
-    #[test]
-    fn a_bare_slash_pointer_names_the_empty_key_not_the_root() {
-        // In RFC 6901, `/` names the empty key rather than the root.
-        let schema = json!({
+    fn only_the_self_id_pointer_is_a_usable_operand() {
+        // §9.6 allows `/$id` and nothing else; RFC 6901 pointers are gone.
+        let self_ref = json!({
             "$id": "gts://gts.x.a.b.target.v1~",
             "type": "object",
-            "properties": {"r": {"type": "string", "x-gts-ref": "/"}}
+            "properties": {"r": {"type": "string", "x-gts-ref": "/$id"}}
         });
-
-        let errors =
-            XGtsRefValidator::new().validate_instance(&json!({"r": target_id()}), &schema, "");
-        assert_eq!(errors.len(), 1, "{errors:?}");
-        assert!(
-            errors[0].reason.contains("Cannot resolve reference path"),
-            "{:?}",
-            errors[0]
+        assert!(is_valid(&json!({"r": target_id()}), &self_ref));
+        assert_eq!(
+            violation_paths(&json!({"r": other_id()}), &self_ref),
+            ["/r"]
         );
+
+        for pointer in [
+            "/",
+            "/examples/0",
+            "/$defs/a~1b/const",
+            "/properties/r",
+            "./$id",
+        ] {
+            let schema = json!({
+                "$id": "gts://gts.x.a.b.target.v1~",
+                "examples": ["gts.x.a.b.target.v1~"],
+                "$defs": {"a/b": {"const": "gts.x.a.b.target.v1~"}},
+                "type": "object",
+                "properties": {"r": {"type": "string", "x-gts-ref": pointer}}
+            });
+            let errors = XGtsRefValidator::new().validate_schema(&schema, "", None);
+            assert_eq!(errors.len(), 1, "{pointer}: {errors:?}");
+        }
     }
 }

@@ -179,46 +179,33 @@ async fn test_uuid_endpoint() {
 }
 
 #[tokio::test]
-async fn test_add_schema_endpoint() {
-    let ops = create_test_ops();
-    let app = create_test_router(ops, 0);
+async fn test_add_schemas_endpoint() {
+    let app = create_test_router(create_test_ops(), 0);
+    let type_id = "gts.x.test6.schemaendpoint.type.v1~";
 
-    // A registrable id: `test:schema:v1` is not a GTS identifier, so this
-    // route could only ever answer it with a refusal.
-    let schema = serde_json::json!({
-        "type_id": "gts.x.test6.schemaendpoint.type.v1~",
-        "type_schema": {
-            "$id": "gts://gts.x.test6.schemaendpoint.type.v1~",
+    let (status, body) = post_json(
+        &app,
+        "/type-schemas",
+        &serde_json::json!([{
+            "$id": format!("gts://{type_id}"),
+            "$schema": "http://json-schema.org/draft-07/schema#",
             "type": "object",
-            "properties": {
-                "name": { "type": "string" }
-            }
-        }
-    });
+            "properties": {"name": {"type": "string"}}
+        }]),
+    )
+    .await;
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/type-schemas")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&schema).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(
         body["ok"],
         serde_json::json!(true),
-        "a 200 here must mean the schema actually registered"
+        "a 200 with ok=true must mean the schema actually registered: {body}"
     );
+    assert_eq!(body["results"][0]["ok"], serde_json::json!(true));
+    assert_eq!(body["results"][0]["type_id"], serde_json::json!(type_id));
+
+    let (status, _) = get_json(&app, &format!("/entities/{type_id}")).await;
+    assert_eq!(status, StatusCode::OK);
 }
 
 #[tokio::test]
@@ -626,17 +613,16 @@ async fn test_add_entity_type_schema_resubmission() {
 }
 
 #[tokio::test]
-async fn test_add_schema_resubmission() {
+async fn test_add_schemas_resubmission() {
     let app = create_test_router(create_test_ops(), 0);
     let type_id = "gts.x.test6.schemapost.type.v1~";
     let request = |value_type: &str| {
-        serde_json::json!({
-            "type_id": type_id,
-            "type_schema": {
-                "type": "object",
-                "properties": {"value": {"type": value_type}}
-            }
-        })
+        serde_json::json!([{
+            "$id": format!("gts://{type_id}"),
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": {"value": {"type": value_type}}
+        }])
     };
 
     let (status, body) = post_json(&app, "/type-schemas", &request("string")).await;
@@ -645,14 +631,30 @@ async fn test_add_schema_resubmission() {
 
     let (status, body) = post_json(&app, "/type-schemas", &request("string")).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["ok"], serde_json::json!(true));
-    assert_eq!(body["id"], serde_json::json!(type_id));
+    assert_eq!(
+        body["ok"],
+        serde_json::json!(true),
+        "identical content is accepted"
+    );
 
     let (status, body) = post_json(&app, "/type-schemas", &request("integer")).await;
-    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "entry outcomes are reported in the body"
+    );
     assert_eq!(body["ok"], serde_json::json!(false));
-    assert!(body.get("rejection").is_none());
-    assert!(body.get("id").is_none());
+    let refused = &body["results"][0];
+    assert_eq!(refused["ok"], serde_json::json!(false));
+    assert_eq!(refused["type_id"], serde_json::json!(type_id));
+    assert!(
+        refused["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("already registered with different content"),
+        "{refused}"
+    );
+    assert!(refused.get("rejection").is_none());
 
     let (status, body) = get_json(&app, &format!("/entities/{type_id}")).await;
     assert_eq!(status, StatusCode::OK);
@@ -664,44 +666,75 @@ async fn test_add_schema_resubmission() {
 }
 
 #[tokio::test]
-async fn test_add_schema_reports_a_failed_registration_as_unprocessable() {
+async fn test_add_schemas_requires_an_array_of_canonical_schemas() {
     let app = create_test_router(create_test_ops(), 0);
+    let schema = serde_json::json!({
+        "$id": "gts://gts.x.test6.schemabody.type.v1~",
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object"
+    });
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/type-schemas")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&schema).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "a single object is not a batch"
+    );
 
     let (status, body) = post_json(
         &app,
         "/type-schemas",
-        &serde_json::json!({
-            "type_id": "not-a-gts-id",
-            "type_schema": {"type": "object"},
-        }),
+        &serde_json::json!([
+            schema,
+            {"$schema": "http://json-schema.org/draft-07/schema#", "type": "object"},
+        ]),
     )
     .await;
-
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(
-        status,
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "a client reading the status must not see a failed registration as success"
+        body["ok"],
+        serde_json::json!(false),
+        "a batch with a rejected entry is not ok"
     );
-    assert_eq!(body["ok"], serde_json::json!(false));
+    assert_eq!(body["results"][0]["ok"], serde_json::json!(true));
+    assert_eq!(body["results"][1]["ok"], serde_json::json!(false));
+    assert!(body["results"][1].get("type_id").is_none());
+    assert!(
+        body["results"][1]["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("'$id'"),
+        "{body}"
+    );
 }
 
 #[tokio::test]
-async fn test_add_schema_refuses_what_add_entity_refuses() {
+async fn test_add_schemas_refuses_what_add_entity_refuses() {
     let app = create_test_router(create_test_ops(), 0);
-    let misplaced = serde_json::json!({
-        "type": "object",
-        "properties": {"a": {"type": "string", "x-gts-traits": {"k": "v"}}},
-    });
+    let misplaced = |type_id: &str| {
+        serde_json::json!({
+            "$id": format!("gts://{type_id}"),
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": {"a": {"type": "string", "x-gts-traits": {"k": "v"}}},
+        })
+    };
 
     let (entity_status, entity_body) = post_json(
         &app,
         "/entities",
-        &serde_json::json!({
-            "$id": "gts://gts.x.test6.parity.viaentity.v1~",
-            "$schema": "http://json-schema.org/draft-07/schema#",
-            "type": "object",
-            "properties": {"a": {"type": "string", "x-gts-traits": {"k": "v"}}},
-        }),
+        &misplaced("gts.x.test6.parity.viaentity.v1~"),
     )
     .await;
     assert_eq!(entity_status, StatusCode::UNPROCESSABLE_ENTITY);
@@ -710,14 +743,16 @@ async fn test_add_schema_refuses_what_add_entity_refuses() {
     let (schema_status, schema_body) = post_json(
         &app,
         "/type-schemas",
-        &serde_json::json!({"type_id": type_id, "type_schema": misplaced}),
+        &serde_json::json!([misplaced(type_id)]),
     )
     .await;
+    assert_eq!(schema_status, StatusCode::OK);
     assert_eq!(
-        schema_status, entity_status,
+        schema_body["results"][0]["ok"],
+        serde_json::json!(false),
         "both ingest routes must give the same verdict on the same content"
     );
-    assert_eq!(schema_body["error"], entity_body["error"]);
+    assert_eq!(schema_body["results"][0]["error"], entity_body["error"]);
 
     let (status, body) = get_json(&app, &format!("/entities/{type_id}")).await;
     assert_eq!(status, StatusCode::OK);
@@ -768,4 +803,76 @@ async fn test_add_entity_accepts_corrected_body_after_failed_validation() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["ok"], serde_json::json!(true));
     assert_eq!(body["id"], serde_json::json!(instance_id));
+}
+
+#[tokio::test]
+async fn test_unknown_gts_ref_validation_mode_is_rejected() {
+    let app = create_test_router(create_test_ops(), 0);
+    let type_id = "gts.x.modes.srv.target.v1~";
+
+    // Each body is the one its endpoint accepts, so a 422 can only come from
+    // the mode and not from deserialization.
+    for (uri, body) in [
+        (
+            "/validate-type-schema?gts-ref-validation=unknown",
+            serde_json::json!({"type_id": type_id}),
+        ),
+        (
+            "/validate-instance?gts-ref-validation=unknown",
+            serde_json::json!({"instance_id": format!("{type_id}x.v._.a.v1")}),
+        ),
+        (
+            "/validate-entity?gts-ref-validation=unknown",
+            serde_json::json!({"entity_id": type_id}),
+        ),
+        (
+            "/entities?validate=true&gts-ref-validation=unknown",
+            serde_json::json!({
+                "$id": format!("gts://{type_id}"),
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object"
+            }),
+        ),
+    ] {
+        let (status, body) = post_json(&app, uri, &body).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{uri}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("gts-ref-validation"),
+            "{uri}: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_gts_ref_validation_mode_gates_registration() {
+    let app = create_test_router(create_test_ops(), 0);
+    let holder = |name: &str| {
+        serde_json::json!({
+            "$id": format!("gts://gts.x.modes.srv.{name}.v1~"),
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string", "x-gts-ref": "gts.x.modes.srv.missing.v1~"}
+            }
+        })
+    };
+
+    let (status, _) = post_json(
+        &app,
+        "/entities?validate=true&gts-ref-validation=none",
+        &holder("lenient"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _) = post_json(
+        &app,
+        "/entities?validate=true&gts-ref-validation=any-present",
+        &holder("strict"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }

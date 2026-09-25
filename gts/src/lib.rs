@@ -7,6 +7,7 @@ pub mod path_resolver;
 pub mod schema;
 pub mod schema_cast;
 pub mod schema_derivation;
+mod schema_dialect;
 pub mod schema_evolution;
 pub mod schema_modifiers;
 pub mod schema_narrow;
@@ -20,7 +21,7 @@ pub mod testing;
 pub mod x_gts_ref;
 
 /// GTS specification revision implemented by compatibility and validation logic.
-pub const GTS_SPECIFICATION_VERSION: &str = "0.13";
+pub const GTS_SPECIFICATION_VERSION: &str = "0.14";
 
 /// Version of this Rust implementation.
 pub const GTS_IMPLEMENTATION_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -54,4 +55,4 @@ pub use schema_traits::{GtsTraitsSchema, inline_traits_schema_of};
 pub use store::{
     GtsReader, GtsStore, GtsStoreQueryResult, ResolvedType, SchemaComparison, StoreError,
 };
-pub use x_gts_ref::{XGtsRefValidationError, XGtsRefValidator};
+pub use x_gts_ref::{GtsRefValidation, XGtsRefValidationError, XGtsRefValidator};

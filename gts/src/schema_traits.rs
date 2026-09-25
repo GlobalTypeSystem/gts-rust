@@ -73,9 +73,18 @@ pub(crate) struct EffectiveTraits {
     pub(crate) resolved_trait_schemas: Vec<Value>,
     /// RFC 7396-merged `x-gts-traits` values across the chain (pre-defaults).
     pub(crate) merged_traits: Value,
+    /// The type these traits are validated for: `/$id` in the trait schema
+    /// names it (spec v0.14 §9.6). The composed schema has no `$id` of its own.
+    pub(crate) selected_type: Option<String>,
 }
 
 impl EffectiveTraits {
+    /// These traits, validated on behalf of the leaf `type_id`.
+    pub(crate) fn for_type(mut self, type_id: &str) -> Self {
+        self.selected_type = Some(type_id.to_owned());
+        self
+    }
+
     /// `true` when the chain contributed at least one `x-gts-traits-schema`.
     fn has_schema(&self) -> bool {
         !self.resolved_trait_schemas.is_empty()
@@ -126,7 +135,13 @@ impl EffectiveTraits {
             return Ok(());
         }
 
-        validate_trait_values(&self.schema, &self.values, check_unresolved, entity_exists)
+        validate_trait_values(
+            &self.schema,
+            &self.values,
+            check_unresolved,
+            self.selected_type.as_deref(),
+            entity_exists,
+        )
     }
 }
 
@@ -235,7 +250,9 @@ pub fn validate_traits_chain(chain_schemas: &[(String, Value)]) -> Result<(), Ve
     let mut trait_schemas = Vec::new();
     let mut merged = serde_json::Map::new();
     for (_id, content) in chain_schemas {
-        collect_trait_schema_from_value(content, &mut trait_schemas);
+        let mut level = Vec::new();
+        collect_trait_schema_from_value(content, &mut level);
+        trait_schemas.extend(level.into_iter().cloned());
         collect_traits_from_value(content, &mut merged);
     }
     // Dialect comes from the leaf document's `$schema`, mirroring the store path.
@@ -365,6 +382,7 @@ pub(crate) fn build_effective_traits(
         values,
         resolved_trait_schemas: resolved_trait_schemas.to_vec(),
         merged_traits: merged_traits.clone(),
+        selected_type: None,
     }
 }
 
@@ -373,12 +391,14 @@ fn validate_trait_values(
     effective_traits_schema: &Value,
     effective_traits: &Value,
     check_unresolved: bool,
+    selected_type: Option<&str>,
     entity_exists: Option<crate::x_gts_ref::ReferenceExists>,
 ) -> Result<(), Vec<String>> {
     let mut errors = match validate_traits_against_schema(
         effective_traits_schema,
         effective_traits,
         check_unresolved,
+        selected_type,
         entity_exists,
     ) {
         Ok(()) => Vec::new(),
@@ -446,14 +466,29 @@ fn effective_schema_is_false_recursive(schema: &Value, depth: usize) -> bool {
 ///
 /// Only pointers that actually resolve against `root` are inlined; anything
 /// else (notably `gts://` refs and the synthetic `#/$defs/GtsInstanceId` family
-/// that schema resolution special-cases) is left untouched. Recursion is
-/// bounded by [`MAX_RECURSION_DEPTH`].
+/// that schema resolution special-cases) is left untouched. An embedded
+/// resource with an `$id` of its own is copied as is: its references resolve
+/// from it, which `$ref` resolution does once the fragment is a document. A
+/// pointer into one resolves the target's own references from that resource.
+/// Recursion is bounded by [`MAX_RECURSION_DEPTH`].
+///
+/// `fragment` must lie in `root`: embedded resources are known by identity.
 pub(crate) fn inline_local_pointers(fragment: &Value, root: &Value) -> Value {
-    inline_local_pointers_recursive(fragment, root, 0)
+    let embedded = crate::schema_modifiers::embedded_resources(root);
+    let is_resource = |node: &Value| {
+        node.as_object()
+            .is_some_and(|map| embedded.contains(&std::ptr::from_ref(map)))
+    };
+    inline_local_pointers_recursive(fragment, root, &is_resource, 0)
 }
 
-fn inline_local_pointers_recursive(value: &Value, root: &Value, depth: usize) -> Value {
-    if depth >= MAX_RECURSION_DEPTH {
+fn inline_local_pointers_recursive(
+    value: &Value,
+    root: &Value,
+    is_resource: &dyn Fn(&Value) -> bool,
+    depth: usize,
+) -> Value {
+    if depth >= MAX_RECURSION_DEPTH || is_resource(value) {
         return value.clone();
     }
     match value {
@@ -462,9 +497,12 @@ fn inline_local_pointers_recursive(value: &Value, root: &Value, depth: usize) ->
                 && let Some(ptr) = r.strip_prefix("#/")
                 && let Some(target) = root.pointer(&format!("/{ptr}"))
             {
-                // Resolve the target against the same root, then overlay any
-                // sibling keywords (JSON Schema `$ref`-with-siblings).
-                let mut resolved = inline_local_pointers_recursive(target, root, depth + 1);
+                // Resolve the target from the innermost resource holding it,
+                // then overlay any sibling keywords (JSON Schema
+                // `$ref`-with-siblings) resolved from the same root as the ref.
+                let target_root = innermost_resource(root, ptr, is_resource);
+                let mut resolved =
+                    inline_local_pointers_recursive(target, target_root, is_resource, depth + 1);
                 if map.len() > 1
                     && let Value::Object(resolved_map) = &mut resolved
                 {
@@ -472,7 +510,7 @@ fn inline_local_pointers_recursive(value: &Value, root: &Value, depth: usize) ->
                         if k != "$ref" {
                             resolved_map.insert(
                                 k.clone(),
-                                inline_local_pointers_recursive(v, root, depth + 1),
+                                inline_local_pointers_recursive(v, root, is_resource, depth + 1),
                             );
                         }
                     }
@@ -483,29 +521,56 @@ fn inline_local_pointers_recursive(value: &Value, root: &Value, depth: usize) ->
             for (k, v) in map {
                 out.insert(
                     k.clone(),
-                    inline_local_pointers_recursive(v, root, depth + 1),
+                    inline_local_pointers_recursive(v, root, is_resource, depth + 1),
                 );
             }
             Value::Object(out)
         }
         Value::Array(arr) => Value::Array(
             arr.iter()
-                .map(|v| inline_local_pointers_recursive(v, root, depth + 1))
+                .map(|v| inline_local_pointers_recursive(v, root, is_resource, depth + 1))
                 .collect(),
         ),
         _ => value.clone(),
     }
 }
 
+/// The innermost resource on the way from `root` along the JSON Pointer
+/// `/pointer`, excluding its target: `root` when none is crossed.
+fn innermost_resource<'v>(
+    root: &'v Value,
+    pointer: &str,
+    is_resource: &dyn Fn(&Value) -> bool,
+) -> &'v Value {
+    let mut node = root;
+    let mut innermost = root;
+    for token in pointer.split('/') {
+        if is_resource(node) {
+            innermost = node;
+        }
+        let token = token.replace("~1", "/").replace("~0", "~");
+        let next = match node {
+            Value::Object(map) => map.get(&token),
+            Value::Array(items) => token.parse::<usize>().ok().and_then(|i| items.get(i)),
+            _ => None,
+        };
+        let Some(next) = next else {
+            break;
+        };
+        node = next;
+    }
+    innermost
+}
+
 /// Recursively search a schema value for `x-gts-traits-schema` entries.
 ///
 /// Handles both top-level and `allOf`-nested occurrences.
 /// Recursion is bounded by [`MAX_RECURSION_DEPTH`] to prevent stack overflow.
-pub(crate) fn collect_trait_schema_from_value(value: &Value, out: &mut Vec<Value>) {
+pub(crate) fn collect_trait_schema_from_value<'v>(value: &'v Value, out: &mut Vec<&'v Value>) {
     collect_trait_schema_recursive(value, out, 0);
 }
 
-fn collect_trait_schema_recursive(value: &Value, out: &mut Vec<Value>, depth: usize) {
+fn collect_trait_schema_recursive<'v>(value: &'v Value, out: &mut Vec<&'v Value>, depth: usize) {
     if depth >= MAX_RECURSION_DEPTH {
         return;
     }
@@ -515,7 +580,7 @@ fn collect_trait_schema_recursive(value: &Value, out: &mut Vec<Value>, depth: us
     };
 
     if let Some(ts) = obj.get(X_GTS_TRAITS_SCHEMA) {
-        out.push(ts.clone());
+        out.push(ts);
     }
 
     // Also check inside allOf items (e.g. a derived schema that is an allOf overlay)
@@ -855,11 +920,13 @@ fn strip_required_recursive(schema: &mut Value, depth: usize) {
 /// Validate the effective traits object against the effective trait schema.
 ///
 /// Validates standard and GTS constraints with dialect-aware applicability.
-/// `entity_exists` enables store-aware reference checks.
+/// `selected_type` is what `/$id` names; `entity_exists` enables store-aware
+/// reference checks.
 fn validate_traits_against_schema(
     trait_schema: &Value,
     effective_traits: &Value,
     check_unresolved: bool,
+    selected_type: Option<&str>,
     entity_exists: Option<crate::x_gts_ref::ReferenceExists>,
 ) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
@@ -878,7 +945,12 @@ fn validate_traits_against_schema(
         &stripped
     };
 
-    match crate::json_schema::gts_validator_for(validation_schema, entity_exists) {
+    match crate::json_schema::gts_validator_for_type(
+        validation_schema,
+        selected_type,
+        &[],
+        entity_exists,
+    ) {
         Ok(validator) => {
             let diagnosis =
                 crate::json_schema::diagnose(&validator, validation_schema, effective_traits);
@@ -2416,6 +2488,7 @@ mod tests {
             &schema,
             &values,
             false,
+            None,
             Some(std::sync::Arc::new(|_| false)),
         );
         let errors = res.expect_err("a dangling verifiable reference must fail");
@@ -2435,7 +2508,7 @@ mod tests {
         });
         let values = json!({"topicRef": "gts.x.a.b.topic.v1~x.c._.orders.v1"});
 
-        super::validate_trait_values(&schema, &values, false, super::REFS_UNVERIFIABLE)
+        super::validate_trait_values(&schema, &values, false, None, super::REFS_UNVERIFIABLE)
             .expect("an unverifiable reference must be tolerated");
     }
 
@@ -2460,6 +2533,7 @@ mod tests {
                 &schema,
                 &values,
                 false,
+                None,
                 Some(std::sync::Arc::new(|_| false)),
             )
             .unwrap_or_else(|errors| panic!("{label}: {errors:?}"));
@@ -2481,6 +2555,7 @@ mod tests {
             &schema,
             &values,
             false,
+            None,
             Some(std::sync::Arc::new(|_| false)),
         )
         .expect_err("no branch tolerates the dangling reference");
@@ -2497,7 +2572,8 @@ mod tests {
         // A value that does not match the required gts prefix must be reported,
         // even though the standard jsonschema validator ignores x-gts-ref.
         let values = json!({ "topicRef": "not-a-gts-id" });
-        let res = super::validate_trait_values(&schema, &values, false, super::REFS_UNVERIFIABLE);
+        let res =
+            super::validate_trait_values(&schema, &values, false, None, super::REFS_UNVERIFIABLE);
         assert!(
             res.is_err(),
             "x-gts-ref violation should be reported: {res:?}"
