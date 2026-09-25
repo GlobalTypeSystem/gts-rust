@@ -7,6 +7,7 @@ use axum::{
     routing::{get, post},
 };
 use gts::GtsOps;
+use gts::ops::AddEntityRejection;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -74,6 +75,8 @@ impl GtsHttpServer {
             .route("/validate-instance", post(validate_instance))
             .route("/validate-type-schema", post(validate_schema))
             .route("/validate-entity", post(validate_entity))
+            .route("/validate-json", post(validate_json))
+            .route("/validate-json/{gts_type}", post(validate_json_as_type))
             .route("/resolve-relationships", get(schema_graph))
             .route("/compatibility", get(compatibility))
             .route("/cast", post(cast))
@@ -238,11 +241,12 @@ async fn add_entity(
         Err(response) => return response.into_response(),
     };
     let result = ops.add_entity(&body, params.validate);
-    if result.ok {
-        (StatusCode::OK, Json(result)).into_response()
-    } else {
-        (StatusCode::UNPROCESSABLE_ENTITY, Json(result)).into_response()
-    }
+    let status = match (result.ok, result.rejection) {
+        (true, _) => StatusCode::OK,
+        (false, Some(AddEntityRejection::Conflict)) => StatusCode::CONFLICT,
+        (false, None) => StatusCode::UNPROCESSABLE_ENTITY,
+    };
+    (status, Json(result)).into_response()
 }
 
 async fn add_entities(
@@ -266,7 +270,12 @@ async fn add_schema(
         Err(response) => return response.into_response(),
     };
     let result = ops.add_schema(body.type_id, &body.type_schema);
-    Json(result).into_response()
+    let status = match (result.ok, result.rejection) {
+        (true, _) => StatusCode::OK,
+        (false, Some(AddEntityRejection::Conflict)) => StatusCode::CONFLICT,
+        (false, None) => StatusCode::UNPROCESSABLE_ENTITY,
+    };
+    (status, Json(result)).into_response()
 }
 
 async fn validate_id(
@@ -359,6 +368,31 @@ async fn validate_entity(
         Err(response) => return response.into_response(),
     };
     let result = ops.validate_entity(&body.entity_id);
+    Json(result).into_response()
+}
+
+async fn validate_json(
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Map<String, Value>>,
+) -> impl IntoResponse {
+    let mut ops = match lock_ops(&state.ops) {
+        Ok(guard) => guard,
+        Err(response) => return response.into_response(),
+    };
+    let result = ops.validate_json(&Value::Object(body));
+    Json(result).into_response()
+}
+
+async fn validate_json_as_type(
+    State(state): State<AppState>,
+    Path(gts_type): Path<String>,
+    Json(body): Json<serde_json::Map<String, Value>>,
+) -> impl IntoResponse {
+    let mut ops = match lock_ops(&state.ops) {
+        Ok(guard) => guard,
+        Err(response) => return response.into_response(),
+    };
+    let result = ops.validate_json_as_type(&gts_type, &Value::Object(body));
     Json(result).into_response()
 }
 

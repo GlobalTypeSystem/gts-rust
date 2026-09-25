@@ -26,9 +26,9 @@ mod tests {
 
         // Verify they both contain the same content (just different formatting)
         let regular_parsed: serde_json::Value = serde_json::from_str(&regular)
-            .unwrap_or_else(|_| panic!("Failed to parse regular JSON: {}", &regular));
+            .unwrap_or_else(|_| panic!("Failed to parse regular JSON: {regular}"));
         let pretty_parsed: serde_json::Value = serde_json::from_str(&pretty)
-            .unwrap_or_else(|_| panic!("Failed to parse pretty JSON: {}", &pretty));
+            .unwrap_or_else(|_| panic!("Failed to parse pretty JSON: {pretty}"));
 
         assert_eq!(
             regular_parsed, pretty_parsed,

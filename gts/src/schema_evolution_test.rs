@@ -1068,6 +1068,106 @@ fn test_identical_unresolved_ref_needs_no_resolution() {
     assert!(result.full_compatibility.is_compatible());
 }
 
+fn recursive_document(value_type: &str) -> Value {
+    json!({
+        "$ref": "#/$defs/node",
+        "$defs": {
+            "node": {
+                "type": "object",
+                "properties": {
+                    "value": {"type": value_type},
+                    "next": {"$ref": "#/$defs/node"}
+                }
+            }
+        }
+    })
+}
+
+#[test]
+fn test_changed_recursive_ref_target_is_never_compatible() {
+    let old_schema = recursive_document("string");
+    let new_schema = recursive_document("integer");
+
+    let (backward, backward_errors) = check_backward_compatibility(&old_schema, &new_schema);
+    let (forward, forward_errors) = check_forward_compatibility(&old_schema, &new_schema);
+
+    assert!(
+        !backward.is_compatible(),
+        "a changed recursive target must not be certified backward compatible: {backward_errors:?}"
+    );
+    assert!(
+        !forward.is_compatible(),
+        "a changed recursive target must not be certified forward compatible: {forward_errors:?}"
+    );
+    assert!(
+        backward_errors
+            .iter()
+            .any(|error| error.contains("#/$defs/node")),
+        "the reference that could not be compared must be named: {backward_errors:?}"
+    );
+}
+
+#[test]
+fn test_identical_recursive_document_stays_compatible() {
+    let result =
+        check_schema_compatibility(&recursive_document("string"), &recursive_document("string"));
+    assert!(
+        result.full_compatibility.is_compatible(),
+        "an unchanged recursive document is compatible with itself"
+    );
+}
+
+#[test]
+fn test_changed_recursive_document_is_unknown_even_when_the_change_is_additive() {
+    let document = |extra: bool| {
+        let mut properties = json!({"child": {"$ref": "#"}});
+        if extra {
+            properties["note"] = json!({"type": "string"});
+        }
+        json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": properties
+        })
+    };
+
+    let (backward, backward_errors) =
+        check_backward_compatibility(&document(false), &document(true));
+    assert!(
+        backward.is_unknown(),
+        "a surviving self-reference across changed documents is unprovable: {backward_errors:?}"
+    );
+}
+
+#[test]
+fn test_identical_external_ref_stays_compatible_across_changed_documents() {
+    let old_schema = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {"target": {"$ref": "gts://gts.x.core.a.b.v1~"}}
+    });
+    let new_schema = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "target": {"$ref": "gts://gts.x.core.a.b.v1~"},
+            "extra": {"type": "string"}
+        }
+    });
+
+    let (backward, backward_errors) = check_backward_compatibility(&old_schema, &new_schema);
+    assert!(
+        backward.is_compatible(),
+        "an unchanged external reference beside an added optional property: {backward_errors:?}"
+    );
+    assert!(
+        !backward_errors
+            .iter()
+            .any(|error| error.contains("unresolved '$ref'")),
+        "{backward_errors:?}"
+    );
+}
+
 fn property_change(old_property: Value, new_property: Value) -> CompatibilityResult {
     check_schema_compatibility(
         &property_document(old_property),

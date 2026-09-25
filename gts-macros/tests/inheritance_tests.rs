@@ -707,16 +707,16 @@ mod tests {
         println!("{}", serde_json::to_string_pretty(&base_schema).unwrap());
 
         // Verify schema IDs are still accessible
-        assert!(
-            BaseEventV1::<()>::gts_type_id().clone().into_string()
-                == gts_id!("x.core.events.type.v1~")
+        assert_eq!(
+            BaseEventV1::<()>::gts_type_id().clone().into_string(),
+            gts_id!("x.core.events.type.v1~")
         );
         let _audit_payload_id = AuditPayloadV1::<()>::gts_type_id().clone().into_string();
-        assert!(
-            PlaceOrderDataV1::gts_type_id().clone().into_string()
-                == gts_id!(
-                    "x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~"
-                )
+        assert_eq!(
+            PlaceOrderDataV1::gts_type_id().clone().into_string(),
+            gts_id!(
+                "x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~"
+            )
         );
 
         // BaseEventV1 should have direct properties, no allOf

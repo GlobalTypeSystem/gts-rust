@@ -3,6 +3,8 @@ use super::*;
 use crate::entities::{GtsConfig, GtsEntity};
 use serde_json::{Value, json};
 
+const DRAFT7: &str = "http://json-schema.org/draft-07/schema#";
+
 #[test]
 fn test_gts_store_query_result_default() {
     let result = GtsStoreQueryResult {
@@ -517,8 +519,84 @@ fn test_gts_store_register_duplicate() {
     store.register(entity1).expect("test");
     let result = store.register(entity2);
 
-    // Should still succeed (overwrites)
     assert!(result.is_ok());
+}
+
+#[test]
+fn test_gts_store_register_identical_content_keeps_committed_entity() {
+    let mut store = GtsStore::new();
+    let cfg = GtsConfig::default();
+
+    let content = json!({
+        "id": "gts.vendor.package.namespace.type.v1.0",
+        "name": "test"
+    });
+    // `list_sequence` tells the two otherwise identical entities apart.
+    let make = |sequence: usize| {
+        GtsEntity::new(
+            None,
+            Some(sequence),
+            &content,
+            Some(&cfg),
+            None,
+            false,
+            String::new(),
+            None,
+            None,
+        )
+    };
+
+    store.register(make(1)).expect("test");
+    store.register(make(2)).expect("test");
+
+    assert_eq!(store.items().count(), 1);
+    assert_eq!(
+        store
+            .get("gts.vendor.package.namespace.type.v1.0")
+            .expect("test")
+            .list_sequence,
+        Some(1)
+    );
+}
+
+#[test]
+fn test_gts_store_register_rejects_changed_content() {
+    let mut store = GtsStore::new();
+    let cfg = GtsConfig::default();
+
+    let make = |name: &str| {
+        let content = json!({
+            "id": "gts.vendor.package.namespace.type.v1.0",
+            "name": name
+        });
+        GtsEntity::new(
+            None,
+            None,
+            &content,
+            Some(&cfg),
+            None,
+            false,
+            String::new(),
+            None,
+            None,
+        )
+    };
+
+    store.register(make("first")).expect("test");
+    let err = store.register(make("second")).expect_err("test");
+
+    assert!(
+        matches!(&err, StoreError::ImmutableConflict(id)
+            if id == "gts.vendor.package.namespace.type.v1.0"),
+        "unexpected error: {err}"
+    );
+    assert_eq!(
+        store
+            .get("gts.vendor.package.namespace.type.v1.0")
+            .expect("test")
+            .content["name"],
+        json!("first")
+    );
 }
 
 #[test]
@@ -1115,44 +1193,85 @@ fn test_gts_store_error_variants() {
 }
 
 #[test]
-fn test_gts_store_register_schema_overwrite() {
+fn test_gts_store_register_schema_rejects_changed_content() {
     let mut store = GtsStore::new();
 
-    let schema1 = json!({
-        "$id": "gts://gts.vendor.package.namespace.type.v1.0~",
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "type": "object",
-        "properties": {
-            "name": {"type": "string"}
+    let schema = |extra: Option<&str>| {
+        let mut properties = json!({"name": {"type": "string"}});
+        if let Some(extra) = extra {
+            properties[extra] = json!({"type": "string"});
         }
-    });
-
-    let schema2 = json!({
-        "$id": "gts://gts.vendor.package.namespace.type.v1.0~",
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "type": "object",
-        "properties": {
-            "name": {"type": "string"},
-            "email": {"type": "string"}
-        }
-    });
+        json!({
+            "$id": "gts://gts.vendor.package.namespace.type.v1.0~",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": properties
+        })
+    };
 
     store
-        .register_schema("gts.vendor.package.namespace.type.v1.0~", &schema1)
+        .register_schema("gts.vendor.package.namespace.type.v1.0~", &schema(None))
         .expect("test");
     store
-        .register_schema("gts.vendor.package.namespace.type.v1.0~", &schema2)
-        .expect("test");
+        .register_schema("gts.vendor.package.namespace.type.v1.0~", &schema(None))
+        .expect("resubmitting identical content is accepted");
 
-    let result = store.get_schema_content("gts.vendor.package.namespace.type.v1.0~");
-    assert!(result.is_ok());
-    let schema = result.expect("test");
+    let err = store
+        .register_schema(
+            "gts.vendor.package.namespace.type.v1.0~",
+            &schema(Some("email")),
+        )
+        .expect_err("test");
     assert!(
+        matches!(&err, StoreError::ImmutableConflict(id)
+            if id == "gts.vendor.package.namespace.type.v1.0~"),
+        "unexpected error: {err}"
+    );
+
+    let committed = store
+        .get_schema_content("gts.vendor.package.namespace.type.v1.0~")
+        .expect("test");
+    assert_eq!(committed, schema(None));
+}
+
+#[test]
+fn test_gts_store_register_schema_conflicts_with_registered_entity() {
+    let mut store = GtsStore::new();
+    let cfg = GtsConfig::default();
+
+    let schema = json!({
+        "$id": "gts://gts.vendor.package.namespace.type.v1.0~",
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object"
+    });
+    let entity = GtsEntity::new(
+        None,
+        None,
+        &schema,
+        Some(&cfg),
+        None,
+        false,
+        String::new(),
+        None,
+        None,
+    );
+    store.register(entity).expect("test");
+
+    let mut changed = schema.clone();
+    changed["type"] = json!("array");
+    let err = store
+        .register_schema("gts.vendor.package.namespace.type.v1.0~", &changed)
+        .expect_err("test");
+    assert!(
+        matches!(&err, StoreError::ImmutableConflict(id)
+            if id == "gts.vendor.package.namespace.type.v1.0~"),
+        "unexpected error: {err}"
+    );
+    assert_eq!(
+        store
+            .get_schema_content("gts.vendor.package.namespace.type.v1.0~")
+            .expect("test"),
         schema
-            .get("properties")
-            .expect("test")
-            .get("email")
-            .is_some()
     );
 }
 
@@ -2736,9 +2855,6 @@ fn test_validate_schema_entity_not_schema() {
 
 #[test]
 fn test_validate_schema_content_not_object() {
-    // Test error case when schema content is not an object
-    // When content is non-object (array), GtsEntity.has_schema_field() returns false
-    // so is_schema becomes false, triggering the error on line 453-455 instead of 460-462
     let mut store = GtsStore::new();
 
     // Create schema with non-object content (an array)
@@ -2752,8 +2868,7 @@ fn test_validate_schema_content_not_object() {
     assert!(result.is_err());
     match result {
         Err(StoreError::InvalidEntity(msg)) => {
-            // Since the content has no $schema field, is_schema is false
-            assert!(msg.contains("is not a schema"));
+            assert!(msg.contains("content must be a dictionary"), "{msg}");
         }
         _ => panic!("Expected InvalidEntity error"),
     }
@@ -6133,6 +6248,50 @@ fn test_compare_documents_fails_on_unresolvable_reference() {
     assert!(matches!(error, StoreError::SchemaNotFound(_)), "{error:?}");
 }
 
+#[test]
+fn test_compare_documents_does_not_certify_a_changed_recursive_target() {
+    let store = GtsStore::new();
+    let document = |value_type: &str| {
+        json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "$ref": "#/$defs/node",
+            "$defs": {
+                "node": {
+                    "type": "object",
+                    "properties": {
+                        "value": {"type": value_type},
+                        "next": {"$ref": "#/$defs/node"}
+                    }
+                }
+            }
+        })
+    };
+
+    let comparison = store
+        .compare_documents(&document("string"), &document("integer"))
+        .expect("a recursive document resolves");
+
+    assert!(
+        !comparison.backward_compatibility().is_compatible(),
+        "{:?}",
+        comparison.backward_diagnostics
+    );
+    assert!(
+        !comparison.forward_compatibility().is_compatible(),
+        "{:?}",
+        comparison.forward_diagnostics
+    );
+
+    let unchanged = store
+        .compare_documents(&document("string"), &document("string"))
+        .expect("a recursive document resolves");
+    assert!(
+        unchanged.full_compatibility().is_compatible(),
+        "{:?}",
+        unchanged.backward_diagnostics
+    );
+}
+
 /// OP#8 and OP#9 must agree: both resolve `$ref` before comparing, so the same
 /// pair of schemas cannot be compatible through one operation and incompatible
 /// through the other.
@@ -6376,5 +6535,335 @@ fn test_comparison_verdicts_are_derived_from_diagnostics() {
             "candidate_object_levels",
             "forward_diagnostics"
         ]
+    );
+}
+
+#[test]
+fn test_with_transient_entity_removes_the_document_afterwards() {
+    let mut store = GtsStore::new();
+    let entity = GtsEntity::new(
+        None,
+        None,
+        &json!({"$id": "gts://gts.x.tr.pkg.doc.v1~", "$schema": DRAFT7, "type": "object"}),
+        Some(&GtsConfig::default()),
+        None,
+        false,
+        String::new(),
+        None,
+        None,
+    );
+
+    let seen = store
+        .with_transient_entity(entity, |store, id| store.get(id).is_some())
+        .expect("the entity has an effective id");
+
+    assert!(seen, "the document must be visible while the check runs");
+    assert!(
+        store.get("gts.x.tr.pkg.doc.v1~").is_none(),
+        "and gone once it finishes"
+    );
+}
+
+#[test]
+fn test_with_transient_entity_restores_a_displaced_entity_on_panic() {
+    let mut store = GtsStore::new();
+    store
+        .register_schema("gts.x.tr.pkg.doc.v1~", &json!({"type": "string"}))
+        .expect("registers");
+
+    let replacement = GtsEntity::new(
+        None,
+        None,
+        &json!({"$id": "gts://gts.x.tr.pkg.doc.v1~", "$schema": DRAFT7, "type": "integer"}),
+        Some(&GtsConfig::default()),
+        None,
+        false,
+        String::new(),
+        None,
+        None,
+    );
+
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = store.with_transient_entity(replacement, |_store, _id| {
+            panic!("check exploded");
+        });
+    }));
+    assert!(panicked.is_err(), "the panic must keep propagating");
+
+    let restored = store.get("gts.x.tr.pkg.doc.v1~").expect("still registered");
+    assert_eq!(
+        restored.content.get("type"),
+        Some(&json!("string")),
+        "the displaced entity must come back, not the transient replacement"
+    );
+}
+
+fn store_with_trait_chain(trait_schema: &Value, trait_values: &Value) -> GtsStore {
+    let mut store = GtsStore::new();
+    let cfg = GtsConfig::default();
+    for content in [
+        json!({
+            "$id": "gts://gts.x.tv.pkg.target.v1~",
+            "$schema": DRAFT7,
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+        }),
+        json!({
+            "$id": "gts://gts.x.tv.pkg.event.v1~",
+            "$schema": DRAFT7,
+            "type": "object",
+            "x-gts-traits-schema": trait_schema.clone(),
+            "properties": {"id": {"type": "string"}},
+        }),
+        json!({
+            "$id": "gts://gts.x.tv.pkg.event.v1~x.tv._.leaf.v1~",
+            "$schema": DRAFT7,
+            "type": "object",
+            "allOf": [{"$ref": "gts://gts.x.tv.pkg.event.v1~"}],
+            "x-gts-traits": trait_values.clone(),
+        }),
+    ] {
+        let entity = GtsEntity::new(
+            None,
+            None,
+            &content,
+            Some(&cfg),
+            None,
+            false,
+            String::new(),
+            None,
+            None,
+        );
+        store.register(entity).expect("registers");
+    }
+    store
+}
+
+#[test]
+fn test_wildcard_trait_ref_does_not_vouch_for_an_exact_one() {
+    let mut store = store_with_trait_chain(
+        &json!({
+            "type": "object",
+            "properties": {
+                "strict": {"type": "string", "x-gts-ref": "gts.x.tv.pkg.target.v1~"},
+                "loose": {"type": "string", "x-gts-ref": "gts.*"},
+            },
+        }),
+        &json!({
+            "strict": "gts.x.tv.pkg.target.v1~x.tv._.missing.v1",
+            "loose": "gts.x.tv.pkg.target.v1~x.tv._.missing.v1",
+        }),
+    );
+
+    let err = store
+        .validate_schema("gts.x.tv.pkg.event.v1~x.tv._.leaf.v1~")
+        .expect_err("a dangling reference into a registered type must fail");
+    assert!(err.to_string().contains("not registered"), "{err}");
+}
+
+#[test]
+fn test_trait_ref_into_an_unknown_type_is_tolerated() {
+    let mut store = store_with_trait_chain(
+        &json!({
+            "type": "object",
+            "properties": {
+                "topic": {"type": "string", "x-gts-ref": "gts.x.elsewhere.pkg.topic.v1~"},
+            },
+        }),
+        &json!({"topic": "gts.x.elsewhere.pkg.topic.v1~x.tv._.orders.v1"}),
+    );
+
+    store
+        .validate_schema("gts.x.tv.pkg.event.v1~x.tv._.leaf.v1~")
+        .expect("an unverifiable reference must not fail validation");
+}
+
+/// A registry that answers point lookups but cannot be enumerated - the shape
+/// of a network- or database-backed [`GtsReader`]. `GtsFileReader` is the
+/// mirror image (enumerable, no random access), so only a reader like this one
+/// can hold a type the eager `populate_from_reader` pass never cached.
+struct LazyLookupReader {
+    entities: Vec<GtsEntity>,
+}
+
+impl GtsReader for LazyLookupReader {
+    fn iter(&mut self) -> Box<dyn Iterator<Item = GtsEntity> + '_> {
+        Box::new(std::iter::empty())
+    }
+
+    fn read_by_id(&self, entity_id: &str) -> Option<GtsEntity> {
+        self.entities
+            .iter()
+            .find(|entity| entity.effective_id().as_deref() == Some(entity_id))
+            .cloned()
+    }
+
+    fn reset(&mut self) {}
+}
+
+#[test]
+fn test_trait_ref_into_a_reader_supplied_type_is_not_tolerated() {
+    let cfg = GtsConfig::default();
+    let schema_entity = |content: &Value| {
+        GtsEntity::new(
+            None,
+            None,
+            content,
+            Some(&cfg),
+            None,
+            false,
+            String::new(),
+            None,
+            None,
+        )
+    };
+
+    // The owning type reaches the store only through the reader.
+    let mut store = GtsStore::with_reader(Box::new(LazyLookupReader {
+        entities: vec![schema_entity(&json!({
+            "$id": "gts://gts.x.tv.pkg.target.v1~",
+            "$schema": DRAFT7,
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+        }))],
+    }));
+
+    for content in [
+        json!({
+            "$id": "gts://gts.x.tv.pkg.event.v1~",
+            "$schema": DRAFT7,
+            "type": "object",
+            "x-gts-traits-schema": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "x-gts-ref": "gts.x.tv.pkg.target.v1~"},
+                },
+            },
+            "properties": {"id": {"type": "string"}},
+        }),
+        json!({
+            "$id": "gts://gts.x.tv.pkg.event.v1~x.tv._.leaf.v1~",
+            "$schema": DRAFT7,
+            "type": "object",
+            "allOf": [{"$ref": "gts://gts.x.tv.pkg.event.v1~"}],
+            "x-gts-traits": {"topic": "gts.x.tv.pkg.target.v1~x.tv._.missing.v1"},
+        }),
+    ] {
+        store.register(schema_entity(&content)).expect("registers");
+    }
+
+    assert!(
+        !store.by_id.contains_key("gts.x.tv.pkg.target.v1~"),
+        "the owning type must stay uncached, or the check below proves nothing"
+    );
+
+    let err = store
+        .validate_schema("gts.x.tv.pkg.event.v1~x.tv._.leaf.v1~")
+        .expect_err("a dangling reference into a reader-supplied type must fail");
+    assert!(err.to_string().contains("not registered"), "{err}");
+}
+
+#[test]
+fn test_trait_branch_that_does_not_apply_cannot_reject_the_values() {
+    let constrained = json!({
+        "required": ["other"],
+        "properties": {
+            "topic": {"type": "string", "x-gts-ref": "gts.x.tv.pkg.target.v1~"},
+            "other": {"type": "string"},
+        },
+    });
+    let open = json!({"type": "object"});
+    let values = json!({"topic": "gts.x.tv.pkg.target.v1~x.tv._.missing.v1"});
+
+    for (label, branches) in [
+        ("constrained first", json!([constrained, open])),
+        ("open first", json!([open, constrained])),
+    ] {
+        let mut store =
+            store_with_trait_chain(&json!({"type": "object", "anyOf": branches}), &values);
+        store
+            .validate_schema("gts.x.tv.pkg.event.v1~x.tv._.leaf.v1~")
+            .unwrap_or_else(|error| {
+                panic!("{label}: the applicable branch imposes no reference: {error}")
+            });
+    }
+}
+
+#[test]
+fn test_validate_payload_rejects_a_deep_document_it_cannot_afford_to_explain() {
+    let mut store = GtsStore::new();
+    store
+        .register_schema(
+            "gts.vendor.package.namespace.recursive.v1.0~",
+            &json!({
+                "$id": "gts://gts.vendor.package.namespace.recursive.v1.0~",
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "properties": {
+                    "child": {"anyOf": [{"$ref": "#"}, {"$ref": "#"}]},
+                    "ref": {
+                        "type": "string",
+                        "x-gts-ref": "gts.vendor.package.namespace.target.v1.0~"
+                    }
+                }
+            }),
+        )
+        .expect("register type");
+
+    let mut payload = json!({"ref": "gts.other.package.namespace.target.v1.0~x.v._.bad.v1"});
+    for _ in 0..40 {
+        payload = json!({"child": payload});
+    }
+
+    let started = std::time::Instant::now();
+    let err = store
+        .validate_payload("gts.vendor.package.namespace.recursive.v1.0~", &payload)
+        .expect_err("the nested reference violation must be rejected");
+    let elapsed = started.elapsed();
+
+    assert!(
+        err.to_string().contains("re-enter itself"),
+        "the rejection must say why it carries no detail: {err}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "took {elapsed:?}; explaining the rejection is multiplying out"
+    );
+}
+
+#[test]
+fn test_trait_existence_covers_references_in_branches_the_walk_skips() {
+    let first = "gts.x.tv.pkg.target.v1~x.tv._.missing_a.v1";
+    let second = "gts.x.tv.pkg.target.v1~x.tv._.missing_b.v1";
+    for reference in [first, second] {
+        GtsId::try_new(reference)
+            .unwrap_or_else(|error| panic!("{reference} must be a valid GTS id: {error}"));
+    }
+
+    let mut store = store_with_trait_chain(
+        &json!({
+            "type": "object",
+            "anyOf": [
+                {"properties": {"a": {"type": "string", "x-gts-ref": "gts.x.tv.pkg.target.v1~"}}},
+                {"properties": {"b": {"type": "string", "x-gts-ref": "gts.x.tv.pkg.target.v1~"}}},
+            ],
+        }),
+        &json!({"a": first, "b": second}),
+    );
+
+    let err = store
+        .validate_schema("gts.x.tv.pkg.event.v1~x.tv._.leaf.v1~")
+        .expect_err("neither branch tolerates its dangling reference")
+        .to_string();
+
+    for reference in [first, second] {
+        assert!(
+            err.contains(reference),
+            "every unsatisfied reference must be named: {err}"
+        );
+    }
+    assert!(
+        !err.contains("does not match") && !err.contains("not a GTS pattern"),
+        "the fixtures must fail on existence, not on their pattern: {err}"
     );
 }

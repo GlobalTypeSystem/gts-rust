@@ -1,22 +1,13 @@
-use serde_json::Value;
+use jsonschema::Draft;
+use serde_json::{Map, Value};
 
 use crate::schema_traits::{X_GTS_TRAITS, X_GTS_TRAITS_SCHEMA};
 
+/// GTS reference keyword.
+pub(crate) const X_GTS_REF: &str = "x-gts-ref";
+
 pub const X_GTS_FINAL: &str = "x-gts-final";
 pub const X_GTS_ABSTRACT: &str = "x-gts-abstract";
-
-fn contains_key_recursive(value: &Value, key: &str) -> bool {
-    match value {
-        Value::Object(map) => {
-            if map.contains_key(key) {
-                return true;
-            }
-            map.values().any(|v| contains_key_recursive(v, key))
-        }
-        Value::Array(arr) => arr.iter().any(|v| contains_key_recursive(v, key)),
-        _ => false,
-    }
-}
 
 /// Validate `x-gts-final` and `x-gts-abstract` on a schema:
 /// - both must be booleans,
@@ -45,89 +36,231 @@ pub fn validate_schema_modifiers(content: &Value) -> Result<(), String> {
         ));
     }
 
-    if let Value::Object(map) = content {
-        for (k, v) in map {
-            if k == X_GTS_FINAL || k == X_GTS_ABSTRACT {
-                continue;
-            }
-            if contains_key_recursive(v, X_GTS_FINAL) {
-                return Err(format!("{X_GTS_FINAL} must be at the schema top level"));
-            }
-            if contains_key_recursive(v, X_GTS_ABSTRACT) {
-                return Err(format!("{X_GTS_ABSTRACT} must be at the schema top level"));
-            }
+    visit_schema_nodes(content, "", EnterTraitSchema::Yes, &mut |map, path| {
+        if path.is_empty() {
+            return Ok(());
         }
-    }
-
-    Ok(())
+        if map.contains_key(X_GTS_FINAL) {
+            return Err(format!("{X_GTS_FINAL} must be at the schema top level"));
+        }
+        if map.contains_key(X_GTS_ABSTRACT) {
+            return Err(format!("{X_GTS_ABSTRACT} must be at the schema top level"));
+        }
+        Ok(())
+    })
 }
 
 /// Validate that `x-gts-traits` and `x-gts-traits-schema` appear only at the
 /// schema document top level (GTS spec § 9.7.1/§9.11).
 ///
-/// Like the modifier placement rule, these are type-level keywords describing
-/// the GTS Type as a whole; nesting either inside a subschema (`allOf`,
-/// `properties`, `$defs`, combinators, `items`, …) is a misplacement and is
-/// rejected (fail fast) rather than silently ignored.
-///
-/// The rule constrains only the *position* of the keyword, not the *contents*
-/// of the two top-level trait keywords, so neither value is re-scanned — for
-/// distinct reasons:
-///
-/// - `x-gts-traits-schema` is an ordinary JSON Schema subschema whose body may
-///   legitimately carry `x-gts-*` members (e.g. when an existing GTS type is
-///   reused as a trait-schema source via `$ref`); §9.7.1 explicitly exempts its
-///   contents.
-/// - `x-gts-traits` is a plain JSON object of trait *values* matched against
-///   the effective trait-schema. A member that happens to be keyed
-///   `x-gts-traits` / `x-gts-traits-schema` inside it is ordinary data, not a
-///   misplaced keyword — just as instance data may contain any key. There is no
-///   subschema there for a keyword to be "misplaced" in.
+/// Top-level trait values and their schema contents are exempt.
 ///
 /// # Errors
 /// Returns an error describing the first misplaced keyword found.
 pub fn validate_trait_placement(content: &Value) -> Result<(), String> {
-    if let Value::Object(map) = content {
-        for (k, v) in map {
-            // The four document-level keyword slots are allowed at the top
-            // level; their own values are not re-scanned (see doc comment).
-            if k == X_GTS_FINAL
-                || k == X_GTS_ABSTRACT
-                || k == X_GTS_TRAITS
-                || k == X_GTS_TRAITS_SCHEMA
-            {
-                continue;
-            }
-            if contains_key_recursive(v, X_GTS_TRAITS_SCHEMA) {
-                return Err(format!(
-                    "{X_GTS_TRAITS_SCHEMA} must be at the schema top level"
-                ));
-            }
-            if contains_key_recursive(v, X_GTS_TRAITS) {
-                return Err(format!("{X_GTS_TRAITS} must be at the schema top level"));
+    visit_schema_nodes(content, "", EnterTraitSchema::No, &mut |map, path| {
+        if path.is_empty() {
+            return Ok(());
+        }
+        if map.contains_key(X_GTS_TRAITS_SCHEMA) {
+            return Err(format!(
+                "{X_GTS_TRAITS_SCHEMA} must be at the schema top level"
+            ));
+        }
+        if map.contains_key(X_GTS_TRAITS) {
+            return Err(format!("{X_GTS_TRAITS} must be at the schema top level"));
+        }
+        Ok(())
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EnterTraitSchema {
+    Yes,
+    No,
+}
+
+/// Dialect subschemas, optionally including the GTS trait schema.
+fn direct_subresources(
+    node: &Value,
+    draft: Draft,
+    enter_trait_schema: EnterTraitSchema,
+) -> Vec<&Value> {
+    let mut subresources = draft.subresources_of(node).collect::<Vec<_>>();
+
+    if enter_trait_schema == EnterTraitSchema::Yes
+        && let Some(trait_schema) = node.get(X_GTS_TRAITS_SCHEMA)
+    {
+        subresources.push(trait_schema);
+    }
+
+    subresources
+}
+
+fn is_direct_subresource(value: &Value, subresources: &[&Value]) -> bool {
+    // Equality is insufficient: identical JSON may also occur in literal data.
+    subresources
+        .iter()
+        .any(|subresource| std::ptr::eq(*subresource, value))
+}
+
+/// Supported GTS extension keywords.
+const KNOWN_GTS_KEYWORDS: &[&str] = &[
+    X_GTS_FINAL,
+    X_GTS_ABSTRACT,
+    X_GTS_TRAITS,
+    X_GTS_TRAITS_SCHEMA,
+    X_GTS_REF,
+];
+
+type SchemaNodeVisitor<'a> =
+    dyn FnMut(&serde_json::Map<String, Value>, &str) -> Result<(), String> + 'a;
+type SchemaNodePredicate<'a> = dyn FnMut(&Map<String, Value>) -> bool + 'a;
+type SchemaNodeWalker<'a> = dyn FnMut(&Map<String, Value>, &str) + 'a;
+
+/// Visits the document and dialect-defined subschemas, excluding annotation data.
+fn visit_schema_nodes(
+    node: &Value,
+    path: &str,
+    enter_trait_schema: EnterTraitSchema,
+    visit: &mut SchemaNodeVisitor<'_>,
+) -> Result<(), String> {
+    visit_schema_nodes_with_draft(node, path, Draft::default(), enter_trait_schema, visit)
+}
+
+fn visit_schema_nodes_with_draft(
+    node: &Value,
+    path: &str,
+    inherited_draft: Draft,
+    enter_trait_schema: EnterTraitSchema,
+    visit: &mut SchemaNodeVisitor<'_>,
+) -> Result<(), String> {
+    let Value::Object(map) = node else {
+        return Ok(());
+    };
+    let draft = inherited_draft.detect(node);
+
+    visit(map, path)?;
+
+    let subresources = direct_subresources(node, draft, enter_trait_schema);
+    visit_direct_subresources(node, path, &subresources, draft, enter_trait_schema, visit)
+}
+
+/// Visits schema nodes with their path (`""` for the root).
+pub(crate) fn for_each_schema_node(node: &Value, visit: &mut SchemaNodeWalker<'_>) {
+    let result = visit_schema_nodes(node, "", EnterTraitSchema::Yes, &mut |map, path| {
+        visit(map, path);
+        Ok(())
+    });
+    debug_assert!(result.is_ok());
+}
+
+/// Whether `node` contains a local JSON Pointer reference.
+fn is_local_ref(node: &Map<String, Value>) -> bool {
+    node.get("$ref")
+        .and_then(Value::as_str)
+        .is_some_and(|target| target == "#" || target.starts_with("#/"))
+}
+
+/// Whether a schema position contains a local JSON Pointer reference.
+pub(crate) fn contains_local_ref(schema: &Value) -> bool {
+    any_schema_node(schema, &mut is_local_ref)
+}
+
+/// Whether any schema node satisfies `predicate`.
+pub(crate) fn any_schema_node(node: &Value, predicate: &mut SchemaNodePredicate<'_>) -> bool {
+    let mut found = false;
+    let result = visit_schema_nodes(node, "", EnterTraitSchema::Yes, &mut |map, _| {
+        if !found {
+            found = predicate(map);
+        }
+        Ok(())
+    });
+    debug_assert!(result.is_ok());
+    found
+}
+
+fn visit_direct_subresources(
+    value: &Value,
+    path: &str,
+    subresources: &[&Value],
+    draft: Draft,
+    enter_trait_schema: EnterTraitSchema,
+    visit: &mut SchemaNodeVisitor<'_>,
+) -> Result<(), String> {
+    if is_direct_subresource(value, subresources) {
+        return visit_schema_nodes_with_draft(value, path, draft, enter_trait_schema, visit);
+    }
+
+    match value {
+        Value::Object(object) => {
+            for (key, child) in object {
+                visit_direct_subresources(
+                    child,
+                    &extend_path(path, key),
+                    subresources,
+                    draft,
+                    enter_trait_schema,
+                    visit,
+                )?;
             }
         }
+        Value::Array(array) => {
+            for (index, child) in array.iter().enumerate() {
+                visit_direct_subresources(
+                    child,
+                    &format!("{path}[{index}]"),
+                    subresources,
+                    draft,
+                    enter_trait_schema,
+                    visit,
+                )?;
+            }
+        }
+        _ => {}
     }
 
     Ok(())
 }
 
-/// Validate every GTS extension keyword carried by a *schema* document — both
-/// format and placement:
-/// - `x-gts-final` / `x-gts-abstract`: boolean, mutually exclusive, top-level
-///   only ([`validate_schema_modifiers`]);
-/// - `x-gts-traits` / `x-gts-traits-schema`: top-level only
-///   ([`validate_trait_placement`]).
+fn extend_path(path: &str, segment: &str) -> String {
+    if path.is_empty() {
+        segment.to_owned()
+    } else {
+        format!("{path}/{segment}")
+    }
+}
+
+/// Rejects unknown `x-gts-*` keywords in schema positions.
 ///
-/// Pure structural check on raw content (no `$ref` resolution), so it is the
-/// natural companion to ref validation: both gate a schema before any
-/// resolution or cross-schema work. The single entry point used by both the
-/// ingest path and [`crate::store::GtsStore::validate_schema`].
+/// # Errors
+/// Returns an error naming the first unrecognised keyword and its location.
+fn validate_known_gts_keywords(content: &Value) -> Result<(), String> {
+    visit_schema_nodes(content, "", EnterTraitSchema::Yes, &mut |map, path| {
+        for key in map.keys() {
+            if key.starts_with("x-gts-") && !KNOWN_GTS_KEYWORDS.contains(&key.as_str()) {
+                let location = if path.is_empty() {
+                    "the schema top level".to_owned()
+                } else {
+                    format!("'{path}'")
+                };
+                return Err(format!(
+                    "unknown GTS extension keyword '{key}' at {location}; \
+                     the x-gts- namespace is reserved"
+                ));
+            }
+        }
+        Ok(())
+    })
+}
+
+/// Structurally validates GTS extension keywords without resolving references.
 ///
 /// # Errors
 /// Returns the human-readable reason the first malformed or misplaced keyword
 /// fails.
 pub fn validate_gts_keywords(content: &Value) -> Result<(), String> {
+    validate_known_gts_keywords(content)?;
     validate_schema_modifiers(content)?;
     validate_trait_placement(content)?;
     Ok(())
@@ -138,6 +271,164 @@ pub fn validate_gts_keywords(content: &Value) -> Result<(), String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn test_known_keywords_accepted() {
+        assert!(
+            validate_known_gts_keywords(&json!({
+                "x-gts-final": true,
+                "type": "object",
+                "properties": {"ref": {"type": "string", "x-gts-ref": "gts.x.a.b.c.v1~"}},
+            }))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_unknown_keyword_at_top_level_rejected() {
+        let err = validate_known_gts_keywords(&json!({
+            "type": "object",
+            "x-gts-bogus": true,
+        }))
+        .unwrap_err();
+        assert!(err.contains("x-gts-bogus"), "{err}");
+    }
+
+    #[test]
+    fn test_unknown_keyword_inside_property_subschema_rejected() {
+        let err = validate_known_gts_keywords(&json!({
+            "type": "object",
+            "properties": {"widget": {"type": "string", "x-gts-widget": "dropdown"}},
+        }))
+        .unwrap_err();
+        assert!(err.contains("x-gts-widget"), "{err}");
+        assert!(err.contains("properties/widget"), "{err}");
+    }
+
+    #[test]
+    fn test_unknown_keyword_inside_definitions_rejected() {
+        let err = validate_known_gts_keywords(&json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "definitions": {"Sub": {"type": "object", "x-gts-experimental": true}},
+        }))
+        .unwrap_err();
+        assert!(err.contains("x-gts-experimental"), "{err}");
+    }
+
+    #[test]
+    fn test_unknown_keyword_inside_all_of_rejected() {
+        let err = validate_known_gts_keywords(&json!({
+            "allOf": [
+                {"$ref": "gts://gts.x.a.b.c.v1~"},
+                {"type": "object", "x-gts-policy": "strict"},
+            ],
+        }))
+        .unwrap_err();
+        assert!(err.contains("x-gts-policy"), "{err}");
+        assert!(err.contains("allOf[1]"), "{err}");
+    }
+
+    #[test]
+    fn test_near_miss_typos_rejected() {
+        for typo in ["x-gts-trait", "x-gts-refs", "x-gts-traits-schemas"] {
+            let content = json!({"type": "object", typo: {}});
+            assert!(
+                validate_known_gts_keywords(&content).is_err(),
+                "expected {typo} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_dependency_property_names_are_not_keywords() {
+        assert!(
+            validate_known_gts_keywords(&json!({
+                "type": "object",
+                "dependencies": {"x-gts-widget": ["other"]},
+            }))
+            .is_ok()
+        );
+        assert!(
+            validate_known_gts_keywords(&json!({
+                "type": "object",
+                "dependencies": {"x-gts-widget": {"required": ["other"]}},
+            }))
+            .is_ok()
+        );
+        assert!(
+            validate_known_gts_keywords(&json!({
+                "type": "object",
+                "dependentRequired": {"x-gts-widget": ["other"]},
+            }))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_unknown_keyword_inside_a_dependency_subschema_is_rejected() {
+        let err = validate_known_gts_keywords(&json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "dependencies": {"trigger": {"type": "object", "x-gts-bogus": 1}},
+        }))
+        .unwrap_err();
+        assert!(err.contains("x-gts-bogus"), "{err}");
+    }
+
+    #[test]
+    fn test_vocabulary_uris_are_not_keywords() {
+        assert!(
+            validate_known_gts_keywords(&json!({
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$vocabulary": {"x-gts-custom:example": false},
+            }))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_property_named_like_a_keyword_is_not_a_keyword() {
+        assert!(
+            validate_known_gts_keywords(&json!({
+                "type": "object",
+                "properties": {"x-gts-widget": {"type": "string"}},
+            }))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_trait_values_are_data_not_keywords() {
+        assert!(
+            validate_known_gts_keywords(&json!({
+                "x-gts-traits": {"x-gts-anything": "is just data"},
+            }))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_unknown_keyword_inside_trait_schema_rejected() {
+        let err = validate_known_gts_keywords(&json!({
+            "x-gts-traits-schema": {
+                "type": "object",
+                "properties": {"topic": {"type": "string", "x-gts-bogus": 1}},
+            },
+        }))
+        .unwrap_err();
+        assert!(err.contains("x-gts-bogus"), "{err}");
+    }
+
+    #[test]
+    fn test_enum_and_const_values_are_data() {
+        assert!(
+            validate_known_gts_keywords(&json!({
+                "const": {"x-gts-final": "data"},
+                "enum": [{"x-gts-abstract": "also data"}],
+            }))
+            .is_ok()
+        );
+    }
 
     // =========================================================================
     // validate_schema_modifiers unit tests
@@ -390,6 +681,166 @@ mod tests {
                 "x-gts-traits": {"retention": "P30D"}
             }))
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_vendor_annotation_contents_are_not_keywords() {
+        assert_eq!(
+            validate_gts_keywords(&json!({
+                "type": "object",
+                "x-ui": {"x-gts-widget": "text"},
+                "properties": {"a": {"type": "string"}}
+            })),
+            Ok(())
+        );
+
+        assert_eq!(
+            validate_gts_keywords(&json!({
+                "type": "object",
+                "x-vendor": [{"x-gts-bogus": 1}]
+            })),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn test_dialect_specific_keywords_only_contain_subschemas_in_their_dialect() {
+        let draft7 = "http://json-schema.org/draft-07/schema#";
+        let draft2020 = "https://json-schema.org/draft/2020-12/schema";
+
+        assert!(
+            validate_gts_keywords(&json!({
+                "$schema": draft7,
+                "prefixItems": [{"x-gts-bogus": "annotation data"}]
+            }))
+            .is_ok()
+        );
+        assert!(
+            validate_gts_keywords(&json!({
+                "$schema": draft7,
+                "dependencies": {"name": {"x-gts-bogus": true}}
+            }))
+            .is_err()
+        );
+
+        assert!(
+            validate_gts_keywords(&json!({
+                "$schema": draft2020,
+                "dependencies": {"name": {"x-gts-bogus": "annotation data"}}
+            }))
+            .is_ok()
+        );
+        assert!(
+            validate_gts_keywords(&json!({
+                "$schema": draft2020,
+                "prefixItems": [{"x-gts-bogus": true}]
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn test_draft4_and_draft6_subschema_locations_are_supported() {
+        for dialect in [
+            "http://json-schema.org/draft-04/schema#",
+            "http://json-schema.org/draft-06/schema#",
+        ] {
+            assert!(
+                validate_gts_keywords(&json!({
+                    "$schema": dialect,
+                    "definitions": {"name": {"x-gts-bogus": true}}
+                }))
+                .is_err(),
+                "definitions contains subschemas in {dialect}"
+            );
+        }
+
+        assert!(
+            validate_gts_keywords(&json!({
+                "$schema": "http://json-schema.org/draft-06/schema#",
+                "prefixItems": [{"x-gts-bogus": "annotation data"}]
+            }))
+            .is_ok(),
+            "prefixItems is not a subschema container in Draft 6"
+        );
+    }
+
+    #[test]
+    fn test_known_gts_keyword_names_inside_annotations_are_data() {
+        for document in [
+            json!({"type": "object", "x-ui": {"x-gts-final": true}}),
+            json!({"type": "object", "x-ui": {"x-gts-abstract": true}}),
+            json!({"type": "object", "x-ui": {"x-gts-traits": {"retention": "P30D"}}}),
+            json!({"type": "object", "x-ui": {"x-gts-traits-schema": {"type": "object"}}}),
+            json!({"type": "object", "default": {"x-gts-final": true}}),
+            json!({"type": "object", "examples": [{"x-gts-traits": {}}]}),
+        ] {
+            assert_eq!(validate_gts_keywords(&document), Ok(()), "{document}");
+        }
+    }
+
+    #[test]
+    fn test_modifiers_in_real_subschema_positions_are_still_rejected() {
+        for document in [
+            json!({"if": {"x-gts-final": true}}),
+            json!({"then": {"x-gts-abstract": true}}),
+            json!({"else": {"x-gts-final": true}}),
+            json!({"not": {"x-gts-abstract": true}}),
+            json!({"contains": {"x-gts-final": true}}),
+            json!({"propertyNames": {"x-gts-abstract": true}}),
+            json!({"additionalProperties": {"x-gts-final": true}}),
+            json!({"unevaluatedProperties": {"x-gts-abstract": true}}),
+            json!({
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "items": [{"x-gts-final": true}]
+            }),
+            json!({
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "additionalItems": {"x-gts-abstract": true}
+            }),
+            json!({"prefixItems": [{"x-gts-final": true}]}),
+            json!({"dependentSchemas": {"a": {"x-gts-abstract": true}}}),
+            json!({
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "dependencies": {"a": {"x-gts-final": true}}
+            }),
+        ] {
+            assert!(
+                validate_gts_keywords(&document).is_err(),
+                "a modifier in a subschema position must be rejected: {document}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_unknown_keywords_in_real_subschema_positions_are_still_rejected() {
+        for document in [
+            json!({"if": {"x-gts-bogus": 1}}),
+            json!({"not": {"x-gts-bogus": 1}}),
+            json!({"contains": {"x-gts-bogus": 1}}),
+            json!({"propertyNames": {"x-gts-bogus": 1}}),
+            json!({
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "items": [{"x-gts-bogus": 1}]
+            }),
+            json!({"items": {"x-gts-bogus": 1}}),
+            json!({"prefixItems": [{"x-gts-bogus": 1}]}),
+            json!({"additionalProperties": {"x-gts-bogus": 1}}),
+            json!({"x-gts-traits-schema": {"x-gts-bogus": 1}}),
+        ] {
+            assert!(
+                validate_gts_keywords(&document).is_err(),
+                "an unknown keyword in a subschema position must be rejected: {document}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_trait_keyword_nested_in_a_subschema_is_still_rejected() {
+        assert!(validate_trait_placement(&json!({"if": {"x-gts-traits": {}}})).is_err());
+        assert!(
+            validate_trait_placement(&json!({"contains": {"x-gts-traits-schema": {}}})).is_err()
         );
     }
 

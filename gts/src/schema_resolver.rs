@@ -12,6 +12,7 @@
 use serde_json::Value;
 
 use crate::gts::GTS_ID_URI_PREFIX;
+
 use crate::store::StoreError;
 
 /// Read-only schema lookup the resolver needs from its host.
@@ -26,23 +27,7 @@ pub(crate) trait SchemaProvider {
     fn schema_content(&self, type_id: &str) -> Option<&Value>;
 }
 
-/// Longest chain of nested `$ref`s that will be inlined.
-///
-/// A single posted document is bounded by the JSON parser's own nesting limit,
-/// but inlining walks from one registered document into the next, so the
-/// resolved body's depth is the product of the chain length and each link's
-/// depth. Bounding the chain bounds the tree every later walk - compatibility,
-/// flattening, content-model classification - has to descend.
-///
-/// `visited` holds exactly the refs whose resolution is in progress on the
-/// current path, so its size *is* the current chain depth.
-///
-/// This is a hard refusal, not a truncation: a chain longer than the budget is
-/// reported as [`StoreError::UnresolvedRefs`], so a document that resolved
-/// before this bound existed no longer does. The budget is deliberately far
-/// above any authored `$id` derivation chain - the gts-spec conformance suite
-/// resolves well inside it - and no caller can raise it, because the tree it
-/// bounds is what every later walk has to descend.
+/// Maximum `$ref` chain depth before resolution fails.
 const MAX_REF_CHAIN_DEPTH: usize = 32;
 
 /// Inlines `$ref`s in a JSON Schema using a [`SchemaProvider`] for lookups.
@@ -77,6 +62,7 @@ impl<'a> SchemaResolver<'a> {
         let resolved = self.resolve_inner(
             schema,
             schema,
+            schema,
             &mut visited,
             &mut cycle_found,
             &mut unresolved_refs,
@@ -95,6 +81,7 @@ impl<'a> SchemaResolver<'a> {
         &self,
         schema: &Value,
         local_root: &Value,
+        root_doc: &Value,
         visited: &mut std::collections::HashSet<String>,
         cycle_found: &mut bool,
         unresolved_refs: &mut Vec<String>,
@@ -117,7 +104,10 @@ impl<'a> SchemaResolver<'a> {
                                 let local_ref_key =
                                     format!("local:{:p}:{ref_uri}", std::ptr::from_ref(local_root));
                                 if visited.contains(&local_ref_key) {
-                                    *cycle_found = true;
+                                    // Only root recursion keeps the same anchor.
+                                    if !std::ptr::eq(local_root, root_doc) {
+                                        *cycle_found = true;
+                                    }
                                     return Value::Object(map.clone());
                                 }
                                 if visited.len() >= MAX_REF_CHAIN_DEPTH {
@@ -132,6 +122,7 @@ impl<'a> SchemaResolver<'a> {
                                     let resolved = self.resolve_inner(
                                         target,
                                         local_root,
+                                        root_doc,
                                         visited,
                                         cycle_found,
                                         unresolved_refs,
@@ -141,6 +132,7 @@ impl<'a> SchemaResolver<'a> {
                                         map,
                                         resolved,
                                         local_root,
+                                        root_doc,
                                         visited,
                                         cycle_found,
                                         unresolved_refs,
@@ -158,6 +150,7 @@ impl<'a> SchemaResolver<'a> {
                                     self.resolve_inner(
                                         v,
                                         local_root,
+                                        root_doc,
                                         visited,
                                         cycle_found,
                                         unresolved_refs,
@@ -201,6 +194,7 @@ impl<'a> SchemaResolver<'a> {
                                     self.resolve_inner(
                                         v,
                                         local_root,
+                                        root_doc,
                                         visited,
                                         cycle_found,
                                         unresolved_refs,
@@ -235,19 +229,14 @@ impl<'a> SchemaResolver<'a> {
                             let mut resolved = self.resolve_inner(
                                 target_content,
                                 content,
+                                root_doc,
                                 visited,
                                 cycle_found,
                                 unresolved_refs,
                             );
                             visited.remove(canonical_ref);
 
-                            // The target is inlined at a non-root position (e.g. an
-                            // `allOf` branch), so drop keys that are only meaningful at
-                            // a type root: `$id`/`$schema` (URL/dialect resolution) and
-                            // the type-level modifiers (they describe the referenced
-                            // type, not the host; trait composition lives in
-                            // `effective_traits`/`effective_traits_schema`). Everything
-                            // else is preserved verbatim.
+                            // Strip keys meaningful only at the referenced type's root.
                             if let Value::Object(ref mut resolved_map) = resolved {
                                 resolved_map.remove("$id");
                                 resolved_map.remove("$schema");
@@ -261,6 +250,7 @@ impl<'a> SchemaResolver<'a> {
                                 map,
                                 resolved,
                                 local_root,
+                                root_doc,
                                 visited,
                                 cycle_found,
                                 unresolved_refs,
@@ -284,6 +274,7 @@ impl<'a> SchemaResolver<'a> {
                                 self.resolve_inner(
                                     v,
                                     local_root,
+                                    root_doc,
                                     visited,
                                     cycle_found,
                                     unresolved_refs,
@@ -294,20 +285,21 @@ impl<'a> SchemaResolver<'a> {
                     return Value::Object(new_map);
                 }
 
-                // `allOf` (and every other keyword) is handled by the generic
-                // recursion below: each branch is resolved in place, preserving
-                // the composition verbatim. We deliberately do NOT flatten
-                // branches into one object — that dropped non-property keywords
-                // and collapsed same-named properties to last-wins instead of
-                // intersection. Trait composition lives in `effective_traits`/
-                // `effective_traits_schema`, not in this resolved body.
+                // Flattening combinators would change intersection semantics.
 
                 // Recursively process all properties
                 let mut new_map = serde_json::Map::new();
                 for (k, v) in map {
                     new_map.insert(
                         k.clone(),
-                        self.resolve_inner(v, local_root, visited, cycle_found, unresolved_refs),
+                        self.resolve_inner(
+                            v,
+                            local_root,
+                            root_doc,
+                            visited,
+                            cycle_found,
+                            unresolved_refs,
+                        ),
                     );
                 }
                 Value::Object(new_map)
@@ -315,7 +307,14 @@ impl<'a> SchemaResolver<'a> {
             Value::Array(arr) => Value::Array(
                 arr.iter()
                     .map(|v| {
-                        self.resolve_inner(v, local_root, visited, cycle_found, unresolved_refs)
+                        self.resolve_inner(
+                            v,
+                            local_root,
+                            root_doc,
+                            visited,
+                            cycle_found,
+                            unresolved_refs,
+                        )
                     })
                     .collect(),
             ),
@@ -323,11 +322,14 @@ impl<'a> SchemaResolver<'a> {
         }
     }
 
+    /// Combines a resolved `$ref` target with its sibling constraints.
+    #[allow(clippy::too_many_arguments)]
     fn resolved_ref_with_siblings(
         &self,
         map: &serde_json::Map<String, Value>,
         resolved: Value,
         local_root: &Value,
+        root_doc: &Value,
         visited: &mut std::collections::HashSet<String>,
         cycle_found: &mut bool,
         unresolved_refs: &mut Vec<String>,
@@ -340,8 +342,32 @@ impl<'a> SchemaResolver<'a> {
         // Otherwise combine the resolved schema with the siblings via `allOf`.
         // A last-wins merge would let a sibling drop or loosen the target's
         // constraints (e.g. `required`, `additionalProperties`).
+        let resolved_contains_local_ref = crate::schema_modifiers::contains_local_ref(&resolved);
         match resolved {
             Value::Object(resolved_map) => {
+                // Keep recursive local pointers at their authored position.
+                if resolved_contains_local_ref {
+                    let mut preserved = serde_json::Map::new();
+                    for (k, v) in map {
+                        if k == "$ref" {
+                            preserved.insert(k.clone(), v.clone());
+                        } else {
+                            preserved.insert(
+                                k.clone(),
+                                self.resolve_inner(
+                                    v,
+                                    local_root,
+                                    root_doc,
+                                    visited,
+                                    cycle_found,
+                                    unresolved_refs,
+                                ),
+                            );
+                        }
+                    }
+                    return Value::Object(preserved);
+                }
+
                 let mut siblings = serde_json::Map::new();
                 for (k, v) in map {
                     if k != "$ref" {
@@ -350,6 +376,7 @@ impl<'a> SchemaResolver<'a> {
                             self.resolve_inner(
                                 v,
                                 local_root,
+                                root_doc,
                                 visited,
                                 cycle_found,
                                 unresolved_refs,
@@ -371,6 +398,31 @@ impl<'a> SchemaResolver<'a> {
             // with siblings: `$ref` wins per JSON Schema precedence.
             other => other,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::schema_modifiers::contains_local_ref;
+    use serde_json::json;
+
+    #[test]
+    fn local_ref_detection_only_visits_schema_locations() {
+        assert!(!contains_local_ref(&json!({
+            "const": {"$ref": "#/$defs/literal"},
+            "default": {"$ref": "#/$defs/literal"},
+            "examples": [{"$ref": "#/$defs/literal"}],
+            "enum": [{"$ref": "#/$defs/literal"}],
+            "properties": {
+                "$ref": {"const": "a property name, not a reference"}
+            }
+        })));
+
+        assert!(contains_local_ref(&json!({
+            "properties": {
+                "child": {"$ref": "#/$defs/child"}
+            }
+        })));
     }
 }
 

@@ -702,11 +702,7 @@ fn test_resolve_remote_fragment_siblings_resolve_against_caller_root() {
 }
 
 #[test]
-fn test_resolve_root_self_ref_is_circular() {
-    // `$ref: "#"` is a JSON Pointer to the document root. Since the root
-    // contains the ref itself, inlining is inherently recursive and must be
-    // detected as a cycle — NOT reported as an unresolved external ref (which
-    // was the bug before `#` was handled as a local pointer).
+fn test_resolve_root_self_ref_is_recursive_not_circular() {
     let p = MapProvider::new();
 
     let schema = json!({
@@ -719,18 +715,19 @@ fn test_resolve_root_self_ref_is_circular() {
         }
     });
 
-    assert!(matches!(
-        SchemaResolver::new(&p)
-            .resolve(&schema)
-            .expect_err("root self-ref must be detected as circular"),
-        StoreError::CircularRef
-    ));
+    let resolved = SchemaResolver::new(&p)
+        .resolve(&schema)
+        .expect("a recursive local $ref is legal and must resolve");
+
+    assert_eq!(
+        resolved.pointer("/properties/self_ref/properties/self_ref"),
+        Some(&json!({"$ref": "#"})),
+        "the recursive reference must survive rather than expand forever"
+    );
 }
 
 #[test]
-fn test_resolve_root_self_ref_with_siblings_is_circular() {
-    // `$ref: "#"` with siblings is still circular — the root contains the
-    // ref, so inlining recurses. Cycle detection must fire, not UnresolvedRefs.
+fn test_resolve_root_self_ref_with_siblings_is_recursive_not_circular() {
     let p = MapProvider::new();
 
     let schema = json!({
@@ -746,12 +743,15 @@ fn test_resolve_root_self_ref_with_siblings_is_circular() {
         }
     });
 
-    assert!(matches!(
-        SchemaResolver::new(&p)
-            .resolve(&schema)
-            .expect_err("root self-ref with siblings must be circular"),
-        StoreError::CircularRef
-    ));
+    let resolved = SchemaResolver::new(&p)
+        .resolve(&schema)
+        .expect("a recursive local $ref with siblings is legal and must resolve");
+
+    assert_eq!(
+        resolved.pointer("/properties/wrapped"),
+        schema.pointer("/properties/wrapped"),
+        "a recursive node must be left as authored: {resolved}"
+    );
 }
 
 #[test]
@@ -842,4 +842,84 @@ fn test_resolve_refuses_a_ref_chain_past_the_budget() {
         refs.iter().any(|entry| entry.contains("chained $refs")),
         "{refs:?}"
     );
+}
+
+#[test]
+fn test_recursive_pointer_target_stays_addressable_from_the_output_root() {
+    let p = MapProvider::new();
+
+    let schema = json!({
+        "$id": "gts://gts.x.test.defs.v1~",
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "$ref": "#/$defs/node",
+        "$defs": {
+            "node": {
+                "type": "object",
+                "properties": {"next": {"$ref": "#/$defs/node"}}
+            }
+        }
+    });
+
+    let resolved = SchemaResolver::new(&p)
+        .resolve(&schema)
+        .expect("a recursive pointer is legal and must resolve");
+
+    assert!(
+        resolved.pointer("/$defs/node").is_some(),
+        "the pointer target must remain at the document root: {resolved}"
+    );
+
+    crate::json_schema::validator_for(&resolved).expect("the resolved document must compile");
+}
+
+#[test]
+fn test_recursive_pointer_into_properties_stays_addressable() {
+    let p = MapProvider::new();
+
+    let schema = json!({
+        "$id": "gts://gts.x.test.propptr.v1~",
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "$ref": "#/properties/node",
+        "properties": {
+            "node": {
+                "type": "object",
+                "properties": {"next": {"$ref": "#/properties/node"}}
+            }
+        }
+    });
+
+    let resolved = SchemaResolver::new(&p)
+        .resolve(&schema)
+        .expect("a recursive pointer is legal and must resolve");
+
+    assert!(
+        resolved.pointer("/properties/node").is_some(),
+        "the pointer target must remain reachable: {resolved}"
+    );
+    crate::json_schema::validator_for(&resolved).expect("the result must compile");
+}
+
+#[test]
+fn test_referring_definitions_do_not_replace_the_target_s_own() {
+    let p = MapProvider::new().with(
+        "gts.x.test.defsmerge.base.v1~",
+        json!({
+            "$id": "gts://gts.x.test.defsmerge.base.v1~",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {"from_base": {"$ref": "#/$defs/shared"}},
+            "$defs": {"shared": {"type": "integer"}}
+        }),
+    );
+
+    let schema = json!({
+        "$id": "gts://gts.x.test.defsmerge.leaf.v1~",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$ref": "gts://gts.x.test.defsmerge.base.v1~",
+        "$defs": {"own": {"type": "string"}}
+    });
+
+    let resolved = SchemaResolver::new(&p).resolve(&schema).expect("resolves");
+
+    crate::json_schema::validator_for(&resolved).expect("the resolved document must still compile");
 }

@@ -22,6 +22,8 @@ pub enum StoreError {
     InvalidEntity(String),
     #[error("Invalid GTS type id: {0}")]
     InvalidTypeId(GtsIdError),
+    #[error("Entity ID '{0}' is already registered with different content")]
+    ImmutableConflict(String),
     #[error("{0}")]
     ValidationError(String),
     #[error("Invalid $ref: {0}")]
@@ -140,9 +142,8 @@ impl SchemaComparison {
 /// A pure value computed from store contents — the library holds **no cache**
 /// of these. Because schemas are append-only by versioned id (a new version is
 /// a new `type_id`), a `ResolvedType` is safe for a *consumer* to cache forever
-/// keyed by `type_id`. Note this relies on callers honoring id immutability:
-/// `register_schema` does not itself reject re-registering an existing id, so a
-/// consumer that overwrites ids in place must invalidate its own cache.
+/// keyed by `type_id`: [`GtsStore::register_schema`] refuses to rebind an id to
+/// different content.
 #[derive(Debug, Clone)]
 pub struct ResolvedType {
     /// The type id this resolution is for (the `type_id` passed to
@@ -159,6 +160,15 @@ pub struct ResolvedType {
     pub effective_traits: Value,
     /// Dialect-pinned, `allOf`-composed, `$ref`-inlined effective traits schema.
     pub effective_traits_schema: Value,
+}
+
+/// Whether a [`GtsStore::register`] call changed the store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Registration {
+    /// The id was unbound and now holds the submitted entity.
+    Inserted,
+    /// The id already held identical content; the store is untouched.
+    Unchanged,
 }
 
 pub struct GtsStore {
@@ -223,20 +233,84 @@ impl GtsStore {
 
     /// Registers an entity in the store.
     ///
+    /// Ids are immutable: resubmitting identical content is a no-op that
+    /// leaves the committed entity in place, and rebinding an id to different
+    /// content is refused.
+    ///
     /// # Errors
-    /// Returns `StoreError::InvalidEntity` if the entity has no effective ID.
+    /// Returns `StoreError::InvalidEntity` if the entity has no effective ID,
+    /// or `StoreError::ImmutableConflict` if the id is already bound to
+    /// different content.
     pub fn register(&mut self, entity: GtsEntity) -> Result<(), StoreError> {
+        self.register_with_outcome(entity).map(|_| ())
+    }
+
+    /// [`Self::register`], reporting whether the store changed.
+    ///
+    /// # Errors
+    /// See [`Self::register`].
+    pub(crate) fn register_with_outcome(
+        &mut self,
+        entity: GtsEntity,
+    ) -> Result<Registration, StoreError> {
         let id = entity
             .effective_id()
             .ok_or_else(|| StoreError::InvalidEntity("Entity has no effective ID".to_owned()))?;
+        if let Some(existing) = self.get(&id) {
+            return if existing.content == entity.content {
+                Ok(Registration::Unchanged)
+            } else {
+                Err(StoreError::ImmutableConflict(id))
+            };
+        }
         self.by_id.insert(id, entity);
-        Ok(())
+        Ok(Registration::Inserted)
+    }
+
+    /// Drops an id's binding, undoing a [`Registration::Inserted`].
+    pub(crate) fn unregister(&mut self, entity_id: &str) {
+        self.by_id.remove(entity_id);
+    }
+
+    /// Runs `action` with a temporary entity and restores the store on exit.
+    ///
+    /// # Errors
+    /// Returns `StoreError::InvalidEntity` if the entity has no effective ID.
+    pub(crate) fn with_transient_entity<T>(
+        &mut self,
+        entity: GtsEntity,
+        action: impl FnOnce(&mut Self, &str) -> T,
+    ) -> Result<T, StoreError> {
+        let id = entity
+            .effective_id()
+            .ok_or_else(|| StoreError::InvalidEntity("Entity has no effective ID".to_owned()))?;
+        let displaced = self.by_id.insert(id.clone(), entity);
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| action(self, &id)));
+
+        match displaced {
+            Some(previous) => {
+                self.by_id.insert(id, previous);
+            }
+            None => {
+                self.by_id.remove(&id);
+            }
+        }
+
+        match outcome {
+            Ok(value) => Ok(value),
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
     }
 
     /// Registers a schema in the store.
     ///
+    /// Ids are immutable here too: see [`Self::register`].
+    ///
     /// # Errors
-    /// Returns `StoreError::InvalidTypeId` if `type_id` is not a valid GTS type id.
+    /// Returns `StoreError::InvalidTypeId` if `type_id` is not a valid GTS type
+    /// id, or `StoreError::ImmutableConflict` if the id is already bound to
+    /// different content.
     pub fn register_schema(&mut self, type_id: &str, schema: &Value) -> Result<(), StoreError> {
         let gts_id = GtsId::try_new(type_id).map_err(StoreError::InvalidTypeId)?;
         if !gts_id.is_type() {
@@ -245,7 +319,7 @@ impl GtsStore {
                 "GTS type IDs must end with '~'",
             )));
         }
-        let entity = GtsEntity::new(
+        let mut entity = GtsEntity::new(
             None,
             None,
             schema,
@@ -256,8 +330,9 @@ impl GtsStore {
             None,
             None,
         );
-        self.by_id.insert(type_id.to_owned(), entity);
-        Ok(())
+        // The API declares schema intent even without `$schema`.
+        entity.is_schema = true;
+        self.register(entity)
     }
 
     pub fn get(&mut self, entity_id: &str) -> Option<&GtsEntity> {
@@ -343,54 +418,6 @@ impl GtsStore {
     /// [`StoreError::UnresolvedRefs`] or [`StoreError::CircularRef`].
     pub fn resolve_schema_refs(&self, schema: &Value) -> Result<Value, StoreError> {
         crate::schema_resolver::SchemaResolver::new(self).resolve(schema)
-    }
-
-    fn remove_x_gts_ref_fields(schema: &Value) -> Value {
-        // Recursively remove x-gts-ref fields from a schema.
-        // This is needed because the jsonschema crate doesn't understand x-gts-ref
-        // and will fail on JSON Pointer references like "/$id".
-        //
-        // Additionally, when x-gts-ref removal leaves combinator branches (oneOf/
-        // anyOf/allOf) as empty objects `{}`, those combinator keywords themselves
-        // must be removed. Otherwise the jsonschema crate treats the empty branches
-        // as match-everything schemas, causing e.g. oneOf to reject valid instances
-        // because "more than one branch matched".
-        match schema {
-            Value::Object(map) => {
-                let mut new_map = serde_json::Map::new();
-                for (key, value) in map {
-                    if key == "x-gts-ref" {
-                        continue;
-                    }
-                    // For combinator keywords, check if all branches become
-                    // empty objects after stripping; if so, drop the keyword.
-                    if (key == "oneOf" || key == "anyOf" || key == "allOf")
-                        && Self::is_all_empty_after_strip(value)
-                    {
-                        continue;
-                    }
-                    new_map.insert(key.clone(), Self::remove_x_gts_ref_fields(value));
-                }
-                Value::Object(new_map)
-            }
-            Value::Array(arr) => {
-                Value::Array(arr.iter().map(Self::remove_x_gts_ref_fields).collect())
-            }
-            _ => schema.clone(),
-        }
-    }
-
-    /// Returns true if `value` is an array where every element becomes an empty
-    /// object after recursively stripping `x-gts-ref`.
-    fn is_all_empty_after_strip(value: &Value) -> bool {
-        if let Some(arr) = value.as_array() {
-            arr.iter().all(|item| {
-                let stripped = Self::remove_x_gts_ref_fields(item);
-                stripped.as_object().is_some_and(serde_json::Map::is_empty)
-            })
-        } else {
-            false
-        }
     }
 
     /// Collapses a slice of x-gts-ref validation errors into a single
@@ -686,6 +713,14 @@ impl GtsStore {
                 "Schema '{type_id}' content must be a dictionary"
             )));
         }
+        if content
+            .get("$schema")
+            .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
+        {
+            return Err(StoreError::ValidationError(format!(
+                "JSON Schema validation failed for '{type_id}': '$schema' must be a non-empty string"
+            )));
+        }
 
         // Validate $ref URIs (must be local #... or gts:// type ids)
         Self::validate_ref_uris(&content)?;
@@ -709,12 +744,13 @@ impl GtsStore {
         // `$ref`/`x-gts-ref` structure (see `validate_schema_refs`); now that
         // every dependency is inlined we can compile the resolved body and catch
         // malformed schema structure outside the refs.
-        let mut schema_for_validation = Self::remove_x_gts_ref_fields(&resolved_schema);
+        // JSON Schema permits the already-validated extension keywords.
+        let mut schema_for_validation = resolved_schema.clone();
         if let Value::Object(ref mut map) = schema_for_validation {
             map.remove("$id");
             map.remove("$schema");
         }
-        jsonschema::validator_for(&schema_for_validation).map_err(|e| {
+        crate::json_schema::validator_for(&schema_for_validation).map_err(|e| {
             StoreError::ValidationError(format!(
                 "JSON Schema validation failed for '{type_id}': {e}"
             ))
@@ -727,8 +763,22 @@ impl GtsStore {
         // validated with `check_unresolved = false`.
         let is_abstract = Self::content_is_abstract(&content);
         let traits = self.effective_traits(type_id)?;
+        // Prefetch because the validation predicate cannot borrow the store.
+        let mut unsatisfied = std::collections::HashSet::new();
+        for reference in crate::x_gts_ref::candidate_reference_values(&traits.values) {
+            if !self.reference_is_satisfied(&reference) {
+                unsatisfied.insert(reference);
+            }
+        }
+        let unsatisfied = std::sync::Arc::new(unsatisfied);
+
         traits
-            .validate(!is_abstract)
+            .validate(
+                !is_abstract,
+                Some(std::sync::Arc::new(move |reference: &str| {
+                    !unsatisfied.contains(reference)
+                })),
+            )
             .map_err(|errors| Self::wrap_trait_error(type_id, &errors))?;
 
         Ok(ResolvedType {
@@ -739,6 +789,30 @@ impl GtsStore {
             effective_traits: traits.values,
             effective_traits_schema: traits.schema,
         })
+    }
+
+    /// Checks references the store can reach; accepts unverifiable external
+    /// registries.
+    ///
+    /// Reachability is decided through [`Self::get`] for both the owning type
+    /// and the reference itself, so a [`GtsReader`] that serves the type must
+    /// serve the instance too. Gating the type on `by_id` alone would wave a
+    /// dangling reference through whenever the type is only lazily readable.
+    /// Both lookups warm the reader cache - that is what the `&mut self` is for.
+    fn reference_is_satisfied(&mut self, reference: &str) -> bool {
+        let Ok(gid) = GtsId::try_new(reference) else {
+            return true;
+        };
+
+        let Some(owning_type) = gid.get_type_id() else {
+            return true;
+        };
+
+        if self.get(&owning_type).is_none() {
+            return true;
+        }
+
+        self.get(reference).is_some()
     }
 
     /// Validate a caller-supplied instance payload against `type_id`'s schema.
@@ -768,29 +842,22 @@ impl GtsStore {
             .resolve_schema_refs(&content)
             .map_err(|e| StoreError::ValidationError(format!("Schema '{type_id}' has {e}")))?;
 
-        // Strip x-gts-ref before compiling; resolve_schema_refs has already
-        // inlined all resolvable external gts:// refs or returned an error.
-        let schema_for_validation = Self::remove_x_gts_ref_fields(&resolved_schema);
-        let validator = jsonschema::options()
-            .build(&schema_for_validation)
-            .map_err(|e| {
+        // External `$ref`s are already resolved; this also enforces `x-gts-ref`.
+        let validator =
+            crate::json_schema::gts_validator_for(&resolved_schema, None).map_err(|e| {
                 StoreError::ValidationError(format!("Invalid schema for '{type_id}': {e}"))
             })?;
 
-        let errors: Vec<String> = validator
-            .iter_errors(payload)
-            .map(|e| e.to_string())
-            .collect();
+        let diagnosis = crate::json_schema::diagnose(&validator, &resolved_schema, payload);
+        let mut errors = diagnosis.standard;
+        errors.extend(diagnosis.unexplained);
         if !errors.is_empty() {
             return Err(StoreError::ValidationError(format!(
                 "Validation failed: {}",
                 errors.join(", ")
             )));
         }
-
-        let xref = crate::x_gts_ref::XGtsRefValidator::new();
-        let xref_errors = xref.validate_instance(payload, &resolved_schema, "");
-        Self::check_x_gts_ref_errors(&xref_errors)?;
+        Self::check_x_gts_ref_errors(&diagnosis.references)?;
 
         Ok(())
     }

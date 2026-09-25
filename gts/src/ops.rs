@@ -11,7 +11,7 @@ use crate::path_resolver::JsonPathResolver;
 use crate::schema_cast::GtsEntityCastResult;
 #[cfg(test)]
 use crate::schema_evolution::CompatibilityVerdict;
-use crate::store::{GtsStore, GtsStoreQueryResult};
+use crate::store::{GtsStore, GtsStoreQueryResult, Registration};
 
 /// `is_schema` is `Some(true)` for schema/type IDs (ending with `~`),
 /// `Some(false)` for instance IDs and wildcard patterns that match instances,
@@ -161,6 +161,16 @@ pub struct GtsAddEntityResult {
     pub is_type_schema: bool,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub error: String,
+    /// Machine-readable rejection reason, omitted from serialized responses.
+    #[serde(skip)]
+    pub rejection: Option<AddEntityRejection>,
+}
+
+/// Reason an entity registration was rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddEntityRejection {
+    /// The ID is already bound to different content.
+    Conflict,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,6 +186,9 @@ pub struct GtsAddSchemaResult {
     pub id: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub error: String,
+    /// Machine-readable rejection reason, omitted from serialized responses.
+    #[serde(skip)]
+    pub rejection: Option<AddEntityRejection>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,6 +198,48 @@ pub struct GtsExtractIdResult {
     pub selected_entity_field: Option<String>,
     pub selected_type_id_field: Option<String>,
     pub is_type_schema: bool,
+}
+/// Result of OP#6 transient JSON validation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GtsValidateJsonResult {
+    pub ok: bool,
+    pub id: Option<String>,
+    pub type_id: Option<String>,
+    pub is_type_schema: bool,
+    pub error: Option<String>,
+}
+
+impl GtsValidateJsonResult {
+    fn valid(id: Option<String>, type_id: Option<String>, is_type_schema: bool) -> Self {
+        Self {
+            ok: true,
+            id,
+            type_id,
+            is_type_schema,
+            error: None,
+        }
+    }
+
+    fn invalid(
+        id: Option<String>,
+        type_id: Option<String>,
+        is_type_schema: bool,
+        error: impl Into<String>,
+    ) -> Self {
+        Self {
+            ok: false,
+            id,
+            type_id,
+            is_type_schema,
+            error: Some(error.into()),
+        }
+    }
+}
+
+/// Detects single-segment instance IDs, which the canonical parser rejects
+/// (gts-spec issue #37), by parsing their type form.
+fn names_an_instance(id: &str) -> bool {
+    !id.ends_with('~') && GtsId::try_new(&format!("{id}~")).is_ok_and(|gid| gid.is_type())
 }
 
 pub struct GtsOps {
@@ -324,10 +379,11 @@ impl GtsOps {
                     )
                 } else {
                     format!(
-                        "Unable to detect ID in instance entity. Instances must have an 'id' field (or one of the configured entity_id_fields):\n{}",
+                        "Unable to detect GTS ID in instance entity. Instances must have an 'id' field (or one of the configured entity_id_fields):\n{}",
                         self.get_details(&entity)
                     )
                 },
+                rejection: None,
             };
         };
 
@@ -345,22 +401,28 @@ impl GtsOps {
                 type_id: None,
                 is_type_schema: entity.is_schema,
                 error: e,
+                rejection: None,
             };
         }
 
-        // Register the entity
-        if let Err(e) = self.store.register(entity.clone()) {
-            return GtsAddEntityResult {
-                ok: false,
-                id: String::new(),
-                type_id: None,
-                is_type_schema: entity.is_schema,
-                error: format!(
-                    "Unable to register entity: {e}\n{}",
-                    self.get_details(&entity)
-                ),
-            };
-        }
+        let registration = match self.store.register_with_outcome(entity.clone()) {
+            Ok(registration) => registration,
+            Err(e) => {
+                let rejection = matches!(e, crate::store::StoreError::ImmutableConflict(_))
+                    .then_some(AddEntityRejection::Conflict);
+                return GtsAddEntityResult {
+                    ok: false,
+                    id: String::new(),
+                    type_id: None,
+                    is_type_schema: entity.is_schema,
+                    error: format!(
+                        "Unable to register entity: {e}\n{}",
+                        self.get_details(&entity)
+                    ),
+                    rejection,
+                };
+            }
+        };
 
         // Validate schemas. Without `validate` we only check `$ref`/`x-gts-ref`
         // structure — no dependency resolution, so forward-reference batches can
@@ -374,16 +436,12 @@ impl GtsOps {
                 self.store.validate_schema_refs(&entity_id)
             };
             if let Err(e) = validation {
-                return GtsAddEntityResult {
-                    ok: false,
-                    id: String::new(),
-                    type_id: None,
-                    is_type_schema: entity.is_schema,
-                    error: format!(
-                        "Schema validation failed: {e}\n{}",
-                        self.get_details(&entity)
-                    ),
-                };
+                return self.reject_registration(
+                    &entity,
+                    &entity_id,
+                    registration,
+                    &format!("Schema validation failed: {e}"),
+                );
             }
         }
 
@@ -392,16 +450,12 @@ impl GtsOps {
             && !entity.is_schema
             && let Err(e) = self.store.validate_instance(&entity_id)
         {
-            return GtsAddEntityResult {
-                ok: false,
-                id: String::new(),
-                type_id: None,
-                is_type_schema: entity.is_schema,
-                error: format!(
-                    "Instance validation failed: {e}\n{}",
-                    self.get_details(&entity)
-                ),
-            };
+            return self.reject_registration(
+                &entity,
+                &entity_id,
+                registration,
+                &format!("Instance validation failed: {e}"),
+            );
         }
 
         // println!("submitted: {}", self.get_content_pretty(&entity));
@@ -412,6 +466,191 @@ impl GtsOps {
             type_id: entity.type_id,
             is_type_schema: entity.is_schema,
             error: String::new(),
+            rejection: None,
+        }
+    }
+
+    /// Rejects an entity whose post-registration validation failed, undoing the
+    /// insert this call made. An id already committed with identical content
+    /// keeps its entity.
+    fn reject_registration(
+        &mut self,
+        entity: &GtsEntity,
+        entity_id: &str,
+        registration: Registration,
+        error: &str,
+    ) -> GtsAddEntityResult {
+        if registration == Registration::Inserted {
+            self.store.unregister(entity_id);
+        }
+        GtsAddEntityResult {
+            ok: false,
+            id: String::new(),
+            type_id: None,
+            is_type_schema: entity.is_schema,
+            error: format!("{error}\n{}", self.get_details(entity)),
+            rejection: None,
+        }
+    }
+
+    /// Validates a transient schema or instance without storing it (OP#6).
+    pub fn validate_json(&mut self, content: &Value) -> GtsValidateJsonResult {
+        let entity = self.transient_entity(content);
+        if entity.is_schema {
+            self.validate_transient_type_schema(&entity)
+        } else {
+            self.validate_transient_instance(&entity, None)
+        }
+    }
+
+    /// OP#6: validates a transient instance against an explicit type without
+    /// storing it. Schema bodies are rejected.
+    pub fn validate_json_as_type(
+        &mut self,
+        type_id: &str,
+        content: &Value,
+    ) -> GtsValidateJsonResult {
+        let wrong_kind = || {
+            GtsValidateJsonResult::invalid(
+                None,
+                Some(type_id.to_owned()),
+                false,
+                format!(
+                    "'{type_id}' must be GTS Type schema identifier, ending with '~'; \
+                     it names an instance"
+                ),
+            )
+        };
+        match GtsId::try_new(type_id) {
+            Ok(gid) if gid.is_type() => {}
+            Ok(_) => return wrong_kind(),
+            // Single-segment instances need separate handling (issue #37).
+            Err(_) if names_an_instance(type_id) => return wrong_kind(),
+            Err(e) => {
+                return GtsValidateJsonResult::invalid(
+                    None,
+                    Some(type_id.to_owned()),
+                    false,
+                    format!("Invalid GTS Type Schema ID '{type_id}': {e}"),
+                );
+            }
+        }
+
+        let entity = self.transient_entity(content);
+        if entity.is_schema {
+            return GtsValidateJsonResult::invalid(
+                entity.effective_id(),
+                Some(type_id.to_owned()),
+                true,
+                "the explicit type route only accepts instance JSON, but the body is a \
+                 GTS Type Schema; POST it to /validate-json instead",
+            );
+        }
+
+        if let Some(declared) = entity.type_id.as_deref()
+            && declared != type_id
+        {
+            return GtsValidateJsonResult::invalid(
+                entity.effective_id(),
+                Some(type_id.to_owned()),
+                false,
+                format!(
+                    "the body declares type '{declared}', which does not match \
+                     path type '{type_id}'"
+                ),
+            );
+        }
+
+        self.validate_transient_instance(&entity, Some(type_id))
+    }
+
+    /// Builds an unregistered entity through the normal ingest path.
+    fn transient_entity(&self, content: &Value) -> GtsEntity {
+        GtsEntity::new(
+            None,
+            None,
+            content,
+            Some(&self.cfg),
+            None,
+            false,
+            String::new(),
+            None,
+            None,
+        )
+    }
+
+    fn validate_transient_type_schema(&mut self, entity: &GtsEntity) -> GtsValidateJsonResult {
+        let Some(type_id) = entity.effective_id() else {
+            return GtsValidateJsonResult::invalid(
+                None,
+                None,
+                true,
+                "Unable to detect GTS ID in schema entity: a GTS Type Schema must carry \
+                 a '$id' naming its GTS Type Identifier",
+            );
+        };
+
+        if let Err(e) = crate::schema_modifiers::validate_gts_keywords(&entity.content) {
+            return GtsValidateJsonResult::invalid(Some(type_id), None, true, e);
+        }
+
+        if let Ok(gid) = GtsId::try_new(&type_id)
+            && let Some(parent) = gid.get_type_id()
+            && self.store.get(&parent).is_none()
+        {
+            return GtsValidateJsonResult::invalid(
+                Some(type_id),
+                None,
+                true,
+                format!("Parent GTS Type Schema not found: '{parent}' is not registered"),
+            );
+        }
+
+        let outcome = self
+            .store
+            .with_transient_entity(entity.clone(), |store, id| {
+                store.validate_schema(id).map(|_| ())
+            })
+            .map_err(|e| e.to_string())
+            .and_then(|inner| inner.map_err(|e| e.to_string()));
+        match outcome {
+            Ok(()) => GtsValidateJsonResult::valid(Some(type_id), None, true),
+            Err(e) => GtsValidateJsonResult::invalid(Some(type_id), None, true, e),
+        }
+    }
+
+    /// Validates an optionally named instance against its resolved type.
+    fn validate_transient_instance(
+        &mut self,
+        entity: &GtsEntity,
+        explicit_type: Option<&str>,
+    ) -> GtsValidateJsonResult {
+        let id = entity.effective_id();
+        let Some(type_id) = explicit_type
+            .map(str::to_owned)
+            .or_else(|| entity.type_id.clone())
+        else {
+            return GtsValidateJsonResult::invalid(
+                id,
+                None,
+                false,
+                "Unable to determine instance type: the document carries neither a 'type' \
+                 field nor a chained GTS ID naming its GTS Type",
+            );
+        };
+
+        if self.store.get(&type_id).is_none() {
+            return GtsValidateJsonResult::invalid(
+                id,
+                Some(type_id.clone()),
+                false,
+                format!("GTS Type Schema not found: '{type_id}' is not registered"),
+            );
+        }
+
+        match self.store.validate_payload(&type_id, &entity.content) {
+            Ok(()) => GtsValidateJsonResult::valid(id, Some(type_id), false),
+            Err(e) => GtsValidateJsonResult::invalid(id, Some(type_id), false, e.to_string()),
         }
     }
 
@@ -423,11 +662,26 @@ impl GtsOps {
     }
 
     pub fn add_schema(&mut self, type_id: String, schema: &Value) -> GtsAddSchemaResult {
+        // The structural keyword guard `add_entity` applies is enforced at
+        // every ingest, and this route is one. Skipping it let `/type-schemas`
+        // admit schemas `/entities` refuses, leaving the store holding a
+        // document `validate_schema` then reports as invalid. Pure check, so it
+        // runs before `register_schema` for the same reason it does there.
+        if let Err(error) = crate::schema_modifiers::validate_gts_keywords(schema) {
+            return GtsAddSchemaResult {
+                ok: false,
+                id: String::new(),
+                error,
+                rejection: None,
+            };
+        }
+
         match self.store.register_schema(&type_id, schema) {
             Ok(()) => GtsAddSchemaResult {
                 ok: true,
                 id: type_id,
                 error: String::new(),
+                rejection: None,
             },
             Err(e) => GtsAddSchemaResult {
                 ok: false,
@@ -446,6 +700,8 @@ impl GtsOps {
                         None,
                     ))
                 ),
+                rejection: matches!(e, crate::store::StoreError::ImmutableConflict(_))
+                    .then_some(AddEntityRejection::Conflict),
             },
         }
     }
@@ -1400,6 +1656,7 @@ mod tests {
             type_id: None,
             is_type_schema: false,
             error: String::new(),
+            rejection: None,
         };
 
         let json = to_json_obj(&result);
@@ -1421,6 +1678,7 @@ mod tests {
                 type_id: None,
                 is_type_schema: false,
                 error: String::new(),
+                rejection: None,
             },
             GtsAddEntityResult {
                 ok: true,
@@ -1428,6 +1686,7 @@ mod tests {
                 type_id: None,
                 is_type_schema: false,
                 error: String::new(),
+                rejection: None,
             },
         ];
 
@@ -1446,6 +1705,7 @@ mod tests {
             ok: true,
             id: "gts.vendor.package.namespace.type.v1.0~".to_owned(),
             error: String::new(),
+            rejection: None,
         };
 
         let json = to_json_obj(&result);
@@ -2879,6 +3139,236 @@ mod tests {
         assert_eq!(entity.list_sequence, Some(0));
     }
 
+    // OP#6 transient validation
+
+    const DRAFT7: &str = "http://json-schema.org/draft-07/schema#";
+
+    fn ops_with_person_type() -> GtsOps {
+        let mut ops = GtsOps::new(None, None, 0);
+        let schema = json!({
+            "$id": "gts://gts.x.vj.pkg.person.v1~",
+            "$schema": DRAFT7,
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"type": "string"}},
+        });
+        assert!(ops.add_entity(&schema, true).ok, "base type must register");
+        ops
+    }
+
+    #[test]
+    fn test_validate_json_accepts_transient_type_schema_without_storing_it() {
+        let mut ops = GtsOps::new(None, None, 0);
+        let schema = json!({
+            "$id": "gts://gts.x.vj.pkg.transient.v1~",
+            "$schema": DRAFT7,
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+        });
+
+        let result = ops.validate_json(&schema);
+        assert!(result.ok, "{:?}", result.error);
+        assert!(result.is_type_schema);
+        assert_eq!(result.id.as_deref(), Some("gts.x.vj.pkg.transient.v1~"));
+
+        assert!(
+            !ops.get_entity("gts.x.vj.pkg.transient.v1~").ok,
+            "a transient document must not become observable"
+        );
+    }
+
+    #[test]
+    fn test_validate_json_rejects_malformed_type_schema() {
+        let mut ops = GtsOps::new(None, None, 0);
+        let result = ops.validate_json(&json!({
+            "$id": "gts://gts.x.vj.pkg.broken.v1~",
+            "$schema": DRAFT7,
+            "type": 1,
+        }));
+
+        assert!(!result.ok);
+        assert!(result.is_type_schema);
+        let error = result.error.expect("a rejection carries a reason");
+        assert!(error.contains("JSON Schema validation failed"), "{error}");
+    }
+
+    #[test]
+    fn test_validate_json_rejects_invalid_schema_marker() {
+        for schema_marker in [json!(null), json!(1), json!("")] {
+            let mut ops = GtsOps::new(None, None, 0);
+            let result = ops.validate_json(&json!({
+                "$id": "gts://gts.x.vj.pkg.invalid_dialect.v1~",
+                "$schema": schema_marker,
+                "type": "object",
+            }));
+
+            assert!(!result.ok);
+            assert!(result.is_type_schema);
+            let error = result.error.expect("a rejection carries a reason");
+            assert!(error.contains("$schema"), "{error}");
+        }
+    }
+
+    #[test]
+    fn test_validate_json_rejects_derived_schema_with_unregistered_parent() {
+        let mut ops = GtsOps::new(None, None, 0);
+        let result = ops.validate_json(&json!({
+            "$id": "gts://gts.x.vj.pkg.absent.v1~x.vj._.derived.v1~",
+            "$schema": DRAFT7,
+            "type": "object",
+        }));
+
+        assert!(!result.ok);
+        assert!(result.is_type_schema);
+        let error = result.error.expect("a rejection carries a reason");
+        assert!(
+            error.contains("Parent GTS Type Schema not found"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn test_validate_json_validates_instance_against_declared_type() {
+        let mut ops = ops_with_person_type();
+
+        let valid = ops.validate_json(&json!({
+            "id": "gts.x.vj.pkg.person.v1~x.vj._.ada.v1",
+            "type": "gts.x.vj.pkg.person.v1~",
+            "name": "Ada",
+        }));
+        assert!(valid.ok, "{:?}", valid.error);
+        assert!(!valid.is_type_schema);
+        assert!(!ops.get_entity("gts.x.vj.pkg.person.v1~x.vj._.ada.v1").ok);
+
+        let invalid = ops.validate_json(&json!({
+            "id": "gts.x.vj.pkg.person.v1~x.vj._.bad.v1",
+            "type": "gts.x.vj.pkg.person.v1~",
+            "name": 1,
+        }));
+        assert!(!invalid.ok);
+        let error = invalid.error.expect("a rejection carries a reason");
+        assert!(error.contains("is not of type 'string'"), "{error}");
+    }
+
+    #[test]
+    fn test_validate_json_accepts_idless_instance() {
+        let mut ops = ops_with_person_type();
+
+        let result = ops.validate_json(&json!({
+            "type": "gts.x.vj.pkg.person.v1~",
+            "name": "Ada",
+        }));
+        assert!(result.ok, "{:?}", result.error);
+        assert_eq!(result.id, None);
+        assert_eq!(result.type_id.as_deref(), Some("gts.x.vj.pkg.person.v1~"));
+    }
+
+    #[test]
+    fn test_validate_json_rejects_instance_with_undeterminable_type() {
+        let mut ops = GtsOps::new(None, None, 0);
+        let result = ops.validate_json(&json!({"id": "gts.x.vj.pkg.orphan.v1"}));
+
+        assert!(!result.ok);
+        assert!(!result.is_type_schema);
+        let error = result.error.expect("a rejection carries a reason");
+        assert!(
+            error.contains("Unable to determine instance type"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn test_validate_json_as_type_uses_the_path_type() {
+        let mut ops = ops_with_person_type();
+        let result = ops.validate_json_as_type("gts.x.vj.pkg.person.v1~", &json!({"name": "Ada"}));
+
+        assert!(result.ok, "{:?}", result.error);
+        assert!(!result.is_type_schema);
+        assert_eq!(result.type_id.as_deref(), Some("gts.x.vj.pkg.person.v1~"));
+    }
+
+    #[test]
+    fn test_validate_json_as_type_reports_a_malformed_path_type() {
+        let mut ops = GtsOps::new(None, None, 0);
+        let result = ops.validate_json_as_type("not-a-gts-type", &json!({"name": "Ada"}));
+
+        assert!(!result.ok);
+        let error = result.error.expect("a rejection carries a reason");
+        assert!(error.contains("Invalid GTS Type Schema ID"), "{error}");
+    }
+
+    #[test]
+    fn test_validate_json_as_type_reports_an_instance_id_as_the_wrong_kind() {
+        let mut ops = GtsOps::new(None, None, 0);
+        let result = ops.validate_json_as_type("gts.x.vj.pkg.person.v1", &json!({"name": "Ada"}));
+
+        assert!(!result.ok);
+        let error = result.error.expect("a rejection carries a reason");
+        assert!(error.contains("must be GTS Type schema"), "{error}");
+    }
+
+    #[test]
+    fn test_validate_json_as_type_reports_an_unregistered_type() {
+        let mut ops = GtsOps::new(None, None, 0);
+        let result = ops.validate_json_as_type("gts.x.vj.pkg.missing.v1~", &json!({"name": "Ada"}));
+
+        assert!(!result.ok);
+        let error = result.error.expect("a rejection carries a reason");
+        assert!(error.contains("GTS Type Schema not found"), "{error}");
+    }
+
+    #[test]
+    fn test_validate_json_as_type_rejects_a_conflicting_declared_type() {
+        let mut ops = ops_with_person_type();
+        let other = json!({
+            "$id": "gts://gts.x.vj.pkg.other.v1~",
+            "$schema": DRAFT7,
+            "type": "object",
+        });
+        assert!(ops.add_entity(&other, true).ok);
+
+        let result = ops.validate_json_as_type(
+            "gts.x.vj.pkg.person.v1~",
+            &json!({"type": "gts.x.vj.pkg.other.v1~", "name": "Ada"}),
+        );
+
+        assert!(!result.ok);
+        let error = result.error.expect("a rejection carries a reason");
+        assert!(error.contains("does not match path type"), "{error}");
+    }
+
+    #[test]
+    fn test_validate_json_as_type_rejects_a_type_schema_body() {
+        let mut ops = ops_with_person_type();
+        let result = ops.validate_json_as_type(
+            "gts.x.vj.pkg.person.v1~",
+            &json!({
+                "$id": "gts://gts.x.vj.pkg.rejected.v1~",
+                "$schema": DRAFT7,
+                "type": "object",
+            }),
+        );
+
+        assert!(!result.ok);
+        let error = result.error.expect("a rejection carries a reason");
+        assert!(error.contains("only accepts instance JSON"), "{error}");
+        assert!(!ops.get_entity("gts.x.vj.pkg.rejected.v1~").ok);
+    }
+
+    #[test]
+    fn test_validate_json_as_type_rejects_non_string_schema_marker() {
+        let mut ops = ops_with_person_type();
+        let result = ops.validate_json_as_type(
+            "gts.x.vj.pkg.person.v1~",
+            &json!({"$schema": 1, "name": "Ada"}),
+        );
+
+        assert!(!result.ok);
+        assert!(result.is_type_schema);
+        let error = result.error.expect("a rejection carries a reason");
+        assert!(error.contains("only accepts instance JSON"), "{error}");
+    }
+
     // =============================================================================
     // Tests for instance registration validation (commit 7d1eade)
     // =============================================================================
@@ -2895,7 +3385,7 @@ mod tests {
         let result = ops.add_entity(&content, false);
         assert!(!result.ok, "Instance without id should fail");
         assert!(
-            result.error.contains("Unable to detect ID"),
+            result.error.contains("Unable to detect GTS ID"),
             "Error should mention missing ID"
         );
         assert!(
@@ -2971,6 +3461,211 @@ mod tests {
         assert!(result.ok, "Schema with valid $id should succeed");
         assert_eq!(result.id, "gts.vendor.package.namespace.type.v1.0~");
         assert!(result.is_type_schema);
+    }
+
+    #[test]
+    fn test_add_entity_rolls_back_a_schema_that_fails_validation() {
+        let mut ops = GtsOps::new(None, None, 0);
+        let schema = |reference: &str| {
+            json!({
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "$id": "gts://gts.x.rollback._.schema.v1~",
+                "type": "object",
+                "properties": {"child": {"$ref": reference}}
+            })
+        };
+
+        let rejected = ops.add_entity(&schema("https://example.com/other.json"), false);
+        assert!(!rejected.ok, "a malformed $ref must be rejected");
+        assert!(rejected.rejection.is_none());
+        assert!(
+            !ops.get_entity("gts.x.rollback._.schema.v1~").ok,
+            "the rejected schema must not stay registered"
+        );
+
+        let accepted = ops.add_entity(&schema("#"), false);
+        assert!(
+            accepted.ok,
+            "a corrected body for the same id must be accepted: {}",
+            accepted.error
+        );
+        assert_eq!(
+            ops.get_entity("gts.x.rollback._.schema.v1~").content,
+            Some(schema("#"))
+        );
+    }
+
+    #[test]
+    fn test_add_entity_rolls_back_an_instance_that_fails_validation() {
+        let mut ops = GtsOps::new(None, None, 0);
+        let schema = json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "$id": "gts://gts.x.rollback._.instance.v1~",
+            "type": "object",
+            "required": ["value"],
+            "properties": {"value": {"type": "string"}}
+        });
+        assert!(ops.add_entity(&schema, true).ok, "the type must register");
+
+        let instance_id = "gts.x.rollback._.instance.v1~x.rollback._.example.v1";
+        let instance = |value: Value| {
+            json!({
+                "id": instance_id,
+                "type": "gts.x.rollback._.instance.v1~",
+                "value": value
+            })
+        };
+
+        let rejected = ops.add_entity(&instance(json!(1)), true);
+        assert!(
+            !rejected.ok,
+            "an instance violating its type must be rejected"
+        );
+        assert!(rejected.rejection.is_none());
+        assert!(
+            !ops.get_entity(instance_id).ok,
+            "the rejected instance must not stay registered"
+        );
+
+        let accepted = ops.add_entity(&instance(json!("fixed")), true);
+        assert!(
+            accepted.ok,
+            "a corrected body for the same id must be accepted: {}",
+            accepted.error
+        );
+        assert_eq!(
+            ops.get_entity(instance_id).content,
+            Some(instance(json!("fixed")))
+        );
+    }
+
+    #[test]
+    fn test_add_entity_keeps_a_committed_instance_when_revalidation_fails() {
+        let mut ops = GtsOps::new(None, None, 0);
+        let instance_id = "gts.x.rollback._.orphan.v1~x.rollback._.example.v1";
+        let instance = json!({
+            "id": instance_id,
+            "type": "gts.x.rollback._.orphan.v1~",
+            "value": "kept"
+        });
+
+        assert!(
+            ops.add_entity(&instance, false).ok,
+            "unvalidated add stores"
+        );
+
+        let revalidated = ops.add_entity(&instance, true);
+        assert!(
+            !revalidated.ok,
+            "validation must fail while the type is unregistered"
+        );
+
+        let stored = ops.get_entity(instance_id);
+        assert!(
+            stored.ok,
+            "the committed instance must survive: {}",
+            stored.error
+        );
+        assert_eq!(stored.content, Some(instance));
+    }
+
+    #[test]
+    fn test_add_entity_keeps_a_committed_schema_when_revalidation_fails() {
+        let mut ops = GtsOps::new(None, None, 0);
+        let schema = json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "$id": "gts://gts.x.rollback._.forward.v1~",
+            "type": "object",
+            "properties": {"child": {"$ref": "gts://gts.x.rollback._.absent.v1~"}}
+        });
+
+        assert!(
+            ops.add_entity(&schema, false).ok,
+            "a forward reference registers without validation"
+        );
+
+        let revalidated = ops.add_entity(&schema, true);
+        assert!(
+            !revalidated.ok,
+            "validation must fail while the target is unregistered"
+        );
+
+        let stored = ops.get_entity("gts.x.rollback._.forward.v1~");
+        assert!(
+            stored.ok,
+            "the committed schema must survive: {}",
+            stored.error
+        );
+        assert_eq!(stored.content, Some(schema));
+    }
+
+    #[test]
+    fn test_add_schema_rejects_changed_content_for_a_registered_id() {
+        let mut ops = GtsOps::new(None, None, 0);
+        let type_id = "gts.x.rollback._.explicit.v1~";
+        let schema = |value_type: &str| {
+            json!({
+                "type": "object",
+                "properties": {"value": {"type": value_type}}
+            })
+        };
+
+        let first = ops.add_schema(type_id.to_owned(), &schema("string"));
+        assert!(first.ok, "{}", first.error);
+        assert_eq!(first.id, type_id);
+        assert!(first.rejection.is_none());
+
+        let resubmitted = ops.add_schema(type_id.to_owned(), &schema("string"));
+        assert!(resubmitted.ok, "identical content is accepted");
+        assert!(resubmitted.rejection.is_none());
+
+        let conflict = ops.add_schema(type_id.to_owned(), &schema("integer"));
+        assert!(!conflict.ok, "changed content must be refused");
+        assert_eq!(conflict.rejection, Some(AddEntityRejection::Conflict));
+        assert!(conflict.id.is_empty());
+        assert_eq!(
+            ops.get_entity(type_id).content,
+            Some(schema("string")),
+            "the committed schema must stay"
+        );
+    }
+
+    #[test]
+    fn test_add_schema_refuses_a_misplaced_keyword_like_add_entity() {
+        let mut ops = GtsOps::new(None, None, 0);
+        let type_id = "gts.x.parity._.misplaced.v1~";
+        let schema = json!({
+            "type": "object",
+            "properties": {"a": {"type": "string", "x-gts-traits": {"k": "v"}}},
+        });
+
+        let refused = ops.add_schema(type_id.to_owned(), &schema);
+        assert!(!refused.ok, "a misplaced trait keyword must be refused");
+        assert!(
+            refused.rejection.is_none(),
+            "a malformed schema is not an id conflict"
+        );
+        assert_eq!(
+            refused.error,
+            "x-gts-traits must be at the schema top level"
+        );
+        assert!(
+            ops.get_entity(type_id).content.is_none(),
+            "the refused schema must not reach the store"
+        );
+
+        // The same content through the other ingest gives the same verdict.
+        let via_entity = ops.add_entity(
+            &json!({
+                "$id": "gts://gts.x.parity._.viaentity.v1~",
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "properties": {"a": {"type": "string", "x-gts-traits": {"k": "v"}}},
+            }),
+            false,
+        );
+        assert!(!via_entity.ok);
+        assert_eq!(via_entity.error, refused.error);
     }
 
     #[test]

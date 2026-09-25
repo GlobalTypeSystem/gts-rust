@@ -166,6 +166,8 @@ serde_json = "1.0"
 thiserror = "2.0"
 anyhow = "1.0"
 regex = "1.12"
+# ECMAScript-grammar regex parsing for the `format: regex` assertion.
+regress = "0.12"
 uuid = { version = "1.19", features = ["serde", "v4", "v5"] }
 
 # CLI dependencies
