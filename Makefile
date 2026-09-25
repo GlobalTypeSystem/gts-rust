@@ -41,13 +41,16 @@ clippy:
 test:
 	cargo test --workspace
 
-# Re-run gts-id unit tests with a non-default GTS_ID_PREFIX to catch
+# Re-run prefix-aware unit tests with a non-default GTS_ID_PREFIX to catch
 # hard-coded "gts." literals that should use the GTS_ID_PREFIX constant.
 # The prefix is read at compile time (option_env!), so this is a clean
-# rebuild + test cycle. Currently scoped to gts-id (whose tests are
-# prefix-aware); expand to more crates as their test data is cleaned up.
+# rebuild + test cycle. Scoped to the suites whose fixtures are built from
+# the GTS_ID_PREFIX constant; expand to more crates as their test data is
+# cleaned up.
 test-gts-id-prefix:
 	GTS_ID_PREFIX=acme. cargo test -p gts-id
+	GTS_ID_PREFIX=acme. cargo test -p gts-cli json_validation::tests
+	GTS_ID_PREFIX=acme. cargo test -p gts-cli --test cli_run_tests validate_all
 
 # Run dylint lints (requires nightly toolchain + cargo-dylint)
 # Detects hard-coded "gts." / "gts://" string literals in production code

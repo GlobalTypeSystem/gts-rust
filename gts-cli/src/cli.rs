@@ -22,6 +22,14 @@ pub struct Cli {
     #[arg(long)]
     pub path: Option<String>,
 
+    /// Comma-separated directory names to exclude when scanning `--path`
+    #[arg(
+        long,
+        value_delimiter = ',',
+        default_value = "node_modules,dist,build,.git,target"
+    )]
+    pub exclude: Vec<String>,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -52,8 +60,8 @@ pub enum Commands {
         #[arg(long, default_value = "major")]
         scope: String,
     },
-    /// Validate all JSON documents in a file or directory
-    ValidateJson {
+    /// Batch-validate GTS schemas and instances found in JSON files under a file or directory
+    ValidateAll {
         /// JSON file or directory to scan
         #[arg(long)]
         path: Option<String>,
@@ -181,9 +189,10 @@ async fn run_command(cli: Cli) -> Result<()> {
     // Parse path into Vec<String>
     let cli_path = cli.path.clone();
     let path = cli.path.map(|p| vec![p]);
+    let exclude = cli.exclude.clone();
 
     // Create GtsOps
-    let mut ops = GtsOps::new(path, cli.config, cli.verbose as usize);
+    let mut ops = GtsOps::new_with_exclude(path, cli.config, cli.verbose as usize, exclude.clone());
 
     match cli.command {
         Commands::Server { host, port } => {
@@ -204,20 +213,17 @@ async fn run_command(cli: Cli) -> Result<()> {
             });
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
-        Commands::ValidateJson { path: scan_path } => {
+        Commands::ValidateAll { path: scan_path } => {
             let scan = scan_path
                 .or(cli_path)
-                .ok_or_else(|| anyhow::anyhow!("validate-json requires --path"))?;
+                .ok_or_else(|| anyhow::anyhow!("validate-all requires --path"))?;
             let result =
-                crate::json_validation::GtsJsonValidator::new(&scan, ops.cfg.clone()).validate();
-            for issue in &result.issues {
-                let suffix = issue.index.map(|i| format!("#{i}")).unwrap_or_default();
-                eprintln!(
-                    "{}{}: {}: {}",
-                    issue.file, suffix, issue.stage, issue.message
-                );
-            }
+                crate::json_validation::GtsJsonValidator::new(&scan, ops.cfg.clone(), exclude)
+                    .validate();
             print_result(&result)?;
+            if !result.ok {
+                anyhow::bail!("validation failed: {} issue(s) found", result.issues.len());
+            }
         }
         Commands::ValidateId { gts_id } => {
             let result = GtsOps::validate_id(&gts_id);
