@@ -7328,6 +7328,47 @@ fn test_validate_schema_rejects_a_gts_ref_to_another_dialect() {
 }
 
 #[test]
+fn test_validate_rejects_a_descendant_whose_ancestor_has_a_cross_dialect_ref() {
+    // Issue C: the cross-dialect `$ref` lives on an *ancestor*, and the
+    // descendant references neither the ancestor nor the 2020-12 target. A
+    // leaf-only reference walk would accept the descendant; validating the whole
+    // chain + reference closure rejects it because its ancestor is invalid
+    // (spec §11.0 + §12). Guards against a regression to leaf-only traversal.
+    let mut store = GtsStore::new();
+    let target = "gts.x.dialect.anc.target.v1~";
+    let base = "gts.x.dialect.anc.base.v1~";
+    let child = "gts.x.dialect.anc.base.v1~x.dialect._.child.v1~";
+    register_chain_schema(&mut store, target, json!({"$schema": DRAFT_2020_12}));
+    register_chain_schema(
+        &mut store,
+        base,
+        json!({"properties": {"ext": {"$ref": format!("gts://{target}")}}}),
+    );
+    register_chain_schema(
+        &mut store,
+        child,
+        json!({"properties": {"label": {"type": "string"}}}),
+    );
+
+    // Control: the ancestor is invalid on its own (the already-covered leaf case).
+    store
+        .validate_schema(base)
+        .expect_err("ancestor has a cross-dialect $ref");
+
+    // OP#12: validating the descendant must be rejected via its ancestor.
+    let schema_err = store
+        .validate_schema(child)
+        .expect_err("a descendant is only as valid as its ancestors");
+    assert!(schema_err.to_string().contains(base), "{schema_err}");
+
+    // OP#6: an instance of the descendant is rejected for the same reason.
+    let instance_err = store
+        .validate_payload(child, &json!({"label": "example"}))
+        .expect_err("an instance is no more valid than its type's ancestry");
+    assert!(instance_err.to_string().contains(base), "{instance_err}");
+}
+
+#[test]
 fn test_validate_schema_rejects_a_subschema_of_another_dialect() {
     let mut store = GtsStore::new();
     let base = "gts.x.dialect.sub.base.v1~";
