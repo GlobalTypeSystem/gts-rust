@@ -720,6 +720,54 @@ async fn test_add_schemas_requires_an_array_of_canonical_schemas() {
 }
 
 #[tokio::test]
+async fn test_add_schemas_validate_commits_only_valid_entries() {
+    let app = create_test_router(create_test_ops(), 0);
+    let schema = |name: &str, properties: serde_json::Value| {
+        serde_json::json!({
+            "$id": format!("gts://gts.x.test6batchval._.{name}.v1~"),
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": properties
+        })
+    };
+    let dangling = schema(
+        "dangling",
+        serde_json::json!({"a": {"$ref": "gts://gts.x.test6batchval._.missing.v1~"}}),
+    );
+    let batch = serde_json::json!([
+        dangling,
+        schema(
+            "referrer",
+            serde_json::json!({"t": {"$ref": "gts://gts.x.test6batchval._.target.v1~"}}),
+        ),
+        schema("target", serde_json::json!({"n": {"type": "string"}})),
+    ]);
+
+    let (status, body) = post_json(&app, "/type-schemas?validate=true", &batch).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["ok"], serde_json::json!(false), "{body}");
+    assert_eq!(body["results"][0]["ok"], serde_json::json!(false));
+    assert_eq!(body["results"][1]["ok"], serde_json::json!(true), "{body}");
+    assert_eq!(body["results"][2]["ok"], serde_json::json!(true), "{body}");
+
+    let (_, body) = get_json(&app, "/entities/gts.x.test6batchval._.dangling.v1~").await;
+    assert_eq!(
+        body["ok"],
+        serde_json::json!(false),
+        "rejected entry must not commit"
+    );
+    let (_, body) = get_json(&app, "/entities/gts.x.test6batchval._.referrer.v1~").await;
+    assert_eq!(body["ok"], serde_json::json!(true));
+
+    let (_, body) = post_json(&app, "/type-schemas", &serde_json::json!([dangling])).await;
+    assert_eq!(
+        body["ok"],
+        serde_json::json!(true),
+        "without validate a forward reference registers"
+    );
+}
+
+#[tokio::test]
 async fn test_add_schemas_refuses_what_add_entity_refuses() {
     let app = create_test_router(create_test_ops(), 0);
     let misplaced = |type_id: &str| {
@@ -832,6 +880,14 @@ async fn test_unknown_gts_ref_validation_mode_is_rejected() {
                 "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object"
             }),
+        ),
+        (
+            "/type-schemas?gts-ref-validation=unknown",
+            serde_json::json!([{
+                "$id": format!("gts://{type_id}"),
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object"
+            }]),
         ),
     ] {
         let (status, body) = post_json(&app, uri, &body).await;

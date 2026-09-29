@@ -689,10 +689,60 @@ impl GtsOps {
     /// give the same verdict on the same document. Entries are independent: a
     /// rejected one leaves the others registered.
     pub fn add_schemas(&mut self, schemas: &[Value]) -> GtsAddSchemasResult {
-        let results: Vec<GtsAddSchemaResult> = schemas
-            .iter()
-            .map(|schema| self.add_type_schema(schema))
-            .collect();
+        self.add_schemas_with(schemas, false, GtsRefValidation::default())
+    }
+
+    /// [`Self::add_schemas`], optionally with full validation of every entry
+    /// (spec v0.14.4 §9.3 Batch Type Schema Registration).
+    ///
+    /// With `validate`, the whole batch is staged first, so an entry may
+    /// reference or derive from one that comes later in the array. Staged
+    /// entries are then validated until no new failure appears: each rejected
+    /// entry is unstaged and the survivors are checked again, so nothing is
+    /// committed on top of a rejected sibling. The batch may partly succeed;
+    /// a rejected entry is never committed, and an id already stored with the
+    /// same content stays stored. `&mut self` keeps staged entries hidden
+    /// from concurrent readers until the call returns.
+    pub fn add_schemas_with(
+        &mut self,
+        schemas: &[Value],
+        validate: bool,
+        refs: GtsRefValidation,
+    ) -> GtsAddSchemasResult {
+        let mut results = Vec::with_capacity(schemas.len());
+        // Staged entries awaiting validation: result index, id, whether this
+        // call inserted it (and so must remove it on rejection).
+        let mut staged = Vec::new();
+        for schema in schemas {
+            let existed = validate
+                && GtsStore::declared_type_id(schema)
+                    .is_ok_and(|type_id| self.store.get(&type_id).is_some());
+            let result = self.add_type_schema(schema);
+            if validate && let (true, Some(type_id)) = (result.ok, &result.type_id) {
+                staged.push((results.len(), type_id.clone(), !existed));
+            }
+            results.push(result);
+        }
+
+        loop {
+            let before = staged.len();
+            staged.retain(|(index, type_id, inserted)| {
+                let Err(e) = self.store.validate_schema_with(type_id, refs) else {
+                    return true;
+                };
+                if *inserted {
+                    self.store.unregister(type_id);
+                }
+                let result: &mut GtsAddSchemaResult = &mut results[*index];
+                result.ok = false;
+                result.error = format!("Schema validation failed: {e}");
+                false
+            });
+            if staged.len() == before {
+                break;
+            }
+        }
+
         let ok = results.iter().all(|r| r.ok);
         GtsAddSchemasResult { ok, results }
     }
@@ -3532,6 +3582,105 @@ mod tests {
         assert_eq!(
             ops.get_entity("gts.x.rollback._.schema.v1~").content,
             Some(schema("#"))
+        );
+    }
+
+    fn batch_schema(type_id: &str, properties: &Value) -> Value {
+        json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "$id": format!("gts://{type_id}"),
+            "type": "object",
+            "properties": properties
+        })
+    }
+
+    #[test]
+    fn test_add_schemas_with_validate_resolves_later_entries() {
+        let mut ops = GtsOps::new(None, None, 0);
+        let referrer = batch_schema(
+            "gts.x.batch._.referrer.v1~",
+            &json!({"child": {"$ref": "gts://gts.x.batch._.target.v1~"}}),
+        );
+        let derived = json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "$id": "gts://gts.x.batch._.target.v1~x.batch._.derived.v1~",
+            "type": "object",
+            "allOf": [{"$ref": "gts://gts.x.batch._.target.v1~"}]
+        });
+        let target = batch_schema(
+            "gts.x.batch._.target.v1~",
+            &json!({"n": {"type": "string"}}),
+        );
+
+        let result = ops.add_schemas_with(
+            &[referrer, derived, target],
+            true,
+            GtsRefValidation::default(),
+        );
+        assert!(result.ok, "{:?}", result.results);
+        assert!(ops.get_entity("gts.x.batch._.referrer.v1~").ok);
+        assert!(
+            ops.get_entity("gts.x.batch._.target.v1~x.batch._.derived.v1~")
+                .ok
+        );
+    }
+
+    #[test]
+    fn test_add_schemas_with_validate_commits_only_valid_entries() {
+        let mut ops = GtsOps::new(None, None, 0);
+        let valid = batch_schema("gts.x.batch._.valid.v1~", &json!({"n": {"type": "string"}}));
+        let invalid = batch_schema(
+            "gts.x.batch._.invalid.v1~",
+            &json!({"a": {"$ref": "gts://gts.x.batch._.missing.v1~"}}),
+        );
+
+        let result =
+            ops.add_schemas_with(&[valid, invalid.clone()], true, GtsRefValidation::default());
+        assert!(!result.ok);
+        assert!(result.results[0].ok, "{}", result.results[0].error);
+        assert!(!result.results[1].ok);
+        assert!(ops.get_entity("gts.x.batch._.valid.v1~").ok);
+        assert!(!ops.get_entity("gts.x.batch._.invalid.v1~").ok);
+
+        // Without `validate` the same forward reference registers.
+        assert!(ops.add_schemas(&[invalid]).ok);
+    }
+
+    #[test]
+    fn test_add_schemas_with_validate_rejects_dependents_of_rejected_entries() {
+        let mut ops = GtsOps::new(None, None, 0);
+        // `b` comes first, so it passes while `a` is still staged and must be
+        // re-checked once `a` is rejected.
+        let b = batch_schema(
+            "gts.x.batch._.b.v1~",
+            &json!({"x": {"type": "string", "x-gts-ref": "gts.x.batch._.a.v1~"}}),
+        );
+        let a = batch_schema(
+            "gts.x.batch._.a.v1~",
+            &json!({"r": {"type": "string", "x-gts-ref": "gts.x.batch._.missing.v1~"}}),
+        );
+
+        let result = ops.add_schemas_with(&[b, a], true, GtsRefValidation::AnyPresent);
+        assert!(!result.results[0].ok, "b depends on the rejected a");
+        assert!(!result.results[1].ok);
+        assert!(!ops.get_entity("gts.x.batch._.a.v1~").ok);
+        assert!(!ops.get_entity("gts.x.batch._.b.v1~").ok);
+    }
+
+    #[test]
+    fn test_add_schemas_with_validate_keeps_previously_stored_entries() {
+        let mut ops = GtsOps::new(None, None, 0);
+        let stored = batch_schema(
+            "gts.x.batch._.stored.v1~",
+            &json!({"a": {"$ref": "gts://gts.x.batch._.missing.v1~"}}),
+        );
+        assert!(ops.add_schemas(std::slice::from_ref(&stored)).ok);
+
+        let result = ops.add_schemas_with(&[stored], true, GtsRefValidation::default());
+        assert!(!result.ok, "the stored entry is still invalid");
+        assert!(
+            ops.get_entity("gts.x.batch._.stored.v1~").ok,
+            "a rejected resubmission must not remove what was already stored"
         );
     }
 

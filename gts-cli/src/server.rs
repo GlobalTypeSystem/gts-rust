@@ -287,16 +287,22 @@ async fn add_entities(
 }
 
 /// Per-entry outcomes are in the body, so a partly rejected batch is still a
-/// 200; only a body that is not an array of schemas is refused outright.
+/// 200; only a body that is not an array of schemas, or a malformed
+/// `gts-ref-validation`, is refused outright.
 async fn add_schemas(
     State(state): State<AppState>,
+    Query(params): Query<AddEntityQuery>,
     Json(body): Json<Vec<Value>>,
 ) -> impl IntoResponse {
+    let refs = match params.refs.resolve() {
+        Ok(refs) => refs,
+        Err(error) => return unprocessable(&error),
+    };
     let mut ops = match lock_ops(&state.ops) {
         Ok(guard) => guard,
         Err(response) => return response.into_response(),
     };
-    let result = ops.add_schemas(&body);
+    let result = ops.add_schemas_with(&body, params.validate, refs);
     Json(result).into_response()
 }
 
