@@ -1,5 +1,5 @@
 use gts::entities::{GtsConfig, GtsEntity, GtsFile};
-use gts::gts::{GTS_ID_PREFIX, GtsId};
+use gts::gts::{GTS_ID_PREFIX, GTS_ID_URI_PREFIX, GtsId};
 use gts::store::GtsStore;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 use walkdir::WalkDir;
 
-const EXCLUDE_DIRS: &[&str] = &["node_modules", "dist", "build"];
+/// The GTS schema extension keyword. It is a fixed keyword (not derived from
+/// `GTS_ID_PREFIX`), so the marker below is matched verbatim.
+const X_GTS_REF_KEYWORD: &str = "x-gts-ref";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GtsJsonValidationIssue {
@@ -33,6 +35,7 @@ pub struct GtsJsonValidationResult {
 pub struct GtsJsonValidator {
     path: PathBuf,
     cfg: GtsConfig,
+    exclude: Vec<String>,
     files: usize,
     documents: usize,
     entities: Vec<GtsEntity>,
@@ -41,11 +44,12 @@ pub struct GtsJsonValidator {
 
 impl GtsJsonValidator {
     #[must_use]
-    pub fn new(path: &str, cfg: GtsConfig) -> Self {
+    pub fn new(path: &str, cfg: GtsConfig, exclude: Vec<String>) -> Self {
         let expanded = shellexpand::tilde(path).to_string();
         GtsJsonValidator {
             path: PathBuf::from(expanded),
             cfg,
+            exclude,
             files: 0,
             documents: 0,
             entities: Vec::new(),
@@ -59,11 +63,11 @@ impl GtsJsonValidator {
         for file_path in &json_files {
             self.read_file(file_path);
         }
-        self.validate_json_schemas();
-        let mut store = self.register_gts_entities();
-        let (schemas_count, instances_count) = self.count_schema_instance();
-        self.validate_schemas(&mut store);
-        self.validate_instances(&mut store);
+        self.check_schema_field_type();
+        let (mut store, registered) = self.register_gts_entities();
+        let (schemas_count, instances_count) = self.count_schema_instance(&registered);
+        self.validate_schemas(&mut store, &registered);
+        self.validate_instances(&mut store, &registered);
 
         let ok = self.issues.is_empty();
         GtsJsonValidationResult {
@@ -106,20 +110,42 @@ impl GtsJsonValidator {
         let mut files: Vec<PathBuf> = Vec::new();
         let mut seen = HashSet::new();
 
+        // Clone into a local so the traversal closure does not borrow `self`
+        // (the loop body needs `&mut self` to record issues).
+        let exclude = self.exclude.clone();
         for entry in WalkDir::new(&resolved)
             .follow_links(true)
             .into_iter()
-            .flatten()
+            .filter_entry(move |e| {
+                // Prune excluded directories before descending into them.
+                if e.depth() > 0
+                    && e.file_type().is_dir()
+                    && let Some(name) = e.file_name().to_str()
+                {
+                    return !exclude.iter().any(|x| x == name);
+                }
+                true
+            })
         {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(e) => {
+                    // Surface traversal errors instead of silently dropping them.
+                    let file = e.path().map_or_else(
+                        || resolved.to_string_lossy().to_string(),
+                        |p| p.to_string_lossy().to_string(),
+                    );
+                    self.issues.push(GtsJsonValidationIssue {
+                        file,
+                        stage: "discovery".to_owned(),
+                        message: e.to_string(),
+                        index: None,
+                    });
+                    continue;
+                }
+            };
+
             let path = entry.path();
-
-            if path.is_dir()
-                && let Some(name) = path.file_name()
-                && EXCLUDE_DIRS.contains(&name.to_string_lossy().as_ref())
-            {
-                continue;
-            }
-
             if path.is_file()
                 && path
                     .extension()
@@ -137,8 +163,26 @@ impl GtsJsonValidator {
         files
     }
 
+    /// Cheap, portable heuristic to decide whether a document is GTS-related:
+    /// its raw text must contain at least one GTS marker. GTS schemas and
+    /// instances always carry one, so anything without a marker is ignored.
+    ///
+    /// The markers mirror the three combinations agreed on the PR:
+    /// - `{GTS_ID_PREFIX}.`   — the configurable id prefix (e.g. `gts.`)
+    /// - `{GTS_ID_PREFIX}://` — the `$id` URI scheme (`gts://`)
+    /// - `x-{GTS_ID_PREFIX}-` — the `x-gts-ref` schema keyword
+    ///
+    /// The URI scheme and the `x-gts-ref` keyword are fixed in this
+    /// implementation (they are not re-derived when `GTS_ID_PREFIX` is
+    /// overridden), so they are matched against their real constant values to
+    /// keep detection correct under a custom prefix.
+    fn is_gts_related(text: &str) -> bool {
+        text.contains(GTS_ID_PREFIX)
+            || text.contains(GTS_ID_URI_PREFIX)
+            || text.contains(X_GTS_REF_KEYWORD)
+    }
+
     fn read_file(&mut self, file_path: &Path) {
-        self.files += 1;
         let content_str = match std::fs::read_to_string(file_path) {
             Ok(s) => s,
             Err(e) => {
@@ -146,6 +190,12 @@ impl GtsJsonValidator {
                 return;
             }
         };
+
+        // Ignore files with no GTS marker before paying the parse cost.
+        if !Self::is_gts_related(&content_str) {
+            return;
+        }
+        self.files += 1;
 
         let content: Value = match serde_json::from_str(&content_str) {
             Ok(v) => v,
@@ -188,12 +238,12 @@ impl GtsJsonValidator {
         }
     }
 
-    fn validate_json_schemas(&mut self) {
+    /// Checks that, when a `$schema` field is present, it is a string as the GTS
+    /// schema-detection rule requires. This does not classify or validate the
+    /// document — it only guards the type of the `$schema` marker.
+    fn check_schema_field_type(&mut self) {
         let mut new_issues = Vec::new();
         for entity in &self.entities {
-            if !entity.content.is_object() {
-                continue;
-            }
             let Some(obj) = entity.content.as_object() else {
                 continue;
             };
@@ -211,28 +261,36 @@ impl GtsJsonValidator {
         self.issues.extend(new_issues);
     }
 
-    fn register_gts_entities(&mut self) -> GtsStore {
+    fn register_gts_entities(&mut self) -> (GtsStore, HashSet<usize>) {
         let mut store = GtsStore::new();
         let mut keys: HashSet<String> = HashSet::new();
+        let mut registered: HashSet<usize> = HashSet::new();
 
-        for entity in &mut self.entities {
-            if !Self::is_gts_related(&entity.content) {
-                continue;
-            }
-
-            let key = Self::registry_key(entity);
-            let Some(mut key) = key else {
-                self.issues.push(GtsJsonValidationIssue {
-                    file: Self::entity_file(entity),
-                    stage: "registry".to_owned(),
-                    message: "GTS-related document has no registrable GTS ID".to_owned(),
-                    index: entity.list_sequence,
-                });
+        for (idx, entity) in self.entities.iter_mut().enumerate() {
+            let Some(mut key) = Self::registry_key(entity) else {
+                // A schema ($schema present) that yields no registrable GTS id
+                // has a malformed or non-GTS $id — report it instead of
+                // silently dropping it. Non-schema documents without an id are
+                // simply ignored.
+                if entity.is_schema || entity.selected_entity_field.is_some() {
+                    self.issues.push(GtsJsonValidationIssue {
+                        file: Self::entity_file(entity),
+                        stage: "registry".to_owned(),
+                        message: if entity.is_schema {
+                            "GTS schema has a malformed or non-GTS $id".to_owned()
+                        } else {
+                            "GTS instance has a malformed or non-GTS ID".to_owned()
+                        },
+                        index: entity.list_sequence,
+                    });
+                }
                 continue;
             };
 
-            // For non-schema entities without a selected_entity_field, generate UUID from raw id
+            // For anonymous instances (no GTS id, no selected entity field),
+            // derive a stable UUID from the raw instance id.
             if !entity.is_schema
+                && entity.gts_id.is_none()
                 && entity.selected_entity_field.is_none()
                 && let Some(ref instance_id) = entity.instance_id
             {
@@ -252,20 +310,26 @@ impl GtsJsonValidator {
             }
 
             keys.insert(key);
-            let _ = store.register(entity.clone());
+            if let Err(e) = store.register(entity.clone()) {
+                self.issues.push(GtsJsonValidationIssue {
+                    file: Self::entity_file(entity),
+                    stage: "registry".to_owned(),
+                    message: e.to_string(),
+                    index: entity.list_sequence,
+                });
+            } else {
+                registered.insert(idx);
+            }
         }
 
-        store
+        (store, registered)
     }
 
-    fn count_schema_instance(&self) -> (usize, usize) {
+    fn count_schema_instance(&self, registered: &HashSet<usize>) -> (usize, usize) {
         let mut schemas = 0;
         let mut instances = 0;
-        for entity in &self.entities {
-            if !Self::is_gts_related(&entity.content) {
-                continue;
-            }
-            if Self::registry_key(entity).is_none() {
+        for (idx, entity) in self.entities.iter().enumerate() {
+            if !registered.contains(&idx) {
                 continue;
             }
             if entity.is_schema {
@@ -277,89 +341,124 @@ impl GtsJsonValidator {
         (schemas, instances)
     }
 
-    fn validate_schemas(&mut self, store: &mut GtsStore) {
-        let mut schema_ids: Vec<(String, usize)> = Vec::new();
-        for entity in &self.entities {
+    fn validate_schemas(&mut self, store: &mut GtsStore, registered: &HashSet<usize>) {
+        // Validate schemas ordered by (derivation level, GTS ID, file name,
+        // array index): base types (level 1) first, then level-2 derivations,
+        // level-3, and so on — each level a total order on the remaining keys.
+        // The reporting stage is derived from that level.
+        struct Pending {
+            depth: usize,
+            id: String,
+            file: String,
+            index: Option<usize>,
+        }
+
+        let mut schemas: Vec<Pending> = Vec::new();
+        for (idx, entity) in self.entities.iter().enumerate() {
+            if !registered.contains(&idx) {
+                continue;
+            }
             if entity.is_schema
                 && let Some(ref gts_id) = entity.gts_id
             {
                 let id = gts_id.id().to_owned();
                 if store.get(&id).is_some() {
-                    let depth = gts_id.segments().len();
-                    schema_ids.push((id, depth));
+                    schemas.push(Pending {
+                        depth: gts_id.segments().len(),
+                        id,
+                        file: Self::entity_file(entity),
+                        index: entity.list_sequence,
+                    });
                 }
             }
         }
-        schema_ids.sort_by_key(|(_, depth)| *depth);
+        schemas.sort_by(|a, b| {
+            (a.depth, &a.id, &a.file, a.index).cmp(&(b.depth, &b.id, &b.file, b.index))
+        });
 
-        // Validate base types (depth 1) first
-        for (id, depth) in &schema_ids {
-            if *depth != 1 {
-                continue;
-            }
-            if let Err(e) = store.validate_schema(id) {
-                let entity = store.get(id);
-                let (file, index) = entity.map_or_else(
-                    || (id.clone(), None),
-                    |e| (Self::entity_file(e), e.list_sequence),
-                );
+        for s in schemas {
+            if let Err(e) = store.validate_schema(&s.id) {
+                let stage = if s.depth <= 1 {
+                    "base-type"
+                } else {
+                    "derived-type"
+                };
                 self.issues.push(GtsJsonValidationIssue {
-                    file,
-                    stage: "base-type".to_owned(),
+                    file: s.file,
+                    stage: stage.to_owned(),
                     message: e.to_string(),
-                    index,
-                });
-            }
-        }
-
-        // Then validate derived types (depth > 1)
-        for (id, depth) in &schema_ids {
-            if *depth <= 1 {
-                continue;
-            }
-            if let Err(e) = store.validate_schema(id) {
-                let entity = store.get(id);
-                let (file, index) = entity.map_or_else(
-                    || (id.clone(), None),
-                    |e| (Self::entity_file(e), e.list_sequence),
-                );
-                self.issues.push(GtsJsonValidationIssue {
-                    file,
-                    stage: "derived-type".to_owned(),
-                    message: e.to_string(),
-                    index,
+                    index: s.index,
                 });
             }
         }
     }
 
-    fn validate_instances(&mut self, store: &mut GtsStore) {
-        for entity in &self.entities {
-            if entity.is_schema || !Self::is_gts_related(&entity.content) {
+    fn validate_instances(&mut self, store: &mut GtsStore, registered: &HashSet<usize>) {
+        // Validate instances after all schemas, using the same total order as
+        // schemas: (derivation level, GTS ID, file name, array index). The
+        // level is the GTS-ID chain depth (falling back to the declared type's
+        // depth for anonymous instances), so it is stable and independent of
+        // filesystem traversal.
+        struct Pending {
+            depth: usize,
+            id: String,
+            file: String,
+            index: Option<usize>,
+            registry_key: String,
+        }
+
+        let mut pending: Vec<Pending> = Vec::new();
+        for (idx, entity) in self.entities.iter().enumerate() {
+            if entity.is_schema {
                 continue;
             }
-            let key = Self::registry_key(entity);
-            let Some(key) = key else {
+            let Some(registry_key) = Self::registry_key(entity) else {
                 continue;
             };
-            if let Err(e) = store.validate_instance(&key) {
+            // Skip rejected duplicates: only validate successfully registered entities
+            if !registered.contains(&idx) {
+                continue;
+            }
+            pending.push(Pending {
+                depth: Self::entity_depth(entity),
+                id: entity
+                    .gts_id
+                    .as_ref()
+                    .map_or_else(String::new, |g| g.id().to_owned()),
+                file: Self::entity_file(entity),
+                index: entity.list_sequence,
+                registry_key,
+            });
+        }
+        pending.sort_by(|a, b| {
+            (a.depth, &a.id, &a.file, a.index).cmp(&(b.depth, &b.id, &b.file, b.index))
+        });
+
+        for p in pending {
+            if let Err(e) = store.validate_instance(&p.registry_key) {
                 self.issues.push(GtsJsonValidationIssue {
-                    file: Self::entity_file(entity),
+                    file: p.file,
                     stage: "instance".to_owned(),
                     message: e.to_string(),
-                    index: entity.list_sequence,
+                    index: p.index,
                 });
             }
         }
     }
 
-    fn is_gts_related(value: &Value) -> bool {
-        match value {
-            Value::String(s) => s.contains(GTS_ID_PREFIX),
-            Value::Object(map) => map.values().any(Self::is_gts_related),
-            Value::Array(arr) => arr.iter().any(Self::is_gts_related),
-            _ => false,
+    /// Derivation level used for ordering: the GTS-ID chain depth for schemas
+    /// and well-known instances, falling back to the declared type's depth for
+    /// anonymous instances (which have no GTS ID of their own).
+    fn entity_depth(entity: &GtsEntity) -> usize {
+        if let Some(ref gts_id) = entity.gts_id {
+            return gts_id.segments().len();
         }
+        if let Some(ref type_id) = entity.type_id
+            && let Ok(gts_id) = GtsId::try_new(type_id)
+        {
+            return gts_id.segments().len();
+        }
+        0
     }
 
     fn registry_key(entity: &GtsEntity) -> Option<String> {
@@ -393,5 +492,363 @@ impl GtsJsonValidator {
             message: message.to_owned(),
             index: None,
         });
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    // All fixtures are built from the compile-time `GTS_ID_PREFIX` so the suite
+    // also passes under a custom prefix (e.g. `GTS_ID_PREFIX=acme.`).
+    fn base_schema() -> String {
+        format!(
+            r#"{{
+                "$id": "{GTS_ID_URI_PREFIX}{GTS_ID_PREFIX}cli.core.test.base.v1~",
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "properties": {{ "name": {{ "type": "string" }} }},
+                "required": ["name"]
+            }}"#
+        )
+    }
+
+    fn leaf_schema() -> String {
+        format!(
+            r#"{{
+                "$id": "{GTS_ID_URI_PREFIX}{GTS_ID_PREFIX}cli.core.test.base.v1~cli.core.test.leaf.v1~",
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "allOf": [
+                    {{ "$ref": "{GTS_ID_URI_PREFIX}{GTS_ID_PREFIX}cli.core.test.base.v1~" }},
+                    {{ "properties": {{ "extra": {{ "type": "string" }} }} }}
+                ]
+            }}"#
+        )
+    }
+
+    fn base_instance() -> String {
+        format!(
+            r#"{{
+                "id": "{GTS_ID_PREFIX}cli.core.test.base.v1~cli.app._.thing.v1.0",
+                "name": "hello"
+            }}"#
+        )
+    }
+
+    fn write(dir: &Path, name: &str, content: &str) {
+        fs::write(dir.join(name), content).unwrap();
+    }
+
+    fn run(dir: &Path) -> GtsJsonValidationResult {
+        GtsJsonValidator::new(dir.to_str().unwrap(), GtsConfig::default(), vec![]).validate()
+    }
+
+    #[test]
+    fn test_valid_schema_and_instance_set() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "base.schema.json", &base_schema());
+        write(dir.path(), "thing.json", &base_instance());
+
+        let result = run(dir.path());
+
+        assert!(result.ok, "expected ok, issues: {:?}", result.issues);
+        assert_eq!(result.schemas, 1);
+        assert_eq!(result.instances, 1);
+        assert_eq!(result.gts_entities, 2);
+        assert!(result.issues.is_empty());
+    }
+
+    #[test]
+    fn test_derived_schema_set_is_valid() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "base.schema.json", &base_schema());
+        write(dir.path(), "leaf.schema.json", &leaf_schema());
+
+        let result = run(dir.path());
+
+        assert!(result.ok, "expected ok, issues: {:?}", result.issues);
+        assert_eq!(result.schemas, 2);
+        assert_eq!(result.instances, 0);
+    }
+
+    #[test]
+    fn test_malformed_schema_id_is_reported() {
+        let dir = TempDir::new().unwrap();
+        // gts:// URI is correct, but the body uses a non-GTS prefix (gtx.).
+        let malformed = r#"{
+            "$id": "gts://gtx.cli.core.test.bad.v1~",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object"
+        }"#;
+        write(dir.path(), "bad.schema.json", malformed);
+
+        let result = run(dir.path());
+
+        assert!(!result.ok, "malformed GTS id should fail");
+        assert_eq!(result.gts_entities, 0);
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|i| i.stage == "registry" && i.message.contains("malformed")),
+            "expected a malformed-id diagnostic, got: {:?}",
+            result.issues
+        );
+    }
+
+    #[test]
+    fn test_incidental_prefix_mention_is_not_registered() {
+        let dir = TempDir::new().unwrap();
+        // The marker heuristic considers this file GTS-related (it mentions the
+        // prefix), so it is parsed — but the document has no registrable GTS id
+        // and is not a schema, so it is neither registered nor flagged.
+        let doc = format!(
+            r#"{{ "description": "see {GTS_ID_PREFIX}foo.bar for details", "value": 42 }}"#
+        );
+        write(dir.path(), "unrelated.json", &doc);
+
+        let result = run(dir.path());
+
+        assert!(
+            result.ok,
+            "incidental mention should not fail: {:?}",
+            result.issues
+        );
+        assert_eq!(result.documents, 1);
+        assert_eq!(result.gts_entities, 0);
+        assert!(result.issues.is_empty());
+    }
+
+    #[test]
+    fn test_duplicate_entity_is_reported() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "a.schema.json", &base_schema());
+        write(dir.path(), "b.schema.json", &base_schema());
+
+        let result = run(dir.path());
+
+        assert!(!result.ok, "duplicate ids should fail");
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|i| i.message.contains("Duplicate")),
+            "expected a duplicate diagnostic, got: {:?}",
+            result.issues
+        );
+    }
+
+    #[test]
+    fn test_duplicate_invalid_schema_is_not_revalidated_or_counted() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "a.schema.json", &invalid_base("duplicate"));
+        write(dir.path(), "b.schema.json", &invalid_base("duplicate"));
+
+        let result = run(dir.path());
+
+        assert_eq!(result.schemas, 1);
+        assert_eq!(result.gts_entities, 1);
+        assert_eq!(
+            result
+                .issues
+                .iter()
+                .filter(|issue| issue.stage == "base-type")
+                .count(),
+            1,
+            "issues: {:?}",
+            result.issues
+        );
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.stage == "registry" && issue.message.contains("Duplicate"))
+        );
+    }
+
+    #[test]
+    fn test_malformed_gts_instance_id_is_reported() {
+        let dir = TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "bad.json",
+            r#"{ "id": "gts://gtx.cli.core.test.bad.v1~", "value": 42 }"#,
+        );
+
+        let result = run(dir.path());
+
+        assert!(!result.ok, "issues: {:?}", result.issues);
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.stage == "registry" && issue.message.contains("malformed"))
+        );
+    }
+
+    #[test]
+    fn test_explicitly_requested_excluded_root_is_scanned() {
+        let dir = TempDir::new().unwrap();
+        let build = dir.path().join("build");
+        fs::create_dir(&build).unwrap();
+        write(&build, "base.schema.json", &base_schema());
+
+        let result = GtsJsonValidator::new(
+            build.to_str().unwrap(),
+            GtsConfig::default(),
+            vec!["build".to_owned()],
+        )
+        .validate();
+
+        assert!(result.ok, "issues: {:?}", result.issues);
+        assert_eq!(result.schemas, 1);
+    }
+
+    #[test]
+    fn test_non_gts_files_are_ignored() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "base.schema.json", &base_schema());
+
+        // A plain non-GTS JSON file (no marker) is ignored — not counted.
+        write(
+            dir.path(),
+            "package.json",
+            r#"{ "name": "pkg", "version": "1.0.0" }"#,
+        );
+
+        // Even a broken JSON file is ignored when it carries no GTS marker: the
+        // heuristic replaces the old hard-coded directory exclusions, so nested
+        // dependency dirs cost nothing beyond a cheap text scan.
+        let nm = dir.path().join("node_modules");
+        fs::create_dir(&nm).unwrap();
+        write(&nm, "broken.json", "{ this is not json ");
+
+        let result = run(dir.path());
+
+        assert!(
+            result.ok,
+            "non-GTS files must be ignored: {:?}",
+            result.issues
+        );
+        assert_eq!(result.files, 1, "only the GTS schema should be processed");
+        assert_eq!(result.schemas, 1);
+    }
+
+    #[test]
+    fn test_marker_heuristic_matches_expected_combinations() {
+        let bare = GTS_ID_PREFIX.trim_end_matches('.');
+
+        // Each of the three agreed combinations marks a file as GTS-related.
+        assert!(GtsJsonValidator::is_gts_related(&format!(
+            r#"{{ "id": "{bare}.x.y.z.t.v1~a.b.c.d.v1.0" }}"#
+        )));
+        assert!(GtsJsonValidator::is_gts_related(&format!(
+            r#"{{ "$id": "{GTS_ID_URI_PREFIX}{bare}.x.y.z.t.v1~" }}"#
+        )));
+        assert!(GtsJsonValidator::is_gts_related(
+            r#"{ "properties": { "p": { "x-gts-ref": "..." } } }"#
+        ));
+
+        // A document with none of the markers is not GTS-related.
+        assert!(!GtsJsonValidator::is_gts_related(
+            r#"{ "name": "widgets", "version": "1.0.0" }"#
+        ));
+    }
+
+    // A depth-1 (base) Type Schema that fails validation: it references a
+    // missing dependency, so `validate_schema` errors regardless of prefix.
+    fn invalid_base(seg: &str) -> String {
+        format!(
+            r#"{{
+                "$id": "{GTS_ID_URI_PREFIX}{GTS_ID_PREFIX}cli.core.test.{seg}.v1~",
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "allOf": [
+                    {{ "$ref": "{GTS_ID_URI_PREFIX}{GTS_ID_PREFIX}cli.core.test.missing.v1~" }}
+                ]
+            }}"#
+        )
+    }
+
+    // A depth-2 (derived) Type Schema under the valid base that fails
+    // validation (missing dependency).
+    fn invalid_leaf() -> String {
+        format!(
+            r#"{{
+                "$id": "{GTS_ID_URI_PREFIX}{GTS_ID_PREFIX}cli.core.test.base.v1~cli.core.test.leaf.v1~",
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "allOf": [
+                    {{ "$ref": "{GTS_ID_URI_PREFIX}{GTS_ID_PREFIX}cli.core.test.missing.v1~" }}
+                ]
+            }}"#
+        )
+    }
+
+    // A well-known instance of the base type missing the required `name` field.
+    fn invalid_instance(seg: &str) -> String {
+        format!(r#"{{ "id": "{GTS_ID_PREFIX}cli.core.test.base.v1~cli.app._.{seg}.v1.0" }}"#)
+    }
+
+    #[test]
+    fn test_schema_errors_ordered_by_depth_then_gts_id() {
+        let dir = TempDir::new().unwrap();
+        // Valid base so the derived leaf resolves its parent chain.
+        write(dir.path(), "base.schema.json", &base_schema());
+        // File names are deliberately out of GTS-ID / depth order to prove the
+        // reported order comes from (depth, id), not filesystem traversal.
+        write(dir.path(), "0_mmm.schema.json", &invalid_base("mmm"));
+        write(dir.path(), "a_leaf.schema.json", &invalid_leaf());
+        write(dir.path(), "z_aaa.schema.json", &invalid_base("aaa"));
+
+        let result = run(dir.path());
+
+        let schema_issues: Vec<&GtsJsonValidationIssue> = result
+            .issues
+            .iter()
+            .filter(|i| i.stage == "base-type" || i.stage == "derived-type")
+            .collect();
+
+        assert_eq!(schema_issues.len(), 3, "issues: {:?}", result.issues);
+        // Base types first, alphabetically by GTS ID: aaa, then mmm.
+        assert_eq!(schema_issues[0].stage, "base-type");
+        assert!(schema_issues[0].file.ends_with("z_aaa.schema.json"));
+        assert_eq!(schema_issues[1].stage, "base-type");
+        assert!(schema_issues[1].file.ends_with("0_mmm.schema.json"));
+        // Derived (depth-2) types afterwards.
+        assert_eq!(schema_issues[2].stage, "derived-type");
+        assert!(schema_issues[2].file.ends_with("a_leaf.schema.json"));
+    }
+
+    #[test]
+    fn test_instance_errors_ordered_by_gts_id() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "base.schema.json", &base_schema());
+        // File order (a_zeta, z_alpha) is the reverse of GTS-ID order
+        // (alpha < zeta), so this proves the sort keys off the GTS ID.
+        write(dir.path(), "z_alpha.json", &invalid_instance("alpha"));
+        write(dir.path(), "a_zeta.json", &invalid_instance("zeta"));
+
+        let result = run(dir.path());
+
+        let instance_issues: Vec<&GtsJsonValidationIssue> = result
+            .issues
+            .iter()
+            .filter(|i| i.stage == "instance")
+            .collect();
+
+        assert_eq!(instance_issues.len(), 2, "issues: {:?}", result.issues);
+        assert!(
+            instance_issues[0].file.ends_with("z_alpha.json"),
+            "alpha should be first: {instance_issues:?}"
+        );
+        assert!(
+            instance_issues[1].file.ends_with("a_zeta.json"),
+            "zeta should be second: {instance_issues:?}"
+        );
     }
 }
