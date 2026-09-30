@@ -112,7 +112,8 @@ impl EffectiveTraits {
         check_unresolved: bool,
         entity_exists: Option<crate::x_gts_ref::ReferenceExists>,
     ) -> Result<(), Vec<String>> {
-        validate_trait_schema_integrity(&self.resolved_trait_schemas)?;
+        let dialect = self.schema.get("$schema").and_then(Value::as_str);
+        validate_trait_schema_integrity(&self.resolved_trait_schemas, dialect)?;
         validate_trait_schema_compatibility(&self.resolved_trait_schemas)?;
 
         if !self.has_schema() {
@@ -269,10 +270,17 @@ pub fn validate_traits_chain(chain_schemas: &[(String, Value)]) -> Result<(), Ve
 /// preserving indexed error messages for malformed inputs. Run first by
 /// [`EffectiveTraits::validate`].
 ///
+/// A fragment without its own `$schema` is compiled under `dialect`, the host
+/// document's, so a Draft-07 tuple `items: [...]` is not judged by the 2020-12
+/// metaschema. `None` leaves the validator's default draft.
+///
 /// # Errors
 /// Returns `Vec<String>` of error messages if any collected trait schema is not
 /// a JSON Schema object or boolean subschema.
-fn validate_trait_schema_integrity(resolved_trait_schemas: &[Value]) -> Result<(), Vec<String>> {
+fn validate_trait_schema_integrity(
+    resolved_trait_schemas: &[Value],
+    dialect: Option<&str>,
+) -> Result<(), Vec<String>> {
     // Each x-gts-traits-schema is a JSON Schema subschema. Accepted forms are
     // an object subschema, `true`, or `false`. Validate JSON Schema integrity
     // only for object-form subschemas; the boolean forms have well-defined
@@ -291,8 +299,18 @@ fn validate_trait_schema_integrity(resolved_trait_schemas: &[Value]) -> Result<(
     for (i, ts) in resolved_trait_schemas.iter().enumerate() {
         match ts {
             Value::Bool(_) => {}
-            Value::Object(_) => {
-                if let Err(e) = crate::json_schema::validator_for(ts) {
+            Value::Object(fragment) => {
+                let pinned;
+                let schema = match dialect {
+                    Some(dialect) if !fragment.contains_key("$schema") => {
+                        let mut fragment = fragment.clone();
+                        fragment.insert("$schema".to_owned(), Value::String(dialect.to_owned()));
+                        pinned = Value::Object(fragment);
+                        &pinned
+                    }
+                    _ => ts,
+                };
+                if let Err(e) = crate::json_schema::validator_for(schema) {
                     return Err(vec![format!(
                         "x-gts-traits-schema[{i}] is not a valid JSON Schema: {e}"
                     )]);
@@ -1036,7 +1054,7 @@ mod tests {
         // A resolved trait schema that is neither an object subschema nor a
         // boolean (here, an array) must hit the dedicated error arm.
         let schemas = vec![json!([1, 2])];
-        let err = validate_trait_schema_integrity(&schemas).unwrap_err();
+        let err = validate_trait_schema_integrity(&schemas, None).unwrap_err();
         assert!(
             err.iter()
                 .any(|m| m.contains("must be an object subschema or a boolean")),
@@ -1057,6 +1075,31 @@ mod tests {
         assert_eq!(inlined["minLength"], json!(1));
         assert_eq!(inlined["description"], json!("extra"));
         assert!(inlined.get("$ref").is_none());
+    }
+
+    #[test]
+    fn test_trait_schema_integrity_uses_host_dialect() {
+        // Tuple-form `items` is legal Draft-07 but not 2020-12, so the fragment
+        // must be judged by the host document's metaschema.
+        let host = |dialect: &str| {
+            vec![(
+                "base~".to_owned(),
+                json!({"$schema": dialect,
+                    "type": "object",
+                    "x-gts-traits-schema": {
+                        "type": "object",
+                        "properties": {"pair": {"type": "array", "items": [{"type": "string"}]}}
+                    }
+                }),
+            )]
+        };
+        assert!(validate_traits_chain(&host("http://json-schema.org/draft-07/schema#")).is_ok());
+        let err = validate_traits_chain(&host("https://json-schema.org/draft/2020-12/schema"))
+            .unwrap_err();
+        assert!(
+            err.iter().any(|m| m.contains("is not a valid JSON Schema")),
+            "2020-12 must reject tuple items: {err:?}"
+        );
     }
 
     #[test]
