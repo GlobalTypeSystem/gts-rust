@@ -647,10 +647,12 @@ dependencies = [
 name = "gts"
 version = "0.13.0"
 dependencies = [
+ "fancy-regex",
  "gts-id",
  "jsonschema",
  "jsonschema-regex",
  "num-cmp",
+ "referencing",
  "schemars",
  "serde",
  "serde-saphyr",

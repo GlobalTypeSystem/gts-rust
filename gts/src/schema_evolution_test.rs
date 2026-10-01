@@ -1915,3 +1915,13 @@ fn test_all_of_intersects_bounds_beyond_f64_precision() {
         "{flattened}"
     );
 }
+
+#[test]
+fn an_exhausted_regex_match_does_not_prove_inclusion() {
+    let source = json!({"enum": [format!("{}!", "a".repeat(64))]});
+    let target = json!({"not": {"pattern": "^(?:((a|aa)(?=a?))+$|a+!$)"}});
+    assert!(!enumerated_source_is_included(
+        source.as_object().unwrap(),
+        &target
+    ));
+}

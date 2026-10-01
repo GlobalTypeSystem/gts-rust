@@ -4,6 +4,7 @@ pub mod gts;
 mod json_schema;
 pub mod ops;
 pub mod path_resolver;
+mod regex_limits;
 pub mod schema;
 pub mod schema_cast;
 pub mod schema_derivation;

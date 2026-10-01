@@ -1051,7 +1051,14 @@ fn enumerated_source_is_included(source: &Map<String, Value>, target: &Value) ->
     let Ok(validator) = crate::json_schema::validator_for(target) else {
         return false;
     };
-    values.into_iter().all(|value| validator.is_valid(value))
+    // A value whose regex matches could not all be completed is not proven
+    // to validate.
+    let Ok(guard) = crate::regex_limits::RegexGuard::new(target, &[]) else {
+        return false;
+    };
+    values
+        .into_iter()
+        .all(|value| validator.is_valid(value) && guard.check(value).is_ok())
 }
 
 /// Compares the value sets `const` and `enum` impose, as one set.

@@ -185,6 +185,10 @@ chrono = "0.4"
 # JSON Schema validation
 jsonschema = { version = "0.57", default-features = false }
 jsonschema-regex = "0.57"
+# The regex engine and reference resolver `jsonschema` uses; see
+# `gts/src/regex_limits.rs`.
+fancy-regex = "0.19"
+referencing = "0.57"
 # Exact comparison between differently typed numbers, as used by `jsonschema`.
 num-cmp = "0.1"
 
