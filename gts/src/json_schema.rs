@@ -16,6 +16,11 @@ fn options_for(schema: &Value) -> jsonschema::ValidationOptions<'_> {
         return options;
     }
 
+    // `dependentSchemas` and `dependentRequired` replaced `dependencies` in
+    // 2019-09, but `jsonschema` 0.57 still applies it there. The regex replay
+    // (`regex_limits`) follows the dialect, so the validator must as well.
+    options = options.with_keyword("dependencies", |_, _, _| Ok(Box::new(NotAKeyword)));
+
     options = options.should_validate_formats(true);
     for name in ASSERTABLE_FORMATS
         .iter()
@@ -24,6 +29,19 @@ fn options_for(schema: &Value) -> jsonschema::ValidationOptions<'_> {
         options = options.with_format(*name, |_| true);
     }
     options
+}
+
+/// A name the dialect does not define as a keyword: it never fails.
+struct NotAKeyword;
+
+impl<'i> jsonschema::Keyword<'i> for NotAKeyword {
+    fn validate(&self, _instance: &'i Value) -> Result<(), jsonschema::ValidationError<'i>> {
+        Ok(())
+    }
+
+    fn is_valid(&self, _instance: &Value) -> bool {
+        true
+    }
 }
 
 /// Formats GTS requires every dialect to assert (README sec 9.2).
@@ -154,8 +172,15 @@ pub struct Diagnosis {
 
 /// Validates exactly, omitting details when explaining recursive combinators
 /// would grow exponentially.
+///
+/// A regex match the engine cannot complete, or one that could not be
+/// checked, is a standard diagnostic, whatever the validator decided.
 pub fn diagnose(validator: &jsonschema::Validator, schema: &Value, instance: &Value) -> Diagnosis {
-    diagnose_resolved(validator, schema, Some(schema), instance)
+    let mut diagnosis = diagnose_resolved(validator, schema, Some(schema), instance);
+    if let Err(error) = crate::regex_limits::exhausted_match(schema, &[], instance) {
+        diagnosis.standard.insert(0, error.to_string());
+    }
+    diagnosis
 }
 
 /// [`diagnose`] for a `schema` whose references `validator` follows itself.
@@ -294,6 +319,38 @@ mod tests {
     fn diagnose_json(schema: &serde_json::Value, instance: &serde_json::Value) -> Diagnosis {
         let validator = gts_validator_for(schema, None).expect("schema compiles");
         diagnose(&validator, schema, instance)
+    }
+
+    #[test]
+    fn an_exhausted_regex_match_is_a_standard_diagnostic() {
+        let schema = serde_json::json!({"not": {"pattern": "^(?:((a|aa)(?=a?))+$|a+!$)"}});
+        let diagnosis = diagnose_json(&schema, &serde_json::json!(format!("{}!", "a".repeat(64))));
+        assert_eq!(diagnosis.standard.len(), 1, "{diagnosis:?}");
+        assert!(
+            diagnosis.standard[0].contains("could not be matched"),
+            "{diagnosis:?}"
+        );
+    }
+
+    #[test]
+    fn an_exhausted_regex_match_keeps_the_other_diagnostics() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "x-gts-ref": "gts.x.test.refs.target.v1~"},
+                "text": {"not": {"pattern": "^(?:((a|aa)(?=a?))+$|a+!$)"}}
+            }
+        });
+        let instance = serde_json::json!({
+            "target": "not-a-gts-id",
+            "text": format!("{}!", "a".repeat(64))
+        });
+        let diagnosis = diagnose_json(&schema, &instance);
+        assert!(
+            diagnosis.standard[0].contains("could not be matched"),
+            "{diagnosis:?}"
+        );
+        assert_eq!(diagnosis.references.len(), 1, "{diagnosis:?}");
     }
 
     #[test]

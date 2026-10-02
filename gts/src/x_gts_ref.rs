@@ -386,7 +386,10 @@ pub(crate) fn validate_instance_refs(
         }
     };
 
-    let diagnosis = crate::json_schema::diagnose(&validator, schema, instance);
+    // Only reference diagnostics are reported here, so the regex replay that
+    // `diagnose` adds to the standard ones is skipped.
+    let diagnosis =
+        crate::json_schema::diagnose_resolved(&validator, schema, Some(schema), instance);
     let mut references = diagnosis.references;
 
     // An unexplained rejection must not look like a clean reference check.

@@ -7945,3 +7945,190 @@ fn test_an_embedded_resource_stays_reachable_at_root_and_inside() {
             .expect_err(&format!("{id} must reject {invalid}"));
     }
 }
+
+/// Fails a backtracking engine on long runs of `a` before its second
+/// alternative matches them followed by `!`; the lookahead keeps the
+/// repetition off the linear-time engine.
+const EXHAUSTING_PATTERN: &str = "^(?:((a|aa)(?=a?))+$|a+!$)";
+
+fn exhausting_input() -> String {
+    format!("{}!", "a".repeat(64))
+}
+
+fn register_regex_type(store: &mut GtsStore, name: &str, body: &Value) -> String {
+    let type_id = format!("gts.x.regexlimits._.{name}.v1~");
+    let mut schema = json!({"$id": format!("gts://{type_id}"), "$schema": DRAFT7});
+    for (keyword, value) in body.as_object().expect("schema body") {
+        schema[keyword] = value.clone();
+    }
+    store.register_schema(&type_id, &schema).expect("register");
+    type_id
+}
+
+#[test]
+fn an_exhausted_pattern_properties_match_does_not_skip_the_property() {
+    let mut store = GtsStore::new();
+    let type_id = register_regex_type(
+        &mut store,
+        "pattern_properties",
+        &json!({
+            "type": "object",
+            "patternProperties": {EXHAUSTING_PATTERN: {"type": "integer"}}
+        }),
+    );
+    store
+        .validate_payload(&type_id, &json!({"aaaa!": 1}))
+        .expect("a short matching key is checked normally");
+
+    let error = store
+        .validate_payload(&type_id, &json!({exhausting_input(): "not-an-integer"}))
+        .expect_err("the matching key's value is not an integer");
+    assert!(error.to_string().contains(EXHAUSTING_PATTERN), "{error}");
+}
+
+#[test]
+fn an_exhausted_match_is_not_inverted_by_not() {
+    let mut store = GtsStore::new();
+    let cases = [
+        (
+            "not_pattern",
+            json!({
+                "type": "object",
+                "properties": {"value": {"type": "string", "not": {"pattern": EXHAUSTING_PATTERN}}}
+            }),
+            json!({"value": exhausting_input()}),
+        ),
+        (
+            "not_pattern_properties",
+            json!({
+                "type": "object",
+                "not": {
+                    "patternProperties": {EXHAUSTING_PATTERN: {"type": "integer"}},
+                    "additionalProperties": false
+                }
+            }),
+            json!({exhausting_input(): 1}),
+        ),
+    ];
+    for (name, body, matched) in cases {
+        let type_id = register_regex_type(&mut store, name, &body);
+        let error = store
+            .validate_payload(&type_id, &matched)
+            .expect_err(&format!(
+                "{name}: the instance satisfies the negated schema"
+            ));
+        assert!(
+            error.to_string().contains(EXHAUSTING_PATTERN),
+            "{name}: {error}"
+        );
+    }
+}
+
+#[test]
+fn an_exhausted_match_behind_a_relative_embedded_id_is_reported() {
+    // The reference into `dir/inner` already stands in that resource, so its
+    // `$id` must not be applied again on the way to `#/$defs/text`.
+    let mut store = GtsStore::new();
+    let type_id = register_regex_type(
+        &mut store,
+        "relative_embedded_id",
+        &json!({
+            "$schema": DRAFT_2020_12,
+            "type": "object",
+            "properties": {"value": {"$ref": "#/$defs/inner"}},
+            "$defs": {
+                "inner": {
+                    "$id": "dir/inner",
+                    "not": {"$ref": "#/$defs/text"},
+                    "$defs": {"text": {"pattern": EXHAUSTING_PATTERN}}
+                }
+            }
+        }),
+    );
+    store
+        .validate_payload(&type_id, &json!({"value": "b"}))
+        .expect("a value the negated pattern does not match");
+    let error = store
+        .validate_payload(&type_id, &json!({"value": exhausting_input()}))
+        .expect_err("the value matches the negated pattern");
+    assert!(error.to_string().contains(EXHAUSTING_PATTERN), "{error}");
+}
+
+#[test]
+fn a_prepared_regex_guard_is_reused_until_the_registry_changes() {
+    let mut store = GtsStore::new();
+    let type_id = register_regex_type(
+        &mut store,
+        "guard_cache",
+        &json!({
+            "type": "object",
+            "properties": {"value": {"not": {"pattern": EXHAUSTING_PATTERN}}}
+        }),
+    );
+    for _ in 0..2 {
+        store
+            .validate_payload(&type_id, &json!({"value": "b"}))
+            .expect("a value the negated pattern does not match");
+        store
+            .validate_payload(&type_id, &json!({"value": exhausting_input()}))
+            .expect_err("the value matches the negated pattern");
+    }
+    assert_eq!(store.regex_guards.len(), 1);
+
+    register_regex_type(&mut store, "guard_cache_other", &json!({"type": "object"}));
+    assert!(
+        store.regex_guards.is_empty(),
+        "a registration may change what a guard resolves"
+    );
+}
+
+#[test]
+fn an_exhausted_match_behind_a_dynamic_anchor_is_reported_in_any_branch_order() {
+    // `$ref: "#node"` resolves through the dynamic scope, so `t`'s children
+    // may reach `s`'s negated pattern, whichever order `r` names them in.
+    let mut store = GtsStore::new();
+    let id = |name: &str| format!("gts://gts.x.regexlimits._.{name}.v1~");
+    register_regex_type(
+        &mut store,
+        "dynamic_tree",
+        &json!({
+            "$schema": DRAFT_2020_12,
+            "$dynamicAnchor": "node",
+            "type": "object",
+            "properties": {"children": {"items": {"$ref": "#node"}}}
+        }),
+    );
+    register_regex_type(
+        &mut store,
+        "dynamic_strict",
+        &json!({
+            "$schema": DRAFT_2020_12,
+            "$dynamicAnchor": "node",
+            "$ref": id("dynamic_tree"),
+            "properties": {"name": {"not": {"pattern": EXHAUSTING_PATTERN}}}
+        }),
+    );
+    for (name, first, second) in [
+        ("dynamic_strict_first", "dynamic_strict", "dynamic_tree"),
+        ("dynamic_tree_first", "dynamic_tree", "dynamic_strict"),
+    ] {
+        let type_id = register_regex_type(
+            &mut store,
+            name,
+            &json!({
+                "$schema": DRAFT_2020_12,
+                "allOf": [{"$ref": id(first)}, {"$ref": id(second)}]
+            }),
+        );
+        let error = store
+            .validate_payload(
+                &type_id,
+                &json!({"children": [{"name": exhausting_input()}]}),
+            )
+            .expect_err(&format!("{name}: the match cannot complete"));
+        assert!(
+            error.to_string().contains(EXHAUSTING_PATTERN),
+            "{name}: {error}"
+        );
+    }
+}

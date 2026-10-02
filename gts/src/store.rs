@@ -185,6 +185,9 @@ pub struct GtsStore {
     verdicts: HashMap<String, bool>,
     /// The ids `verdicts` holds as valid, in the order they were decided.
     judged_valid: Vec<String>,
+    /// The regex replay prepared for each type validated since the
+    /// registered entities last changed.
+    regex_guards: HashMap<String, std::sync::Arc<crate::regex_limits::RegexGuard>>,
 }
 
 impl Default for GtsStore {
@@ -218,6 +221,7 @@ impl GtsStore {
             validating: HashSet::new(),
             verdicts: HashMap::new(),
             judged_valid: Vec::new(),
+            regex_guards: HashMap::new(),
         }
     }
 
@@ -231,6 +235,7 @@ impl GtsStore {
             validating: HashSet::new(),
             verdicts: HashMap::new(),
             judged_valid: Vec::new(),
+            regex_guards: HashMap::new(),
         };
         store.populate_from_reader();
         tracing::info!("Populated GtsStore with {} entities", store.by_id.len());
@@ -238,6 +243,7 @@ impl GtsStore {
     }
 
     fn populate_from_reader(&mut self) {
+        self.regex_guards.clear();
         if let Some(ref mut reader) = self.reader {
             for entity in reader.iter() {
                 // Use effective_id() which handles both GTS IDs and anonymous instance IDs
@@ -280,12 +286,14 @@ impl GtsStore {
                 Err(StoreError::ImmutableConflict(id))
             };
         }
+        self.regex_guards.clear();
         self.by_id.insert(id, entity);
         Ok(Registration::Inserted)
     }
 
     /// Drops an id's binding, undoing a [`Registration::Inserted`].
     pub(crate) fn unregister(&mut self, entity_id: &str) {
+        self.regex_guards.clear();
         self.by_id.remove(entity_id);
     }
 
@@ -301,10 +309,12 @@ impl GtsStore {
         let id = entity
             .effective_id()
             .ok_or_else(|| StoreError::InvalidEntity("Entity has no effective ID".to_owned()))?;
+        self.regex_guards.clear();
         let displaced = self.by_id.insert(id.clone(), entity);
 
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| action(self, &id)));
 
+        self.regex_guards.clear();
         match displaced {
             Some(previous) => {
                 self.by_id.insert(id, previous);
@@ -400,6 +410,7 @@ impl GtsStore {
         if let Some(ref reader) = self.reader
             && let Some(entity) = reader.read_by_id(entity_id)
         {
+            self.regex_guards.clear();
             self.by_id.insert(entity_id.to_owned(), entity);
             return self.by_id.get(entity_id);
         }
@@ -1183,6 +1194,25 @@ impl GtsStore {
         )
         .map_err(|e| StoreError::ValidationError(format!("Invalid schema for '{type_id}': {e}")))?;
 
+        // The validator captures this payload's reference checks, so only the
+        // regex replay, which depends on the registered documents alone, is
+        // reused across payloads.
+        let guard = match self.regex_guards.get(type_id) {
+            Some(guard) => std::sync::Arc::clone(guard),
+            None => std::sync::Arc::new(
+                crate::regex_limits::RegexGuard::new(&content, &resources).map_err(|e| {
+                    StoreError::ValidationError(format!(
+                        "Validation failed: {}",
+                        crate::regex_limits::RegexCheckError::Unchecked(e)
+                    ))
+                })?,
+            ),
+        };
+        self.regex_guards
+            .insert(type_id.to_owned(), std::sync::Arc::clone(&guard));
+        guard
+            .check(payload)
+            .map_err(|e| StoreError::ValidationError(format!("Validation failed: {e}")))?;
         if validator.is_valid(payload) {
             return Ok(());
         }
