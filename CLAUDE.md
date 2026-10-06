@@ -47,6 +47,8 @@ make gts-spec-tests-run PORT=8001 GTS_SPEC_TESTS_DIR=../gts-spec/tests TEST=...
 
 The server holds state in memory with no reset endpoint — restart it between full-suite runs.
 
+Tests this implementation is known to fail are listed by pytest node id in `.gts-spec-known-failures` and deselected by both targets; each entry is a "Known gaps" item in README.md with a unit-test canary. Run them anyway with `GTS_SPEC_KNOWN_FAILURES=`.
+
 ## Working in This Repo
 
 - `.gts-spec-version` is the canonical pin (`vMAJOR.MINOR.PATCH`). Bump it (commit + push) to roll the spec forward — both CI and `make gts-spec-tests` pick it up. Local cache survives across runs; `docker rmi $(GTS_SPEC_REF)` if you ever need to force a refetch.

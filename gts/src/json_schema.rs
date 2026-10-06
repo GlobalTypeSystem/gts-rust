@@ -1,6 +1,9 @@
 //! Shared JSON Schema validation with GTS formats and diagnostics.
 //!
-//! GTS asserts `uuid` on every dialect and uses ECMA 262 syntax for `regex`.
+//! GTS asserts `uuid` on every dialect. Regular expressions follow the GTS
+//! profile (README §11.0.1): `format: "regex"` asserts membership, every
+//! schema pattern is checked before a validator is built, and matching uses
+//! the linear-time `regex` engine.
 
 use serde_json::{Map, Value};
 use uuid::Uuid;
@@ -10,11 +13,16 @@ use uuid::Uuid;
 fn options_for(schema: &Value) -> jsonschema::ValidationOptions<'_> {
     let mut options = jsonschema::options()
         .with_format("uuid", is_valid_uuid)
-        .with_format("regex", is_valid_ecma262_regex);
+        .with_format("regex", crate::regex_profile::is_supported)
+        .with_pattern_options(jsonschema::PatternOptions::regex());
 
     if declared_dialect_asserts_formats(schema) {
         return options;
     }
+
+    // jsonschema 0.58 still applies `dependencies` in 2019-09+; disable it
+    // to match the dialect-aware regex profile check.
+    options = options.with_keyword("dependencies", |_, _, _| Ok(Box::new(NotAKeyword)));
 
     options = options.should_validate_formats(true);
     for name in ASSERTABLE_FORMATS
@@ -24,6 +32,19 @@ fn options_for(schema: &Value) -> jsonschema::ValidationOptions<'_> {
         options = options.with_format(*name, |_| true);
     }
     options
+}
+
+/// A name the dialect does not define as a keyword: it never fails.
+struct NotAKeyword;
+
+impl<'i> jsonschema::Keyword<'i> for NotAKeyword {
+    fn validate(&self, _instance: &'i Value) -> Result<(), jsonschema::ValidationError<'i>> {
+        Ok(())
+    }
+
+    fn is_valid(&self, _instance: &Value) -> bool {
+        true
+    }
 }
 
 /// Formats GTS requires every dialect to assert (README sec 9.2).
@@ -82,7 +103,32 @@ fn declared_dialect_asserts_formats(schema: &Value) -> bool {
 pub fn validator_for(
     schema: &Value,
 ) -> Result<jsonschema::Validator, jsonschema::ValidationError<'static>> {
+    check_regex_profile(schema, &[])?;
     options_for(schema).build(schema)
+}
+
+/// Rejects `schema` if it or `resources` hold an expression outside the GTS
+/// regex profile in a schema position.
+fn check_regex_profile(
+    schema: &Value,
+    resources: &[(String, &Value)],
+) -> Result<(), jsonschema::ValidationError<'static>> {
+    let root = schema
+        .get("$id")
+        .and_then(Value::as_str)
+        .unwrap_or(crate::schema_regex::DEFAULT_BASE_URI);
+    let documents: Vec<(&str, &Value)> = std::iter::once((root, schema))
+        .chain(
+            resources
+                .iter()
+                .map(|(uri, document)| (uri.as_str(), *document)),
+        )
+        .collect();
+    let registry = jsonschema::Registry::new()
+        .extend(documents.iter().copied())
+        .and_then(jsonschema::RegistryBuilder::prepare)
+        .map_err(jsonschema::ValidationError::from)?;
+    crate::schema_regex::check(&registry, &documents).map_err(jsonschema::ValidationError::schema)
 }
 
 /// Compiles `schema` with GTS formats and `x-gts-ref` enforcement.
@@ -117,6 +163,7 @@ pub fn gts_validator_for_type(
     resources: &[(String, &Value)],
     exists: Option<crate::x_gts_ref::ReferenceExists>,
 ) -> Result<jsonschema::Validator, jsonschema::ValidationError<'static>> {
+    check_regex_profile(schema, resources)?;
     let builder = jsonschema::Registry::new()
         .extend(resources.iter().map(|(uri, document)| (uri, *document)))
         .map_err(jsonschema::ValidationError::from)?;
@@ -249,15 +296,6 @@ fn is_valid_uuid(value: &str) -> bool {
     Uuid::try_parse(value).is_ok() && value.len() == 36
 }
 
-/// Checks ECMA 262 regex syntax (README sec 9.2, ADR-0005).
-#[must_use]
-fn is_valid_ecma262_regex(pattern: &str) -> bool {
-    pattern.len() <= MAX_REGEX_LEN && jsonschema_regex::is_valid_ecma_regex(pattern)
-}
-
-/// Longest accepted `format: regex` value.
-const MAX_REGEX_LEN: usize = 32 * 1024;
-
 /// Renders validator errors in the reference implementation's format.
 ///
 /// Only type errors need rewriting; other messages may contain schema text.
@@ -369,23 +407,6 @@ mod tests {
     }
 
     #[test]
-    fn regex_format_accepts_ecma_only_constructs() {
-        for pattern in [r"(?=a)a", r"(?!a)b", r"(a)\1", r"(?<n>a)\k<n>", r"(?<=a)b"] {
-            assert!(is_valid_ecma262_regex(pattern), "expected valid: {pattern}");
-        }
-    }
-
-    #[test]
-    fn regex_format_rejects_rust_only_constructs() {
-        for pattern in [r"(?P<n>a)", r"(?i)a", r"^*", r"(?x) a"] {
-            assert!(
-                !is_valid_ecma262_regex(pattern),
-                "expected invalid: {pattern}"
-            );
-        }
-    }
-
-    #[test]
     fn formats_are_asserted_on_draft_2020_12() {
         let schema = serde_json::json!({
             "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -453,21 +474,6 @@ mod tests {
     }
 
     #[test]
-    fn regex_format_rejects_a_pattern_nested_past_the_guard() {
-        let bomb = format!("{}a{}", "(?:".repeat(10_000), ")".repeat(10_000));
-        assert!(!is_valid_ecma262_regex(&bomb));
-
-        let modest = format!("{}a{}", "(?:".repeat(20), ")".repeat(20));
-        assert!(is_valid_ecma262_regex(&modest));
-    }
-
-    #[test]
-    fn regex_format_accepts_duplicate_named_groups_across_alternatives() {
-        assert!(is_valid_ecma262_regex(r"(?<a>x)|(?<a>y)"));
-        assert!(!is_valid_ecma262_regex(r"(?<a>x)(?<a>y)"));
-    }
-
-    #[test]
     fn optional_formats_keep_annotation_semantics_on_draft_2020_12() {
         let schema = serde_json::json!({
             "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -488,32 +494,6 @@ mod tests {
         let validator = validator_for(&schema).expect("schema compiles");
         assert!(validator.is_valid(&serde_json::json!("/valid/pointer")));
         assert!(!validator.is_valid(&serde_json::json!("not-a-pointer")));
-    }
-
-    #[test]
-    fn regex_format_survives_a_flat_alternation_bomb() {
-        let bomb = vec!["a"; 10_000].join("|");
-        assert!(bomb.len() <= MAX_REGEX_LEN);
-        assert!(
-            is_valid_ecma262_regex(&bomb),
-            "an alternation of literals is a valid pattern"
-        );
-    }
-
-    #[test]
-    fn regex_format_rejects_a_pattern_past_the_size_cap() {
-        let oversized = "a".repeat(MAX_REGEX_LEN + 1);
-        assert!(!is_valid_ecma262_regex(&oversized));
-    }
-
-    #[test]
-    fn regex_format_parses_a_large_but_permitted_pattern() {
-        let wide = vec!["ab"; 400].join("|");
-        assert!(wide.len() <= MAX_REGEX_LEN);
-        assert!(is_valid_ecma262_regex(&wide));
-
-        let wide_invalid = format!("{wide}|(");
-        assert!(!is_valid_ecma262_regex(&wide_invalid));
     }
 
     #[test]
@@ -625,45 +605,6 @@ mod tests {
     }
 
     #[test]
-    fn regex_format_accepts_ecma262_patterns() {
-        for pattern in [
-            r"^[A-Za-z0-9]+$",
-            r"\d{3}-\d{4}",
-            r"(foo|bar)+",
-            r"[a-z]{1,3}",
-            r"^(https?):\/\/",
-            r"a.*?b",
-            r"(a(b)?c)*",
-            r"[\s\S]*",
-            r"\(\d+\)",
-            r"(a*)*",
-            r"a+?",
-        ] {
-            assert!(is_valid_ecma262_regex(pattern), "expected valid: {pattern}");
-        }
-    }
-
-    #[test]
-    fn regex_format_rejects_invalid_ecma262_patterns() {
-        for pattern in [
-            "[unclosed",
-            "(unclosed",
-            "a{3,2}",
-            r"\",
-            "*abc",
-            "a)",
-            "a**",
-            "a+*",
-            "a??*",
-        ] {
-            assert!(
-                !is_valid_ecma262_regex(pattern),
-                "expected invalid: {pattern}"
-            );
-        }
-    }
-
-    #[test]
     fn draft7_schema_asserts_uuid_format() {
         let schema = serde_json::json!({
             "$schema": "http://json-schema.org/draft-07/schema#",
@@ -676,7 +617,7 @@ mod tests {
     }
 
     #[test]
-    fn draft7_schema_asserts_ecma262_regex_format() {
+    fn regex_format_asserts_the_gts_profile() {
         let schema = serde_json::json!({
             "$schema": "http://json-schema.org/draft-07/schema#",
             "type": "string",
@@ -684,6 +625,110 @@ mod tests {
         });
         let validator = validator_for(&schema).expect("schema compiles");
         assert!(validator.is_valid(&serde_json::json!("^[A-Za-z0-9]+$")));
-        assert!(!validator.is_valid(&serde_json::json!("a**")));
+        // Malformed, ECMA-262 only, RE2 only, and beyond the bounds.
+        for outside in ["a**", "a(?=b)", r"abc\z", "a{1001}"] {
+            assert!(
+                !validator.is_valid(&serde_json::json!(outside)),
+                "{outside}"
+            );
+        }
+        // An ordinary format violation, which `not` inverts.
+        let negated = serde_json::json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "not": {"format": "regex"}
+        });
+        let validator = validator_for(&negated).expect("schema compiles");
+        assert!(validator.is_valid(&serde_json::json!("a(?=b)")));
+        assert!(!validator.is_valid(&serde_json::json!("abc")));
+    }
+
+    #[test]
+    fn an_unsupported_schema_pattern_is_a_schema_error() {
+        for schema in [
+            serde_json::json!({"pattern": "a(?=b)"}),
+            serde_json::json!({"anyOf": [true, {"not": {"pattern": r"abc\z"}}]}),
+            serde_json::json!({"patternProperties": {"(?i)a": true}}),
+            serde_json::json!({
+                "anyOf": [true, {"$ref": "#/custom/x"}],
+                "custom": {"x": {"pattern": "a{1001}"}}
+            }),
+            serde_json::json!({"x-gts-traits-schema": {"properties": {"v": {"pattern": "["}}}}),
+        ] {
+            let error = validator_for(&schema)
+                .err()
+                .unwrap_or_else(|| panic!("{schema}"));
+            assert!(
+                error.to_string().contains("unsupported regular expression"),
+                "{schema}: {error}"
+            );
+            assert!(gts_validator_for(&schema, None).is_err(), "{schema}");
+        }
+    }
+
+    /// jsonschema 0.58.5 treats classification panics as non-matches (#1715,
+    /// fixed by #1721). Reproducing rust-lang/regex#1344 requires sizes beyond
+    /// the profile bounds. When fixed, remove the README's "Engine panics" gap.
+    #[test]
+    fn known_gap_an_engine_panic_in_classification_is_dropped() {
+        let pattern = "^.{0,404600}$";
+        let schema = serde_json::json!({"patternProperties": {pattern: {"type": "integer"}}});
+        let validator = jsonschema::options()
+            .with_pattern_options(jsonschema::PatternOptions::regex().size_limit(1_000_000_000))
+            .build(&schema)
+            .expect("compiles under the inflated limit");
+        assert!(
+            validator.is_valid(&serde_json::json!({"": "not-an-integer"})),
+            "jsonschema now reports the panic"
+        );
+        assert!(
+            crate::regex_profile::check(pattern).is_err(),
+            "the expression is outside the profile bounds"
+        );
+    }
+
+    /// Known gap: jsonschema 0.58.5 uses a custom `\s` set and ECMA-262
+    /// whitespace for `^\S*$`, violating RE2 semantics. When fixed, remove
+    /// the gap from README and `.gts-spec-known-failures`.
+    #[test]
+    fn known_gap_jsonschema_spells_its_own_space_set() {
+        let space = validator_for(&serde_json::json!({"pattern": r"^\s$"})).expect("compiles");
+        let non_space = validator_for(&serde_json::json!({"pattern": r"^\S*$"})).expect("compiles");
+        // Outside the reference set, yet matched.
+        for probe in ["\u{b}", "\u{a0}", "\u{feff}"] {
+            assert!(space.is_valid(&serde_json::json!(probe)), "{probe:?}");
+            assert!(!non_space.is_valid(&serde_json::json!(probe)), "{probe:?}");
+        }
+        // Off the fast path too.
+        let single = validator_for(&serde_json::json!({"pattern": r"^\S$"})).expect("compiles");
+        assert!(!single.is_valid(&serde_json::json!("\u{a0}")));
+        // The reference set itself still matches.
+        for probe in ["\t", "\n", "\u{c}", "\r", " "] {
+            assert!(space.is_valid(&serde_json::json!(probe)), "{probe:?}");
+        }
+    }
+
+    #[test]
+    fn matching_follows_the_reference_semantics() {
+        let cases = [
+            // `.` matches CR, U+2028 and U+2029, but not LF.
+            (r"^.$", "\r", true),
+            (r"^.$", "\u{2028}", true),
+            (r"^.$", "\n", false),
+            // `$` does not match before a final LF.
+            (r"^abc$", "abc\n", false),
+            // ASCII `\d` and `\w`.
+            (r"^\d$", "\u{0661}", false),
+            (r"^\w$", "\u{e9}", false),
+            (r"^[^\W]$", "\u{e9}", false),
+        ];
+        for (pattern, input, expected) in cases {
+            let schema = serde_json::json!({"pattern": pattern});
+            let validator = validator_for(&schema).expect("schema compiles");
+            assert_eq!(
+                validator.is_valid(&serde_json::json!(input)),
+                expected,
+                "{pattern} on {input:?}"
+            );
+        }
     }
 }

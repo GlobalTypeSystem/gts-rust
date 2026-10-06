@@ -1,0 +1,15 @@
+# gts-spec conformance tests this implementation is known to fail, one pytest
+# node id per line; `make gts-spec-tests` and `make gts-spec-tests-run` pass
+# each as `--deselect`. Every entry is a non-conformance listed under "Known
+# gaps" in README.md, with the unit test that notices when it is fixed. Run
+# everything with `make gts-spec-tests GTS_SPEC_KNOWN_FAILURES=`.
+
+# `\s` and `\S`: `jsonschema` 0.58.5 translates them to a whitespace set of its
+# own (README "Regular expressions"; json_schema.rs,
+# known_gap_jsonschema_spells_its_own_space_set).
+test_regex_validation.py::test_matching_differences_follow_declaration[space_vertical_tab]
+test_regex_validation.py::test_matching_differences_follow_declaration[space_nbsp]
+test_regex_validation.py::test_matching_differences_follow_declaration[space_bom]
+test_regex_validation.py::test_matching_differences_follow_declaration[non_space_nbsp]
+test_regex_validation.py::test_matching_differences_follow_declaration[class_space_nbsp]
+test_regex_validation.py::test_matching_differences_follow_declaration[class_non_space_vertical_tab]

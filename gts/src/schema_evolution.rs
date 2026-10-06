@@ -247,14 +247,14 @@ impl std::fmt::Display for CompatibilityDiagnostic {
 /// unprovable.
 type UnprovenPaths = BTreeSet<String>;
 
-/// Whether each side's effective dialect evaluates `unevaluatedProperties`.
+/// Each side's effective dialect, inherited by nested schemas.
 #[derive(Debug, Clone, Copy)]
 struct DialectSupport {
-    old_unevaluated: bool,
-    new_unevaluated: bool,
+    old: Draft,
+    new: Draft,
 }
 
-/// What stays fixed for one directional comparison, plus how deep it has gone.
+/// Context for one directional comparison at the current schema node.
 #[derive(Debug, Clone, Copy)]
 struct Walk {
     /// Backward checks `Valid(old) ⊆ Valid(new)`, forward the reverse inclusion.
@@ -1044,10 +1044,32 @@ fn accepted_value_set(schema: &Map<String, Value>) -> Option<Vec<&Value>> {
 /// Only the positive answer is conclusive. A value that fails may still be
 /// excluded by another constraint on the same node, so a caller that gets
 /// `false` must fall back to comparing keywords.
-fn enumerated_source_is_included(source: &Map<String, Value>, target: &Value) -> bool {
+fn enumerated_source_is_included(
+    source: &Map<String, Value>,
+    target: &Value,
+    dialect: Draft,
+) -> bool {
     let Some(values) = accepted_value_set(source) else {
         return false;
     };
+    // A detached fragment must carry the dialect it inherited. Otherwise the
+    // validator defaults to 2020-12.
+    let target = if target.get("$schema").is_none() && target.is_object() {
+        let meta = match dialect {
+            Draft::Draft4 => &*referencing::meta::DRAFT4,
+            Draft::Draft6 => &*referencing::meta::DRAFT6,
+            Draft::Draft7 => &*referencing::meta::DRAFT7,
+            Draft::Draft201909 => &*referencing::meta::DRAFT201909,
+            Draft::Draft202012 => &*referencing::meta::DRAFT202012,
+            _ => return false,
+        };
+        let mut target = target.clone();
+        target["$schema"] = meta["$schema"].clone();
+        Cow::Owned(target)
+    } else {
+        Cow::Borrowed(target)
+    };
+    let target = target.as_ref();
     let Ok(validator) = crate::json_schema::validator_for(target) else {
         return false;
     };
@@ -1224,6 +1246,13 @@ fn check_schema_node_compatibility(
     inherited_unproven: UnprovenPaths,
     errors: &mut Vec<CompatibilityDiagnostic>,
 ) {
+    let walk = Walk {
+        dialects: DialectSupport {
+            old: walk.dialects.old.detect(old_schema),
+            new: walk.dialects.new.detect(new_schema),
+        },
+        ..walk
+    };
     let check_backward = walk.check_backward;
     if walk.exhausted() {
         errors.push(CompatibilityDiagnostic::new(
@@ -1375,7 +1404,12 @@ fn check_schema_node_compatibility(
     // it discharges the nested findings too - which is why the whole walk is
     // collected before this point rather than after it.
     let source_map = if check_backward { old_map } else { new_map };
-    if enumerated_source_is_included(source_map, target) {
+    let target_dialect = if check_backward {
+        walk.dialects.new
+    } else {
+        walk.dialects.old
+    };
+    if enumerated_source_is_included(source_map, target, target_dialect) {
         return;
     }
     errors.append(&mut node_errors);
@@ -1436,8 +1470,8 @@ fn check_object_compatibility(
         ));
     }
 
-    let old_model = classify_content_model(old_schema, dialects.old_unevaluated);
-    let new_model = classify_content_model(new_schema, dialects.new_unevaluated);
+    let old_model = classify_content_model(old_schema, draft_supports_unevaluated(dialects.old));
+    let new_model = classify_content_model(new_schema, draft_supports_unevaluated(dialects.new));
     let (source_model, target_model) = if check_backward {
         (old_model, new_model)
     } else {
@@ -1633,8 +1667,8 @@ fn partial_content_constraints_equal(
     normalize_additional(old_schema) == normalize_additional(new_schema)
         && old_schema.get("patternProperties") == new_schema.get("patternProperties")
         && old_schema.get("propertyNames") == new_schema.get("propertyNames")
-        && normalize_unevaluated(old_schema, dialects.old_unevaluated)
-            == normalize_unevaluated(new_schema, dialects.new_unevaluated)
+        && normalize_unevaluated(old_schema, draft_supports_unevaluated(dialects.old))
+            == normalize_unevaluated(new_schema, draft_supports_unevaluated(dialects.new))
 }
 
 fn property_change_error(
@@ -1776,8 +1810,8 @@ fn check_inclusion(
         Walk {
             check_backward,
             dialects: DialectSupport {
-                old_unevaluated: draft_supports_unevaluated(effective_old),
-                new_unevaluated: draft_supports_unevaluated(effective_new),
+                old: effective_old,
+                new: effective_new,
             },
             roots_identical: json_values_equal(old_schema, new_schema),
             depth: 0,

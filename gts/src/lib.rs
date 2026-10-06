@@ -4,6 +4,7 @@ pub mod gts;
 mod json_schema;
 pub mod ops;
 pub mod path_resolver;
+pub mod regex_profile;
 pub mod schema;
 pub mod schema_cast;
 pub mod schema_derivation;
@@ -12,6 +13,7 @@ pub mod schema_evolution;
 pub mod schema_modifiers;
 pub mod schema_narrow;
 pub mod schema_refs;
+mod schema_regex;
 pub mod schema_resolver;
 mod schema_semantics;
 pub mod schema_traits;
@@ -21,7 +23,7 @@ pub mod testing;
 pub mod x_gts_ref;
 
 /// GTS specification revision implemented by compatibility and validation logic.
-pub const GTS_SPECIFICATION_VERSION: &str = "0.14";
+pub const GTS_SPECIFICATION_VERSION: &str = "0.15";
 
 /// Version of this Rust implementation.
 pub const GTS_IMPLEMENTATION_VERSION: &str = env!("CARGO_PKG_VERSION");

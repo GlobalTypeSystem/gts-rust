@@ -183,8 +183,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = "0.4"
 
 # JSON Schema validation
-jsonschema = { version = "0.57", default-features = false }
-jsonschema-regex = "0.57"
+jsonschema = { version = "0.58.5", default-features = false }
+# The pattern translation `jsonschema` applies, for tests of the regex profile.
+jsonschema-regex = "0.58.5"
+# The reference resolver `jsonschema` uses; see `gts/src/schema_regex.rs`.
+referencing = "0.58.5"
 # Exact comparison between differently typed numbers, as used by `jsonschema`.
 num-cmp = "0.1"
 

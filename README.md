@@ -6,7 +6,7 @@ A complete Rust implementation of the Global Type System (GTS)
 
 GTS [Global Type System](https://github.com/globaltypesystem/gts-spec) is a simple, human-readable, globally unique identifier and referencing system for data type definitions (e.g., JSON Schemas) and data instances (e.g., JSON objects). This Rust implementation provides high-performance, type-safe operations for working with GTS identifiers.
 
-Current supported GTS spec version: `0.14.4`
+Current supported GTS spec version: `0.15.0`
 
 ## Roadmap
 
@@ -270,6 +270,18 @@ gts --path ../gts-spec/examples validate-instance --gts-id "gts.x.core.events.ev
   "ok": true
 }
 ```
+
+#### Regular expressions
+
+`pattern`, `patternProperties` and `format: "regex"` follow the GTS [safe regular-expression profile](https://github.com/GlobalTypeSystem/gts-spec/blob/main/README.md#1101-regular-expression-execution-safety) (spec §11.0.1, version 0.15).
+
+- **Engine:** Rust [`regex`](https://docs.rs/regex) 1.12 (tested with 1.12.3) through `jsonschema` 0.58.5 with `PatternOptions::regex()`, after `jsonschema`'s pattern translation.
+- **Declared behavior:** reference for `digit` and `word`; no permitted deviation is used.
+
+**Known gaps** (until `jsonschema` changes; the affected conformance tests are listed in `.gts-spec-known-failures`):
+
+1. **`\s` and `\S`.** `\s` matches `[ \t\n\r\v\f\u00A0\uFEFF\u2003\u2029]` and `\S` its complement, instead of `[\t\n\f\r ]` and its complement; `^\S*$` uses ECMA-262 whitespace.
+2. **Engine panics** during `additionalProperties` / `unevaluatedProperties` classification count as a non-match (Stranger6667/jsonschema#1715, fix in #1721). None is known within the profile bounds.
 
 #### OP#7 - Relationship Resolution
 
