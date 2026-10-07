@@ -125,9 +125,18 @@ fn check_regex_profile(
         )
         .collect();
     let registry = jsonschema::Registry::new()
+        .draft(jsonschema::Draft::default().detect(schema))
         .extend(documents.iter().copied())
         .and_then(jsonschema::RegistryBuilder::prepare)
         .map_err(jsonschema::ValidationError::from)?;
+    if schema.get("$schema").is_some() {
+        crate::schema_regex::check_dialect(
+            &registry,
+            &documents,
+            jsonschema::Draft::default().detect(schema),
+        )
+        .map_err(jsonschema::ValidationError::schema)?;
+    }
     crate::schema_regex::check(&registry, &documents).map_err(jsonschema::ValidationError::schema)
 }
 
@@ -512,8 +521,8 @@ mod tests {
     }
 
     #[test]
-    fn an_embedded_legacy_resource_follows_the_documents_decision() {
-        let schema = serde_json::json!({
+    fn embedded_resources_must_use_the_documents_dialect() {
+        let mut schema = serde_json::json!({
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "type": "object",
             "properties": {
@@ -525,11 +534,15 @@ mod tests {
                 }
             }
         });
-        let validator = validator_for(&schema).expect("schema compiles");
+        let error = validator_for(&schema).expect_err("mixed dialects are forbidden");
+        assert!(error.to_string().contains("must use one dialect"));
+        schema["properties"]["x"]["$schema"] =
+            serde_json::json!("http://json-schema.org/draft/2020-12/schema#");
+        let validator = validator_for(&schema).expect("matching dialect compiles");
         assert!(validator.is_valid(&serde_json::json!({"x": "/ok"})));
         assert!(validator.is_valid(&serde_json::json!({"x": "bad"})));
 
-        let required = serde_json::json!({
+        let mut required = serde_json::json!({
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "type": "object",
             "properties": {
@@ -541,7 +554,13 @@ mod tests {
                 }
             }
         });
-        let validator = validator_for(&required).expect("schema compiles");
+        assert!(
+            validator_for(&required).is_err(),
+            "mixed dialects are forbidden"
+        );
+        required["properties"]["x"]["$schema"] =
+            serde_json::json!("https://json-schema.org/draft/2020-12/schema");
+        let validator = validator_for(&required).expect("matching dialect compiles");
         assert!(!validator.is_valid(&serde_json::json!({"x": "bad"})));
     }
 
@@ -665,11 +684,11 @@ mod tests {
         }
     }
 
-    /// jsonschema 0.58.5 treats classification panics as non-matches (#1715,
-    /// fixed by #1721). Reproducing rust-lang/regex#1344 requires sizes beyond
-    /// the profile bounds. When fixed, remove the README's "Engine panics" gap.
+    /// Upstream engine canary using an inflated regex size limit.
+    /// The expression exceeds the GTS profile's repetition bound, so this
+    /// does not demonstrate a GTS conformance gap.
     #[test]
-    fn known_gap_an_engine_panic_in_classification_is_dropped() {
+    fn out_of_profile_classification_panic_canary() {
         let pattern = "^.{0,404600}$";
         let schema = serde_json::json!({"patternProperties": {pattern: {"type": "integer"}}});
         let validator = jsonschema::options()

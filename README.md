@@ -281,7 +281,6 @@ gts --path ../gts-spec/examples validate-instance --gts-id "gts.x.core.events.ev
 **Known gaps** (until `jsonschema` changes; the affected conformance tests are listed in `.gts-spec-known-failures`):
 
 1. **`\s` and `\S`.** `\s` matches `[ \t\n\r\v\f\u00A0\uFEFF\u2003\u2029]` and `\S` its complement, instead of `[\t\n\f\r ]` and its complement; `^\S*$` uses ECMA-262 whitespace.
-2. **Engine panics** during `additionalProperties` / `unevaluatedProperties` classification count as a non-match (Stranger6667/jsonschema#1715, fix in #1721). None is known within the profile bounds.
 
 #### OP#7 - Relationship Resolution
 

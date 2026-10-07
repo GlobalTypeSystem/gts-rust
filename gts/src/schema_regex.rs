@@ -23,6 +23,27 @@ pub const DEFAULT_BASE_URI: &str = "json-schema:///";
 /// # Errors
 /// The first unsupported expression, with its location.
 pub fn check(registry: &Registry<'_>, documents: &[(&str, &Value)]) -> Result<(), String> {
+    walk(registry, documents, None, true)
+}
+
+/// Enforces one dialect throughout the first document's reachable schema graph.
+///
+/// # Errors
+/// A reachable schema node declares another dialect.
+pub fn check_dialect(
+    registry: &Registry<'_>,
+    documents: &[(&str, &Value)],
+    dialect: Draft,
+) -> Result<(), String> {
+    walk(registry, documents, Some(dialect), false)
+}
+
+fn walk(
+    registry: &Registry<'_>,
+    documents: &[(&str, &Value)],
+    dialect: Option<Draft>,
+    check_patterns: bool,
+) -> Result<(), String> {
     let mut walk = Walk {
         roots: documents
             .iter()
@@ -31,12 +52,19 @@ pub fn check(registry: &Registry<'_>, documents: &[(&str, &Value)]) -> Result<()
             .collect(),
         visited: HashSet::new(),
         checked: HashSet::new(),
+        dialect,
+        check_patterns,
     };
-    for (uri, document) in documents {
+    let count = if dialect.is_some() {
+        1
+    } else {
+        documents.len()
+    };
+    for (uri, document) in documents.iter().take(count) {
         let resolver = jsonschema::uri::from_str(uri.trim_end_matches('#'))
             .ok()
             .map(|base| registry.resolver(base));
-        let draft = Draft::default().detect(document);
+        let draft = dialect.unwrap_or_default().detect(document);
         walk.node(document, uri, draft, resolver.as_ref())?;
     }
     Ok(())
@@ -90,6 +118,8 @@ struct Walk {
     visited: HashSet<(NodeKey, Draft)>,
     /// Expressions already found supported.
     checked: HashSet<String>,
+    dialect: Option<Draft>,
+    check_patterns: bool,
 }
 
 impl Walk {
@@ -123,6 +153,16 @@ impl Walk {
             return Ok(());
         };
         let draft = draft.detect(value);
+        if let Some(expected) = self.dialect
+            && draft != expected
+        {
+            return Err(format!(
+                "'{location}' declares {} but the document is read under {}; \
+                 a schema document and its reference graph must use one dialect",
+                crate::schema_dialect::dialect_name(draft),
+                crate::schema_dialect::dialect_name(expected)
+            ));
+        }
         let node = std::ptr::from_ref(map);
         if !self.visited.insert((node, draft)) {
             return Ok(());
@@ -158,10 +198,14 @@ impl Walk {
             return Ok(());
         }
 
-        if let Some(Value::String(expression)) = map.get("pattern") {
+        if self.check_patterns
+            && let Some(Value::String(expression)) = map.get("pattern")
+        {
             self.expression(expression, &join(location, "pattern"))?;
         }
-        if let Some(Value::Object(patterns)) = map.get("patternProperties") {
+        if self.check_patterns
+            && let Some(Value::Object(patterns)) = map.get("patternProperties")
+        {
             let at = join(location, "patternProperties");
             for expression in patterns.keys() {
                 self.expression(expression, &join(&at, expression))?;

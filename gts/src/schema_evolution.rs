@@ -1733,6 +1733,7 @@ pub fn check_forward_compatibility(
 
 /// Checks `Valid(old) ⊆ Valid(new)`, reporting each reason with its schema
 /// location.
+/// Documents that mix dialects violate the GTS profile and return `Unknown`.
 #[must_use]
 pub fn check_backward_diagnostics(
     old_schema: &Value,
@@ -1803,6 +1804,24 @@ fn check_inclusion(
     } else {
         detected_old
     };
+    // GTS requires one dialect per document (spec sec 11.0). Enforce that
+    // before any finite-value proof or equality shortcut can accept an invalid
+    // schema; registry callers already apply the same rule during validation.
+    for (name, schema, dialect) in [
+        ("old", old_schema, effective_old),
+        ("new", new_schema, effective_new),
+    ] {
+        let valid_dialect = crate::schema_dialect::check_subschemas(schema, dialect)
+            .and_then(|()| crate::schema_dialect::check_local_references(schema, dialect));
+        if let Err(reason) = valid_dialect {
+            errors.push(CompatibilityDiagnostic::new(
+                "$",
+                CompatibilityFinding::NotProvable,
+                format!("cannot compare {name} schema: {reason}"),
+            ));
+            return (CompatibilityVerdict::Unknown, errors);
+        }
+    }
     check_schema_node_compatibility(
         old_schema,
         new_schema,

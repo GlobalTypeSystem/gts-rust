@@ -1973,6 +1973,143 @@ fn enumerated_array_fragments_inherit_an_omitted_root_dialect() {
 }
 
 #[test]
+fn mixed_dialects_are_rejected_before_enumerated_or_identical_schema_proofs() {
+    let source = json!({"enum": [{"p": {"a": 1}}]});
+    for root in [
+        "https://json-schema.org/draft/2019-09/schema",
+        "https://json-schema.org/draft/2020-12/schema",
+    ] {
+        for embedded_id in [false, true] {
+            let mut target = json!({
+                "$schema": root,
+                "properties": {"p": {
+                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "dependencies": {"a": ["b"]}
+                }}
+            });
+            if embedded_id {
+                target["properties"]["p"]["$id"] = json!("https://example.com/legacy");
+            }
+            for (old, new) in [(&source, &target), (&target, &source), (&target, &target)] {
+                for (verdict, diagnostics) in [
+                    check_backward_diagnostics(old, new),
+                    check_forward_diagnostics(old, new),
+                ] {
+                    assert_eq!(verdict, CompatibilityVerdict::Unknown, "{diagnostics:?}");
+                    assert!(
+                        diagnostics.iter().any(|diagnostic| {
+                            diagnostic.finding == CompatibilityFinding::NotProvable
+                                && diagnostic
+                                    .detail
+                                    .contains("a subschema must not change dialect")
+                        }),
+                        "{diagnostics:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn mixed_dialects_reached_through_local_refs_cannot_prove_inclusion() {
+    let source = json!({"enum": [{"p": {"a": 1}}]});
+    for reference in ["#/x-defs/p", "gts://gts.x.example.types.root.v1~#/x-defs/p"] {
+        let target = json!({
+            "$id": "gts://gts.x.example.types.root.v1~",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "x-defs": {"p": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "dependencies": {"a": ["b"]}
+            }},
+            "properties": {"p": {"$ref": reference}}
+        });
+        for (verdict, diagnostics) in [
+            check_backward_diagnostics(&source, &target),
+            check_forward_diagnostics(&target, &source),
+            check_accepted_set_inclusion(&source, &target),
+            check_backward_diagnostics(&target, &target),
+        ] {
+            assert_eq!(verdict, CompatibilityVerdict::Unknown, "{diagnostics:?}");
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.detail.contains("a $ref must not cross dialects"))
+            );
+        }
+    }
+}
+
+#[test]
+fn dialect_switches_in_the_reachable_local_graph_are_rejected() {
+    let source = json!({"enum": [{"p": {"a": 1}}]});
+    let mixed =
+        json!({"$schema": "http://json-schema.org/draft-07/schema#", "dependencies": {"a": ["b"]}});
+    for (definitions, keyword, reference) in [
+        (
+            json!({"p": mixed}),
+            "$ref",
+            "https://example.com/root#/x-defs/p",
+        ),
+        (json!({"a b": mixed}), "$ref", "#/x-defs/a%20b"),
+        (json!({"q": {"allOf": [mixed]}}), "$ref", "#/x-defs/q"),
+        (
+            json!({"q": {"$ref": "#/x-defs/r"}, "r": mixed}),
+            "$ref",
+            "#/x-defs/q",
+        ),
+        (json!({"p": mixed}), "$dynamicRef", "#/x-defs/p"),
+    ] {
+        let target = json!({
+            "$id": "https://example.com/root",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "x-defs": definitions,
+            "properties": {"p": {keyword: reference}}
+        });
+        for (verdict, diagnostics) in [
+            check_backward_diagnostics(&source, &target),
+            check_forward_diagnostics(&target, &source),
+            check_backward_diagnostics(&target, &target),
+        ] {
+            assert_eq!(
+                verdict,
+                CompatibilityVerdict::Unknown,
+                "{reference}: {diagnostics:?}"
+            );
+        }
+        assert!(
+            crate::json_schema::validator_for(&target).is_err(),
+            "{reference}"
+        );
+    }
+}
+
+#[test]
+fn omitted_root_dialect_is_inherited_by_local_reference_checks() {
+    for reference in [
+        "#/definitions/p",
+        "gts://gts.x.example.types.root.v1~#/definitions/p",
+    ] {
+        let source = json!({
+            "$id": "gts://gts.x.example.types.root.v1~",
+            "enum": [{"p": 1}],
+            "definitions": {"p": {"$schema": "http://json-schema.org/draft-07/schema#", "type": "integer"}},
+            "properties": {"p": {"$ref": reference}}
+        });
+        let mut target = source.clone();
+        target["$schema"] = json!("http://json-schema.org/draft-07/schema#");
+        assert_eq!(
+            check_backward_diagnostics(&source, &target).0,
+            CompatibilityVerdict::Compatible
+        );
+        assert_eq!(
+            check_forward_diagnostics(&source, &target).0,
+            CompatibilityVerdict::Compatible
+        );
+    }
+}
+
+#[test]
 fn enumerated_fragments_inherit_an_embedded_resource_dialect() {
     let source = json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
