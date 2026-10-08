@@ -200,10 +200,31 @@ pub(crate) fn for_each_schema_node(node: &Value, visit: &mut SchemaNodeWalker<'_
 
 /// Visits schema nodes with their path and their [`SchemaScope`].
 pub(crate) fn for_each_schema_node_in_scope(node: &Value, visit: &mut ScopedSchemaNodeWalker<'_>) {
-    let result = visit_schema_nodes(node, "", EnterTraitSchema::Yes, &mut |map, path, scope| {
-        visit(map, path, scope);
-        Ok(())
-    });
+    for_each_schema_node_in_dialect(node, Draft::default(), visit);
+}
+
+/// Visits a document or fragment under the dialect supplied by its caller.
+pub(crate) fn for_each_schema_node_in_dialect(
+    node: &Value,
+    dialect: Draft,
+    visit: &mut ScopedSchemaNodeWalker<'_>,
+) {
+    let dialect = dialect.detect(node);
+    let scope = SchemaScope {
+        dialect,
+        resource: node,
+        resource_dialect: dialect,
+    };
+    let result = visit_schema_nodes_in_scope(
+        node,
+        "",
+        scope,
+        EnterTraitSchema::Yes,
+        &mut |map, path, scope| {
+            visit(map, path, scope);
+            Ok(())
+        },
+    );
     debug_assert!(result.is_ok());
 }
 

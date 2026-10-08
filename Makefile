@@ -119,6 +119,11 @@ GTS_SPEC_TESTS_DIR ?=
 #   make gts-spec-tests TEST=test_op12_type_derivation_validation.py::TestCaseOp12_FinalBase_RejectDerived
 TEST ?=
 
+# Known failures to skip, one pytest node id per line (see the file). Set it
+# empty to run every test: `make gts-spec-tests GTS_SPEC_KNOWN_FAILURES=`.
+GTS_SPEC_KNOWN_FAILURES ?= .gts-spec-known-failures
+GTS_SPEC_DESELECT = $(foreach id,$(if $(GTS_SPEC_KNOWN_FAILURES),$(shell sed -e 's/\#.*//' $(GTS_SPEC_KNOWN_FAILURES))),'--deselect=$(id)')
+
 # Seconds to wait for the GTS server to start accepting requests.
 SERVER_READY_TIMEOUT ?= 10
 
@@ -187,6 +192,7 @@ RUN_TESTS_DOCKER = \
 		$(if $(GTS_SPEC_TESTS_DIR),-v "$(abspath $(GTS_SPEC_TESTS_DIR)):/tests") \
 		$(GTS_SPEC_REF) \
 		--gts-base-url http://host.docker.internal:$(PORT) \
+		$(GTS_SPEC_DESELECT) \
 		$(TEST)
 
 # Pair with `make gts-spec-tests-run TEST=...` for iterative test development.

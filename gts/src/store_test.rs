@@ -7945,3 +7945,170 @@ fn test_an_embedded_resource_stays_reachable_at_root_and_inside() {
             .expect_err(&format!("{id} must reject {invalid}"));
     }
 }
+
+/// ReDoS-shaped but supported: RE2 matches long runs of `a` plus `!` in linear time.
+const AMBIGUOUS_PATTERN: &str = "^(?:(a|aa)+$|a+!$)";
+
+/// Outside the GTS regex profile: lookahead is ECMA-262 only.
+const UNSUPPORTED_PATTERN: &str = "^(?:((a|aa)(?=a?))+$|a+!$)";
+
+fn ambiguous_input() -> String {
+    format!("{}!", "a".repeat(50_000))
+}
+
+fn register_regex_type(store: &mut GtsStore, name: &str, body: &Value) -> String {
+    let type_id = format!("gts.x.regexprofile._.{name}.v1~");
+    let mut schema = json!({"$id": format!("gts://{type_id}"), "$schema": DRAFT7});
+    for (keyword, value) in body.as_object().expect("schema body") {
+        schema[keyword] = value.clone();
+    }
+    store.register_schema(&type_id, &schema).expect("register");
+    type_id
+}
+
+fn assert_unsupported(error: &StoreError, context: &str) {
+    assert!(
+        error.to_string().contains("unsupported regular expression"),
+        "{context}: {error}"
+    );
+}
+
+#[test]
+fn an_unsupported_pattern_fails_validation_after_deferred_registration() {
+    let mut store = GtsStore::new();
+    for (name, value_schema) in [
+        ("direct", json!({"pattern": UNSUPPORTED_PATTERN})),
+        // Not a non-match that `not` could invert.
+        ("negated", json!({"not": {"pattern": UNSUPPORTED_PATTERN}})),
+        (
+            "inactive",
+            json!({"anyOf": [true, {"patternProperties": {UNSUPPORTED_PATTERN: true}}]}),
+        ),
+    ] {
+        let type_id = register_regex_type(
+            &mut store,
+            name,
+            &json!({"type": "object", "properties": {"value": value_schema}}),
+        );
+        let error = store
+            .validate_schema(&type_id)
+            .expect_err("the schema holds an unsupported pattern");
+        assert_unsupported(&error, name);
+        let error = store
+            .validate_payload(&type_id, &json!({"value": "zz"}))
+            .expect_err("the type is invalid");
+        assert_unsupported(&error, name);
+    }
+}
+
+#[test]
+fn an_unsupported_pattern_in_a_referenced_type_invalidates_the_referrer() {
+    let mut store = GtsStore::new();
+    let target = register_regex_type(
+        &mut store,
+        "ref_target",
+        &json!({"pattern": UNSUPPORTED_PATTERN}),
+    );
+    let holder = register_regex_type(
+        &mut store,
+        "ref_holder",
+        &json!({"anyOf": [true, {"$ref": format!("gts://{target}")}]}),
+    );
+    let error = store
+        .validate_schema(&holder)
+        .expect_err("the referenced type holds an unsupported pattern");
+    assert_unsupported(&error, "ref_holder");
+}
+
+#[test]
+fn an_unsupported_pattern_behind_a_dynamic_anchor_is_found() {
+    let mut store = GtsStore::new();
+    let id = |name: &str| format!("gts://gts.x.regexprofile._.{name}.v1~");
+    register_regex_type(
+        &mut store,
+        "dynamic_tree",
+        &json!({
+            "$schema": DRAFT_2020_12,
+            "$dynamicAnchor": "node",
+            "type": "object",
+            "properties": {"children": {"items": {"$dynamicRef": "#node"}}}
+        }),
+    );
+    register_regex_type(
+        &mut store,
+        "dynamic_strict",
+        &json!({
+            "$schema": DRAFT_2020_12,
+            "$dynamicAnchor": "node",
+            "$ref": id("dynamic_tree"),
+            "properties": {"name": {"not": {"pattern": UNSUPPORTED_PATTERN}}}
+        }),
+    );
+    let type_id = register_regex_type(
+        &mut store,
+        "dynamic_root",
+        &json!({"$schema": DRAFT_2020_12, "$ref": id("dynamic_tree")}),
+    );
+    store
+        .validate_schema(&type_id)
+        .expect("the strict schema is not reachable from this type");
+    let type_id = register_regex_type(
+        &mut store,
+        "dynamic_strict_root",
+        &json!({"$schema": DRAFT_2020_12, "$ref": id("dynamic_strict")}),
+    );
+    let error = store
+        .validate_payload(&type_id, &json!({"children": [{"name": "a"}]}))
+        .expect_err("the strict schema holds an unsupported pattern");
+    assert_unsupported(&error, "dynamic_strict_root");
+}
+
+#[test]
+fn an_ambiguous_pattern_is_matched_in_linear_time() {
+    let mut store = GtsStore::new();
+    let cases = [
+        (
+            "pattern_properties",
+            json!({
+                "type": "object",
+                "patternProperties": {AMBIGUOUS_PATTERN: {"type": "integer"}}
+            }),
+            json!({ambiguous_input(): "not-an-integer"}),
+            json!({ambiguous_input(): 1}),
+        ),
+        (
+            "not_pattern",
+            json!({
+                "type": "object",
+                "properties": {"value": {"not": {"pattern": AMBIGUOUS_PATTERN}}}
+            }),
+            json!({"value": ambiguous_input()}),
+            json!({"value": format!("{}?", "a".repeat(50_000))}),
+        ),
+        (
+            "additional_properties",
+            json!({
+                "type": "object",
+                "patternProperties": {AMBIGUOUS_PATTERN: true},
+                "additionalProperties": false
+            }),
+            json!({format!("{}?", "a".repeat(50_000)): 1}),
+            json!({ambiguous_input(): 1}),
+        ),
+    ];
+    for (name, body, invalid, valid) in cases {
+        let type_id = register_regex_type(&mut store, name, &body);
+        let started = std::time::Instant::now();
+        store
+            .validate_payload(&type_id, &invalid)
+            .expect_err(&format!("{name}: invalid"));
+        store
+            .validate_payload(&type_id, &valid)
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{name}: {:?}",
+            started.elapsed()
+        );
+    }
+}

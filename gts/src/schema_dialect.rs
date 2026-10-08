@@ -80,32 +80,98 @@ pub fn dialect_name(draft: Draft) -> &'static str {
 /// # Errors
 /// The first cross-dialect `$ref`, by location.
 pub fn check_references(schema: &Value, provider: &dyn SchemaProvider) -> Result<(), String> {
+    check_references_in_dialect(schema, Draft::default(), provider)
+}
+
+/// Checks local and self references in a standalone document or inherited fragment.
+///
+/// # Errors
+/// The first reference whose target declares another dialect.
+pub fn check_local_references(schema: &Value, dialect: Draft) -> Result<(), String> {
+    struct LocalOnly<'a>(&'a Value);
+    impl SchemaProvider for LocalOnly<'_> {
+        fn schema_content(&self, type_id: &str) -> Option<&Value> {
+            let own_id = self
+                .0
+                .get("$id")?
+                .as_str()?
+                .strip_prefix(GTS_ID_URI_PREFIX)?;
+            (own_id == type_id).then_some(self.0)
+        }
+    }
+    // Standalone comparisons have no external provider. External references
+    // remain the comparison's responsibility; placeholders let us inspect the
+    // complete local graph without fetching unrelated documents.
+    struct ExternalUnknown;
+    impl jsonschema::Retrieve for ExternalUnknown {
+        fn retrieve(
+            &self,
+            _uri: &jsonschema::Uri<String>,
+        ) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
+            Ok(Value::Bool(true))
+        }
+    }
+    check_references_in_dialect(schema, dialect, &LocalOnly(schema))?;
+    let dialect = dialect.detect(schema);
+    if dialect == Draft::Unknown {
+        return Ok(());
+    }
+    let root = schema
+        .get("$id")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            schema
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|_| dialect == Draft::Draft4)
+        })
+        .unwrap_or(crate::schema_regex::DEFAULT_BASE_URI);
+    let registry = jsonschema::Registry::new()
+        .draft(dialect)
+        .retriever(ExternalUnknown)
+        .add(root, schema)
+        .and_then(jsonschema::RegistryBuilder::prepare)
+        .map_err(|error| error.to_string())?;
+    crate::schema_regex::check_dialect(&registry, &[(root, schema)], dialect)
+}
+
+fn check_references_in_dialect(
+    schema: &Value,
+    dialect: Draft,
+    provider: &dyn SchemaProvider,
+) -> Result<(), String> {
     let mut mismatch = None;
-    crate::schema_modifiers::for_each_schema_node_in_scope(schema, &mut |node, path, scope| {
-        if mismatch.is_some() {
-            return;
-        }
-        let Some(reference) = node.get("$ref").and_then(Value::as_str) else {
-            return;
-        };
-        let Some(target) = target_dialect(scope, reference, provider) else {
-            return;
-        };
-        let dialect = scope.dialect;
-        if target != dialect {
-            let location = if path.is_empty() {
-                "$ref".to_owned()
-            } else {
-                format!("{path}/$ref")
+    let root_dialect = dialect.detect(schema);
+    crate::schema_modifiers::for_each_schema_node_in_dialect(
+        schema,
+        dialect,
+        &mut |node, path, scope| {
+            if mismatch.is_some() {
+                return;
+            }
+            let Some(reference) = node.get("$ref").and_then(Value::as_str) else {
+                return;
             };
-            mismatch = Some(format!(
-                "'{location}' ('{reference}') is read under {} but its target declares {}; \
+            let Some(target) = target_dialect(scope, reference, provider, (schema, root_dialect))
+            else {
+                return;
+            };
+            let dialect = scope.dialect;
+            if target != dialect {
+                let location = if path.is_empty() {
+                    "$ref".to_owned()
+                } else {
+                    format!("{path}/$ref")
+                };
+                mismatch = Some(format!(
+                    "'{location}' ('{reference}') is read under {} but its target declares {}; \
                  a $ref must not cross dialects",
-                dialect_name(dialect),
-                dialect_name(target)
-            ));
-        }
-    });
+                    dialect_name(dialect),
+                    dialect_name(target)
+                ));
+            }
+        },
+    );
     mismatch.map_or(Ok(()), Err)
 }
 
@@ -121,16 +187,20 @@ pub fn check_references(schema: &Value, provider: &dyn SchemaProvider) -> Result
 /// The first subschema that switches dialect, by location.
 pub fn check_subschemas(schema: &Value, dialect: Draft) -> Result<(), String> {
     let mut mismatch = None;
-    crate::schema_modifiers::for_each_schema_node_in_scope(schema, &mut |_, path, scope| {
-        if mismatch.is_none() && scope.dialect != dialect {
-            mismatch = Some(format!(
-                "'{path}' declares {} but the type is read under {}; \
+    crate::schema_modifiers::for_each_schema_node_in_dialect(
+        schema,
+        dialect,
+        &mut |_, path, scope| {
+            if mismatch.is_none() && scope.dialect != dialect {
+                mismatch = Some(format!(
+                    "'{path}' declares {} but the type is read under {}; \
                  a subschema must not change dialect",
-                dialect_name(scope.dialect),
-                dialect_name(dialect)
-            ));
-        }
-    });
+                    dialect_name(scope.dialect),
+                    dialect_name(dialect)
+                ));
+            }
+        },
+    );
     mismatch.map_or(Ok(()), Err)
 }
 
@@ -140,12 +210,18 @@ fn target_dialect(
     scope: SchemaScope<'_>,
     reference: &str,
     provider: &dyn SchemaProvider,
+    root: (&Value, Draft),
 ) -> Option<Draft> {
     match reference.strip_prefix(GTS_ID_URI_PREFIX) {
         Some(target) => {
             let (id, pointer) = target.split_once('#').unwrap_or((target, ""));
             let document = provider.schema_content(id)?;
-            dialect_at(document, Draft::default().detect(document), pointer)
+            let dialect = if std::ptr::eq(document, root.0) {
+                root.1
+            } else {
+                Draft::default().detect(document)
+            };
+            dialect_at(document, dialect, pointer)
         }
         None => dialect_at(
             scope.resource,
