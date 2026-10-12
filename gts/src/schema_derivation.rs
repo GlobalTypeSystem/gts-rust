@@ -20,6 +20,7 @@ use crate::schema_semantics::boolean_schema_value;
 use serde_json::Value;
 
 const ADDITIONAL_PROPERTIES: &str = "additionalProperties";
+const X_GTS_PATTERN_REF: &str = crate::x_gts_pattern_ref::X_GTS_PATTERN_REF;
 
 /// Validates that a derived JSON Schema value may be admitted under its base.
 ///
@@ -66,8 +67,16 @@ pub(crate) fn validate_derivation(
     base_id: &str,
     derived_id: &str,
 ) -> Vec<String> {
-    let base = declared_schema(base_schema, 0);
-    let mut derived = declared_schema(derived_schema, 0);
+    // `/$id` names each side's own type, which the reduction below must see
+    // resolved to intersect operands.
+    let base = declared_schema(
+        &crate::x_gts_pattern_ref::with_resolved_self_operands(base_schema),
+        0,
+    );
+    let mut derived = declared_schema(
+        &crate::x_gts_pattern_ref::with_resolved_self_operands(derived_schema),
+        0,
+    );
     let mut errors = Vec::new();
 
     // An omitted `additionalProperties` is not a declaration: across dialects
@@ -194,8 +203,40 @@ fn absorb_declaration(
                     }
                 }
             }
+            X_GTS_PATTERN_REF => absorb_pattern_ref(declared, value),
             _ => {
                 declared.insert(keyword.clone(), value.clone());
+            }
+        }
+    }
+}
+
+/// Conjoins an `x-gts-pattern-ref` with the one already declared, as `allOf`
+/// does (README §9.6.1): an overlay with a wider operand does not loosen the
+/// inherited scope. A pair neither of which covers the other is kept as an
+/// `allOf` of both, which the inclusion checker leaves unproven.
+fn absorb_pattern_ref(declared: &mut serde_json::Map<String, Value>, candidate: &Value) {
+    use crate::x_gts_pattern_ref::literal_operand;
+
+    let Some(held) = declared.get(X_GTS_PATTERN_REF) else {
+        declared.insert(X_GTS_PATTERN_REF.to_owned(), candidate.clone());
+        return;
+    };
+    if held == candidate {
+        return;
+    }
+    match (literal_operand(held), literal_operand(candidate)) {
+        (Some(held), Some(scope)) if held.covers(&scope) => {
+            declared.insert(X_GTS_PATTERN_REF.to_owned(), candidate.clone());
+        }
+        (Some(held), Some(scope)) if scope.covers(&held) => {}
+        _ => {
+            let both = serde_json::json!({ X_GTS_PATTERN_REF: candidate });
+            match declared.get_mut("allOf").and_then(Value::as_array_mut) {
+                Some(branches) => branches.push(both),
+                None => {
+                    declared.insert("allOf".to_owned(), Value::Array(vec![both]));
+                }
             }
         }
     }
@@ -231,7 +272,7 @@ fn absorb_property(inherited: &mut Value, overlay: &Value, depth: usize) {
         .map(|(keyword, value)| (keyword.clone(), value.clone()))
         .collect();
     let mut additional_properties = inherited_map.get(ADDITIONAL_PROPERTIES).cloned();
-    for keyword in ["properties", "required"] {
+    for keyword in ["properties", "required", X_GTS_PATTERN_REF] {
         if let Some(value) = inherited_map.get(keyword) {
             composed.insert(keyword.to_owned(), value.clone());
         }

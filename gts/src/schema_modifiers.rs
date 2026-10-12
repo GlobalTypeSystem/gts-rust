@@ -111,6 +111,7 @@ const KNOWN_GTS_KEYWORDS: &[&str] = &[
     X_GTS_TRAITS,
     X_GTS_TRAITS_SCHEMA,
     X_GTS_REF,
+    crate::x_gts_pattern_ref::X_GTS_PATTERN_REF,
 ];
 
 /// Where a schema node sits: the dialect it is read under, and the schema

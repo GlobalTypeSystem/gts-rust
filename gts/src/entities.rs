@@ -493,12 +493,26 @@ impl GtsEntity {
     /// `$ref`s) for the dependency graph / display ([`Self::gts_refs`]).
     /// Deliberately broader and non-failing — NOT the canonical resolvable-ref
     /// definition ([`crate::schema_refs::extract_gts_refs`]); the two diverge.
+    ///
+    /// As an implementation choice, `x-gts-pattern-ref` operands at schema
+    /// locations are skipped. The values of fields they constrain are
+    /// reported like other identifier strings. This discovery policy does
+    /// not determine validation dependencies (spec §9.2).
     fn extract_gts_ids_with_paths(&self) -> Vec<GtsRef> {
         let mut found = Vec::new();
 
+        let mut operands = std::collections::HashSet::new();
+        if self.is_schema {
+            crate::schema_modifiers::for_each_schema_node(&self.content, &mut |node, _| {
+                if let Some(operand) = node.get(crate::x_gts_pattern_ref::X_GTS_PATTERN_REF) {
+                    operands.insert(std::ptr::from_ref(operand));
+                }
+            });
+        }
         let gts_id_matcher = |node: &Value, path: &str| -> Option<GtsRef> {
             if let Some(s) = node.as_str()
                 && GtsId::is_valid(s)
+                && !operands.contains(&std::ptr::from_ref(node))
             {
                 return Some(GtsRef {
                     id: s.to_owned(),

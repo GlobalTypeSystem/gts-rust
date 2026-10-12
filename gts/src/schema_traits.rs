@@ -114,7 +114,10 @@ impl EffectiveTraits {
     ) -> Result<(), Vec<String>> {
         let dialect = self.schema.get("$schema").and_then(Value::as_str);
         validate_trait_schema_integrity(&self.resolved_trait_schemas, dialect)?;
-        validate_trait_schema_compatibility(&self.resolved_trait_schemas)?;
+        validate_trait_schema_compatibility(
+            &self.resolved_trait_schemas,
+            self.selected_type.as_deref(),
+        )?;
 
         if !self.has_schema() {
             if self.has_explicit_values() {
@@ -333,14 +336,27 @@ fn validate_trait_schema_integrity(
 /// effective trait-schema also satisfy every ancestor branch. This check catches
 /// structural incompatibilities early, even when an abstract type provides no
 /// concrete `x-gts-traits` values for JSON Schema validation to exercise.
+///
+/// Both prefixes are validated on behalf of `selected_type`, which `/$id`
+/// names in either (README §9.7.5); the composed fragments carry no `$id` of
+/// their own, so it is resolved here before the comparison reduces operands.
 fn validate_trait_schema_compatibility(
     resolved_trait_schemas: &[Value],
+    selected_type: Option<&str>,
 ) -> Result<(), Vec<String>> {
+    let resolve = |schema: Value| match selected_type {
+        Some(selected) => {
+            crate::x_gts_pattern_ref::with_self_operands_naming(&schema, selected).into_owned()
+        }
+        None => schema,
+    };
     let mut errors = Vec::new();
 
     for i in 1..resolved_trait_schemas.len() {
-        let ancestor_schema = build_effective_traits_schema(&resolved_trait_schemas[..i]);
-        let descendant_schema = build_effective_traits_schema(&resolved_trait_schemas[..=i]);
+        let ancestor_schema = resolve(build_effective_traits_schema(&resolved_trait_schemas[..i]));
+        let descendant_schema =
+            resolve(build_effective_traits_schema(&resolved_trait_schemas[..=i]));
+        let contribution = resolve(resolved_trait_schemas[i].clone());
 
         let pair_errors = crate::schema_derivation::validate_derivation(
             &ancestor_schema,
@@ -355,7 +371,7 @@ fn validate_trait_schema_compatibility(
 
         let branch_errors = crate::schema_derivation::validate_closed_descendant_branches(
             &ancestor_schema,
-            &resolved_trait_schemas[i],
+            &contribution,
             "ancestor trait schema",
             "descendant trait schema",
         );

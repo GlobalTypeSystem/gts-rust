@@ -140,7 +140,8 @@ fn check_regex_profile(
     crate::schema_regex::check(&registry, &documents).map_err(jsonschema::ValidationError::schema)
 }
 
-/// Compiles `schema` with GTS formats and `x-gts-ref` enforcement.
+/// Compiles `schema` with GTS formats, `x-gts-ref` and `x-gts-pattern-ref`
+/// enforcement.
 ///
 /// `/$id` names the document's own top-level `$id`. `exists` enables
 /// store-aware reference checks; `None` checks patterns only.
@@ -186,13 +187,29 @@ pub fn gts_validator_for_type(
     let registry = builder
         .prepare()
         .map_err(jsonschema::ValidationError::from)?;
-    crate::x_gts_ref::with_x_gts_ref(
+    let options = crate::x_gts_ref::with_x_gts_ref(
         options_for(schema),
         selected_type.map(str::to_owned),
         exists,
-    )
-    .with_registry(&registry)
-    .build(schema)
+    );
+    crate::x_gts_pattern_ref::with_x_gts_pattern_ref(options, selected_type.map(str::to_owned))
+        .with_registry(&registry)
+        .build(schema)
+}
+
+/// Compiles `schema` with GTS formats and `x-gts-pattern-ref`, the GTS keyword
+/// that belongs to `Valid(S)` without consulting the registry (README §4.3).
+///
+/// `/$id` operands must already be resolved: none is selected here.
+///
+/// # Errors
+///
+/// See [`validator_for`].
+pub fn registry_independent_validator_for(
+    schema: &Value,
+) -> Result<jsonschema::Validator, jsonschema::ValidationError<'static>> {
+    check_regex_profile(schema, &[])?;
+    crate::x_gts_pattern_ref::with_x_gts_pattern_ref(options_for(schema), None).build(schema)
 }
 
 /// A validation result split by diagnostic source.
@@ -705,15 +722,15 @@ mod tests {
         );
     }
 
-    /// Known gap: jsonschema 0.58.5 uses a custom `\s` set and ECMA-262
-    /// whitespace for `^\S*$`, violating RE2 semantics. When fixed, remove
+    /// Known gap: jsonschema 0.58.6 uses ECMA-262 whitespace for
+    /// `\s` and `\S`, violating RE2 semantics. When fixed, remove
     /// the gap from README and `.gts-spec-known-failures`.
     #[test]
     fn known_gap_jsonschema_spells_its_own_space_set() {
         let space = validator_for(&serde_json::json!({"pattern": r"^\s$"})).expect("compiles");
         let non_space = validator_for(&serde_json::json!({"pattern": r"^\S*$"})).expect("compiles");
         // Outside the reference set, yet matched.
-        for probe in ["\u{b}", "\u{a0}", "\u{feff}"] {
+        for probe in ["\u{b}", "\u{a0}", "\u{feff}", "\u{2028}", "\u{3000}"] {
             assert!(space.is_valid(&serde_json::json!(probe)), "{probe:?}");
             assert!(!non_space.is_valid(&serde_json::json!(probe)), "{probe:?}");
         }

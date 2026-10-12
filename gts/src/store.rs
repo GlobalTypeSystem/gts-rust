@@ -901,6 +901,13 @@ impl GtsStore {
         Self::validate_schema_x_gts_refs(&content)?;
         self.check_constraint_targets(&content, refs)?;
 
+        // `x-gts-pattern-ref` operands, wherever they sit: the compiled
+        // validator below only sees the subschemas it reaches. No registry
+        // lookup, whatever `refs` asks of `x-gts-ref` (README §9.6.1).
+        crate::x_gts_pattern_ref::check_operands(&content).map_err(|e| {
+            StoreError::ValidationError(format!("x-gts-pattern-ref validation failed: {e}"))
+        })?;
+
         // Validate GTS keywords
         crate::schema_modifiers::validate_gts_keywords(&content)
             .map_err(StoreError::ValidationError)?;
