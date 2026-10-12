@@ -91,22 +91,6 @@ impl GtsIdSegmentParts {
     }
 }
 
-/// A read-only view of a segment's parsed fields.
-///
-/// Implemented by both [`GtsIdSegment`] and [`GtsIdPatternSegment`] so the
-/// pattern matcher can compare a pattern against a candidate of either kind
-/// (a concrete id or another pattern) with the same field-level logic.
-pub trait SegmentView {
-    fn vendor(&self) -> &str;
-    fn package(&self) -> &str;
-    fn namespace(&self) -> &str;
-    fn type_name(&self) -> &str;
-    fn ver_major_opt(&self) -> Option<u32>;
-    fn ver_minor(&self) -> Option<u32>;
-    fn is_type(&self) -> bool;
-    fn uuid_tail(&self) -> Option<&str>;
-}
-
 /// A trailing anonymous-instance UUID (combined anonymous instance).
 ///
 /// Opaque: the inner string is guaranteed to be a well-formed lowercase UUID
@@ -558,63 +542,6 @@ fn parse_segment_parts(
     }
 
     Ok((parts, false))
-}
-
-// Field views delegate to each type's inherent accessors (inherent methods take
-// priority over trait methods in method-call resolution, so there is no
-// recursion here).
-impl SegmentView for GtsIdSegment {
-    fn vendor(&self) -> &str {
-        self.vendor()
-    }
-    fn package(&self) -> &str {
-        self.package()
-    }
-    fn namespace(&self) -> &str {
-        self.namespace()
-    }
-    fn type_name(&self) -> &str {
-        self.type_name()
-    }
-    fn ver_major_opt(&self) -> Option<u32> {
-        self.ver_major_opt()
-    }
-    fn ver_minor(&self) -> Option<u32> {
-        self.ver_minor()
-    }
-    fn is_type(&self) -> bool {
-        self.is_type()
-    }
-    fn uuid_tail(&self) -> Option<&str> {
-        self.uuid_tail()
-    }
-}
-
-impl SegmentView for GtsIdPatternSegment {
-    fn vendor(&self) -> &str {
-        self.vendor()
-    }
-    fn package(&self) -> &str {
-        self.package()
-    }
-    fn namespace(&self) -> &str {
-        self.namespace()
-    }
-    fn type_name(&self) -> &str {
-        self.type_name()
-    }
-    fn ver_major_opt(&self) -> Option<u32> {
-        self.ver_major_opt()
-    }
-    fn ver_minor(&self) -> Option<u32> {
-        self.ver_minor()
-    }
-    fn is_type(&self) -> bool {
-        self.is_type()
-    }
-    fn uuid_tail(&self) -> Option<&str> {
-        self.uuid_tail()
-    }
 }
 
 #[cfg(test)]

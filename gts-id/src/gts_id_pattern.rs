@@ -12,8 +12,9 @@
 use std::fmt;
 use std::str::FromStr;
 
-use crate::gts_id_segment::SegmentView;
-use crate::{GtsId, GtsIdError, GtsIdPatternSegment};
+use crate::{
+    GTS_ID_MAX_LENGTH, GTS_ID_PREFIX, GtsId, GtsIdError, GtsIdPatternSegment, GtsIdSegment,
+};
 
 /// A GTS identifier match pattern (exact or trailing-`*` wildcard).
 #[derive(Debug, Clone, PartialEq)]
@@ -29,20 +30,18 @@ impl GtsIdPattern {
     /// wildcard. All validation is delegated to the parser
     /// ([`crate::parse::parse_pattern`]), so a pattern is
     /// parsed identically to the same string passed through any other entry
-    /// point.
+    /// point. Input is validated as spelled, without trimming whitespace.
     ///
     /// # Errors
     /// Returns `GtsIdError` if the string is not a valid GTS identifier pattern.
     pub fn try_new(pattern: &str) -> Result<Self, GtsIdError> {
-        let p = pattern.trim();
-
         // Parse with the pattern parser (not GtsId::try_new, which rejects
         // wildcards) since a pattern is an identifier-shaped string that may
         // legitimately contain a trailing '*'.
-        let segments = crate::parse::parse_pattern(p)?;
+        let segments = crate::parse::parse_pattern(pattern)?;
 
         Ok(GtsIdPattern {
-            pattern: p.to_owned(),
+            pattern: pattern.to_owned(),
             segments,
         })
     }
@@ -67,25 +66,23 @@ impl GtsIdPattern {
 
     /// Returns `true` if `self` (used as a candidate) matches `pattern`.
     ///
-    /// Mirrors [`GtsId::matches_pattern`] for the case where the candidate is
-    /// itself a pattern: the candidate's fixed prefix is matched field-by-field
-    /// against `pattern` (with minor-version flexibility).
+    /// Every identifier selected by this candidate must be selected by the
+    /// filter. This is exactly `pattern.covers(self)`, with the arguments in
+    /// matching order rather than coverage order.
     #[must_use]
     pub fn matches_pattern(&self, pattern: &GtsIdPattern) -> bool {
-        pattern.matches_views(self.segments())
+        pattern.covers(self)
     }
 
     /// Returns `true` if this pattern matches the given candidate segments.
     ///
-    /// This is the core matching primitive; [`GtsId::matches_pattern`] and
-    /// [`GtsIdPattern::matches_pattern`] both delegate to it. A non-wildcard
-    /// pattern segment must match exactly (with minor-version flexibility); a
-    /// wildcard segment accepts anything from that point on. The candidate's
-    /// segments are read through [`SegmentView`], so they may be concrete
-    /// ([`GtsIdSegment`](crate::GtsIdSegment)) or pattern segments.
+    /// This is the concrete-ID matching primitive used by
+    /// [`GtsId::matches_pattern`]. A non-wildcard pattern segment must match
+    /// exactly (with minor-version flexibility); a wildcard segment accepts
+    /// anything from that point on. Pattern candidates use [`Self::covers`].
     ///
     /// [`GtsId::matches_pattern`]: crate::GtsId::matches_pattern
-    pub(crate) fn matches_views<C: SegmentView>(&self, candidate: &[C]) -> bool {
+    pub(crate) fn matches_views(&self, candidate: &[GtsIdSegment]) -> bool {
         let pattern_segs = &self.segments;
         // A final bare `~*` may match an empty chain suffix. A wildcard that
         // already specifies part of the next segment (for example `~abc.*`)
@@ -122,6 +119,10 @@ impl GtsIdPattern {
                 if let Some(p_major) = p_seg.ver_major_opt()
                     && Some(p_major) != c_seg.ver_major_opt()
                 {
+                    return false;
+                }
+                // `v1.*` requires an explicit minor in the concrete ID.
+                if p_seg.ver_major_opt().is_some() && c_seg.ver_minor().is_none() {
                     return false;
                 }
                 if let Some(p_minor) = p_seg.ver_minor()
@@ -169,7 +170,6 @@ impl GtsIdPattern {
                 return false;
             }
 
-            // Check is_type flag matches
             if p_seg.is_type() != c_seg.is_type() {
                 return false;
             }
@@ -182,9 +182,9 @@ impl GtsIdPattern {
     /// `other` pattern is also matched by `self`.
     ///
     /// In other words `self` is the broader (less specific) pattern and `other`
-    /// is contained within it. Coverage is decided segment-by-segment with the
-    /// same field logic as matching — minor-version flexibility, wildcard
-    /// widening, and the implicit derived-type coverage of a bare type id — so
+    /// is contained within it. Coverage uses the already-parsed segments and
+    /// respects minor-version flexibility, type/instance boundaries, and the
+    /// identifier length limit. No pattern text is parsed again. Thus
     /// `…event.v1~*` covers `…event.v1.0~*` (any-minor covers a specific minor)
     /// and `…event.v1~` covers `…event.v1.0~`, which a naive string-prefix test
     /// would miss.
@@ -202,11 +202,10 @@ impl GtsIdPattern {
     /// ```
     #[must_use]
     pub fn covers(&self, other: &GtsIdPattern) -> bool {
-        // `self` covers `other` iff `self`, used as a pattern, matches `other`'s
-        // segments taken as the candidate: where `self` is concrete the fields
-        // must agree, and where `self` widens (wildcard / omitted minor) it
-        // accepts whatever `other` fixes at that position.
-        self.matches_views(other.segments())
+        let value = Selection::of(other);
+        let shortest = value.shortest_selected();
+        shortest > GTS_ID_MAX_LENGTH
+            || covers_nonempty(Selection::of(self), value, shortest == GTS_ID_MAX_LENGTH)
     }
 
     /// Checks if a string is a valid GTS identifier pattern.
@@ -275,463 +274,219 @@ impl AsRef<str> for GtsIdPattern {
     }
 }
 
-#[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
-mod tests {
-    use super::*;
+type Segment = GtsIdPatternSegment;
 
-    /// Prepend the configured prefix to a suffix, yielding a full GTS id string
-    /// for use in tests. This keeps tests prefix-aware without hardcoding "gts.".
-    fn gts_id(suffix: &str) -> String {
-        format!("{}{suffix}", crate::GTS_ID_PREFIX)
-    }
+/// Borrowed views of the existing parse tree; no strings are parsed or copied.
+#[derive(Clone, Copy)]
+enum Selection<'a> {
+    Instance {
+        types: &'a [Segment],
+        tail: &'a Segment,
+        length: usize,
+    },
+    Prefixed {
+        types: &'a [Segment],
+        next: Option<&'a Segment>,
+    },
+}
 
-    #[test]
-    fn test_gts_wildcard_simple() {
-        let pattern = GtsIdPattern::try_new(&gts_id("x.core.events.*")).expect("test");
-        let id = GtsId::try_new(&gts_id("x.core.events.event.v1~")).expect("test");
-        assert!(id.matches_pattern(&pattern));
-    }
-
-    #[test]
-    fn test_gts_wildcard_no_match() {
-        let pattern = GtsIdPattern::try_new(&gts_id("x.core.events.*")).expect("test");
-        let id = GtsId::try_new(&gts_id("y.core.events.event.v1~")).expect("test");
-        assert!(!id.matches_pattern(&pattern));
-    }
-
-    #[test]
-    fn test_trailing_wildcard_ignores_type_marker() {
-        // A trailing `*` matches the candidate position whether the candidate
-        // segment there is a type (`~`) or an instance. A wildcard segment never
-        // carries its own type marker, so it imposes no `is_type` constraint.
-        let pattern = GtsIdPattern::try_new(&gts_id("x.core.events.topic.v1~*")).expect("test");
-
-        let type_candidate = GtsId::try_new(&gts_id(
-            "x.core.events.topic.v1~vendor.app.orders.thing.v1~",
-        ))
-        .expect("test");
-        let instance_candidate = GtsId::try_new(&gts_id(
-            "x.core.events.topic.v1~vendor.app.orders.thing.v1.0",
-        ))
-        .expect("test");
-
-        assert!(type_candidate.matches_pattern(&pattern));
-        assert!(instance_candidate.matches_pattern(&pattern));
-    }
-
-    #[test]
-    fn test_trailing_chain_wildcard_matches_empty_suffix() {
-        let pattern = GtsIdPattern::try_new(&gts_id("x.core.events.topic.v1~*")).expect("test");
-        let exact = GtsId::try_new(&gts_id("x.core.events.topic.v1~")).expect("test");
-        let specific_minor = GtsId::try_new(&gts_id("x.core.events.topic.v1.1~")).expect("test");
-
-        assert!(exact.matches_pattern(&pattern));
-        assert!(specific_minor.matches_pattern(&pattern));
-    }
-
-    #[test]
-    fn test_prefixed_chain_wildcard_requires_a_suffix() {
-        let pattern = GtsIdPattern::try_new(&gts_id("x.core.events.topic.v1~abc.*")).expect("test");
-        let base = GtsId::try_new(&gts_id("x.core.events.topic.v1~")).expect("test");
-
-        assert!(!base.matches_pattern(&pattern));
-    }
-
-    #[test]
-    fn test_zero_major_minor_wildcard_is_scoped_to_v0() {
-        let pattern = GtsIdPattern::try_new(&gts_id("x.core.events.topic.v0.*")).expect("test");
-        let v0 = GtsId::try_new(&gts_id("x.core.events.topic.v0.2~")).expect("test");
-        let v1 = GtsId::try_new(&gts_id("x.core.events.topic.v1.2~")).expect("test");
-
-        assert_eq!(pattern.segments()[0].ver_major_opt(), Some(0));
-        assert!(v0.matches_pattern(&pattern));
-        assert!(!v1.matches_pattern(&pattern));
-    }
-
-    #[test]
-    fn test_gts_wildcard_type_suffix() {
-        // Wildcard after ~ should match type IDs
-        let pattern = GtsIdPattern::try_new(&gts_id("x.core.events.*")).expect("test");
-        let id = GtsId::try_new(&gts_id("x.core.events.event.v1~")).expect("test");
-        assert!(id.matches_pattern(&pattern));
-    }
-
-    #[test]
-    fn test_version_flexibility_in_matching() {
-        // Pattern without minor version should match any minor version
-        let pattern = GtsIdPattern::try_new(&gts_id("x.core.events.event.v1~")).expect("test");
-        let id_no_minor = GtsId::try_new(&gts_id("x.core.events.event.v1~")).expect("test");
-        let id_with_minor = GtsId::try_new(&gts_id("x.core.events.event.v1.0~")).expect("test");
-
-        assert!(id_no_minor.matches_pattern(&pattern));
-        assert!(id_with_minor.matches_pattern(&pattern));
-    }
-
-    #[test]
-    fn test_gts_wildcard_exact_match() {
-        let pattern = GtsIdPattern::try_new(&gts_id("x.core.events.event.v1~")).expect("test");
-        let id = GtsId::try_new(&gts_id("x.core.events.event.v1~")).expect("test");
-        assert!(id.matches_pattern(&pattern));
-    }
-
-    #[test]
-    fn test_gts_wildcard_version_mismatch() {
-        let pattern = GtsIdPattern::try_new(&gts_id("x.core.events.event.v2~")).expect("test");
-        let id = GtsId::try_new(&gts_id("x.core.events.event.v1~")).expect("test");
-        assert!(!id.matches_pattern(&pattern));
-    }
-
-    #[test]
-    fn test_pattern_longer_than_candidate_does_not_match() {
-        let pattern = GtsIdPattern::try_new(&gts_id(
-            "x.core.events.topic.v1~vendor.app.orders.order.v1~",
-        ))
-        .expect("test");
-        let id = GtsId::try_new(&gts_id("x.core.events.topic.v1~")).expect("test");
-        assert!(!id.matches_pattern(&pattern));
-    }
-
-    #[test]
-    fn test_uuid_tail_mismatch_does_not_match() {
-        let pattern = GtsIdPattern::try_new(&gts_id(
-            "x.core.events.topic.v1~7a1d2f34-5678-49ab-9012-abcdef123456",
-        ))
-        .expect("test");
-        let id = GtsId::try_new(&gts_id(
-            "x.core.events.topic.v1~7a1d2f34-5678-49ab-9012-abcdef123457",
-        ))
-        .expect("test");
-        assert!(!id.matches_pattern(&pattern));
-    }
-
-    #[test]
-    fn test_gts_wildcard_with_minor_version() {
-        let pattern = GtsIdPattern::try_new(&gts_id("x.core.events.event.v1.0~")).expect("test");
-        let id = GtsId::try_new(&gts_id("x.core.events.event.v1.0~")).expect("test");
-        assert!(id.matches_pattern(&pattern));
-    }
-
-    #[test]
-    fn test_gts_wildcard_invalid_pattern() {
-        let result = GtsIdPattern::try_new("invalid");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_gts_wildcard_multiple_wildcards_error() {
-        let result = GtsIdPattern::try_new(&gts_id("*.*.*.*"));
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_gts_wildcard_instance_match() {
-        let pattern = GtsIdPattern::try_new(&gts_id("x.core.events.*")).expect("test");
-        let id = GtsId::try_new(&gts_id("x.core.events.event.v1~a.b.c.d.v1.0")).expect("test");
-        assert!(id.matches_pattern(&pattern));
-    }
-
-    #[test]
-    fn test_gts_wildcard_whitespace_trimming() {
-        let pattern =
-            GtsIdPattern::try_new(&format!("  {}  ", gts_id("x.core.events.*"))).expect("test");
-        assert_eq!(pattern.pattern(), gts_id("x.core.events.*"));
-    }
-
-    #[test]
-    fn test_gts_wildcard_only_at_end() {
-        // Wildcard in middle should fail
-        let result1 = GtsIdPattern::try_new(&gts_id("*.core.events.event.v1~"));
-        assert!(result1.is_err());
-
-        // Wildcard at end should work
-        let pattern2 = GtsIdPattern::try_new(&gts_id("x.core.events.*")).expect("test");
-        let id2 = GtsId::try_new(&gts_id("x.core.events.event.v1~")).expect("test");
-        assert!(id2.matches_pattern(&pattern2));
-    }
-
-    #[test]
-    fn test_gts_wildcard_no_wildcard_different_vendor() {
-        let pattern = GtsIdPattern::try_new(&gts_id("x.core.events.event.v1~")).expect("test");
-        let id = GtsId::try_new(&gts_id("y.core.events.event.v1~")).expect("test");
-        assert!(!id.matches_pattern(&pattern));
-    }
-
-    #[test]
-    fn test_gts_wildcard_display_trait() {
-        let pattern = GtsIdPattern::try_new(&gts_id("x.core.events.*")).expect("test");
-        assert_eq!(format!("{pattern}"), gts_id("x.core.events.*"));
-    }
-
-    #[test]
-    fn test_gts_wildcard_from_str_trait() {
-        let pattern: GtsIdPattern = gts_id("x.core.events.*").parse().expect("test");
-        assert_eq!(pattern.pattern(), gts_id("x.core.events.*"));
-    }
-
-    #[test]
-    fn test_gts_wildcard_as_ref_trait() {
-        let pattern = GtsIdPattern::try_new(&gts_id("x.core.events.*")).expect("test");
-        let s: &str = pattern.as_ref();
-        assert_eq!(s, gts_id("x.core.events.*"));
-    }
-
-    #[test]
-    fn test_gts_wildcard_type_suffix_match() {
-        // Wildcard after type suffix
-        let pattern = GtsIdPattern::try_new(&gts_id("x.pkg.ns.type.v1~*")).expect("test");
-        let id1 = GtsId::try_new(&gts_id("x.pkg.ns.type.v1~a.b.c.child.v1~")).expect("test");
-        let id2 = GtsId::try_new(&gts_id("x.pkg.ns.type.v2~a.b.c.child.v1~")).expect("test");
-        assert!(id1.matches_pattern(&pattern));
-        assert!(!id2.matches_pattern(&pattern));
-    }
-
-    #[test]
-    fn test_gts_wildcard_at_various_positions() {
-        // Wildcard at vendor position
-        let result = GtsIdPattern::try_new(&gts_id("*"));
-        assert!(result.is_ok());
-
-        // Wildcard at package position
-        let result = GtsIdPattern::try_new(&gts_id("x.*"));
-        assert!(result.is_ok());
-
-        // Wildcard at namespace position
-        let result = GtsIdPattern::try_new(&gts_id("x.pkg.*"));
-        assert!(result.is_ok());
-
-        // Wildcard at type position
-        let result = GtsIdPattern::try_new(&gts_id("x.pkg.ns.*"));
-        assert!(result.is_ok());
-
-        // Wildcard at version position
-        let result = GtsIdPattern::try_new(&gts_id("x.pkg.ns.type.*"));
-        assert!(result.is_ok());
-    }
-
-    // ---- covers ----
-
-    #[test]
-    fn test_covers_broad_covers_narrow() {
-        let broad = GtsIdPattern::try_new(&gts_id("x.core.srr.resource.v1~*")).expect("test");
-        let narrow = GtsIdPattern::try_new(&gts_id("x.core.srr.resource.v1~acme.*")).expect("test");
-        // Coverage is directional: the broad pattern covers the narrow one,
-        // never the reverse.
-        assert!(broad.covers(&narrow));
-        assert!(!narrow.covers(&broad));
-    }
-
-    #[test]
-    fn test_covers_disjoint_types() {
-        let a = GtsIdPattern::try_new(&gts_id("x.core.srr.resource.v1~*")).expect("test");
-        let b = GtsIdPattern::try_new(&gts_id("x.core.other.resource.v1~*")).expect("test");
-        assert!(!a.covers(&b));
-        assert!(!b.covers(&a));
-    }
-
-    #[test]
-    fn test_covers_identical_patterns() {
-        let a = GtsIdPattern::try_new(&gts_id("x.core.srr.resource.v1~*")).expect("test");
-        let b = GtsIdPattern::try_new(&gts_id("x.core.srr.resource.v1~*")).expect("test");
-        // A pattern covers an identical one (both directions).
-        assert!(a.covers(&b));
-        assert!(b.covers(&a));
-    }
-
-    #[test]
-    fn test_covers_wildcard_covers_exact() {
-        let exact = GtsIdPattern::try_new(&gts_id("x.core.srr.resource.v1~acme.crm._.contact.v1~"))
-            .expect("test");
-        let broad = GtsIdPattern::try_new(&gts_id("x.core.srr.resource.v1~*")).expect("test");
-        assert!(broad.covers(&exact));
-        assert!(!exact.covers(&broad));
-    }
-
-    #[test]
-    fn test_covers_three_levels() {
-        let l1 = GtsIdPattern::try_new(&gts_id("x.core.srr.resource.v1~*")).expect("test");
-        let l2 = GtsIdPattern::try_new(&gts_id("x.core.srr.resource.v1~acme.*")).expect("test");
-        let l3 = GtsIdPattern::try_new(&gts_id("x.core.srr.resource.v1~acme.crm.*")).expect("test");
-        // Broader patterns cover narrower ones, transitively.
-        assert!(l1.covers(&l2));
-        assert!(l1.covers(&l3));
-        assert!(l2.covers(&l3));
-        assert!(!l2.covers(&l1));
-        assert!(!l3.covers(&l1));
-        assert!(!l3.covers(&l2));
-    }
-
-    // ---- glued version wildcard `v*` ----
-
-    #[test]
-    fn test_version_wildcard_valid_and_is_wildcard() {
-        let pattern = GtsIdPattern::try_new(&gts_id("x.llm.chat.message.v*")).expect("test");
-        assert_eq!(pattern.segments().len(), 1);
-        assert!(pattern.segments()[0].is_wildcard());
-        assert!(GtsIdPattern::is_valid(&gts_id("x.llm.chat.message.v*")));
-    }
-
-    #[test]
-    fn test_version_wildcard_matches_any_version_and_chain() {
-        let pattern = GtsIdPattern::try_new(&gts_id("x.llm.chat.message.v*")).expect("test");
-        for id in [
-            gts_id("x.llm.chat.message.v1.0~"),
-            gts_id("x.llm.chat.message.v1.1~"),
-            gts_id("x.llm.chat.message.v2~"),
-            gts_id("x.llm.chat.message.v1.0~acme.app.ns.derived.v1~"),
-        ] {
-            let candidate = GtsId::try_new(&id).expect("test");
-            assert!(candidate.matches_pattern(&pattern), "should match: {id}");
-        }
-        // Different type is not matched.
-        let other = GtsId::try_new(&gts_id("x.llm.chat.other.v1~")).expect("test");
-        assert!(!other.matches_pattern(&pattern));
-    }
-
-    #[test]
-    fn test_version_wildcard_equivalent_to_version_position_star() {
-        // `message.v*` and `message.*` match the same set: the `v` marker adds no
-        // constraint because every version token starts with `v`.
-        let v_star = GtsIdPattern::try_new(&gts_id("x.llm.chat.message.v*")).expect("test");
-        let dot_star = GtsIdPattern::try_new(&gts_id("x.llm.chat.message.*")).expect("test");
-        for id in [
-            gts_id("x.llm.chat.message.v1~"),
-            gts_id("x.llm.chat.message.v9.9~"),
-            gts_id("x.llm.chat.message.v1.0~acme.app.ns.derived.v1~"),
-        ] {
-            let candidate = GtsId::try_new(&id).expect("test");
-            assert_eq!(
-                candidate.matches_pattern(&v_star),
-                candidate.matches_pattern(&dot_star),
-                "match divergence for {id}"
-            );
+impl<'a> Selection<'a> {
+    fn of(pattern: &'a GtsIdPattern) -> Self {
+        let segments = pattern.segments();
+        // Validated patterns always have at least one segment.
+        let end = segments.len() - 1;
+        let last = &segments[end];
+        if last.is_wildcard() {
+            Self::Prefixed {
+                types: &segments[..end],
+                next: (last.raw() != "*").then_some(last),
+            }
+        } else if last.is_type() {
+            Self::Prefixed {
+                types: segments,
+                next: None,
+            }
+        } else {
+            Self::Instance {
+                types: &segments[..end],
+                tail: last,
+                length: pattern.pattern().len(),
+            }
         }
     }
 
-    #[test]
-    fn test_version_wildcard_rejections() {
-        // `*` after `v*` — two wildcards.
-        assert!(!GtsIdPattern::is_valid(&gts_id("x.llm.chat.message.v*~*")));
-        // A stray `~` after the wildcard — `*` is not the final character.
-        assert!(!GtsIdPattern::is_valid(&gts_id("x.llm.chat.message.v1.*~")));
-        // Partial (non-version) token wildcard.
-        assert!(!GtsIdPattern::is_valid(&gts_id("x.llm.chat.msg*")));
-    }
-
-    // ---- covers: minor-version flexibility (segment-based) ----
-
-    #[test]
-    fn test_covers_any_minor_covers_specific_minor() {
-        // A pattern pinned to a major (no minor) is broader than one pinned to a
-        // specific minor — segment-based coverage captures this; string prefixes
-        // would not (`…v1~` is not a string prefix of `…v1.0~`).
-        let any_minor = GtsIdPattern::try_new(&gts_id("x.core.events.event.v1~*")).expect("test");
-        let specific = GtsIdPattern::try_new(&gts_id("x.core.events.event.v1.0~*")).expect("test");
-        assert!(any_minor.covers(&specific));
-        assert!(!specific.covers(&any_minor));
-    }
-
-    #[test]
-    fn test_covers_bare_type_minor_flexibility() {
-        let any_minor = GtsIdPattern::try_new(&gts_id("x.core.events.event.v1~")).expect("test");
-        let specific = GtsIdPattern::try_new(&gts_id("x.core.events.event.v1.0~")).expect("test");
-        assert!(any_minor.covers(&specific));
-        assert!(!specific.covers(&any_minor));
-    }
-
-    #[test]
-    fn test_covers_major_version_mismatch() {
-        let v1 = GtsIdPattern::try_new(&gts_id("x.core.events.event.v1~*")).expect("test");
-        let v2 = GtsIdPattern::try_new(&gts_id("x.core.events.event.v2~*")).expect("test");
-        assert!(!v1.covers(&v2));
-        assert!(!v2.covers(&v1));
-    }
-
-    // ---- From<GtsId> conversion ----
-
-    #[test]
-    fn test_from_gts_id_ref() {
-        let id = GtsId::try_new(&gts_id("x.core.events.event.v1~")).expect("test");
-        let pattern = GtsIdPattern::from(&id);
-        // The pattern string is the id verbatim.
-        assert_eq!(pattern.pattern(), id.id());
-        // A concrete id maps to a concrete pattern — no wildcard segments.
-        assert!(pattern.segments().iter().all(|s| !s.is_wildcard()));
-        // The id at minimum matches the pattern derived from itself.
-        assert!(id.matches_pattern(&pattern));
-    }
-
-    #[test]
-    fn test_concrete_pattern_covers_derived_chain() {
-        // Per GTS spec §3.6 "implicit derived-type coverage": a base type id used
-        // as a pattern is treated as the implicit envelope `…~*`, so it matches
-        // not only itself but every type/instance derived from it down the chain.
-        let pattern = GtsId::try_new(&gts_id("a.b.c.d.v1~"))
-            .expect("test")
-            .to_pattern();
-
-        // Exact and derived candidates both match.
-        let exact = GtsId::try_new(&gts_id("a.b.c.d.v1~")).expect("test");
-        let derived = GtsId::try_new(&gts_id("a.b.c.d.v1~w.x.y.z.v1")).expect("test");
-        assert!(exact.matches_pattern(&pattern));
-        assert!(derived.matches_pattern(&pattern));
-
-        // A different base type is not covered.
-        let other_base = GtsId::try_new(&gts_id("a.b.c.other.v1~w.x.y.z.v1")).expect("test");
-        assert!(!other_base.matches_pattern(&pattern));
-    }
-
-    #[test]
-    fn test_from_gts_id_owned() {
-        let id = GtsId::try_new(&gts_id("x.core.events.event.v1~")).expect("test");
-        let expected = id.id().to_owned();
-        let pattern: GtsIdPattern = id.into();
-        assert_eq!(pattern.pattern(), expected);
-        assert!(pattern.segments().iter().all(|s| !s.is_wildcard()));
-    }
-
-    #[test]
-    fn test_from_gts_id_chained_preserves_segments() {
-        let id = GtsId::try_new(&gts_id(
-            "x.core.events.topic.v1~vendor.app.orders.thing.v1.0",
-        ))
-        .expect("test");
-        let pattern = GtsIdPattern::from(&id);
-        assert_eq!(pattern.segments().len(), id.segments().len());
-        assert_eq!(pattern.pattern(), id.id());
-        assert!(id.matches_pattern(&pattern));
-    }
-
-    #[test]
-    fn test_from_ref_and_owned_agree() {
-        let id = GtsId::try_new(&gts_id("x.core.events.event.v1~")).expect("test");
-        let from_ref = GtsIdPattern::from(&id);
-        let from_owned = GtsIdPattern::from(id);
-        // Borrowing and consuming conversions produce the same pattern.
-        assert_eq!(from_ref, from_owned);
-    }
-
-    #[test]
-    fn test_from_gts_id_matches_to_pattern() {
-        let id = GtsId::try_new(&gts_id("x.core.events.event.v1~")).expect("test");
-        // The inherent `to_pattern` is just the ergonomic form of `From<&GtsId>`.
-        assert_eq!(GtsIdPattern::from(&id), id.to_pattern());
-    }
-
-    // ---- is_valid ----
-
-    #[test]
-    fn test_is_valid() {
-        // Exact ids and trailing-`*` patterns are valid.
-        assert!(GtsIdPattern::is_valid(&gts_id("x.core.events.event.v1~")));
-        assert!(GtsIdPattern::is_valid(&gts_id("x.core.events.*")));
-        assert!(GtsIdPattern::is_valid(&gts_id("x.core.events.topic.v1~*")));
-
-        // Malformed strings and misplaced wildcards are not.
-        assert!(!GtsIdPattern::is_valid("not-a-gts-id"));
-        assert!(!GtsIdPattern::is_valid(&gts_id("x.*.events.event.v1~")));
-        assert!(!GtsIdPattern::is_valid(&gts_id(
-            "x.core.events.topic.v1.*~"
-        )));
+    fn shortest_selected(self) -> usize {
+        match self {
+            Self::Instance { length, .. } => length,
+            Self::Prefixed { types, next } => {
+                let chain = GTS_ID_PREFIX.len()
+                    + types
+                        .iter()
+                        .map(|segment| segment.raw().len())
+                        .sum::<usize>();
+                match next {
+                    None if !types.is_empty() => chain,
+                    next => {
+                        // Four one-letter names, four dots, and `v0` need ten characters.
+                        let segment = next.map_or(10, shortest_partial);
+                        // A first segment must end in the type marker.
+                        chain + segment + usize::from(types.is_empty())
+                    }
+                }
+            }
+        }
     }
 }
+
+fn shortest_partial(partial: &Segment) -> usize {
+    if partial.ver_major_opt().is_some() {
+        // In `v1.*`, replacing `*` with the shortest minor (`0`) keeps the length.
+        partial.raw().len()
+    } else {
+        // Missing names are one character; `.v0` and the name separators add six.
+        [
+            partial.vendor(),
+            partial.package(),
+            partial.namespace(),
+            partial.type_name(),
+        ]
+        .iter()
+        .map(|name| name.len().max(1))
+        .sum::<usize>()
+            + 6
+    }
+}
+
+fn covers_nonempty(operand: Selection<'_>, value: Selection<'_>, at_limit: bool) -> bool {
+    match (operand, value) {
+        (
+            Selection::Instance {
+                types: a,
+                tail: a_tail,
+                ..
+            },
+            Selection::Instance {
+                types: b,
+                tail: b_tail,
+                ..
+            },
+        ) => {
+            same_chain_covers(a, b)
+                && match (a_tail.uuid_tail(), b_tail.uuid_tail()) {
+                    (Some(a), Some(b)) => a == b,
+                    (None, None) => segment_covers(a_tail, b_tail),
+                    _ => false,
+                }
+        }
+        (
+            Selection::Instance { types: a, tail, .. },
+            Selection::Prefixed {
+                types: b,
+                next: Some(partial),
+            },
+        ) if at_limit => {
+            // Only one-digit instance minors fit; appending a type marker
+            // or another chain segment would exceed the length limit.
+            same_chain_covers(a, b)
+                && tail.uuid_tail().is_none()
+                && tail.ver_minor().is_none()
+                && same_names(tail, partial)
+                && partial.ver_major_opt() == tail.ver_major_opt()
+        }
+        (Selection::Instance { .. }, Selection::Prefixed { .. }) => false,
+        (
+            Selection::Prefixed { types, next },
+            Selection::Instance {
+                types: ids, tail, ..
+            },
+        ) => {
+            ids.len() >= types.len()
+                && types.iter().zip(ids).all(|(a, b)| segment_covers(a, b))
+                && next.is_none_or(|partial| {
+                    partial_admits(partial, ids.get(types.len()).unwrap_or(tail))
+                })
+        }
+        (
+            Selection::Prefixed {
+                types: a,
+                next: a_next,
+            },
+            Selection::Prefixed {
+                types: b,
+                next: b_next,
+            },
+        ) => prefixed_covers(a, a_next, b, b_next),
+    }
+}
+
+fn same_names(a: &Segment, b: &Segment) -> bool {
+    a.vendor() == b.vendor()
+        && a.package() == b.package()
+        && a.namespace() == b.namespace()
+        && a.type_name() == b.type_name()
+}
+
+fn segment_covers(a: &Segment, b: &Segment) -> bool {
+    same_names(a, b)
+        && a.ver_major_opt() == b.ver_major_opt()
+        && (a.ver_minor().is_none() || a.ver_minor() == b.ver_minor())
+}
+
+fn same_chain_covers(a: &[Segment], b: &[Segment]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(a, b)| segment_covers(a, b))
+}
+
+fn partial_names_cover(a: &Segment, b: &Segment) -> bool {
+    (a.vendor().is_empty() || a.vendor() == b.vendor())
+        && (a.package().is_empty() || a.package() == b.package())
+        && (a.namespace().is_empty() || a.namespace() == b.namespace())
+        && (a.type_name().is_empty() || a.type_name() == b.type_name())
+}
+
+fn partial_admits(partial: &Segment, segment: &Segment) -> bool {
+    partial_names_cover(partial, segment)
+        && partial.ver_major_opt().is_none_or(|major| {
+            segment.ver_major_opt() == Some(major) && segment.ver_minor().is_some()
+        })
+}
+
+fn partial_covers(a: &Segment, b: &Segment) -> bool {
+    partial_names_cover(a, b)
+        && a.ver_major_opt()
+            .is_none_or(|major| b.ver_major_opt() == Some(major))
+}
+
+fn prefixed_covers(
+    a: &[Segment],
+    a_next: Option<&Segment>,
+    b: &[Segment],
+    b_next: Option<&Segment>,
+) -> bool {
+    if a.len() > b.len() {
+        // A first-segment minor wildcard selects types contained in a bare
+        // type scope with the same names and major and an omitted minor.
+        return match (a, a_next, b, b_next) {
+            ([only], None, [], Some(partial)) => {
+                only.ver_minor().is_none()
+                    && same_names(only, partial)
+                    && only.ver_major_opt() == partial.ver_major_opt()
+            }
+            _ => false,
+        };
+    }
+    if !a.iter().zip(b).all(|(a, b)| segment_covers(a, b)) {
+        return false;
+    }
+    let Some(partial) = a_next else {
+        return true;
+    };
+    match b.get(a.len()) {
+        Some(segment) => partial_admits(partial, segment),
+        None => b_next.is_some_and(|other| partial_covers(partial, other)),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[path = "gts_id_pattern_test.rs"]
+mod tests;

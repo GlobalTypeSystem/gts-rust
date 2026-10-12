@@ -68,6 +68,12 @@ changes.
 
 Every value is produced only by the validating constructors, so a parsed value is always well-formed and its invariants cannot be forged.
 
+The `try_new`, `FromStr`, and `is_valid` entry points of both `GtsId` and `GtsIdPattern` validate input as spelled and reject surrounding whitespace. Callers that want to normalize input must do so explicitly.
+
+An omitted minor version matches both omitted and explicit minors of the same major, including in instance segments. A minor wildcard such as `v1.*` requires an explicit minor and does not match the only-major spelling `v1`.
+
+Major and minor versions range from `0` to `4294967295` (`u32`). `GtsIdPattern::covers` compares the selected identifier sets using the parsed segments, including the 1024-character identifier limit, without parsing the patterns again.
+
 ## Examples
 
 The snippets below use `?` for brevity; assume they run inside a function that returns `Result<_, gts_id::GtsIdError>`.
@@ -151,6 +157,10 @@ let broad = GtsIdPattern::try_new("gts.x.core.events.topic.v1~*")?;
 let narrow = GtsIdPattern::try_new("gts.x.core.events.topic.v1~acme.*")?;
 assert!(broad.covers(&narrow));
 assert!(!narrow.covers(&broad));
+
+// Pattern matching uses the same set inclusion, with the arguments reversed.
+assert!(narrow.matches_pattern(&broad));
+assert!(!broad.matches_pattern(&narrow));
 ```
 
 ### Anonymous instances (UUID tail)

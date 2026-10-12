@@ -1,4 +1,5 @@
 use super::*;
+use crate::gts::GTS_ID_MAX_LENGTH;
 use crate::schema_evolution::{
     CompatibilityVerdict, check_backward_compatibility, check_forward_compatibility,
 };
@@ -6,8 +7,8 @@ use serde_json::json;
 
 const RESOURCE: &str = "gts.x.core.resources.resource";
 
-fn pattern(text: &str) -> GtsPattern {
-    GtsPattern::parse(text).unwrap_or_else(|e| panic!("{text}: {e}"))
+fn pattern(text: &str) -> GtsIdPattern {
+    GtsIdPattern::try_new(text).unwrap_or_else(|e| panic!("{text}: {e}"))
 }
 
 fn covers(operand: &str, value: &str) -> bool {
@@ -35,10 +36,10 @@ fn grammar_accepts_section_10_patterns() {
         "gts.x.core.events.type.v1.2~",
         "gts.x.core.events.topic.v1~ven.app._.custom_event_topic.v1.2",
         "gts.x.core.events.type.v1~7a1d2f34-5678-49ab-9012-abcdef123456",
-        "gts.x.core.events.type.v99999999999999999999~",
+        "gts.x.core.events.type.v4294967295~",
         &longest,
     ] {
-        assert!(GtsPattern::parse(valid).is_ok(), "{valid}");
+        assert!(GtsIdPattern::try_new(valid).is_ok(), "{valid}");
     }
 }
 
@@ -74,6 +75,9 @@ fn grammar_rejects_everything_else_without_normalizing() {
         "gts://gts.x.core.events.type.v1~",
         "gts.x.core.events.type.v1",
         "gts.x.core.events.type.v01~",
+        "gts.x.core.events.type.v4294967296~",
+        "gts.x.core.events.type.v1.4294967296~",
+        "gts.x.core.events.type.v4294967296.*",
         "gts.x.core.events.type.v1.01~*",
         "gts.x.core.events.type~",
         "gts.x.core.events.type.v1~~",
@@ -82,7 +86,7 @@ fn grammar_rejects_everything_else_without_normalizing() {
         "gts.x.\u{441}ore.*",
         &too_long,
     ] {
-        assert!(GtsPattern::parse(invalid).is_err(), "{invalid:?}");
+        assert!(GtsIdPattern::try_new(invalid).is_err(), "{invalid:?}");
     }
 }
 
@@ -126,11 +130,16 @@ fn coverage_follows_the_readme_tables() {
         (
             uploads.clone(),
             format!("{RESOURCE}.v1~acme.prod._.uploads.v1.0"),
-            false,
+            true,
         ),
         (
             format!("{RESOURCE}.v1~acme.prod._.uploads.v1.*"),
             uploads.clone(),
+            false,
+        ),
+        (
+            format!("{RESOURCE}.v1~acme.prod._.uploads.v1.*"),
+            format!("{uploads}.0"),
             true,
         ),
         (
@@ -143,8 +152,13 @@ fn coverage_follows_the_readme_tables() {
             format!("{RESOURCE}.v1~acme.prod._.uploads.v1.3~"),
             true,
         ),
-        // First-segment `v1.*` is `v1~`.
-        (format!("{RESOURCE}.v1.*"), format!("{RESOURCE}.v1~"), true),
+        // A minor wildcard requires an explicit minor; omission is broader.
+        (format!("{RESOURCE}.v1.*"), format!("{RESOURCE}.v1~"), false),
+        (
+            format!("{RESOURCE}.v1.*"),
+            format!("{RESOURCE}.v1.0~"),
+            true,
+        ),
         (format!("{RESOURCE}.v1~"), format!("{RESOURCE}.v1.*"), true),
         (
             format!("{RESOURCE}.v1.0~"),
@@ -189,6 +203,34 @@ fn coverage_follows_the_readme_tables() {
     }
 }
 
+#[test]
+fn instance_scopes_apply_minor_flexibility_in_every_segment() {
+    let broad =
+        "gts.x.core.resources.resource.v1~acme.storage.resources.bucket.v2~acme.prod._.uploads.v3";
+    let pinned = "gts.x.core.resources.resource.v1.4~acme.storage.resources.bucket.v2.5~acme.prod._.uploads.v3.6";
+    assert!(covers(broad, pinned));
+    assert!(!covers(pinned, broad));
+    for other in [
+        "gts.x.core.resources.resource.v1.7~acme.storage.resources.bucket.v2.5~acme.prod._.uploads.v3.6",
+        "gts.x.core.resources.resource.v1.4~acme.storage.resources.bucket.v2.7~acme.prod._.uploads.v3.6",
+        "gts.x.core.resources.resource.v1.4~acme.storage.resources.bucket.v2.5~acme.prod._.uploads.v3.7",
+        "gts.x.core.resources.resource.v1.4~acme.storage.resources.bucket.v2.5~acme.prod._.uploads.v30.6",
+        "gts.x.core.resources.resource.v1.4~acme.storage.resources.bucket.v2.5~acme.prod._.downloads.v3.6",
+    ] {
+        assert!(!covers(pinned, other), "{other}");
+    }
+
+    let uuid = "7a1d2f34-5678-49ab-9012-abcdef123456";
+    let anonymous = format!("gts.x.core.resources.resource.v1~{uuid}");
+    let pinned_anonymous = format!("gts.x.core.resources.resource.v1.4~{uuid}");
+    assert!(covers(&anonymous, &pinned_anonymous));
+    assert!(!covers(&pinned_anonymous, &anonymous));
+    assert!(!covers(
+        &anonymous,
+        "gts.x.core.resources.resource.v1~7a1d2f34-5678-49ab-9012-abcdef123457"
+    ));
+}
+
 /// `(prefix, wildcard, completion)`: around a padded name, a wildcard ending
 /// and the ending of the shortest identifier it selects.
 fn boundary_shapes() -> Vec<(String, &'static str, &'static str)> {
@@ -197,16 +239,13 @@ fn boundary_shapes() -> Vec<(String, &'static str, &'static str)> {
         // A first segment is a type: the completion ends in `~`.
         ("gts.".to_owned(), ".*", ".a._.a.v0~"),
         ("gts.".to_owned(), ".b.c.d.v*", ".b.c.d.v0~"),
+        ("gts.".to_owned(), ".b.c.d.v0.*", ".b.c.d.v0.0~"),
         ("gts.x.".to_owned(), ".*", ".a.a.v0~"),
         // A later segment may end an instance identifier, one character
         // shorter; explicit minors and long majors count as spelled.
         (format!("{RESOURCE}.v1~"), ".*", ".a._.a.v0"),
         (format!("{RESOURCE}.v1.0~"), ".*", ".a._.a.v0"),
-        (
-            format!("{RESOURCE}.v{}~", "9".repeat(80)),
-            ".*",
-            ".a._.a.v0",
-        ),
+        (format!("{RESOURCE}.v4294967295~"), ".*", ".a._.a.v0"),
         (bucket, ".*", ".a._.a.v0"),
     ]
 }
@@ -232,7 +271,7 @@ fn empty_selections_are_covered_by_any_operand() {
         assert!(!covers(operand, &selecting), "{selecting} is not empty");
 
         let (empty, too_long) = fill(GTS_ID_MAX_LENGTH + 1);
-        assert!(GtsPattern::parse(&too_long).is_err());
+        assert!(GtsIdPattern::try_new(&too_long).is_err());
         assert!(covers(operand, &empty), "{empty} selects nothing");
         assert!(covers(&empty, &empty), "{empty} covers itself");
         assert!(!covers(&empty, &selecting), "{empty} omits {witness}");
@@ -355,11 +394,18 @@ fn evolution_compares_operands_by_coverage() {
     use CompatibilityVerdict::{Compatible, Incompatible, Unknown};
     let narrow = json!({"type": "string", "x-gts-pattern-ref": format!("{RESOURCE}.v1~")});
     let wide = json!({"type": "string", "x-gts-pattern-ref": format!("{RESOURCE}.*")});
-    let equal = json!({"type": "string", "x-gts-pattern-ref": format!("{RESOURCE}.v1.*")});
+    let explicit_minor = json!({"type": "string", "x-gts-pattern-ref": format!("{RESOURCE}.v1.*")});
     let plain = json!({"type": "string"});
     assert_eq!(verdicts(&narrow, &wide), (Compatible, Incompatible));
     assert_eq!(verdicts(&wide, &narrow), (Incompatible, Compatible));
-    assert_eq!(verdicts(&narrow, &equal), (Compatible, Compatible));
+    assert_eq!(
+        verdicts(&narrow, &explicit_minor),
+        (Incompatible, Compatible)
+    );
+    assert_eq!(
+        verdicts(&explicit_minor, &narrow),
+        (Compatible, Incompatible)
+    );
     assert_eq!(verdicts(&plain, &narrow), (Incompatible, Compatible));
 
     let not_narrow =
@@ -385,6 +431,21 @@ fn evolution_compares_operands_by_coverage() {
     assert_eq!(verdicts(&constant, &narrow).0, Compatible);
     let outside = json!({"type": "string", "const": "gts.*"});
     assert_ne!(verdicts(&outside, &narrow).0, Compatible);
+}
+
+#[test]
+fn evolution_compares_instance_minor_scopes() {
+    use CompatibilityVerdict::{Compatible, Incompatible};
+    let operand = "gts.x.core.resources.resource.v1~acme.prod._.uploads.v1";
+    let schema = |operand: &str| json!({"type": "string", "x-gts-pattern-ref": operand});
+    let broad = schema(operand);
+    let pinned = schema(&format!("{operand}.0"));
+    assert_eq!(verdicts(&broad, &pinned), (Incompatible, Compatible));
+    assert_eq!(verdicts(&pinned, &broad), (Compatible, Incompatible));
+    assert_eq!(
+        verdicts(&pinned, &schema(&format!("{operand}.1"))),
+        (Incompatible, Incompatible)
+    );
 }
 
 #[test]
