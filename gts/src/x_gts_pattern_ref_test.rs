@@ -434,6 +434,25 @@ fn evolution_compares_operands_by_coverage() {
 }
 
 #[test]
+fn evolution_positive_operand_masks_a_negated_coverage_break() {
+    use CompatibilityVerdict::{Incompatible, Unknown};
+    let source = json!({
+        "type": "string",
+        "x-gts-pattern-ref": "gts.y.*",
+        "not": {"x-gts-pattern-ref": "gts.x.a.*"}
+    });
+    let target = json!({
+        "type": "string",
+        "not": {"x-gts-pattern-ref": "gts.x.*"}
+    });
+    // The positive operand rejects the proposed witness, `gts.x.*`.
+    assert!(!is_valid(&source, &json!("gts.x.*")));
+    // Inclusion holds, but comparing the negations alone cannot prove it.
+    assert_eq!(verdicts(&source, &target), (Unknown, Incompatible));
+    assert_eq!(verdicts(&target, &source), (Incompatible, Unknown));
+}
+
+#[test]
 fn evolution_compares_instance_minor_scopes() {
     use CompatibilityVerdict::{Compatible, Incompatible};
     let operand = "gts.x.core.resources.resource.v1~acme.prod._.uploads.v1";

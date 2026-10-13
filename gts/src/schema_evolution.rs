@@ -1042,7 +1042,7 @@ fn check_pattern_ref_compatibility(
                     errors.push(not_provable());
                 }
                 Some(_) => errors.push(narrowed(
-                    masked,
+                    masked || source.contains_key(X_GTS_PATTERN_REF),
                     format!(
                         "changes negated '{X_GTS_PATTERN_REF}' so that {declared} does not \
                          cover {excluded}"
