@@ -172,6 +172,14 @@ x-gts-ref: gts.x.core.*
     }
 
     #[test]
+    fn test_scan_yaml_xgts_pattern_ref_wildcard() {
+        let content = "properties:\n  selector:\n    x-gts-pattern-ref: gts.x.core.*\n";
+        let file = create_temp_yaml(content);
+        let errors = scan_yaml_file(file.path(), None, 10_485_760, false).unwrap();
+        assert!(errors.is_empty(), "Unexpected errors: {errors:?}");
+    }
+
+    #[test]
     fn test_scan_yaml_xgts_ref_bare_wildcard() {
         let content = r#"
 x-gts-ref: "*"

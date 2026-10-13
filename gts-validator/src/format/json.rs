@@ -8,7 +8,7 @@ use gts::{GTS_ID_PREFIX, GTS_ID_URI_PREFIX};
 use serde_json::Value;
 
 use crate::error::{ScanError, ScanErrorKind, ValidationError};
-use crate::normalize::normalize_candidate;
+use crate::normalize::{NormalizedCandidate, normalize_candidate};
 use crate::validator::validate_candidate;
 
 /// Scan JSON content for GTS identifiers.
@@ -69,6 +69,7 @@ pub fn walk_json_value(
         Value::String(s) => {
             let candidate_str = s.as_str();
             let is_xgts_ref = json_path.ends_with(".x-gts-ref");
+            let is_pattern_ref = json_path.ends_with(".x-gts-pattern-ref");
 
             // PRE-FILTER: x-gts-ref special values that are NOT GTS identifiers.
             // These must be checked BEFORE normalization to avoid misleading errors.
@@ -77,8 +78,10 @@ pub fn walk_json_value(
             //   - Wildcard pattern (gts.*)
             //   - Bare wildcard (*)
             //   - Relative JSON pointer (/$id, /properties/id, etc.)
-            if is_xgts_ref && (candidate_str.starts_with('/') || candidate_str == "*") {
-                return; // valid x-gts-ref value, not a GTS ID to validate
+            if (is_xgts_ref && (candidate_str.starts_with('/') || candidate_str == "*"))
+                || (is_pattern_ref && candidate_str == "/$id")
+            {
+                return;
             }
 
             // Only consider strings that look like GTS identifiers
@@ -91,14 +94,24 @@ pub fn walk_json_value(
                     .is_some_and(|pos| pos > candidate_str.rfind('~').unwrap_or(0));
 
             // For plain gts. strings, skip if it looks like a filename (e.g., "gts.x.type.v1~.schema.json")
-            if looks_like_filename {
+            if looks_like_filename && !is_pattern_ref {
                 return;
             }
 
-            if looks_like_gts_candidate(candidate_str) {
-                match normalize_candidate(candidate_str) {
+            if is_pattern_ref || looks_like_gts_candidate(candidate_str) {
+                // Pattern operands must be valid as spelled. Documentation
+                // normalization would incorrectly accept whitespace or URIs.
+                let candidate = if is_pattern_ref {
+                    Ok(NormalizedCandidate {
+                        gts_id: s.clone(),
+                        original: s.clone(),
+                    })
+                } else {
+                    normalize_candidate(candidate_str)
+                };
+                match candidate {
                     Ok(candidate) => {
-                        let allow_wildcards = is_xgts_ref;
+                        let allow_wildcards = is_xgts_ref || is_pattern_ref;
                         let validation_errors =
                             validate_candidate(&candidate, vendor, allow_wildcards);
                         for err in validation_errors {
@@ -235,6 +248,44 @@ mod tests {
             errors.is_empty(),
             "Wildcards in x-gts-ref should be allowed"
         );
+    }
+
+    #[test]
+    fn test_scan_json_xgts_pattern_ref_wildcard() {
+        for operand in [
+            "gts.*",
+            "gts.x.core.*",
+            "gts.x.core.events.type.v1~",
+            "/$id",
+        ] {
+            let content = serde_json::json!({
+                "properties": {"selector": {"x-gts-pattern-ref": operand}}
+            });
+            let file = create_temp_json(&content.to_string());
+            for vendor in [None, Some("x")] {
+                let errors = scan_json_file(file.path(), vendor, 10_485_760, false).unwrap();
+                assert!(errors.is_empty(), "{operand} ({vendor:?}): {errors:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_scan_json_xgts_pattern_ref_rejects_invalid_pattern() {
+        for operand in [
+            "gts.x..*",
+            "/not-a-pattern",
+            "*",
+            "not a pattern",
+            " gts.x.core.* ",
+            "gts://gts.x.core.*",
+            "gts.x.core.events.type.v1~.schema.json",
+        ] {
+            let content = serde_json::json!({"x-gts-pattern-ref": operand});
+            let file = create_temp_json(&content.to_string());
+            let errors = scan_json_file(file.path(), None, 10_485_760, false).unwrap();
+            assert_eq!(errors.len(), 1, "{operand}: {errors:?}");
+            assert_eq!(errors[0].json_path, "$.x-gts-pattern-ref");
+        }
     }
 
     #[test]

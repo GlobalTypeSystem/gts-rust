@@ -125,10 +125,12 @@ pub fn validate_candidate(
         // GtsIdPattern::try_new() delegates to GtsId::try_new() internally,
         // so all spec rules are enforced. Single parse — vendor check
         // only runs on success to avoid duplicate/misleading errors.
+        // A vendor that is wildcarded or empty (`gts.*`) names no vendor.
         match gts::GtsIdPattern::try_new(gts_id) {
             Ok(parsed) => {
                 if let Some(expected) = expected_vendor
                     && let Some(first_seg) = parsed.segments().first()
+                    && !first_seg.vendor().is_empty()
                     && !first_seg.vendor().contains('*')
                     && first_seg.vendor() != expected
                     && !is_example_vendor(first_seg.vendor())
@@ -254,6 +256,21 @@ mod tests {
         let errors = validate_candidate(&candidate, None, false);
         assert!(!errors.is_empty());
         assert!(errors[0].contains("Wildcards"));
+    }
+
+    #[test]
+    fn test_validate_candidate_wildcard_vendor() {
+        // `gts.*` selects every vendor, so it cannot mismatch the expected one
+        for pattern in ["gts.*", "gts.x.*", "gts.x.core.*"] {
+            let candidate = normalize_candidate(pattern).unwrap();
+            let errors = validate_candidate(&candidate, Some("x"), true);
+            assert!(errors.is_empty(), "{pattern}: {errors:?}");
+        }
+
+        let candidate = normalize_candidate("gts.y.core.*").unwrap();
+        let errors = validate_candidate(&candidate, Some("x"), true);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("Vendor mismatch"));
     }
 
     #[test]
