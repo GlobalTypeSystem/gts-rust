@@ -20,10 +20,11 @@ pub mod schema_traits;
 pub mod store;
 #[doc(hidden)]
 pub mod testing;
+mod x_gts_pattern_ref;
 pub mod x_gts_ref;
 
 /// GTS specification revision implemented by compatibility and validation logic.
-pub const GTS_SPECIFICATION_VERSION: &str = "0.15";
+pub const GTS_SPECIFICATION_VERSION: &str = "0.16";
 
 /// Version of this Rust implementation.
 pub const GTS_IMPLEMENTATION_VERSION: &str = env!("CARGO_PKG_VERSION");

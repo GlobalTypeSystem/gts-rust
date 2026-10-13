@@ -445,6 +445,22 @@ fn merge_keyword(
         keyword if MAXIMUMS.contains(&keyword) => {
             merge_numeric_bound(current, candidate_value, path, unproven, Ordering::Less);
         }
+        // Two coverage scopes intersect in the narrower one when one covers
+        // the other; any other pair is left unproven.
+        crate::x_gts_pattern_ref::X_GTS_PATTERN_REF => {
+            match (
+                crate::x_gts_pattern_ref::literal_operand(current),
+                crate::x_gts_pattern_ref::literal_operand(candidate_value),
+            ) {
+                (Some(held), Some(candidate)) if held.covers(&candidate) => {
+                    *current = candidate_value.clone();
+                }
+                (Some(held), Some(candidate)) if candidate.covers(&held) => {}
+                _ => {
+                    unproven.insert(path.to_owned());
+                }
+            }
+        }
         "type" => {
             if current.as_str() == Some("number") && candidate_value.as_str() == Some("integer") {
                 *current = candidate_value.clone();
@@ -904,6 +920,204 @@ fn check_narrowing_constraints(
     errors
 }
 
+/// Compares `x-gts-pattern-ref` by coverage (README §9.6.1).
+///
+/// The keyword accepts the strings whose selection the operand covers, so an
+/// isolated positive constraint is included in another exactly when the
+/// other's operand covers its own: widening the operand is backward
+/// compatible, narrowing it forward compatible. Under `not` the directions
+/// reverse. Where another constraint on the same node could hide the
+/// counterexample, the break is reported as not provable rather than as
+/// incompatible.
+fn check_pattern_ref_compatibility(
+    path: &str,
+    old_schema: &Map<String, Value>,
+    new_schema: &Map<String, Value>,
+    check_backward: bool,
+) -> Vec<CompatibilityDiagnostic> {
+    use crate::x_gts_pattern_ref::{X_GTS_PATTERN_REF, literal_operand};
+
+    let (source, target) = if check_backward {
+        (old_schema, new_schema)
+    } else {
+        (new_schema, old_schema)
+    };
+    let narrowed = |masked: bool, detail: String| {
+        let finding = if masked {
+            CompatibilityFinding::NotProvable
+        } else {
+            CompatibilityFinding::NarrowingConstraintChanged
+        };
+        CompatibilityDiagnostic::new(path, finding, detail)
+    };
+    let unreadable = |operand: &Value| {
+        CompatibilityDiagnostic::new(
+            path,
+            CompatibilityFinding::NotProvable,
+            format!("has '{X_GTS_PATTERN_REF}' operand {operand}, which cannot be compared"),
+        )
+    };
+    let masked = masks_string_witness(source);
+    let mut errors = Vec::new();
+
+    if admits_strings(source)
+        && admits_strings(target)
+        && let Some(required) = target.get(X_GTS_PATTERN_REF)
+        && source.get(X_GTS_PATTERN_REF) != Some(required)
+    {
+        match (source.get(X_GTS_PATTERN_REF), literal_operand(required)) {
+            (_, None) => errors.push(unreadable(required)),
+            (None, Some(_)) => errors.push(narrowed(
+                masked,
+                format!(
+                    "{} '{X_GTS_PATTERN_REF}' constraint {required}",
+                    direction_verb(check_backward)
+                ),
+            )),
+            (Some(declared), Some(required_scope)) => match literal_operand(declared) {
+                None => errors.push(unreadable(declared)),
+                Some(scope) if required_scope.covers(&scope) => {}
+                Some(_) => errors.push(narrowed(
+                    masked,
+                    format!(
+                        "changes '{X_GTS_PATTERN_REF}' so that {required} does not cover {declared}"
+                    ),
+                )),
+            },
+        }
+    }
+
+    let not_provable = || {
+        CompatibilityDiagnostic::new(
+            path,
+            CompatibilityFinding::NotProvable,
+            format!(
+                "changes a negated '{X_GTS_PATTERN_REF}' constraint, so inclusion cannot be \
+                 established"
+            ),
+        )
+    };
+    // The keyword holds for every non-string, so a target `not` excludes
+    // non-strings too unless its subschema restricts itself to strings.
+    match (negated_pattern_ref(source), negated_pattern_ref(target)) {
+        // `not` on the source side only narrows the source; an ordinary target
+        // `not` is compared by [`check_exact_constraints`].
+        (_, None) => {}
+        (None, Some((excluded, rest))) => match negated_domain(&rest) {
+            None => errors.push(not_provable()),
+            // Excludes strings only, which the source never accepts.
+            Some(NegatedDomain::Strings) if !admits_strings(source) => {}
+            Some(_) => errors.push(narrowed(
+                masked || source.contains_key(X_GTS_PATTERN_REF) || source.contains_key("not"),
+                format!(
+                    "{} negated '{X_GTS_PATTERN_REF}' constraint {excluded}",
+                    direction_verb(check_backward)
+                ),
+            )),
+        },
+        (Some((declared, declared_rest)), Some((excluded, excluded_rest))) => {
+            if declared == excluded && declared_rest == excluded_rest {
+                return errors;
+            }
+            let (Some(scope), Some(excluded_scope)) =
+                (literal_operand(declared), literal_operand(excluded))
+            else {
+                errors.push(not_provable());
+                return errors;
+            };
+            if declared_rest != excluded_rest {
+                errors.push(not_provable());
+                return errors;
+            }
+            // Valid(not S) ⊆ Valid(not T) iff Valid(T) ⊆ Valid(S).
+            if scope.covers(&excluded_scope) {
+                return errors;
+            }
+            match negated_domain(&declared_rest) {
+                None => errors.push(not_provable()),
+                // The witness would be a string the source never accepts.
+                Some(NegatedDomain::Strings) if !admits_strings(source) => {}
+                // The source `not` already rejects every value it could hold.
+                Some(NegatedDomain::Everything) if !admits_strings(source) => {
+                    errors.push(not_provable());
+                }
+                Some(_) => errors.push(narrowed(
+                    masked || source.contains_key(X_GTS_PATTERN_REF),
+                    format!(
+                        "changes negated '{X_GTS_PATTERN_REF}' so that {declared} does not \
+                         cover {excluded}"
+                    ),
+                )),
+            }
+        }
+    }
+    errors
+}
+
+/// Which values a negated `x-gts-pattern-ref` subschema matches outside the
+/// strings its operand covers.
+enum NegatedDomain {
+    /// Every non-string as well: nothing else is declared.
+    Everything,
+    /// Nothing else: the subschema is restricted to strings.
+    Strings,
+}
+
+/// The [`NegatedDomain`] of a negated subschema's other keywords, or `None`
+/// when they could constrain the witness in ways not compared here.
+fn negated_domain(rest: &Map<String, Value>) -> Option<NegatedDomain> {
+    if rest.is_empty() {
+        Some(NegatedDomain::Everything)
+    } else if rest.len() == 1 && rest.get("type").and_then(Value::as_str) == Some("string") {
+        Some(NegatedDomain::Strings)
+    } else {
+        None
+    }
+}
+
+/// How a constraint present only on the target side reads in this direction.
+const fn direction_verb(check_backward: bool) -> &'static str {
+    if check_backward { "adds" } else { "removes" }
+}
+
+/// The operand and the remaining keywords of a `not` whose subschema declares
+/// `x-gts-pattern-ref`.
+fn negated_pattern_ref(schema: &Map<String, Value>) -> Option<(&Value, Map<String, Value>)> {
+    let negated = schema.get("not")?.as_object()?;
+    let operand = negated.get(crate::x_gts_pattern_ref::X_GTS_PATTERN_REF)?;
+    let mut rest = negated.clone();
+    rest.remove(crate::x_gts_pattern_ref::X_GTS_PATTERN_REF);
+    Some((operand, rest))
+}
+
+/// Whether the schema can accept a string at all.
+fn admits_strings(schema: &Map<String, Value>) -> bool {
+    match schema.get("type") {
+        Some(Value::String(name)) => name == "string",
+        Some(Value::Array(names)) => names.iter().any(|name| name.as_str() == Some("string")),
+        None | Some(_) => true,
+    }
+}
+
+/// Whether another constraint could reject the string that would show a
+/// coverage break, which would leave the break unproven.
+fn masks_string_witness(schema: &Map<String, Value>) -> bool {
+    const MASKING: &[&str] = &[
+        "pattern",
+        "format",
+        "minLength",
+        "maxLength",
+        "const",
+        "enum",
+        "anyOf",
+        "oneOf",
+        "if",
+        "contentEncoding",
+        "contentMediaType",
+    ];
+    MASKING.iter().any(|keyword| schema.contains_key(*keyword))
+}
+
 fn check_type_compatibility(
     path: &str,
     old_schema: &Map<String, Value>,
@@ -1070,7 +1284,7 @@ fn enumerated_source_is_included(
         Cow::Borrowed(target)
     };
     let target = target.as_ref();
-    let Ok(validator) = crate::json_schema::validator_for(target) else {
+    let Ok(validator) = crate::json_schema::registry_independent_validator_for(target) else {
         return false;
     };
     values.into_iter().all(|value| validator.is_valid(value))
@@ -1175,8 +1389,14 @@ fn check_exact_constraints(
         "contentMediaType",
     ];
 
+    // A negated `x-gts-pattern-ref` is compared by coverage instead, which
+    // holds only when no side carries an ordinary `not`.
+    let negations_compared = [old_schema, new_schema]
+        .iter()
+        .all(|schema| !schema.contains_key("not") || negated_pattern_ref(schema).is_some());
     EXACT_CONSTRAINTS
         .iter()
+        .filter(|keyword| !(negations_compared && **keyword == "not"))
         .filter(|keyword| old_schema.get(**keyword) != new_schema.get(**keyword))
         .map(|keyword| {
             CompatibilityDiagnostic::new(
@@ -1348,6 +1568,12 @@ fn check_schema_node_compatibility(
         walk.roots_identical,
     ));
     node_errors.extend(check_narrowing_constraints(
+        path,
+        old_map,
+        new_map,
+        check_backward,
+    ));
+    node_errors.extend(check_pattern_ref_compatibility(
         path,
         old_map,
         new_map,
@@ -1773,6 +1999,10 @@ fn check_inclusion(
     new_schema: &Value,
     check_backward: bool,
 ) -> (CompatibilityVerdict, Vec<CompatibilityDiagnostic>) {
+    // `/$id` names each effective schema's own type (README §9.6.1), so the
+    // same spelling on both sides may denote different scopes.
+    let old_schema = &*crate::x_gts_pattern_ref::with_resolved_self_operands(old_schema);
+    let new_schema = &*crate::x_gts_pattern_ref::with_resolved_self_operands(new_schema);
     let mut errors = Vec::new();
     let declared_old = old_schema.get("$schema").and_then(Value::as_str);
     let declared_new = new_schema.get("$schema").and_then(Value::as_str);

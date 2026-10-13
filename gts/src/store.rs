@@ -901,6 +901,13 @@ impl GtsStore {
         Self::validate_schema_x_gts_refs(&content)?;
         self.check_constraint_targets(&content, refs)?;
 
+        // `x-gts-pattern-ref` operands, wherever they sit: the compiled
+        // validator below only sees the subschemas it reaches. No registry
+        // lookup, whatever `refs` asks of `x-gts-ref` (README §9.6.1).
+        crate::x_gts_pattern_ref::check_operands(&content).map_err(|e| {
+            StoreError::ValidationError(format!("x-gts-pattern-ref validation failed: {e}"))
+        })?;
+
         // Validate GTS keywords
         crate::schema_modifiers::validate_gts_keywords(&content)
             .map_err(StoreError::ValidationError)?;
@@ -1656,11 +1663,7 @@ impl GtsStore {
         exact_gts_id: Option<&GtsId>,
     ) -> bool {
         if is_wildcard && let Some(pattern) = wildcard_pattern {
-            // OP#4 allows a final bare `~*` to match an empty suffix, while
-            // OP#10 queries require the wildcard position to be present in the
-            // stored ID. Preserve that query-specific chain-depth constraint.
-            return entity_id.segments().len() >= pattern.segments().len()
-                && entity_id.matches_pattern(pattern);
+            return entity_id.matches_pattern(pattern);
         }
 
         // For non-wildcard patterns, use matches_pattern to support version flexibility

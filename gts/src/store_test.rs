@@ -246,6 +246,51 @@ fn test_gts_store_query_wildcard() {
 }
 
 #[test]
+fn test_gts_store_query_chain_wildcard_includes_root_types() {
+    let mut store = GtsStore::new();
+
+    for version in ["1", "1.0", "1.2", "2.0"] {
+        let base = format!("gts.vendor.package.namespace.type.v{version}~");
+        let derived = format!("{base}acme.app._.derived.v1~");
+        for id in [base, derived] {
+            let schema = json!({
+                "$id": format!("gts://{id}"),
+                "$schema": DRAFT7,
+                "type": "object"
+            });
+            store
+                .register_schema(&id, &schema)
+                .expect("register schema");
+        }
+    }
+
+    for (version_pattern, versions) in [
+        ("1~*", &["1", "1.0", "1.2"][..]),
+        ("1.0~*", &["1.0"][..]),
+        ("1.*", &["1.0", "1.2"][..]),
+    ] {
+        let pattern = format!("gts.vendor.package.namespace.type.v{version_pattern}");
+        let result = store.query(&pattern, 100);
+        assert!(result.error.is_empty(), "{pattern}: {}", result.error);
+        let actual: std::collections::BTreeSet<_> = result
+            .results
+            .iter()
+            .map(|entity| entity["$id"].as_str().expect("schema ID").to_owned())
+            .collect();
+        let expected: std::collections::BTreeSet<_> = versions
+            .iter()
+            .flat_map(|version| {
+                let base = format!("gts://gts.vendor.package.namespace.type.v{version}~");
+                let derived = format!("{base}acme.app._.derived.v1~");
+                [base, derived]
+            })
+            .collect();
+        assert_eq!(actual, expected, "{pattern}");
+        assert_eq!(result.count, expected.len(), "{pattern}");
+    }
+}
+
+#[test]
 fn test_gts_store_query_with_limit() {
     let mut store = GtsStore::new();
 
@@ -8111,4 +8156,171 @@ fn an_ambiguous_pattern_is_matched_in_linear_time() {
             started.elapsed()
         );
     }
+}
+
+// OP#13 and `x-gts-pattern-ref` (README §9.7.5): `/$id` in every trait-schema
+// layer names the selected leaf, also when one prefix is compared with another.
+
+#[test]
+fn op13_trait_self_operand_is_resolved_before_layers_are_compared() {
+    let base = "gts.x.op13.pr.base.v1~";
+    let leaf = format!("{base}x.op13._.leaf.v1~");
+    let register = |base_operand: &str, leaf_operand: &str, value: &str| {
+        let mut store = GtsStore::new();
+        store
+            .register_schema(
+                base,
+                &json!({
+                    "$id": format!("gts://{base}"),
+                    "$schema": DRAFT7,
+                    "type": "object",
+                    "x-gts-abstract": true,
+                    "x-gts-traits-schema": {
+                        "type": "object",
+                        "properties": {"sel": {"type": "string", "x-gts-pattern-ref": base_operand}}
+                    },
+                }),
+            )
+            .unwrap();
+        store
+            .register_schema(
+                &leaf,
+                &json!({
+                    "$id": format!("gts://{leaf}"),
+                    "$schema": DRAFT7,
+                    "type": "object",
+                    "allOf": [{"$ref": format!("gts://{base}")}],
+                    "x-gts-traits-schema": {
+                        "type": "object",
+                        "properties": {"sel": {"type": "string", "x-gts-pattern-ref": leaf_operand}}
+                    },
+                    "x-gts-traits": {"sel": value},
+                }),
+            )
+            .unwrap();
+        store.validate_schema(&leaf).map(|_| ())
+    };
+    // A descendant layer conjoins with the inherited scope, whatever its operand.
+    for (base_operand, leaf_operand) in [
+        ("/$id", leaf.as_str()),
+        ("/$id", "gts.*"),
+        ("/$id", "/$id"),
+        (base, "/$id"),
+    ] {
+        let result = register(base_operand, leaf_operand, &leaf);
+        assert!(
+            result.is_ok(),
+            "{base_operand} / {leaf_operand}: {result:?}"
+        );
+    }
+    // The resolved scope still rejects the leaf's ancestor.
+    let outside = register("/$id", "gts.*", base);
+    assert!(outside.is_err(), "{outside:?}");
+}
+
+// Our OP#7 discovery policy skips `x-gts-pattern-ref` operands at schema
+// locations and reports the values of pattern fields like other identifier
+// strings. The specification does not prescribe the discovery algorithm or
+// the exact contents of the relationship graph.
+
+const PATTERN_TARGET: &str = "gts.x.op7.pattern.target.v1~";
+
+/// Source path → target ID of the relationships `id`'s graph node reports.
+fn graph_edges(store: &mut GtsStore, id: &str) -> std::collections::BTreeMap<String, String> {
+    let graph = store.build_schema_graph(id);
+    graph
+        .get("refs")
+        .and_then(Value::as_object)
+        .map(|refs| {
+            refs.iter()
+                .map(|(path, node)| (path.clone(), node["id"].as_str().unwrap().to_owned()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn op7_skips_pattern_operands_at_schema_locations() {
+    let mut store = GtsStore::new();
+    let base = "gts.x.op7.named.base.v1~";
+    let keyword = "x-gts-pattern-ref";
+    store
+        .register_schema(
+            base,
+            &json!({
+                "$id": format!("gts://{base}"),
+                "$schema": DRAFT7,
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string", keyword: PATTERN_TARGET},
+                    "reference": {"type": "string", "x-gts-ref": PATTERN_TARGET},
+                    "holder": {"type": "object", "default": {keyword: PATTERN_TARGET}},
+                },
+                "definitions": {"Selector": {"type": "string", keyword: PATTERN_TARGET}},
+                "x-gts-traits-schema": {
+                    "type": "object",
+                    "properties": {"scope": {"type": "string", keyword: PATTERN_TARGET}},
+                },
+            }),
+        )
+        .unwrap();
+
+    let edges = graph_edges(&mut store, base);
+    for operand in [
+        "properties.selector.x-gts-pattern-ref",
+        "definitions.Selector.x-gts-pattern-ref",
+        "x-gts-traits-schema.properties.scope.x-gts-pattern-ref",
+    ] {
+        assert!(!edges.contains_key(operand), "{operand}: {edges:?}");
+    }
+    // Literal data and `x-gts-ref` operands are identifier strings like any other.
+    for path in [
+        "properties.holder.default.x-gts-pattern-ref",
+        "properties.reference.x-gts-ref",
+    ] {
+        assert_eq!(
+            edges.get(path).map(String::as_str),
+            Some(PATTERN_TARGET),
+            "{path}: {edges:?}"
+        );
+    }
+}
+
+#[test]
+fn op7_reports_values_of_pattern_fields() {
+    let mut store = GtsStore::new();
+    let holder = "gts.x.op7.pattern.holder.v1~";
+    store
+        .register_schema(
+            holder,
+            &json!({
+                "$id": format!("gts://{holder}"),
+                "$schema": DRAFT7,
+                "type": "object",
+                "properties": {"scope": {"type": "string", "x-gts-pattern-ref": "gts.*"}},
+            }),
+        )
+        .unwrap();
+    let instance = format!("{holder}x.op7._.item.v1");
+    let cfg = GtsConfig::default();
+    let entity = GtsEntity::new(
+        None,
+        None,
+        &json!({"id": instance, "type": holder, "scope": PATTERN_TARGET}),
+        Some(&cfg),
+        None,
+        false,
+        String::new(),
+        None,
+        None,
+    );
+    store.register(entity).unwrap();
+
+    // Our discovery policy reports this identifier; the target is unregistered.
+    let graph = store.build_schema_graph(&instance);
+    assert_eq!(
+        graph["refs"]["scope"]["id"],
+        json!(PATTERN_TARGET),
+        "{graph}"
+    );
 }

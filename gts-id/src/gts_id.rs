@@ -25,18 +25,17 @@ impl GtsId {
     ///
     /// Wildcards are **not** accepted here — a `GtsId` is always a concrete
     /// identifier. Parse wildcard patterns with [`GtsIdPattern::try_new`] instead.
+    /// Input is validated as spelled, without trimming whitespace.
     ///
     /// # Errors
     /// Returns `GtsIdError` if the string is not a valid concrete GTS identifier.
     pub fn try_new(id: &str) -> Result<Self, GtsIdError> {
-        let raw = id.trim();
-
         // Delegate to the concrete parser (single source of truth). A `GtsId`
         // is always concrete, so its segments are `GtsIdSegment` (never wildcard).
-        let segments = parse_id(raw)?;
+        let segments = parse_id(id)?;
 
         Ok(GtsId {
-            id: raw.to_owned(),
+            id: id.to_owned(),
             segments,
         })
     }
@@ -344,10 +343,26 @@ mod tests {
     }
 
     #[test]
-    fn test_gts_id_whitespace_trimming() {
-        let id =
-            GtsId::try_new(&format!("  {}  ", gts_id("x.core.events.event.v1~"))).expect("test");
-        assert_eq!(id.id, gts_id("x.core.events.event.v1~"));
+    fn test_gts_id_rejects_surrounding_whitespace() {
+        for suffix in [
+            "x.core.events.event.v1~",
+            "x.core.events.event.v1~acme.prod._.uploads.v2",
+            "x.core.events.event.v1~7a1d2f34-5678-49ab-9012-abcdef123456",
+        ] {
+            let canonical = gts_id(suffix);
+            for (leading, trailing) in [
+                (" ", ""),
+                ("", " "),
+                ("\t", "\r\n"),
+                ("\u{a0}", "\u{a0}"),
+                ("", "\u{2028}"),
+            ] {
+                let input = format!("{leading}{canonical}{trailing}");
+                assert!(GtsId::try_new(&input).is_err(), "{input:?}");
+                assert!(input.parse::<GtsId>().is_err(), "{input:?}");
+                assert!(!GtsId::is_valid(&input), "{input:?}");
+            }
+        }
     }
 
     #[test]

@@ -6,7 +6,7 @@ A complete Rust implementation of the Global Type System (GTS)
 
 GTS [Global Type System](https://github.com/globaltypesystem/gts-spec) is a simple, human-readable, globally unique identifier and referencing system for data type definitions (e.g., JSON Schemas) and data instances (e.g., JSON objects). This Rust implementation provides high-performance, type-safe operations for working with GTS identifiers.
 
-Current supported GTS spec version: `0.15.0`
+Current supported GTS spec version: `0.16.0`
 
 ## Roadmap
 
@@ -36,6 +36,7 @@ Other GTS spec [Reference Implementation](https://github.com/globaltypesystem/gt
 - [x] **CLI** - command-line interface for all GTS operations
 - [x] **Web server** - a non-production web-server with REST API for the operations processing and testing
 - [x] **x-gts-ref** - to support special GTS entity reference annotation in schemas
+- [x] **x-gts-pattern-ref** - pattern-valued string fields: GTS identifier pattern syntax and coverage by an operand, independent of the registry (spec §9.6.2, §10)
 - [x] **YAML support** - to support YAML files (*.yml, *.yaml) as input files
 - [ ] **TypeSpec support** - add [typespec.io](https://typespec.io/) files (*.tsp) support
 - [x] **UUID for instances** - to support UUID as ID in JSON instances (anonymous instances)
@@ -273,14 +274,14 @@ gts --path ../gts-spec/examples validate-instance --gts-id "gts.x.core.events.ev
 
 #### Regular expressions
 
-`pattern`, `patternProperties` and `format: "regex"` follow the GTS [safe regular-expression profile](https://github.com/GlobalTypeSystem/gts-spec/blob/main/README.md#1101-regular-expression-execution-safety) (spec §11.0.1, version 0.15).
+`pattern`, `patternProperties` and `format: "regex"` follow the GTS [safe regular-expression profile](https://github.com/GlobalTypeSystem/gts-spec/blob/main/README.md#1101-regular-expression-execution-safety) (spec §11.0.1, version 0.16).
 
-- **Engine:** Rust [`regex`](https://docs.rs/regex) 1.12 (tested with 1.12.3) through `jsonschema` 0.58.5 with `PatternOptions::regex()`, after `jsonschema`'s pattern translation.
+- **Engine:** Rust [`regex`](https://docs.rs/regex) 1.12 (tested with 1.12.3) through `jsonschema` 0.58.6 with `PatternOptions::regex()`, after `jsonschema`'s pattern translation. GTS passes schema expressions to the library without rewriting them.
 - **Declared behavior:** reference for `digit` and `word`; no permitted deviation is used.
 
 **Known gaps** (until `jsonschema` changes; the affected conformance tests are listed in `.gts-spec-known-failures`):
 
-1. **`\s` and `\S`.** `\s` matches `[ \t\n\r\v\f\u00A0\uFEFF\u2003\u2029]` and `\S` its complement, instead of `[\t\n\f\r ]` and its complement; `^\S*$` uses ECMA-262 whitespace.
+1. **`\s` and `\S`.** `jsonschema` 0.58.6 uses ECMA-262 whitespace, including vertical tab (U+000B), NBSP (U+00A0), BOM (U+FEFF) and Unicode space separators, instead of `[\t\n\f\r ]`; `\S` uses its complement. This also affects character classes and the `^\S*$` fast path. The canary `known_gap_jsonschema_spells_its_own_space_set` tracks this gap.
 
 #### OP#7 - Relationship Resolution
 
@@ -296,6 +297,8 @@ gts --path ../gts-spec/examples resolve-relationships --gts-id "gts.x.core.event
 # 3. Resolves each reference
 # 4. Reports missing or broken references
 ```
+
+OP#7 discovers candidate relationships by scanning the stored document for strings that are valid GTS identifiers. As an implementation choice, it excludes `x-gts-pattern-ref` operands at schema locations. Values of fields declared with `x-gts-pattern-ref` are reported like other identifier strings; an unregistered one shows up as broken. The specification does not prescribe the discovery algorithm or the exact contents of the relationship graph. These diagnostics do not determine validation dependencies or whether an entity is valid.
 
 **Output:**
 ```json

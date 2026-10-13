@@ -1222,22 +1222,17 @@ mod tests {
             10,
         );
 
-        // The query pattern matches 3-segment IDs, so it should only find the instance, not the 2-segment schema
-        assert_eq!(
-            query_result.count, 1,
-            "Query should find one result (the instance)"
+        // A bare ~* includes the selected schema itself and its instances.
+        assert!(query_result.error.is_empty(), "{}", query_result.error);
+        assert_eq!(query_result.count, 2);
+        assert_eq!(query_result.results.len(), 2);
+        assert!(
+            query_result.results.contains(&empty_schema),
+            "Query should include the selected schema"
         );
-        assert_eq!(
-            query_result.results.len(),
-            1,
-            "Query should return one result"
-        );
-
-        // Verify the queried result matches our original instance
-        let queried_instance = &query_result.results[0];
-        assert_eq!(
-            *queried_instance, instance_json,
-            "Queried result should match original instance"
+        assert!(
+            query_result.results.contains(&instance_json),
+            "Query should include the original instance"
         );
     }
 
