@@ -19,7 +19,7 @@ mod test_structs {
 
     // Inline trait-shape declaring the system-behaviour properties shared by
     // every event type. An ordinary `JsonSchema` struct marked with
-    // `#[derive(GtsTraitsSchema)]` - `x-gts-ref` / `default` come from standard
+    // `#[derive(GtsTraitsSchema)]` - `x-gts-instance-ref` / `default` come from standard
     // schemars/serde attributes. The base host embeds it via
     // `traits_schema = inline(...)`; leaves resolve concrete values via
     // `traits = serde_json::json!({ ... })`. `deny_unknown_fields` closes the
@@ -30,7 +30,7 @@ mod test_structs {
     pub struct EventTypeTraitsV1 {
         // Required trait: no default, so every non-abstract type in the chain
         // must resolve it explicitly via `x-gts-traits` (OP#13 completeness).
-        #[schemars(extend("x-gts-ref" = TOPIC_TYPE_REF))]
+        #[schemars(extend("x-gts-instance-ref" = TOPIC_TYPE_REF))]
         pub topic_ref: String,
         #[serde(default = "default_retention")]
         pub retention: String,

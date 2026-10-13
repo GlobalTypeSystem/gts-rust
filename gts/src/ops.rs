@@ -443,8 +443,8 @@ impl GtsOps {
             }
         };
 
-        // Validate schemas. Without `validate` we only check `$ref`/`x-gts-ref`
-        // structure — no dependency resolution, so forward-reference batches can
+        // Validate schemas. Without `validate` we only check `$ref` and
+        // entity-reference operand structure — no dependency resolution, so forward-reference batches can
         // be registered before their targets exist. With `validate` we run the
         // full pipeline (refs, chain, resolve, meta-compile, traits) via
         // `validate_schema`, discarding the resolved artifacts.
@@ -3653,11 +3653,11 @@ mod tests {
         // re-checked once `a` is rejected.
         let b = batch_schema(
             "gts.x.batch._.b.v1~",
-            &json!({"x": {"type": "string", "x-gts-ref": "gts.x.batch._.a.v1~"}}),
+            &json!({"x": {"type": "string", "x-gts-type-ref": "gts.x.batch._.a.v1~"}}),
         );
         let a = batch_schema(
             "gts.x.batch._.a.v1~",
-            &json!({"r": {"type": "string", "x-gts-ref": "gts.x.batch._.missing.v1~"}}),
+            &json!({"r": {"type": "string", "x-gts-instance-ref": "gts.x.batch._.missing.v1~"}}),
         );
 
         let result = ops.add_schemas_with(&[b, a], true, GtsRefValidation::AnyPresent);

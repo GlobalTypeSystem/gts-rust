@@ -3,9 +3,6 @@ use serde_json::{Map, Value};
 
 use crate::schema_traits::{X_GTS_TRAITS, X_GTS_TRAITS_SCHEMA};
 
-/// GTS reference keyword.
-pub(crate) const X_GTS_REF: &str = "x-gts-ref";
-
 pub const X_GTS_FINAL: &str = "x-gts-final";
 pub const X_GTS_ABSTRACT: &str = "x-gts-abstract";
 
@@ -110,9 +107,16 @@ const KNOWN_GTS_KEYWORDS: &[&str] = &[
     X_GTS_ABSTRACT,
     X_GTS_TRAITS,
     X_GTS_TRAITS_SCHEMA,
-    X_GTS_REF,
+    crate::x_gts_ref::X_GTS_TYPE_REF,
+    crate::x_gts_ref::X_GTS_INSTANCE_REF,
     crate::x_gts_pattern_ref::X_GTS_PATTERN_REF,
 ];
+
+/// Whether `keyword` is outside the reserved `x-gts-*` namespace or a
+/// supported GTS keyword there (README §11.0).
+pub(crate) fn is_permitted_keyword(keyword: &str) -> bool {
+    !keyword.starts_with("x-gts-") || KNOWN_GTS_KEYWORDS.contains(&keyword)
+}
 
 /// Where a schema node sits: the dialect it is read under, and the schema
 /// resource a same-document reference (`#...`) in it resolves from.
@@ -348,14 +352,16 @@ fn extend_path(path: &str, segment: &str) -> String {
     }
 }
 
-/// Rejects unknown `x-gts-*` keywords in schema positions.
+/// Rejects unknown `x-gts-*` keywords in schema positions, including the
+/// removed `x-gts-ref` (README §11.0). Literal data and property names are
+/// not keywords.
 ///
 /// # Errors
 /// Returns an error naming the first unrecognised keyword and its location.
 fn validate_known_gts_keywords(content: &Value) -> Result<(), String> {
     visit_schema_nodes(content, "", EnterTraitSchema::Yes, &mut |map, path, _| {
         for key in map.keys() {
-            if key.starts_with("x-gts-") && !KNOWN_GTS_KEYWORDS.contains(&key.as_str()) {
+            if !is_permitted_keyword(key) {
                 let location = if path.is_empty() {
                     "the schema top level".to_owned()
                 } else {
@@ -395,7 +401,10 @@ mod tests {
             validate_known_gts_keywords(&json!({
                 "x-gts-final": true,
                 "type": "object",
-                "properties": {"ref": {"type": "string", "x-gts-ref": "gts.x.a.b.c.v1~"}},
+                "properties": {
+                    "type": {"type": "string", "x-gts-type-ref": "gts.x.a.b.c.v1~"},
+                    "ref": {"type": "string", "x-gts-instance-ref": "gts.x.a.b.c.v1~"},
+                },
             }))
             .is_ok()
         );
@@ -447,7 +456,12 @@ mod tests {
 
     #[test]
     fn test_near_miss_typos_rejected() {
-        for typo in ["x-gts-trait", "x-gts-refs", "x-gts-traits-schemas"] {
+        for typo in [
+            "x-gts-trait",
+            "x-gts-refs",
+            "x-gts-traits-schemas",
+            "x-gts-ref",
+        ] {
             let content = json!({"type": "object", typo: {}});
             assert!(
                 validate_known_gts_keywords(&content).is_err(),

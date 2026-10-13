@@ -779,3 +779,89 @@ fn test_derivation_nested_beyond_the_bound_is_refused() {
         "{errs:?}"
     );
 }
+
+// -- x-gts-type-ref / x-gts-instance-ref ---------------------------------
+
+const REF_ROOT: &str = "gts.x.der.refs.target.v1~";
+const REF_DERIVED: &str = "gts.x.der.refs.target.v1~x.der._.derived.v1~";
+
+fn ref_holder(field: &serde_json::Value) -> serde_json::Value {
+    json!({"type": "object", "required": ["ref"], "properties": {"ref": field}})
+}
+
+fn admits(base_field: &serde_json::Value, derived_field: &serde_json::Value) -> bool {
+    validate_derivation_compatibility(
+        &ref_holder(base_field),
+        &ref_holder(derived_field),
+        "base",
+        "derived",
+    )
+    .is_empty()
+}
+
+#[test]
+fn entity_ref_derivation_may_narrow_but_not_widen_or_switch_kind() {
+    for keyword in ["x-gts-type-ref", "x-gts-instance-ref"] {
+        let root = json!({"type": "string", keyword: REF_ROOT});
+        let derived = json!({"type": "string", keyword: REF_DERIVED});
+        assert!(admits(&root, &derived), "{keyword}: narrowing");
+        assert!(!admits(&derived, &root), "{keyword}: widening");
+        assert!(
+            !admits(&root, &json!({"type": "string"})),
+            "{keyword}: dropped"
+        );
+    }
+    let as_type = json!({"type": "string", "x-gts-type-ref": REF_ROOT});
+    let as_instance = json!({"type": "string", "x-gts-instance-ref": REF_ROOT});
+    assert!(!admits(&as_type, &as_instance));
+    assert!(!admits(&as_instance, &as_type));
+    let union = json!({
+        "type": "string",
+        "anyOf": [{"x-gts-type-ref": REF_ROOT}, {"x-gts-instance-ref": REF_ROOT}],
+    });
+    assert!(admits(&union, &as_type));
+    assert!(admits(&union, &as_instance));
+    assert!(!admits(&as_type, &union));
+}
+
+#[test]
+fn an_inherited_entity_ref_is_conjoined_with_a_wider_overlay() {
+    for keyword in ["x-gts-type-ref", "x-gts-instance-ref"] {
+        let base = ref_holder(&json!({"type": "string", keyword: REF_DERIVED}));
+        let derived = json!({
+            "allOf": [
+                base.clone(),
+                ref_holder(&json!({"type": "string", keyword: REF_ROOT})),
+            ]
+        });
+        assert!(
+            validate_derivation_compatibility(&base, &derived, "base", "derived").is_empty(),
+            "{keyword}"
+        );
+    }
+}
+
+#[test]
+fn self_reference_is_resolved_for_each_side() {
+    let holder = |id: &str, operand: &str, keyword: &str| {
+        json!({
+            "$id": format!("gts://{id}"),
+            "type": "object",
+            "required": ["ref"],
+            "properties": {"ref": {"type": "string", keyword: operand}},
+        })
+    };
+    let base_id = "gts.x.der.refs.base.v1~";
+    let leaf_id = "gts.x.der.refs.base.v1~x.der._.leaf.v1~";
+    for keyword in ["x-gts-type-ref", "x-gts-instance-ref"] {
+        let base = holder(base_id, "/$id", keyword);
+        for (operand, admitted) in [("/$id", true), (base_id, true), ("gts.x.der.refs.*", false)] {
+            let leaf = holder(leaf_id, operand, keyword);
+            assert_eq!(
+                validate_derivation_compatibility(&base, &leaf, base_id, leaf_id).is_empty(),
+                admitted,
+                "{keyword} {operand}"
+            );
+        }
+    }
+}

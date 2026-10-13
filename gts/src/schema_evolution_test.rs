@@ -2169,3 +2169,208 @@ fn an_unsupported_pattern_in_a_legacy_annotation_does_not_block_inclusion() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// x-gts-type-ref / x-gts-instance-ref (README §9.6.1, ADR-0008)
+// ---------------------------------------------------------------------------
+
+const ROOT: &str = "gts.x.evo.refs.target.v1~";
+const DERIVED: &str = "gts.x.evo.refs.target.v1~x.evo._.derived.v1~";
+
+fn entity_ref_verdicts(old: &Value, new: &Value) -> (CompatibilityVerdict, CompatibilityVerdict) {
+    let wrap = |field: &Value| {
+        json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "required": ["ref"],
+            "properties": {"ref": field},
+        })
+    };
+    let result = check_schema_compatibility(&wrap(old), &wrap(new));
+    (result.backward_compatibility, result.forward_compatibility)
+}
+
+fn entity_ref(keyword: &str, operand: &str) -> Value {
+    json!({"type": "string", keyword: operand})
+}
+
+use CompatibilityVerdict::{Compatible, Incompatible};
+
+#[test]
+fn entity_ref_scopes_narrow_and_widen_for_both_keywords() {
+    for keyword in ["x-gts-type-ref", "x-gts-instance-ref"] {
+        let root = entity_ref(keyword, ROOT);
+        let derived = entity_ref(keyword, DERIVED);
+        assert_eq!(
+            entity_ref_verdicts(&root, &entity_ref(keyword, &format!("{ROOT}*"))),
+            (Compatible, Compatible),
+            "{keyword}: root~ and root~* select equal scopes"
+        );
+        assert_eq!(
+            entity_ref_verdicts(&root, &derived),
+            (Incompatible, Compatible),
+            "{keyword}: a derived root narrows"
+        );
+        assert_eq!(
+            entity_ref_verdicts(&derived, &root),
+            (Compatible, Incompatible),
+            "{keyword}: the base root widens"
+        );
+    }
+}
+
+#[test]
+fn entity_ref_kind_swap_breaks_both_directions() {
+    let as_type = entity_ref("x-gts-type-ref", ROOT);
+    let as_instance = entity_ref("x-gts-instance-ref", ROOT);
+    assert_eq!(
+        entity_ref_verdicts(&as_type, &as_instance),
+        (Incompatible, Incompatible)
+    );
+    assert_eq!(
+        entity_ref_verdicts(&as_instance, &as_type),
+        (Incompatible, Incompatible)
+    );
+}
+
+#[test]
+fn an_empty_instance_scope_is_included_in_any_type_scope() {
+    // A 1024-character Type ID leaves no room for an instance tail: as an
+    // instance reference it selects nothing, as a type reference itself.
+    let long_root = format!(
+        "gts.x.evo.refs.{}.v1~",
+        "a".repeat(1024 - "gts.x.evo.refs.".len() - ".v1~".len())
+    );
+    assert_eq!(long_root.len(), 1024);
+    let as_instance = entity_ref("x-gts-instance-ref", &long_root);
+    let as_type = entity_ref("x-gts-type-ref", &long_root);
+    assert_eq!(
+        entity_ref_verdicts(&as_instance, &as_type),
+        (Compatible, Incompatible)
+    );
+}
+
+#[test]
+fn both_kinds_on_one_string_accept_nothing() {
+    let empty = json!({
+        "type": "string",
+        "x-gts-type-ref": ROOT,
+        "x-gts-instance-ref": ROOT,
+    });
+    // Included in any target, even one whose own checks would otherwise see a
+    // narrowing.
+    for target in [
+        json!({"const": format!("{ROOT}x.evo._.item.v1")}),
+        entity_ref("x-gts-type-ref", DERIVED),
+        json!({"type": "integer"}),
+    ] {
+        let (backward, _) = entity_ref_verdicts(&empty, &target);
+        assert_eq!(backward, Compatible, "{target}");
+    }
+    // Non-strings are not excluded without `type: string`.
+    let untyped = json!({"x-gts-type-ref": ROOT, "x-gts-instance-ref": ROOT});
+    let (backward, _) = entity_ref_verdicts(&untyped, &json!({"type": "string"}));
+    assert_ne!(backward, Compatible);
+}
+
+#[test]
+fn negated_entity_ref_scopes_reverse_the_directions() {
+    for keyword in ["x-gts-type-ref", "x-gts-instance-ref"] {
+        let not_root = json!({"not": entity_ref(keyword, ROOT)});
+        let not_derived = json!({"not": entity_ref(keyword, DERIVED)});
+        // The compared `not` does not mask its own counterexample.
+        assert_eq!(
+            entity_ref_verdicts(&not_root, &not_derived),
+            (Compatible, Incompatible),
+            "{keyword}"
+        );
+    }
+}
+
+#[test]
+fn a_masking_constraint_never_yields_a_false_break() {
+    // The pattern pins the only accepted string to DERIVED, inside the target
+    // scope, although the source's own reference is the broader ROOT.
+    let pinned = format!("^{}$", DERIVED.replace('.', "\\.").replace('~', "\\~"));
+    let source = json!({"type": "string", "x-gts-type-ref": ROOT, "pattern": pinned});
+    let (backward, _) = entity_ref_verdicts(&source, &entity_ref("x-gts-type-ref", DERIVED));
+    assert_ne!(backward, Incompatible);
+    let enumerated = json!({"type": "string", "x-gts-type-ref": ROOT, "enum": [DERIVED]});
+    let (backward, _) = entity_ref_verdicts(&enumerated, &entity_ref("x-gts-type-ref", DERIVED));
+    assert_eq!(
+        backward, Compatible,
+        "the enumerated value is inside the target"
+    );
+}
+
+#[test]
+fn an_empty_scope_is_equivalent_to_false() {
+    let empty = json!({"type": "string", "x-gts-type-ref": ROOT, "x-gts-instance-ref": ROOT});
+    assert_eq!(
+        entity_ref_verdicts(&empty, &json!(false)),
+        (Compatible, Compatible)
+    );
+}
+
+#[test]
+fn negating_an_empty_scope_excludes_nothing() {
+    let long_root = format!("gts.x.evo.refs.{}.v1~", "a".repeat(1024 - 19));
+    let plain = json!({"type": "string"});
+    let negated = json!({
+        "type": "string",
+        "not": {"type": "string", "x-gts-instance-ref": long_root},
+    });
+    assert_eq!(
+        entity_ref_verdicts(&plain, &negated),
+        (Compatible, Compatible)
+    );
+}
+
+#[test]
+fn an_entity_ref_masks_an_added_pattern_ref() {
+    // Same accepted strings: every type under ROOT is covered by ROOT.
+    let source = entity_ref("x-gts-type-ref", ROOT);
+    let target = json!({"type": "string", "x-gts-type-ref": ROOT, "x-gts-pattern-ref": ROOT});
+    let (backward, _) = entity_ref_verdicts(&source, &target);
+    assert_ne!(backward, Incompatible);
+}
+
+#[test]
+fn a_union_is_included_through_one_branch() {
+    let union = json!({
+        "type": "string",
+        "anyOf": [{"x-gts-type-ref": ROOT}, {"x-gts-instance-ref": ROOT}],
+    });
+    let type_only = entity_ref("x-gts-type-ref", ROOT);
+    let (backward, forward) = entity_ref_verdicts(&union, &type_only);
+    assert_ne!(backward, Compatible, "the union accepts instances too");
+    assert_eq!(forward, Compatible, "the type scope is one branch");
+    let (backward, _) = entity_ref_verdicts(&type_only, &union);
+    assert_eq!(backward, Compatible);
+    // A union whose every branch is included is included.
+    let narrow_union = json!({
+        "type": "string",
+        "anyOf": [{"x-gts-type-ref": DERIVED}, {"x-gts-type-ref": format!("{ROOT}x.evo._.other.v1~")}],
+    });
+    let (backward, _) = entity_ref_verdicts(&narrow_union, &type_only);
+    assert_eq!(backward, Compatible);
+}
+
+#[test]
+fn self_reference_resolves_for_each_side() {
+    let schema = |id: &str, keyword: &str| {
+        json!({
+            "$id": format!("gts://{id}"),
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": {"ref": {"type": "string", keyword: "/$id"}},
+        })
+    };
+    for keyword in ["x-gts-type-ref", "x-gts-instance-ref"] {
+        let old = schema("gts.x.evo.refs.self.v1.0~", keyword);
+        let new = schema("gts.x.evo.refs.self.v1.1~", keyword);
+        let result = check_schema_compatibility(&old, &new);
+        assert_eq!(result.backward_compatibility, Incompatible, "{keyword}");
+        assert_eq!(result.forward_compatibility, Incompatible, "{keyword}");
+    }
+}

@@ -12,11 +12,11 @@ mod tests {
             "properties": {
                 "x-gts-ref": {
                     "type": "string",
-                    "x-gts-ref": "gts.x.test.refs.target.v1~"
+                    "x-gts-instance-ref": "gts.x.test.refs.target.v1~"
                 },
                 "payload": {
-                    "const": {"x-gts-ref": "literal const data"},
-                    "default": {"x-gts-ref": "literal default data"},
+                    "const": {"x-gts-ref": "literal const data", "x-gts-type-ref": 1},
+                    "default": {"x-gts-instance-ref": "literal default data"},
                     "examples": [{"x-gts-ref": "literal example data"}]
                 }
             }
@@ -26,7 +26,7 @@ mod tests {
         assert!(
             validator
                 .validate_instance(
-                    &json!({"payload": {"x-gts-ref": "literal const data"}}),
+                    &json!({"payload": {"x-gts-ref": "literal const data", "x-gts-type-ref": 1}}),
                     &schema,
                     ""
                 )
@@ -54,7 +54,7 @@ mod tests {
             "$schema": "http://json-schema.org/draft-07/schema#",
             "type": "object",
             "dependencies": {
-                "name": {"properties": {"ref": {"type": "string", "x-gts-ref": target}}}
+                "name": {"properties": {"ref": {"type": "string", "x-gts-instance-ref": target}}}
             }
         });
         let errors = validator.validate_instance(&json!({"name": "n", "ref": bad}), &draft7, "");
@@ -67,7 +67,7 @@ mod tests {
         let draft2020 = json!({
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "type": "array",
-            "prefixItems": [{"type": "string", "x-gts-ref": target}]
+            "prefixItems": [{"type": "string", "x-gts-instance-ref": target}]
         });
         let errors = validator.validate_instance(&json!([bad]), &draft2020, "");
         assert_eq!(
@@ -81,7 +81,7 @@ mod tests {
     fn refs_of(value: &str, pattern: &str) -> Vec<XGtsRefValidationError> {
         XGtsRefValidator::new().validate_instance(
             &json!(value),
-            &json!({"type": "string", "x-gts-ref": pattern}),
+            &json!({"type": "string", "x-gts-type-ref": pattern}),
             "",
         )
     }
@@ -108,7 +108,7 @@ mod tests {
             "properties": {
                 "topic_id": {
                     "type": "string",
-                    "x-gts-ref": "gts.x.core.events.topic.*"
+                    "x-gts-type-ref": "gts.x.core.events.topic.*"
                 }
             }
         });
@@ -125,7 +125,7 @@ mod tests {
             "properties": {
                 "topic_id": {
                     "type": "string",
-                    "x-gts-ref": "gts.x.core.events.topic.*"
+                    "x-gts-type-ref": "gts.x.core.events.topic.*"
                 }
             }
         });
@@ -146,11 +146,11 @@ mod tests {
             "properties": {
                 "anchor": {
                     "type": "string",
-                    "x-gts-ref": "gts.x.core.events.topic.*"
+                    "x-gts-instance-ref": "gts.x.core.events.topic.*"
                 },
                 "relative": {
                     "type": "string",
-                    "x-gts-ref": "/properties/anchor"
+                    "x-gts-instance-ref": "/properties/anchor"
                 }
             }
         });
@@ -169,7 +169,7 @@ mod tests {
                 "anchor": {"type": "string", "const": "not a gts id"},
                 "relative": {
                     "type": "string",
-                    "x-gts-ref": "/properties/anchor/const"
+                    "x-gts-instance-ref": "/properties/anchor/const"
                 }
             }
         });
@@ -189,7 +189,7 @@ mod tests {
             "properties": {
                 "topic_id": {
                     "type": "string",
-                    "x-gts-ref": "gts.x.core.events.topic.*"
+                    "x-gts-type-ref": "gts.x.core.events.topic.*"
                 }
             }
         });
@@ -212,7 +212,7 @@ mod tests {
             "properties": {
                 "id": {
                     "type": "string",
-                    "x-gts-ref": "/$id"
+                    "x-gts-type-ref": "/$id"
                 }
             }
         });
@@ -235,7 +235,7 @@ mod tests {
             "properties": {
                 "id": {
                     "type": "string",
-                    "x-gts-ref": "/$id"
+                    "x-gts-type-ref": "/$id"
                 }
             }
         });
@@ -301,18 +301,34 @@ mod tests {
 
     #[test]
     fn a_literal_declaration_is_judged_by_the_pattern_parser() {
-        for ok in ["gts.x.core.events.topic.v1~", "gts.*", "gts.x.core.*"] {
-            assert!(
-                resolve_declaration(&json!(ok), None).is_ok(),
-                "expected '{ok}' to validate"
-            );
-        }
+        for kind in EntityRefKind::ALL {
+            for ok in ["gts.x.core.events.topic.v1~", "gts.*", "gts.x.core.*"] {
+                assert!(
+                    resolve_declaration(kind, &json!(ok), None).is_ok(),
+                    "expected '{ok}' to validate for {kind:?}"
+                );
+            }
 
-        // Reject malformed wildcard placement.
-        for bad in ["gts.x.*.events.*", "gts.*.*.*.*"] {
-            let reason = resolve_declaration(&json!(bad), None)
-                .expect_err("expected '{bad}' to be rejected");
-            assert!(!reason.is_empty());
+            // Reject malformed wildcard placement.
+            for bad in ["gts.x.*.events.*", "gts.*.*.*.*"] {
+                let reason = resolve_declaration(kind, &json!(bad), None)
+                    .expect_err("expected '{bad}' to be rejected");
+                assert!(!reason.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn an_instance_operand_selects_no_types() {
+        // ADR-0008: the operand asymmetry, for named and UUID-tailed instances.
+        for instance in [
+            "gts.x.core.events.topic.v1~x.app._.orders.v1",
+            "gts.x.core.events.topic.v1~7a1d2f34-5678-49ab-9012-abcdef123456",
+        ] {
+            assert!(resolve_declaration(EntityRefKind::Instance, &json!(instance), None).is_ok());
+            let reason = resolve_declaration(EntityRefKind::Type, &json!(instance), None)
+                .expect_err("an Instance ID cannot satisfy a type reference");
+            assert!(reason.contains("GTS Instance Identifier"), "{reason}");
         }
     }
 
@@ -333,28 +349,45 @@ mod tests {
         // Compilation and schema validation share declaration rules.
         let selected = Some("gts.x.test._.entity.v1~");
 
-        assert!(resolve_declaration(&json!("gts.x.y.z.w.v1~"), None).is_ok());
-        assert!(resolve_declaration(&json!("/$id"), selected).is_ok());
+        for kind in EntityRefKind::ALL {
+            assert!(resolve_declaration(kind, &json!("gts.x.y.z.w.v1~"), None).is_ok());
+            assert!(resolve_declaration(kind, &json!("/$id"), selected).is_ok());
 
-        for (declared, selected, expected) in [
-            ("gts.INVALID", None, "Invalid GTS identifier"),
-            ("/$id", None, "Cannot resolve reference path"),
-            ("/properties/anchor", selected, "self-reference '/$id'"),
-            ("./$id", selected, "self-reference '/$id'"),
-            ("invalid-format", None, "must start with 'gts.'"),
-        ] {
-            let reason = resolve_declaration(&json!(declared), selected)
-                .expect_err("declaration must be rejected");
-            assert!(reason.contains(expected), "{declared}: {reason}");
+            for (declared, selected, expected) in [
+                ("gts.INVALID", None, "expected a GTS identifier"),
+                ("/$id", None, "has no selected GTS Type Schema"),
+                ("/properties/anchor", selected, "expected a GTS identifier"),
+                ("./$id", selected, "expected a GTS identifier"),
+                ("/$id/", selected, "expected a GTS identifier"),
+                ("gts://gts.x.y.z.w.v1~", None, "expected a GTS identifier"),
+                ("invalid-format", None, "expected a GTS identifier"),
+                ("", None, "expected a GTS identifier"),
+            ] {
+                let reason = resolve_declaration(kind, &json!(declared), selected)
+                    .expect_err("declaration must be rejected");
+                assert!(reason.contains(expected), "{declared}: {reason}");
+            }
+
+            // `/$id` must name a concrete Type ID, for either keyword.
+            for not_a_type in [
+                "not-a-valid-gts-id",
+                "gts.x.test._.entity.v1~x.test._.item.v1",
+                "gts.x.test._.entity.v1~*",
+            ] {
+                let reason = resolve_declaration(kind, &json!("/$id"), Some(not_a_type))
+                    .expect_err("a self-reference onto a non-type must be rejected");
+                assert!(
+                    reason.contains("not a concrete GTS Type Identifier"),
+                    "{not_a_type}: {reason}"
+                );
+            }
+
+            for non_string in [json!(123), json!(null), json!(["gts.*"]), json!({})] {
+                let reason = resolve_declaration(kind, &non_string, None)
+                    .expect_err("a non-string declaration must be rejected");
+                assert!(reason.contains("must be a string"), "{reason}");
+            }
         }
-
-        let reason = resolve_declaration(&json!("/$id"), Some("not-a-valid-gts-id"))
-            .expect_err("a self-reference onto a non-identifier must be rejected");
-        assert!(reason.contains("not a valid GTS identifier"), "{reason}");
-
-        let reason = resolve_declaration(&json!(123), None)
-            .expect_err("a non-string declaration must be rejected");
-        assert!(reason.contains("must be a string"), "{reason}");
     }
 
     #[test]
@@ -362,7 +395,7 @@ mod tests {
         let validator = XGtsRefValidator::new();
         let with_id = json!({
             "$id": "gts://gts.x.test._.entity.v1~",
-            "properties": {"self": {"type": "string", "x-gts-ref": "/$id"}}
+            "properties": {"self": {"type": "string", "x-gts-type-ref": "/$id"}}
         });
         assert!(
             validator
@@ -374,9 +407,9 @@ mod tests {
         for broken in [
             json!({
                 "someField": "not-a-gts-pattern",
-                "properties": {"r": {"type": "string", "x-gts-ref": "/someField"}}
+                "properties": {"r": {"type": "string", "x-gts-type-ref": "/someField"}}
             }),
-            json!({"properties": {"r": {"type": "string", "x-gts-ref": "/$id"}}}),
+            json!({"properties": {"r": {"type": "string", "x-gts-type-ref": "/$id"}}}),
         ] {
             let errors = validator.validate_instance(&json!({"r": "some-value"}), &broken, "");
             assert_eq!(errors.len(), 1, "{errors:?}");
@@ -387,12 +420,14 @@ mod tests {
             );
         }
 
-        let missing = json!({"properties": {"r": {"type": "string", "x-gts-ref": "/$id"}}});
+        let missing = json!({"properties": {"r": {"type": "string", "x-gts-type-ref": "/$id"}}});
         let reported = validator.validate_schema(&missing, "", None);
         assert_eq!(reported.len(), 1, "{reported:?}");
-        assert_eq!(reported[0].field_path, "properties/r/x-gts-ref");
+        assert_eq!(reported[0].field_path, "properties/r/x-gts-type-ref");
         assert!(
-            reported[0].reason.contains("Cannot resolve reference path"),
+            reported[0]
+                .reason
+                .contains("has no selected GTS Type Schema"),
             "{:?}",
             reported[0]
         );
@@ -416,7 +451,7 @@ mod tests {
         let schema = json!({
             "properties": {
                 "field": {
-                    "x-gts-ref": 123
+                    "x-gts-instance-ref": 123
                 }
             }
         });
@@ -434,11 +469,11 @@ mod tests {
             "properties": {
                 "field1": {
                     "type": "string",
-                    "x-gts-ref": "gts.x.test.*"
+                    "x-gts-instance-ref": "gts.x.test.*"
                 },
                 "field2": {
                     "type": "string",
-                    "x-gts-ref": "gts.y.test.*"
+                    "x-gts-instance-ref": "gts.y.test.*"
                 }
             }
         });
@@ -451,11 +486,11 @@ mod tests {
     fn the_build_rejects_a_declaration_that_says_nothing_usable() {
         // Invalid declarations in schema positions fail compilation.
         for broken in [
-            json!({"type": "string", "x-gts-ref": "not-a-pattern"}),
-            json!({"type": "string", "x-gts-ref": "gts.x.*.events.*"}),
-            json!({"type": "string", "x-gts-ref": "/nowhere"}),
-            json!({"type": "string", "x-gts-ref": 123}),
-            json!({"type": "string", "x-gts-ref": ["gts.x.a.b.target.v1~"]}),
+            json!({"type": "string", "x-gts-instance-ref": "not-a-pattern"}),
+            json!({"type": "string", "x-gts-instance-ref": "gts.x.*.events.*"}),
+            json!({"type": "string", "x-gts-instance-ref": "/nowhere"}),
+            json!({"type": "string", "x-gts-instance-ref": 123}),
+            json!({"type": "string", "x-gts-instance-ref": ["gts.x.a.b.target.v1~"]}),
         ] {
             assert!(
                 crate::json_schema::gts_validator_for(&broken, None).is_err(),
@@ -470,17 +505,17 @@ mod tests {
             "type": "object",
             "properties": {
                 "payload": {
-                    "const": {"x-gts-ref": "not-a-pattern"},
-                    "default": {"x-gts-ref": 123},
-                    "enum": [{"x-gts-ref": "not-a-pattern"}],
-                    "examples": [{"x-gts-ref": "/nowhere"}]
+                    "const": {"x-gts-instance-ref": "not-a-pattern"},
+                    "default": {"x-gts-instance-ref": 123},
+                    "enum": [{"x-gts-instance-ref": "not-a-pattern"}],
+                    "examples": [{"x-gts-instance-ref": "/nowhere"}]
                 }
             }
         });
 
         let validator = crate::json_schema::gts_validator_for(&schema, None)
             .expect("literal data must not be read as a declaration");
-        assert!(validator.is_valid(&json!({"payload": {"x-gts-ref": "not-a-pattern"}})));
+        assert!(validator.is_valid(&json!({"payload": {"x-gts-instance-ref": "not-a-pattern"}})));
     }
 
     #[test]
@@ -490,13 +525,13 @@ mod tests {
             "type": "object",
             "properties": {
                 "payload": {
-                    "const": {"x-gts-ref": "not-a-pattern"},
-                    "default": {"x-gts-ref": "not-a-pattern"},
-                    "enum": [{"x-gts-ref": "not-a-pattern"}],
-                    "examples": [{"x-gts-ref": "not-a-pattern"}]
+                    "const": {"x-gts-instance-ref": "not-a-pattern"},
+                    "default": {"x-gts-instance-ref": "not-a-pattern"},
+                    "enum": [{"x-gts-instance-ref": "not-a-pattern"}],
+                    "examples": [{"x-gts-instance-ref": "not-a-pattern"}]
                 },
-                "x-gts-ref": {"type": "string"},
-                "vendor": {"x-vendor-extension": {"x-gts-ref": "not-a-pattern"}}
+                "x-gts-instance-ref": {"type": "string"},
+                "vendor": {"x-vendor-extension": {"x-gts-instance-ref": "not-a-pattern"}}
             }
         });
 
@@ -516,7 +551,7 @@ mod tests {
                 "outer": {
                     "type": "object",
                     "properties": {
-                        "inner": {"type": "string", "x-gts-ref": "not-a-pattern"}
+                        "inner": {"type": "string", "x-gts-instance-ref": "not-a-pattern"}
                     }
                 }
             }
@@ -526,15 +561,18 @@ mod tests {
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert_eq!(
             errors[0].field_path,
-            "properties/outer/properties/inner/x-gts-ref"
+            "properties/outer/properties/inner/x-gts-instance-ref"
         );
-        assert!(errors[0].reason.contains("must start with"), "{errors:?}");
+        assert!(
+            errors[0].reason.contains("expected a GTS identifier"),
+            "{errors:?}"
+        );
     }
 
     #[test]
     fn a_declaration_position_follows_the_declared_dialect() {
         let validator = XGtsRefValidator::new();
-        let bad = json!({"type": "string", "x-gts-ref": "not-a-pattern"});
+        let bad = json!({"type": "string", "x-gts-instance-ref": "not-a-pattern"});
 
         let draft2020 = json!({
             "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -562,10 +600,10 @@ mod tests {
         let schema = json!({
             "items": [
                 {
-                    "x-gts-ref": "gts.x.test.*"
+                    "x-gts-instance-ref": "gts.x.test.*"
                 },
                 {
-                    "x-gts-ref": "gts.y.test.*"
+                    "x-gts-instance-ref": "gts.y.test.*"
                 }
             ]
         });
@@ -585,7 +623,7 @@ mod tests {
                     "properties": {
                         "inner": {
                             "type": "string",
-                            "x-gts-ref": "gts.x.test.*"
+                            "x-gts-type-ref": "gts.x.test.*"
                         }
                     }
                 }
@@ -619,7 +657,7 @@ mod tests {
             "type": "array",
             "items": {
                 "type": "string",
-                "x-gts-ref": "gts.x.test.*"
+                "x-gts-type-ref": "gts.x.test.*"
             }
         });
 
@@ -636,7 +674,7 @@ mod tests {
             "type": "array",
             "items": {
                 "type": "string",
-                "x-gts-ref": "gts.x.test.*"
+                "x-gts-type-ref": "gts.x.test.*"
             }
         });
 
@@ -690,7 +728,7 @@ mod tests {
             "properties": {
                 "field": {
                     "type": "number",
-                    "x-gts-ref": "gts.x.test.*"
+                    "x-gts-instance-ref": "gts.x.test.*"
                 }
             }
         });
@@ -708,7 +746,7 @@ mod tests {
         let validator = XGtsRefValidator::new();
         let schema = json!({
             "type": "string",
-            "x-gts-ref": "gts.x.test.*"
+            "x-gts-type-ref": "gts.x.test.*"
         });
 
         let instance = json!("gts.x.test._.entity.v1~");
@@ -727,7 +765,7 @@ mod tests {
         let schema = json!({
             "properties": {
                 "field": {
-                    "x-gts-ref": "/$id"
+                    "x-gts-instance-ref": "/$id"
                 }
             }
         });
@@ -775,7 +813,7 @@ mod applicator_tests {
             "type": "object",
             "properties": {
                 "child": {"anyOf": [{"$ref": "#"}, {"$ref": "#"}]},
-                "r": {"type": "string", "x-gts-ref": "gts.x.a.b.target.v1~"},
+                "r": {"type": "string", "x-gts-instance-ref": "gts.x.a.b.target.v1~"},
             },
         });
         let instance = nested_instance(40);
@@ -805,7 +843,7 @@ mod applicator_tests {
             "type": "object",
             "properties": {
                 "child": {"anyOf": [{"$ref": "#"}, {"$ref": "#"}]},
-                "r": {"type": "string", "x-gts-ref": "gts.x.a.b.target.v1~"},
+                "r": {"type": "string", "x-gts-instance-ref": "gts.x.a.b.target.v1~"},
             },
         });
         let validator =
@@ -832,7 +870,7 @@ mod applicator_tests {
             "type": "object",
             "properties": {
                 "child": {"anyOf": vec![branch; 10]},
-                "r": {"type": "string", "x-gts-ref": "gts.x.a.b.target.v1~"},
+                "r": {"type": "string", "x-gts-instance-ref": "gts.x.a.b.target.v1~"},
             },
         });
         let instance = nested_instance(10);
@@ -871,7 +909,7 @@ mod applicator_tests {
                         {"anyOf": branches},
                     ]
                 },
-                "r": {"type": "string", "x-gts-ref": "gts.x.a.b.target.v1~"},
+                "r": {"type": "string", "x-gts-instance-ref": "gts.x.a.b.target.v1~"},
             },
         });
         let instance = nested_instance(16);
@@ -904,7 +942,7 @@ mod applicator_tests {
             "type": "object",
             "properties": {
                 "child": {"anyOf": [{"$ref": "#"}, {"$ref": "#"}]},
-                "r": {"type": "string", "x-gts-ref": "gts.x.a.b.target.v1~"},
+                "r": {"type": "string", "x-gts-instance-ref": "gts.x.a.b.target.v1~"},
             },
         });
         let instance = nested_instance(1);
@@ -928,7 +966,7 @@ mod applicator_tests {
             "type": "object",
             "properties": {
                 "id": {"type": "string"},
-                "link": {"type": "string", "x-gts-ref": "gts.x.testref_root._.target.v1~"},
+                "link": {"type": "string", "x-gts-instance-ref": "gts.x.testref_root._.target.v1~"},
                 "child": {"$ref": "#"}
             },
             "additionalProperties": false
@@ -960,7 +998,7 @@ mod applicator_tests {
             "properties": {
                 "child": {"$ref": "#"},
                 "kind": {"anyOf": [{"type": "string"}, {"type": "integer"}]},
-                "r": {"type": "string", "x-gts-ref": "gts.x.a.b.target.v1~"},
+                "r": {"type": "string", "x-gts-instance-ref": "gts.x.a.b.target.v1~"},
             },
         });
 
@@ -978,7 +1016,7 @@ mod applicator_tests {
             "type": "object",
             "properties": {
                 "child": {"allOf": [{"$ref": "#"}, {"$ref": "#"}]},
-                "r": {"type": "string", "x-gts-ref": "gts.x.a.b.target.v1~"},
+                "r": {"type": "string", "x-gts-instance-ref": "gts.x.a.b.target.v1~"},
             },
         });
         let instance = nested_instance(12);
@@ -1007,7 +1045,7 @@ mod applicator_tests {
             "properties": {
                 "left": {"$ref": "#"},
                 "right": {"$ref": "#"},
-                "r": {"type": "string", "x-gts-ref": "gts.x.a.b.target.v1~"},
+                "r": {"type": "string", "x-gts-instance-ref": "gts.x.a.b.target.v1~"},
             },
         });
         let instance = json!({"left": {"r": "bad"}});
@@ -1024,7 +1062,7 @@ mod applicator_tests {
 
     #[test]
     fn a_deep_document_under_a_flat_schema_keeps_its_detail() {
-        let mut schema = json!({"type": "string", "x-gts-ref": "gts.x.a.b.target.v1~"});
+        let mut schema = json!({"type": "string", "x-gts-instance-ref": "gts.x.a.b.target.v1~"});
         let mut instance = json!("gts.x.a.b.other.v1~x.c._.i.v1");
         for _ in 0..20 {
             schema = json!({"type": "object", "properties": {"child": schema}});
@@ -1042,7 +1080,7 @@ mod applicator_tests {
         let schema = json!({
             "anyOf": [
                 {"type": "object"},
-                {"type": "string", "x-gts-ref": "gts.*"},
+                {"type": "string", "x-gts-instance-ref": "gts.*"},
             ]
         });
 
@@ -1100,7 +1138,7 @@ mod applicator_tests {
             "type": "object",
             "properties": {
                 "child": {"$ref": "#"},
-                "r": {"type": "string", "x-gts-ref": "gts.x.a.b.target.v1~"},
+                "r": {"type": "string", "x-gts-instance-ref": "gts.x.a.b.target.v1~"},
             },
         });
         let validator = XGtsRefValidator::new();
@@ -1130,8 +1168,8 @@ mod applicator_tests {
         let schema = json!({
             "anyOf": [{
                 "oneOf": [
-                    {"x-gts-ref": "gts.x.a.b.target_a.v1~"},
-                    {"x-gts-ref": "gts.x.a.b.target_b.v1~"},
+                    {"x-gts-instance-ref": "gts.x.a.b.target_a.v1~"},
+                    {"x-gts-instance-ref": "gts.x.a.b.target_b.v1~"},
                 ]
             }]
         });
@@ -1155,7 +1193,7 @@ mod applicator_tests {
                 "anyOf": [{
                     "type": "string",
                     "enum": Value::Array(ids.clone()),
-                    "x-gts-ref": "gts.*",
+                    "x-gts-instance-ref": "gts.*",
                 }]
             }
         });
@@ -1197,7 +1235,7 @@ mod applicator_tests {
             },
             "anyOf": [
                 {"$ref": "#/$defs/a", "$defs": {"b": {"type": "string"}}},
-                {"type": "string", "x-gts-ref": "gts.*"}
+                {"type": "string", "x-gts-instance-ref": "gts.*"}
             ]
         });
 
@@ -1256,7 +1294,7 @@ mod applicator_tests {
                 "n": {"type": "object", "properties": {"next": {"$ref": "#/$defs/n"}}}
             },
             "oneOf": [
-                {"type": "string", "x-gts-ref": "gts.*"},
+                {"type": "string", "x-gts-instance-ref": "gts.*"},
                 {"$ref": "#/$defs/n"}
             ]
         });
@@ -1276,8 +1314,8 @@ mod applicator_tests {
     fn one_of_branch_counting_still_applies_to_gts_discriminators() {
         let schema = json!({
             "oneOf": [
-                {"x-gts-ref": "gts.x.a.b.target_a.v1~"},
-                {"x-gts-ref": "gts.x.a.b.target_b.v1~"},
+                {"x-gts-instance-ref": "gts.x.a.b.target_a.v1~"},
+                {"x-gts-instance-ref": "gts.x.a.b.target_b.v1~"},
             ]
         });
         let validator = XGtsRefValidator::new();
@@ -1296,8 +1334,8 @@ mod applicator_tests {
         // Multiple matches are a combinator error, not a reference error.
         let overlapping = json!({
             "oneOf": [
-                {"x-gts-ref": "gts.x.a.b.*"},
-                {"x-gts-ref": "gts.x.a.b.target_a.v1~"},
+                {"x-gts-instance-ref": "gts.x.a.b.*"},
+                {"x-gts-instance-ref": "gts.x.a.b.target_a.v1~"},
             ]
         });
         let both = json!("gts.x.a.b.target_a.v1~x.c._.a1.v1");
@@ -1338,7 +1376,7 @@ mod applicator_tests {
         let schema = json!({
             "anyOf": [{
                 "type": "string",
-                "x-gts-ref": "gts.*",
+                "x-gts-instance-ref": "gts.*",
                 "$defs": {"unused": {"$ref": "#"}}
             }]
         });
@@ -1354,8 +1392,8 @@ mod applicator_tests {
     fn bare_x_gts_ref_branches_still_discriminate_one_of() {
         let schema = json!({
             "oneOf": [
-                {"x-gts-ref": "gts.x.a.b.target_a.v1~"},
-                {"x-gts-ref": "gts.x.a.b.target_b.v1~"},
+                {"x-gts-instance-ref": "gts.x.a.b.target_a.v1~"},
+                {"x-gts-instance-ref": "gts.x.a.b.target_b.v1~"},
             ]
         });
         let validator = XGtsRefValidator::new();
@@ -1390,7 +1428,7 @@ mod applicator_tests {
     fn two_branch_schema(constrained_first: bool) -> Value {
         let constrained = json!({
             "required": ["other"],
-            "properties": {"topic": {"type": "string", "x-gts-ref": "gts.x.a.b.topic.v1~"}}
+            "properties": {"topic": {"type": "string", "x-gts-instance-ref": "gts.x.a.b.topic.v1~"}}
         });
         let open = json!({"type": "object"});
         let branches = if constrained_first {
@@ -1423,8 +1461,8 @@ mod applicator_tests {
         let schema = json!({
             "type": "object",
             "anyOf": [
-                {"properties": {"topic": {"type": "string", "x-gts-ref": "gts.x.a.b.topic.v1~"}}},
-                {"properties": {"topic": {"type": "string", "x-gts-ref": "gts.x.a.b.topic.v1~"}}},
+                {"properties": {"topic": {"type": "string", "x-gts-instance-ref": "gts.x.a.b.topic.v1~"}}},
+                {"properties": {"topic": {"type": "string", "x-gts-instance-ref": "gts.x.a.b.topic.v1~"}}},
             ]
         });
         let instance = json!({"topic": "gts.x.a.b.topic.v1~x.c._.missing.v1"});
@@ -1441,7 +1479,7 @@ mod applicator_tests {
         let schema = json!({
             "type": "object",
             "allOf": [
-                {"properties": {"topic": {"type": "string", "x-gts-ref": "gts.x.a.b.topic.v1~"}}}
+                {"properties": {"topic": {"type": "string", "x-gts-instance-ref": "gts.x.a.b.topic.v1~"}}}
             ]
         });
         let instance = json!({"topic": "gts.x.a.b.topic.v1~x.c._.missing.v1"});
@@ -1462,7 +1500,7 @@ mod applicator_tests {
     fn a_pattern_violation_is_not_repeated_as_an_existence_failure() {
         let schema = json!({
             "type": "object",
-            "properties": {"topic": {"type": "string", "x-gts-ref": "gts.x.a.b.topic.v1~"}}
+            "properties": {"topic": {"type": "string", "x-gts-instance-ref": "gts.x.a.b.topic.v1~"}}
         });
         let instance = json!({"topic": "gts.x.a.b.other.v1~x.c._.o1.v1"});
 
@@ -1478,7 +1516,7 @@ mod applicator_tests {
     fn without_a_registry_only_patterns_are_checked() {
         let schema = json!({
             "type": "object",
-            "properties": {"topic": {"type": "string", "x-gts-ref": "gts.x.a.b.topic.v1~"}}
+            "properties": {"topic": {"type": "string", "x-gts-instance-ref": "gts.x.a.b.topic.v1~"}}
         });
         let instance = json!({"topic": "gts.x.a.b.topic.v1~x.c._.missing.v1"});
 
@@ -1522,7 +1560,7 @@ mod applicator_tests {
 
     #[test]
     fn not_inverts_a_reference_constraint() {
-        let schema = json!({"not": {"type": "string", "x-gts-ref": TARGET}});
+        let schema = json!({"not": {"type": "string", "x-gts-instance-ref": TARGET}});
 
         assert!(
             !is_valid(&target_id(), &schema),
@@ -1540,8 +1578,8 @@ mod applicator_tests {
             "type": "object",
             "if": {"type": "object", "required": ["kind"],
                    "properties": {"kind": {"const": "target"}}},
-            "then": {"properties": {"ref": {"type": "string", "x-gts-ref": TARGET}}},
-            "else": {"properties": {"ref": {"type": "string", "x-gts-ref": OTHER}}}
+            "then": {"properties": {"ref": {"type": "string", "x-gts-instance-ref": TARGET}}},
+            "else": {"properties": {"ref": {"type": "string", "x-gts-instance-ref": OTHER}}}
         });
 
         assert!(is_valid(
@@ -1566,7 +1604,7 @@ mod applicator_tests {
     fn contains_needs_one_member_whose_reference_matches() {
         let schema = json!({
             "type": "array",
-            "contains": {"type": "string", "x-gts-ref": TARGET}
+            "contains": {"type": "string", "x-gts-instance-ref": TARGET}
         });
 
         assert!(is_valid(&json!([other_id(), target_id()]), &schema));
@@ -1580,8 +1618,8 @@ mod applicator_tests {
     fn pattern_and_additional_properties_carry_their_own_references() {
         let schema = json!({
             "type": "object",
-            "patternProperties": {"^ref_": {"type": "string", "x-gts-ref": TARGET}},
-            "additionalProperties": {"type": "string", "x-gts-ref": OTHER}
+            "patternProperties": {"^ref_": {"type": "string", "x-gts-instance-ref": TARGET}},
+            "additionalProperties": {"type": "string", "x-gts-instance-ref": OTHER}
         });
 
         assert!(is_valid(
@@ -1601,7 +1639,7 @@ mod applicator_tests {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "type": "object",
             "dependentSchemas": {
-                "kind": {"properties": {"ref": {"type": "string", "x-gts-ref": TARGET}}}
+                "kind": {"properties": {"ref": {"type": "string", "x-gts-instance-ref": TARGET}}}
             }
         });
 
@@ -1619,7 +1657,7 @@ mod applicator_tests {
     fn property_names_carry_references_too() {
         let schema = json!({
             "type": "object",
-            "propertyNames": {"x-gts-ref": TARGET}
+            "propertyNames": {"x-gts-instance-ref": TARGET}
         });
 
         assert!(is_valid(
@@ -1638,7 +1676,7 @@ mod applicator_tests {
         let schema = json!({
             "type": "object",
             "properties": {"ref": {"$ref": "#/$defs/TargetRef"}},
-            "$defs": {"TargetRef": {"type": "string", "x-gts-ref": TARGET}}
+            "$defs": {"TargetRef": {"type": "string", "x-gts-instance-ref": TARGET}}
         });
 
         assert!(is_valid(&json!({"ref": target_id()}), &schema));
@@ -1662,7 +1700,7 @@ mod applicator_tests {
         let self_ref = json!({
             "$id": "gts://gts.x.a.b.target.v1~",
             "type": "object",
-            "properties": {"r": {"type": "string", "x-gts-ref": "/$id"}}
+            "properties": {"r": {"type": "string", "x-gts-instance-ref": "/$id"}}
         });
         assert!(is_valid(&json!({"r": target_id()}), &self_ref));
         assert_eq!(
@@ -1682,10 +1720,138 @@ mod applicator_tests {
                 "examples": ["gts.x.a.b.target.v1~"],
                 "$defs": {"a/b": {"const": "gts.x.a.b.target.v1~"}},
                 "type": "object",
-                "properties": {"r": {"type": "string", "x-gts-ref": pointer}}
+                "properties": {"r": {"type": "string", "x-gts-instance-ref": pointer}}
             });
             let errors = XGtsRefValidator::new().validate_schema(&schema, "", None);
             assert_eq!(errors.len(), 1, "{pointer}: {errors:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod compiler_preflight_tests {
+    use crate::json_schema::gts_validator_for_type;
+    use serde_json::{Value, json};
+
+    const TARGET: &str = "gts.x.pre.refs.target.v1~";
+    const INSTANCE: &str = "gts.x.pre.refs.target.v1~x.pre._.item.v1";
+    const SELECTED: &str = "gts.x.pre.refs.holder.v1~";
+
+    fn compiles(schema: &Value) -> bool {
+        gts_validator_for_type(schema, Some(SELECTED), &[], None).is_ok()
+    }
+
+    fn document(body: &Value) -> Value {
+        let mut document = json!({
+            "$id": format!("gts://{SELECTED}"),
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+        });
+        document
+            .as_object_mut()
+            .unwrap()
+            .extend(body.as_object().unwrap().clone());
+        document
+    }
+
+    #[test]
+    fn an_instance_operand_is_rejected_in_a_branch_never_evaluated() {
+        for (keyword, operand, valid) in [
+            ("x-gts-type-ref", INSTANCE, false),
+            ("x-gts-type-ref", TARGET, true),
+            ("x-gts-instance-ref", INSTANCE, true),
+        ] {
+            let ref_schema = json!({"type": "string", keyword: operand});
+            for body in [
+                json!({"anyOf": [true, ref_schema]}),
+                json!({"properties": {"r": {"not": ref_schema}}}),
+                json!({"$defs": {"Unused": ref_schema}}),
+                json!({"x-gts-traits-schema": {"type": "object", "properties": {"r": ref_schema}}}),
+            ] {
+                assert_eq!(
+                    compiles(&document(&body)),
+                    valid,
+                    "{keyword} {operand}: {body}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_removed_keyword_is_unknown_at_schema_positions_only() {
+        let legacy = json!({"type": "string", "x-gts-ref": TARGET});
+        for body in [
+            json!({"properties": {"r": legacy}}),
+            json!({"anyOf": [true, legacy]}),
+            json!({"$defs": {"Unused": legacy}}),
+        ] {
+            assert!(!compiles(&document(&body)), "{body}");
+        }
+        // Literal data and property names are not keywords.
+        assert!(compiles(&document(&json!({
+            "properties": {
+                "x-gts-ref": {"type": "string"},
+                "data": {"const": {"x-gts-ref": "not-an-id"}, "default": {"x-gts-type-ref": 1}},
+            },
+        }))));
+    }
+
+    #[test]
+    fn a_reference_makes_literal_data_a_schema_position() {
+        let stash = json!({"x-gts-ref": "gts.*"});
+        assert!(compiles(&document(&json!({"stash": stash}))));
+        assert!(!compiles(&document(&json!({
+            "stash": stash,
+            "allOf": [{"$ref": "#/stash"}],
+        }))));
+        let bad_operand = json!({"x-gts-type-ref": INSTANCE});
+        assert!(compiles(&document(&json!({"stash": bad_operand}))));
+        assert!(!compiles(&document(&json!({
+            "stash": bad_operand,
+            "anyOf": [true, {"$ref": "#/stash"}],
+        }))));
+    }
+
+    #[test]
+    fn referenced_resources_are_checked_on_behalf_of_the_selected_type() {
+        let resource_uri = "gts://gts.x.pre.refs.shared.v1~";
+        let resource = |operand: &str| {
+            json!({
+                "$id": resource_uri,
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$defs": {"Unused": {"x-gts-type-ref": operand}},
+            })
+        };
+        let holder = document(&json!({"allOf": [{"$ref": resource_uri}]}));
+        for (operand, valid) in [(TARGET, true), (INSTANCE, false), ("/$id", true)] {
+            let resource = resource(operand);
+            let result = gts_validator_for_type(
+                &holder,
+                Some(SELECTED),
+                &[(resource_uri.to_owned(), &resource)],
+                None,
+            );
+            assert_eq!(result.is_ok(), valid, "{operand}");
+        }
+    }
+
+    #[test]
+    fn self_reference_needs_a_concrete_selected_type() {
+        for keyword in ["x-gts-type-ref", "x-gts-instance-ref"] {
+            let schema = document(&json!({"properties": {"r": {keyword: "/$id"}}}));
+            for (selected, valid) in [
+                (Some(SELECTED), true),
+                (Some(INSTANCE), false),
+                (Some("gts.x.pre.refs.*"), false),
+                (None, false),
+            ] {
+                assert_eq!(
+                    gts_validator_for_type(&schema, selected, &[], None).is_ok(),
+                    valid,
+                    "{keyword} {selected:?}"
+                );
+            }
         }
     }
 }

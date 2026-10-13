@@ -461,6 +461,23 @@ fn merge_keyword(
                 }
             }
         }
+        // Two entity scopes of one keyword intersect in the narrower one when
+        // one includes the other; any other pair is left unproven.
+        keyword if crate::x_gts_ref::EntityRefKind::of_keyword(keyword).is_some() => {
+            use crate::x_gts_ref::EntityScope;
+            match (
+                EntityScope::of(keyword, current),
+                EntityScope::of(keyword, candidate_value),
+            ) {
+                (Some(held), Some(candidate)) if held.includes(&candidate) => {
+                    *current = candidate_value.clone();
+                }
+                (Some(held), Some(candidate)) if candidate.includes(&held) => {}
+                _ => {
+                    unproven.insert(path.to_owned());
+                }
+            }
+        }
         "type" => {
             if current.as_str() == Some("number") && candidate_value.as_str() == Some("integer") {
                 *current = candidate_value.clone();
@@ -957,7 +974,9 @@ fn check_pattern_ref_compatibility(
             format!("has '{X_GTS_PATTERN_REF}' operand {operand}, which cannot be compared"),
         )
     };
-    let masked = masks_string_witness(source);
+    // An entity reference on the source restricts which strings it accepts,
+    // so it can hide the counterexample as well.
+    let masked = masks_string_witness(source) || has_entity_ref(source);
     let mut errors = Vec::new();
 
     if admits_strings(source)
@@ -1116,6 +1135,345 @@ fn masks_string_witness(schema: &Map<String, Value>) -> bool {
         "contentMediaType",
     ];
     MASKING.iter().any(|keyword| schema.contains_key(*keyword))
+}
+
+/// Proves inclusion through an `anyOf` that only one side changes.
+///
+/// `Valid(rest ∧ (B1 ∨ … ∨ Bn))` is the union of each `rest ∧ Bi`, so a target
+/// union includes the source when one conjoined branch does, and a source
+/// union is included when every conjoined branch is. Only a positive answer is
+/// conclusive: anything else falls back to the keyword comparison, which
+/// leaves a changed `anyOf` unproven.
+fn union_inclusion_holds(
+    old_map: &Map<String, Value>,
+    new_map: &Map<String, Value>,
+    path: &str,
+    walk: Walk,
+    unproven: &UnprovenPaths,
+) -> bool {
+    let (source, target) = if walk.check_backward {
+        (old_map, new_map)
+    } else {
+        (new_map, old_map)
+    };
+    if source.get("anyOf") == target.get("anyOf") || walk.deeper().exhausted() {
+        return false;
+    }
+    // `rest ∧ branch`, when the intersection is exact.
+    let conjoin = |schema: &Map<String, Value>, branch: &Value| {
+        let mut rest = schema.clone();
+        rest.remove("anyOf");
+        let (branch, mut lost) = flatten_effective(branch, walk.depth + 1);
+        let mut conjoined = Value::Object(rest);
+        merge_schema_intersection(&mut conjoined, &branch, "", &mut lost, walk.depth + 1);
+        lost.is_empty().then_some(conjoined)
+    };
+    let included = |subset: &Value, superset: &Value| {
+        let (old, new) = if walk.check_backward {
+            (subset, superset)
+        } else {
+            (superset, subset)
+        };
+        let mut errors = Vec::new();
+        check_schema_node_compatibility(
+            old,
+            new,
+            path,
+            walk.deeper(),
+            unproven.clone(),
+            &mut errors,
+        );
+        errors.is_empty()
+    };
+    match (
+        source.get("anyOf").and_then(Value::as_array),
+        target.get("anyOf").and_then(Value::as_array),
+    ) {
+        (None, Some(branches)) if !source.contains_key("anyOf") => {
+            let source = Value::Object(source.clone());
+            branches
+                .iter()
+                .filter_map(|branch| conjoin(target, branch))
+                .any(|branch| included(&source, &branch))
+        }
+        (Some(branches), None) if !target.contains_key("anyOf") && !branches.is_empty() => {
+            let target = Value::Object(target.clone());
+            branches.iter().all(|branch| {
+                conjoin(source, branch).is_some_and(|branch| included(&branch, &target))
+            })
+        }
+        _ => false,
+    }
+}
+
+/// Compares `x-gts-type-ref` and `x-gts-instance-ref` by the identifiers of
+/// the required kind each selects (README §9.6.1).
+///
+/// A positive constraint includes another when its scope includes the other's;
+/// a conjunction of both kinds, or a scope with no identifier at all, accepts
+/// no string. A break is reported as incompatible only with a counterexample:
+/// an identifier the source's reference keywords accept and the target's
+/// reject. Where another constraint could hide it, or none is found, the
+/// relation is left unproven. Under `not` the directions reverse.
+fn check_entity_ref_compatibility(
+    path: &str,
+    old_schema: &Map<String, Value>,
+    new_schema: &Map<String, Value>,
+    check_backward: bool,
+) -> Vec<CompatibilityDiagnostic> {
+    use crate::x_gts_ref::{ENTITY_REF_KEYWORDS, EntityScope};
+
+    let (source, target) = if check_backward {
+        (old_schema, new_schema)
+    } else {
+        (new_schema, old_schema)
+    };
+    let diagnostic = |masked: bool, detail: String| {
+        let finding = if masked {
+            CompatibilityFinding::NotProvable
+        } else {
+            CompatibilityFinding::NarrowingConstraintChanged
+        };
+        CompatibilityDiagnostic::new(path, finding, detail)
+    };
+    let not_provable = |detail: String| {
+        CompatibilityDiagnostic::new(path, CompatibilityFinding::NotProvable, detail)
+    };
+    let unreadable = |keyword: &str, operand: &Value| {
+        not_provable(format!(
+            "has '{keyword}' operand {operand}, which cannot be compared"
+        ))
+    };
+    let mut errors = Vec::new();
+
+    if admits_strings(source) && admits_strings(target) {
+        let source_scopes = entity_scopes(source);
+        for keyword in ENTITY_REF_KEYWORDS {
+            let Some(required) = target.get(keyword) else {
+                continue;
+            };
+            if source.get(keyword) == Some(required) {
+                continue;
+            }
+            let Some(required_scope) = EntityScope::of(keyword, required) else {
+                errors.push(unreadable(keyword, required));
+                continue;
+            };
+            let scopes = match &source_scopes {
+                Ok(scopes) => scopes,
+                Err((keyword, operand)) => {
+                    errors.push(unreadable(keyword, operand));
+                    continue;
+                }
+            };
+            if accepts_no_string(scopes)
+                || scopes.iter().any(|scope| required_scope.includes(scope))
+            {
+                continue;
+            }
+            let masked = masks_string_witness(source) || source.contains_key("not");
+            match reference_counterexample(source, scopes, |id| !required_scope.admits(id)) {
+                Some(Counterexample::Identifier(witness)) => errors.push(diagnostic(
+                    masked,
+                    format!("accepts '{witness}', which '{keyword}' {required} rejects"),
+                )),
+                Some(Counterexample::NonIdentifier) => errors.push(diagnostic(
+                    masked,
+                    format!(
+                        "{} '{keyword}' constraint {required}",
+                        direction_verb(check_backward)
+                    ),
+                )),
+                None => errors.push(not_provable(format!(
+                    "changes '{keyword}' to {required}, and no identifier shows whether the \
+                     accepted scope narrowed"
+                ))),
+            }
+        }
+    }
+
+    for keyword in ENTITY_REF_KEYWORDS {
+        let changed =
+            format!("changes a negated '{keyword}' constraint, so inclusion cannot be established");
+        match (
+            negated_reference(source, keyword),
+            negated_reference(target, keyword),
+        ) {
+            (_, None) => {}
+            // Negating a scope that selects nothing excludes nothing.
+            (None, Some((excluded, _)))
+                if EntityScope::of(keyword, excluded).is_some_and(|scope| scope.is_empty()) => {}
+            (None, Some((excluded, rest))) => match negated_domain(&rest) {
+                None => errors.push(not_provable(changed)),
+                Some(NegatedDomain::Strings) if !admits_strings(source) => {}
+                Some(_) => errors.push(diagnostic(
+                    masked_for_negation(source),
+                    format!(
+                        "{} negated '{keyword}' constraint {excluded}",
+                        direction_verb(check_backward)
+                    ),
+                )),
+            },
+            (Some((declared, declared_rest)), Some((excluded, excluded_rest))) => {
+                if declared == excluded && declared_rest == excluded_rest {
+                    continue;
+                }
+                let (Some(scope), Some(excluded_scope)) = (
+                    EntityScope::of(keyword, declared),
+                    EntityScope::of(keyword, excluded),
+                ) else {
+                    errors.push(not_provable(changed));
+                    continue;
+                };
+                if declared_rest != excluded_rest {
+                    errors.push(not_provable(changed));
+                    continue;
+                }
+                // Valid(not S) ⊆ Valid(not T) iff Valid(T) ⊆ Valid(S).
+                if scope.includes(&excluded_scope) {
+                    continue;
+                }
+                let witness = excluded_scope
+                    .witnesses()
+                    .into_iter()
+                    .find(|id| !scope.admits(id));
+                match (witness, negated_domain(&declared_rest)) {
+                    (None, _) | (_, None) => errors.push(not_provable(changed)),
+                    // The witness would be a string the source never accepts.
+                    (Some(_), Some(NegatedDomain::Strings)) if !admits_strings(source) => {}
+                    (Some(_), Some(NegatedDomain::Everything)) if !admits_strings(source) => {
+                        errors.push(not_provable(changed));
+                    }
+                    // The compared `not` is the source's own constraint, which
+                    // the witness was chosen to satisfy.
+                    (Some(witness), Some(_)) => errors.push(diagnostic(
+                        masks_string_witness(source) || has_reference_keyword(source),
+                        format!(
+                            "changes negated '{keyword}' so that it accepts '{witness}' from \
+                             {excluded}, outside {declared}"
+                        ),
+                    )),
+                }
+            }
+        }
+    }
+    errors
+}
+
+/// The entity scopes a node's positive reference keywords declare, or the
+/// first operand that cannot be read.
+fn entity_scopes(
+    schema: &Map<String, Value>,
+) -> Result<Vec<crate::x_gts_ref::EntityScope>, (&'static str, &Value)> {
+    crate::x_gts_ref::ENTITY_REF_KEYWORDS
+        .into_iter()
+        .filter_map(|keyword| schema.get(keyword).map(|operand| (keyword, operand)))
+        .map(|(keyword, operand)| {
+            crate::x_gts_ref::EntityScope::of(keyword, operand).ok_or((keyword, operand))
+        })
+        .collect()
+}
+
+/// Whether conjoined entity scopes accept no string: one of them is empty, or
+/// they require both kinds.
+fn accepts_no_string(scopes: &[crate::x_gts_ref::EntityScope]) -> bool {
+    scopes.iter().any(crate::x_gts_ref::EntityScope::is_empty)
+        || scopes
+            .windows(2)
+            .any(|pair| pair[0].kind() != pair[1].kind())
+}
+
+/// A string a source accepts and a target rejects.
+enum Counterexample {
+    /// This identifier.
+    Identifier(crate::gts::GtsId),
+    /// Any string that is not an identifier.
+    NonIdentifier,
+}
+
+/// A string the source's GTS reference keywords accept and `rejected` holds
+/// for, or `None` when none was found.
+fn reference_counterexample(
+    source: &Map<String, Value>,
+    scopes: &[crate::x_gts_ref::EntityScope],
+    rejected: impl Fn(&crate::gts::GtsId) -> bool,
+) -> Option<Counterexample> {
+    use crate::x_gts_pattern_ref::{X_GTS_PATTERN_REF, literal_operand};
+
+    let pattern_scope = match source.get(X_GTS_PATTERN_REF) {
+        None => None,
+        Some(operand) => Some(literal_operand(operand)?),
+    };
+    if scopes.is_empty() {
+        // A non-identifier is rejected by every entity reference, but a
+        // pattern-valued field accepts none.
+        return pattern_scope
+            .is_none()
+            .then_some(Counterexample::NonIdentifier);
+    }
+    scopes
+        .iter()
+        .flat_map(crate::x_gts_ref::EntityScope::witnesses)
+        .find(|id| {
+            scopes.iter().all(|scope| scope.admits(id))
+                && pattern_scope
+                    .as_ref()
+                    .is_none_or(|scope| scope.covers(&crate::gts::GtsIdPattern::from(id)))
+                && rejected(id)
+        })
+        .map(Counterexample::Identifier)
+}
+
+/// Whether a source constraint could reject the identifier that would show a
+/// break under a `not` the source does not share.
+fn masked_for_negation(source: &Map<String, Value>) -> bool {
+    masks_string_witness(source) || source.contains_key("not") || has_reference_keyword(source)
+}
+
+/// Whether the node declares a positive GTS reference keyword.
+fn has_reference_keyword(schema: &Map<String, Value>) -> bool {
+    has_entity_ref(schema) || schema.contains_key(crate::x_gts_pattern_ref::X_GTS_PATTERN_REF)
+}
+
+/// Whether the node declares a positive entity reference.
+fn has_entity_ref(schema: &Map<String, Value>) -> bool {
+    crate::x_gts_ref::ENTITY_REF_KEYWORDS
+        .iter()
+        .any(|keyword| schema.contains_key(*keyword))
+}
+
+/// Whether the node provably accepts no instance: it admits only strings, and
+/// its entity references accept none (README §9.6.1).
+fn accepts_nothing(schema: &Map<String, Value>) -> bool {
+    let only_strings = match schema.get("type") {
+        Some(Value::String(name)) => name == "string",
+        Some(Value::Array(names)) => {
+            !names.is_empty() && names.iter().all(|name| name.as_str() == Some("string"))
+        }
+        _ => false,
+    };
+    only_strings && entity_scopes(schema).is_ok_and(|scopes| accepts_no_string(&scopes))
+}
+
+/// Whether the node's `not` holds a GTS reference keyword.
+fn negates_reference(schema: &Map<String, Value>) -> bool {
+    negated_pattern_ref(schema).is_some()
+        || crate::x_gts_ref::ENTITY_REF_KEYWORDS
+            .iter()
+            .any(|keyword| negated_reference(schema, keyword).is_some())
+}
+
+/// The operand and the remaining keywords of a `not` whose subschema declares
+/// `keyword`.
+fn negated_reference<'s>(
+    schema: &'s Map<String, Value>,
+    keyword: &str,
+) -> Option<(&'s Value, Map<String, Value>)> {
+    let negated = schema.get("not")?.as_object()?;
+    let operand = negated.get(keyword)?;
+    let mut rest = negated.clone();
+    rest.remove(keyword);
+    Some((operand, rest))
 }
 
 fn check_type_compatibility(
@@ -1389,11 +1747,11 @@ fn check_exact_constraints(
         "contentMediaType",
     ];
 
-    // A negated `x-gts-pattern-ref` is compared by coverage instead, which
-    // holds only when no side carries an ordinary `not`.
+    // A negated GTS reference is compared by scope instead, which holds only
+    // when no side carries an ordinary `not`.
     let negations_compared = [old_schema, new_schema]
         .iter()
-        .all(|schema| !schema.contains_key("not") || negated_pattern_ref(schema).is_some());
+        .all(|schema| !schema.contains_key("not") || negates_reference(schema));
     EXACT_CONSTRAINTS
         .iter()
         .filter(|keyword| !(negations_compared && **keyword == "not"))
@@ -1506,6 +1864,11 @@ fn check_schema_node_compatibility(
     } else {
         (&new_effective, &old_effective)
     };
+    // A provably empty source is included in anything, `false` too. The
+    // emptiness is read off the flattened node only where flattening was exact.
+    if !unproven.contains("") && source.as_object().is_some_and(accepts_nothing) {
+        return;
+    }
     let source_boolean = boolean_schema_value(source);
     let target_boolean = boolean_schema_value(target);
     if source_boolean == Some(false) || target_boolean == Some(true) {
@@ -1537,6 +1900,9 @@ fn check_schema_node_compatibility(
             CompatibilityFinding::NotProvable,
             "contains an allOf intersection that the compatibility checker cannot prove".to_owned(),
         ));
+        return;
+    }
+    if union_inclusion_holds(old_map, new_map, path, walk, &unproven) {
         return;
     }
 
@@ -1574,6 +1940,12 @@ fn check_schema_node_compatibility(
         check_backward,
     ));
     node_errors.extend(check_pattern_ref_compatibility(
+        path,
+        old_map,
+        new_map,
+        check_backward,
+    ));
+    node_errors.extend(check_entity_ref_compatibility(
         path,
         old_map,
         new_map,

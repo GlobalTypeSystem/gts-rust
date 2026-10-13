@@ -6,7 +6,7 @@ A complete Rust implementation of the Global Type System (GTS)
 
 GTS [Global Type System](https://github.com/globaltypesystem/gts-spec) is a simple, human-readable, globally unique identifier and referencing system for data type definitions (e.g., JSON Schemas) and data instances (e.g., JSON objects). This Rust implementation provides high-performance, type-safe operations for working with GTS identifiers.
 
-Current supported GTS spec version: `0.16.1`
+Target GTS specification: `0.17` (draft)
 
 ## Roadmap
 
@@ -35,7 +35,7 @@ Other GTS spec [Reference Implementation](https://github.com/globaltypesystem/gt
 - [x] **In-memory entities registry** - simple GTS entities registry with optional GTS references validation on entity registration
 - [x] **CLI** - command-line interface for all GTS operations
 - [x] **Web server** - a non-production web-server with REST API for the operations processing and testing
-- [x] **x-gts-ref** - to support special GTS entity reference annotation in schemas
+- [x] **x-gts-type-ref / x-gts-instance-ref** - kind-specific GTS entity references in schemas (spec §9.6.1)
 - [x] **x-gts-pattern-ref** - pattern-valued string fields: GTS identifier pattern syntax and coverage by an operand, independent of the registry (spec §9.6.2, §10)
 - [x] **YAML support** - to support YAML files (*.yml, *.yaml) as input files
 - [ ] **TypeSpec support** - add [typespec.io](https://typespec.io/) files (*.tsp) support

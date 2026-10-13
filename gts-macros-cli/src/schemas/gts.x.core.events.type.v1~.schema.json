@@ -25,7 +25,7 @@
       "format": "gts-type-id",
       "title": "GTS Type ID",
       "type": "string",
-      "x-gts-ref": "gts.*"
+      "x-gts-type-ref": "gts.*"
     }
   },
   "required": [
@@ -46,7 +46,7 @@
       },
       "topic_ref": {
         "type": "string",
-        "x-gts-ref": "gts.x.core.events.topic.v1~"
+        "x-gts-instance-ref": "gts.x.core.events.topic.v1~"
       }
     },
     "required": [

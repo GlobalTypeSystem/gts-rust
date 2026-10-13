@@ -490,7 +490,7 @@ The CLI automatically maps Rust types to JSON Schema types:
 **Notes**:
 - `Option<T>` fields are not marked as `required` in the generated schema. The generated
   schema is `{"type": ["<T>", "null"]}`, so any other keyword of `T` (`format`,
-  `items`, `x-gts-ref`) is dropped; when `T` has no scalar `type`, the result is
+  `items`, `x-gts-instance-ref`/`x-gts-type-ref`) is dropped; when `T` has no scalar `type`, the result is
   `{"oneOf": [<T>, {"type": "null"}]}`
 - The deprecated alias `GtsSchemaId` is accepted and maps to `gts-type-id`, same as `GtsTypeId`
 - There is no special handling for date/time types — `DateTime`, `NaiveDate` and friends fall

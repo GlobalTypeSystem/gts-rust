@@ -1,6 +1,6 @@
 // Golden case: inline trait-shape on an abstract base + a final leaf that
 // resolves values. Exercises `traits_schema = inline(T)`, schemars `extend`
-// for `x-gts-ref`/`const`, serde `default`, top-level keyword placement, and
+// for `x-gts-instance-ref`/`const`, serde `default`, top-level keyword placement, and
 // `gts_abstract`/`gts_final`.
 //
 // Both `severity` and `escalation` are non-primitive named types. schemars
@@ -36,7 +36,7 @@ pub struct Escalation {
 
 #[derive(JsonSchema, serde::Serialize, GtsTraitsSchema)]
 pub struct EventTraits {
-    #[schemars(extend("x-gts-ref" = TOPIC_REF))]
+    #[schemars(extend("x-gts-instance-ref" = TOPIC_REF))]
     pub topic_ref: String,
     #[serde(default = "default_retention")]
     pub retention: String,

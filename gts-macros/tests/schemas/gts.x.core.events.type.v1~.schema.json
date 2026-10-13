@@ -15,7 +15,7 @@
       "format": "gts-type-id",
       "title": "GTS Type ID",
       "type": "string",
-      "x-gts-ref": "gts.*"
+      "x-gts-type-ref": "gts.*"
     },
     "id": {
       "format": "uuid",

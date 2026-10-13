@@ -68,16 +68,24 @@ pub fn walk_json_value(
     match value {
         Value::String(s) => {
             let candidate_str = s.as_str();
-            let is_xgts_ref = json_path.ends_with(".x-gts-ref");
-            let is_pattern_ref = json_path.ends_with(".x-gts-pattern-ref");
+            // The operand of a GTS reference keyword (README §9.6) is a GTS
+            // identifier, a wildcard pattern, or the `/$id` self-reference.
+            // The removed `x-gts-ref` is not one of them.
+            let is_xgts_ref =
+                [gts::X_GTS_TYPE_REF, gts::X_GTS_INSTANCE_REF]
+                    .iter()
+                    .any(|keyword| {
+                        json_path
+                            .strip_suffix(keyword)
+                            .is_some_and(|parent| parent.ends_with('.'))
+                    });
+            let is_pattern_ref = json_path
+                .strip_suffix(gts::X_GTS_PATTERN_REF)
+                .is_some_and(|parent| parent.ends_with('.'));
 
-            // PRE-FILTER: x-gts-ref special values that are NOT GTS identifiers.
-            // These must be checked BEFORE normalization to avoid misleading errors.
-            // Spec section 9.6 defines allowed x-gts-ref values:
-            //   - GTS identifier (gts.vendor.pkg...)
-            //   - Wildcard pattern (gts.*)
-            //   - Bare wildcard (*)
-            //   - Relative JSON pointer (/$id, /properties/id, etc.)
+            // PRE-FILTER: operand values that are NOT GTS identifiers, checked
+            // BEFORE normalization to avoid misleading errors. Validating the
+            // operand itself is the schema validator's job.
             if (is_xgts_ref && (candidate_str.starts_with('/') || candidate_str == "*"))
                 || (is_pattern_ref && candidate_str == "/$id")
             {
@@ -241,12 +249,25 @@ mod tests {
 
     #[test]
     fn test_scan_json_xgts_ref_wildcard() {
+        for keyword in ["x-gts-type-ref", "x-gts-instance-ref", "x-gts-pattern-ref"] {
+            let content = format!(r#"{{"{keyword}": "gts.x.core.*"}}"#);
+            let file = create_temp_json(&content);
+            let errors = scan_json_file(file.path(), None, 10_485_760, false).unwrap();
+            assert!(
+                errors.is_empty(),
+                "Wildcards in {keyword} should be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn test_scan_json_removed_x_gts_ref_is_not_an_operand_position() {
         let content = r#"{"x-gts-ref": "gts.x.core.*"}"#;
         let file = create_temp_json(content);
         let errors = scan_json_file(file.path(), None, 10_485_760, false).unwrap();
         assert!(
-            errors.is_empty(),
-            "Wildcards in x-gts-ref should be allowed"
+            !errors.is_empty(),
+            "the removed x-gts-ref keyword must not admit wildcards"
         );
     }
 
@@ -290,23 +311,23 @@ mod tests {
 
     #[test]
     fn test_scan_json_xgts_ref_bare_wildcard() {
-        let content = r#"{"x-gts-ref": "*"}"#;
+        let content = r#"{"x-gts-type-ref": "*"}"#;
         let file = create_temp_json(content);
         let errors = scan_json_file(file.path(), None, 10_485_760, false).unwrap();
         assert!(
             errors.is_empty(),
-            "Bare wildcard in x-gts-ref should be skipped"
+            "Bare wildcard in x-gts-type-ref should be skipped"
         );
     }
 
     #[test]
     fn test_scan_json_xgts_ref_relative_pointer() {
-        let content = r#"{"x-gts-ref": "/$id"}"#;
+        let content = r#"{"x-gts-instance-ref": "/$id"}"#;
         let file = create_temp_json(content);
         let errors = scan_json_file(file.path(), None, 10_485_760, false).unwrap();
         assert!(
             errors.is_empty(),
-            "Relative pointers in x-gts-ref should be skipped"
+            "Relative pointers in x-gts-instance-ref should be skipped"
         );
     }
 
@@ -315,7 +336,7 @@ mod tests {
         let content = r#"{
             "properties": {
                 "type": {
-                    "x-gts-ref": "gts.x.core.events.type.v1~"
+                    "x-gts-type-ref": "gts.x.core.events.type.v1~"
                 }
             }
         }"#;
@@ -358,11 +379,15 @@ mod tests {
 
     #[test]
     fn test_scan_json_error_includes_json_path() {
-        let content = r#"{"properties": {"type": {"x-gts-ref": "gts.invalid"}}}"#;
+        let content = r#"{"properties": {"type": {"x-gts-type-ref": "gts.invalid"}}}"#;
         let file = create_temp_json(content);
         let errors = scan_json_file(file.path(), None, 10_485_760, false).unwrap();
         assert!(!errors.is_empty());
-        assert!(errors[0].json_path.contains("properties.type.x-gts-ref"));
+        assert!(
+            errors[0]
+                .json_path
+                .contains("properties.type.x-gts-type-ref")
+        );
     }
 
     #[test]

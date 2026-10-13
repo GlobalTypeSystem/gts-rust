@@ -139,9 +139,17 @@ impl<'i> jsonschema::Keyword<'i> for PatternRefKeyword {
     }
 }
 
-/// `schema` with every `/$id` operand replaced by the document's own `$id`, so
-/// that two effective schemas can be compared by their literal operands. The
-/// document is returned unchanged when it has no `$id` to substitute.
+/// GTS reference keywords whose operand may be `/$id`.
+const SELF_REFERENCING_KEYWORDS: [&str; 3] = [
+    X_GTS_PATTERN_REF,
+    crate::x_gts_ref::X_GTS_TYPE_REF,
+    crate::x_gts_ref::X_GTS_INSTANCE_REF,
+];
+
+/// `schema` with every `/$id` operand of a GTS reference keyword replaced by
+/// the document's own `$id`, so that two effective schemas can be compared by
+/// their literal operands. The document is returned unchanged when it has no
+/// `$id` to substitute.
 pub fn with_resolved_self_operands(schema: &Value) -> std::borrow::Cow<'_, Value> {
     match self_id(schema) {
         Some(selected) => with_self_operands_naming(schema, &selected),
@@ -158,7 +166,10 @@ pub fn with_self_operands_naming<'s>(
 ) -> std::borrow::Cow<'s, Value> {
     let mut holders = std::collections::HashSet::new();
     crate::schema_modifiers::for_each_schema_node(schema, &mut |node, _| {
-        if node.get(X_GTS_PATTERN_REF).and_then(Value::as_str) == Some(SELF_ID_POINTER) {
+        if SELF_REFERENCING_KEYWORDS
+            .iter()
+            .any(|keyword| node.get(*keyword).and_then(Value::as_str) == Some(SELF_ID_POINTER))
+        {
             holders.insert(std::ptr::from_ref(node));
         }
     });
@@ -180,10 +191,11 @@ fn substitute(
                 .map(|(key, child)| (key.clone(), substitute(child, holders, selected)))
                 .collect();
             if holders.contains(&std::ptr::from_ref(map)) {
-                copy.insert(
-                    X_GTS_PATTERN_REF.to_owned(),
-                    Value::String(selected.to_owned()),
-                );
+                for keyword in SELF_REFERENCING_KEYWORDS {
+                    if map.get(keyword).and_then(Value::as_str) == Some(SELF_ID_POINTER) {
+                        copy.insert(keyword.to_owned(), Value::String(selected.to_owned()));
+                    }
+                }
             }
             Value::Object(copy)
         }

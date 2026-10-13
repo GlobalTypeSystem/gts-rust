@@ -48,7 +48,7 @@ pub fn validate_traits_chain(chain: &[&Value]) -> Result<(), String> {
 /// when a set of macro-generated schemas (trait types, hosts, intermediates)
 /// must *all* be valid and mutually consistent in one registry.
 ///
-/// `x-gts-ref` targets are not looked up: the set under test is the whole
+/// Entity-reference targets are not looked up: the set under test is the whole
 /// registry here, so a constraint naming a type outside it says nothing about
 /// whether the set is self-consistent.
 ///

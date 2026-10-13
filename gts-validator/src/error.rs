@@ -62,7 +62,7 @@ pub struct ValidationError {
     pub line: usize,
     /// Column number (1-indexed) — for .md files; 0 for structured files
     pub column: usize,
-    /// JSON path (e.g., "$.properties.type.x-gts-ref") — for .json/.yaml files; empty for .md
+    /// JSON path (e.g., "$.properties.type.x-gts-type-ref") — for .json/.yaml files; empty for .md
     pub json_path: String,
     /// The original raw string that was found
     pub raw_value: String,
@@ -143,18 +143,18 @@ mod tests {
             file: PathBuf::from("config/test.json"),
             line: 0,
             column: 0,
-            json_path: "$.properties.type.x-gts-ref".to_owned(),
+            json_path: "$.properties.type.x-gts-type-ref".to_owned(),
             raw_value: "gts.invalid".to_owned(),
             normalized_id: "gts.invalid".to_owned(),
             error: "Invalid GTS ID".to_owned(),
-            context: "x-gts-ref".to_owned(),
+            context: "x-gts-type-ref".to_owned(),
         };
 
         let formatted = err.format_human_readable();
         assert!(formatted.contains("config/test.json"));
         assert!(formatted.contains("Invalid GTS ID"));
         assert!(formatted.contains("[gts.invalid]"));
-        assert!(formatted.contains("(at $.properties.type.x-gts-ref)"));
+        assert!(formatted.contains("(at $.properties.type.x-gts-type-ref)"));
         assert!(!formatted.contains(":0:0"));
     }
 }

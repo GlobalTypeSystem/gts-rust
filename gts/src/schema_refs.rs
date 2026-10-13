@@ -96,8 +96,9 @@ fn classify_ref(ref_uri: &str) -> Result<RefKind<'_>, InvalidRefReason> {
 /// bare-id ref is rejected up front rather than surfacing later as a failed
 /// lookup, with a path-tracked error.
 ///
-/// Excludes internal `#/...` references (e.g. `#/$defs/...`) and `x-gts-ref`
-/// (a constraint on instance values, not a schema dependency to inline). Does
+/// Excludes internal `#/...` references (e.g. `#/$defs/...`) and entity
+/// references (constraints on instance values, not schema dependencies to
+/// inline). Does
 /// NOT include the `$id`-chain parent - that edge is derived structurally from
 /// the id, not from content.
 ///
@@ -196,8 +197,9 @@ mod tests {
                 "c": {"$ref": "gts://gts.x.dep.ns.c.v1~#/properties/inner"},
                 // internal JSON Pointer ref - excluded
                 "d": {"$ref": "#/$defs/Local"},
-                // x-gts-ref is an instance-value constraint, not a schema dep
-                "e": {"type": "string", "x-gts-ref": "gts.x.notdep.ns.e.v1~"},
+                // entity references constrain instance values, not schema deps
+                "e": {"type": "string", "x-gts-type-ref": "gts.x.notdep.ns.e.v1~"},
+                "g": {"type": "string", "x-gts-instance-ref": "gts.x.notdep.ns.g.v1~"},
                 // duplicate of `a` - must dedupe
                 "f": {"$ref": "gts://gts.x.dep.ns.a.v1~"}
             },

@@ -99,7 +99,7 @@ impl EffectiveTraits {
 
     /// Validate these built artifacts. Runs, in order: per-index integrity of
     /// the collected subschemas (preserving indexed error messages), the
-    /// empty-chain and `false`-schema guards, then JSON Schema + `x-gts-ref`
+    /// empty-chain and `false`-schema guards, then JSON Schema + GTS reference
     /// value validation (with the required-trait completeness check when
     /// `check_unresolved`).
     ///
@@ -164,9 +164,10 @@ impl EffectiveTraits {
 //   where `T` is a `#[struct_to_gts_schema]` type, as
 //   `{ "type": "object", "allOf": [{ "$ref": "gts://<TYPE_ID>" }] }`.
 //
-// `const`, `default` and `x-gts-ref` on trait properties are expressed with
-// standard schemars/serde attributes (`#[schemars(extend("const" = ...))]`,
-// `#[serde(default = "...")]`, `#[schemars(extend("x-gts-ref" = "..."))]`), so
+// `const`, `default` and entity references on trait properties are expressed
+// with standard schemars/serde attributes (`#[schemars(extend("const" = ...))]`,
+// `#[serde(default = "...")]`,
+// `#[schemars(extend("x-gts-instance-ref" = "..."))]`), so
 // no GTS-specific field attributes are needed.
 
 /// Opt-in marker for a struct that backs an inline `x-gts-traits-schema`.
@@ -420,7 +421,7 @@ pub(crate) fn build_effective_traits(
     }
 }
 
-/// Validates materialized traits, including `x-gts-ref` and completeness.
+/// Validates materialized traits, including entity references and completeness.
 fn validate_trait_values(
     effective_traits_schema: &Value,
     effective_traits: &Value,
@@ -995,12 +996,7 @@ fn validate_traits_against_schema(
                     .chain(diagnosis.unexplained)
                     .map(|e| format!("trait validation: {e}")),
             );
-            errors.extend(
-                diagnosis
-                    .references
-                    .iter()
-                    .map(|e| format!("trait {}: {e}", crate::schema_modifiers::X_GTS_REF)),
-            );
+            errors.extend(diagnosis.references.iter().map(|e| format!("trait {e}")));
         }
         Err(e) => {
             errors.push(format!("failed to compile trait schema: {e}"));
@@ -2538,7 +2534,7 @@ mod tests {
         let schema = json!({
             "type": "object",
             "properties": {
-                "topicRef": {"type": "string", "x-gts-ref": "gts.x.a.b.topic.v1~"},
+                "topicRef": {"type": "string", "x-gts-instance-ref": "gts.x.a.b.topic.v1~"},
             },
         });
         let values = json!({"topicRef": "gts.x.a.b.topic.v1~x.c._.missing.v1"});
@@ -2562,7 +2558,7 @@ mod tests {
         let schema = json!({
             "type": "object",
             "properties": {
-                "topicRef": {"type": "string", "x-gts-ref": "gts.x.a.b.topic.v1~"},
+                "topicRef": {"type": "string", "x-gts-instance-ref": "gts.x.a.b.topic.v1~"},
             },
         });
         let values = json!({"topicRef": "gts.x.a.b.topic.v1~x.c._.orders.v1"});
@@ -2576,7 +2572,7 @@ mod tests {
         let constrained = json!({
             "required": ["other"],
             "properties": {
-                "topicRef": {"type": "string", "x-gts-ref": "gts.x.a.b.topic.v1~"},
+                "topicRef": {"type": "string", "x-gts-instance-ref": "gts.x.a.b.topic.v1~"},
                 "other": {"type": "string"},
             },
         });
@@ -2604,8 +2600,8 @@ mod tests {
         let schema = json!({
             "type": "object",
             "anyOf": [
-                {"properties": {"topicRef": {"type": "string", "x-gts-ref": "gts.x.a.b.topic.v1~"}}},
-                {"properties": {"topicRef": {"type": "string", "x-gts-ref": "gts.x.a.b.topic.v1~"}}},
+                {"properties": {"topicRef": {"type": "string", "x-gts-instance-ref": "gts.x.a.b.topic.v1~"}}},
+                {"properties": {"topicRef": {"type": "string", "x-gts-instance-ref": "gts.x.a.b.topic.v1~"}}},
             ],
         });
         let values = json!({"topicRef": "gts.x.a.b.topic.v1~x.c._.missing.v1"});
@@ -2625,17 +2621,17 @@ mod tests {
         let schema = json!({
             "type": "object",
             "properties": {
-                "topicRef": {"type": "string", "x-gts-ref": "gts.x.core.events.topic.v1~"}
+                "topicRef": {"type": "string", "x-gts-instance-ref": "gts.x.core.events.topic.v1~"}
             }
         });
         // A value that does not match the required gts prefix must be reported,
-        // even though the standard jsonschema validator ignores x-gts-ref.
+        // even though the standard jsonschema validator ignores entity references.
         let values = json!({ "topicRef": "not-a-gts-id" });
         let res =
             super::validate_trait_values(&schema, &values, false, None, super::REFS_UNVERIFIABLE);
         assert!(
             res.is_err(),
-            "x-gts-ref violation should be reported: {res:?}"
+            "entity reference violation should be reported: {res:?}"
         );
     }
 
@@ -2752,7 +2748,7 @@ mod inline_traits_schema_tests {
     }
 
     /// Regression: the canonical `GtsInstanceId` representation (its inline
-    /// `x-gts-ref` body) must survive, with no dangling ref left behind.
+    /// `x-gts-instance-ref` body) must survive, with no dangling ref left behind.
     #[test]
     fn gts_instance_id_field_keeps_canonical_inline_form() {
         let schema = inline_traits_schema_of::<InstanceIdTraits>();
@@ -2767,6 +2763,9 @@ mod inline_traits_schema_tests {
         let prop = &schema["properties"]["topic_ref"];
         assert_eq!(prop["type"], "string");
         assert_eq!(prop["format"], "gts-instance-id");
-        assert_eq!(prop["x-gts-ref"], format!("{}*", crate::GTS_ID_PREFIX));
+        assert_eq!(
+            prop["x-gts-instance-ref"],
+            format!("{}*", crate::GTS_ID_PREFIX)
+        );
     }
 }

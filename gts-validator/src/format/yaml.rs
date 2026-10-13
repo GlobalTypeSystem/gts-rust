@@ -161,13 +161,13 @@ $id: gts.invalid
     #[test]
     fn test_scan_yaml_xgts_ref_wildcard() {
         let content = r"
-x-gts-ref: gts.x.core.*
+x-gts-instance-ref: gts.x.core.*
 ";
         let file = create_temp_yaml(content);
         let errors = scan_yaml_file(file.path(), None, 10_485_760, false).unwrap();
         assert!(
             errors.is_empty(),
-            "Wildcards in x-gts-ref should be allowed"
+            "Wildcards in x-gts-instance-ref should be allowed"
         );
     }
 
@@ -182,13 +182,13 @@ x-gts-ref: gts.x.core.*
     #[test]
     fn test_scan_yaml_xgts_ref_bare_wildcard() {
         let content = r#"
-x-gts-ref: "*"
+x-gts-type-ref: "*"
 "#;
         let file = create_temp_yaml(content);
         let errors = scan_yaml_file(file.path(), None, 10_485_760, false).unwrap();
         assert!(
             errors.is_empty(),
-            "Bare wildcard in x-gts-ref should be skipped"
+            "Bare wildcard in x-gts-type-ref should be skipped"
         );
     }
 
@@ -197,7 +197,7 @@ x-gts-ref: "*"
         let content = r"
 properties:
   type:
-    x-gts-ref: gts.x.core.events.type.v1~
+    x-gts-type-ref: gts.x.core.events.type.v1~
 ";
         let file = create_temp_yaml(content);
         let errors = scan_yaml_file(file.path(), None, 10_485_760, false).unwrap();

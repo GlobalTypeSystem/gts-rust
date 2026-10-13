@@ -290,11 +290,11 @@ mod tests {
             file: PathBuf::from("docs/test.yaml"),
             line: 0,
             column: 0,
-            json_path: "$.x-gts-ref".to_owned(),
+            json_path: "$.x-gts-type-ref".to_owned(),
             raw_value: "gts.*".to_owned(),
             normalized_id: "gts.*".to_owned(),
             error: "Vendor mismatch: expected '', found '*'".to_owned(),
-            context: "$.x-gts-ref".to_owned(),
+            context: "$.x-gts-type-ref".to_owned(),
         }];
 
         let filtered = apply_allow_list_filter(

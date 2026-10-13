@@ -23,7 +23,24 @@ pub const DEFAULT_BASE_URI: &str = "json-schema:///";
 /// # Errors
 /// The first unsupported expression, with its location.
 pub fn check(registry: &Registry<'_>, documents: &[(&str, &Value)]) -> Result<(), String> {
-    walk(registry, documents, None, true)
+    walk(registry, documents, None, true, None)
+}
+
+/// A check applied to one schema node, given its location.
+pub type NodeCheck<'v> = dyn FnMut(&Map<String, Value>, &str) -> Result<(), String> + 'v;
+
+/// Applies `check` to every schema position of `documents` this module
+/// visits: active and inactive positions, root `x-gts-traits-schema`, and
+/// reference targets, which turn literal data into a schema position.
+///
+/// # Errors
+/// The first error `check` returns.
+pub fn check_nodes(
+    registry: &Registry<'_>,
+    documents: &[(&str, &Value)],
+    check: &mut NodeCheck<'_>,
+) -> Result<(), String> {
+    walk(registry, documents, None, false, Some(check))
 }
 
 /// Enforces one dialect throughout the first document's reachable schema graph.
@@ -35,7 +52,7 @@ pub fn check_dialect(
     documents: &[(&str, &Value)],
     dialect: Draft,
 ) -> Result<(), String> {
-    walk(registry, documents, Some(dialect), false)
+    walk(registry, documents, Some(dialect), false, None)
 }
 
 fn walk(
@@ -43,6 +60,7 @@ fn walk(
     documents: &[(&str, &Value)],
     dialect: Option<Draft>,
     check_patterns: bool,
+    check_node: Option<&mut NodeCheck<'_>>,
 ) -> Result<(), String> {
     let mut walk = Walk {
         roots: documents
@@ -54,6 +72,7 @@ fn walk(
         checked: HashSet::new(),
         dialect,
         check_patterns,
+        check_node,
     };
     let count = if dialect.is_some() {
         1
@@ -111,7 +130,7 @@ fn holds(draft: Draft, keyword: &str) -> Option<Holds> {
     })
 }
 
-struct Walk {
+struct Walk<'c, 'v> {
     /// Document roots: only there is `x-gts-traits-schema` a schema position.
     roots: HashSet<NodeKey>,
     /// Nodes visited, with the dialect they were read under.
@@ -120,9 +139,11 @@ struct Walk {
     checked: HashSet<String>,
     dialect: Option<Draft>,
     check_patterns: bool,
+    /// Applied to every schema node visited.
+    check_node: Option<&'c mut NodeCheck<'v>>,
 }
 
-impl Walk {
+impl Walk<'_, '_> {
     /// Visits `value`, entered structurally from its parent's scope.
     fn node<'r>(
         &mut self,
@@ -166,6 +187,9 @@ impl Walk {
         let node = std::ptr::from_ref(map);
         if !self.visited.insert((node, draft)) {
             return Ok(());
+        }
+        if let Some(check) = self.check_node.as_mut() {
+            check(map, location)?;
         }
 
         if self.roots.contains(&std::ptr::from_ref(map))
