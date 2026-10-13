@@ -68,7 +68,8 @@ pub fn walk_json_value(
     match value {
         Value::String(s) => {
             let candidate_str = s.as_str();
-            let is_xgts_ref = json_path.ends_with(".x-gts-ref");
+            let is_xgts_ref =
+                json_path.ends_with(".x-gts-ref") || json_path.ends_with(".x-gts-pattern-ref");
 
             // PRE-FILTER: x-gts-ref special values that are NOT GTS identifiers.
             // These must be checked BEFORE normalization to avoid misleading errors.
@@ -234,6 +235,25 @@ mod tests {
         assert!(
             errors.is_empty(),
             "Wildcards in x-gts-ref should be allowed"
+        );
+    }
+
+    #[test]
+    fn test_scan_json_xgts_pattern_ref_wildcard() {
+        let content = r#"{"properties":{"selector":{"x-gts-pattern-ref":"gts.x.core.*"}}}"#;
+        let file = create_temp_json(content);
+        let errors = scan_json_file(file.path(), None, 10_485_760, false).unwrap();
+        assert!(errors.is_empty(), "Unexpected errors: {errors:?}");
+    }
+
+    #[test]
+    fn test_scan_json_xgts_pattern_ref_rejects_invalid_pattern() {
+        let content = r#"{"x-gts-pattern-ref":"gts.x..*"}"#;
+        let file = create_temp_json(content);
+        let errors = scan_json_file(file.path(), None, 10_485_760, false).unwrap();
+        assert!(
+            !errors.is_empty(),
+            "Malformed patterns must still be validated"
         );
     }
 
