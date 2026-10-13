@@ -1663,11 +1663,7 @@ impl GtsStore {
         exact_gts_id: Option<&GtsId>,
     ) -> bool {
         if is_wildcard && let Some(pattern) = wildcard_pattern {
-            // OP#4 allows a final bare `~*` to match an empty suffix, while
-            // OP#10 queries require the wildcard position to be present in the
-            // stored ID. Preserve that query-specific chain-depth constraint.
-            return entity_id.segments().len() >= pattern.segments().len()
-                && entity_id.matches_pattern(pattern);
+            return entity_id.matches_pattern(pattern);
         }
 
         // For non-wildcard patterns, use matches_pattern to support version flexibility

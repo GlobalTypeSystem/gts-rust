@@ -246,6 +246,51 @@ fn test_gts_store_query_wildcard() {
 }
 
 #[test]
+fn test_gts_store_query_chain_wildcard_includes_root_types() {
+    let mut store = GtsStore::new();
+
+    for version in ["1", "1.0", "1.2", "2.0"] {
+        let base = format!("gts.vendor.package.namespace.type.v{version}~");
+        let derived = format!("{base}acme.app._.derived.v1~");
+        for id in [base, derived] {
+            let schema = json!({
+                "$id": format!("gts://{id}"),
+                "$schema": DRAFT7,
+                "type": "object"
+            });
+            store
+                .register_schema(&id, &schema)
+                .expect("register schema");
+        }
+    }
+
+    for (version_pattern, versions) in [
+        ("1~*", &["1", "1.0", "1.2"][..]),
+        ("1.0~*", &["1.0"][..]),
+        ("1.*", &["1.0", "1.2"][..]),
+    ] {
+        let pattern = format!("gts.vendor.package.namespace.type.v{version_pattern}");
+        let result = store.query(&pattern, 100);
+        assert!(result.error.is_empty(), "{pattern}: {}", result.error);
+        let actual: std::collections::BTreeSet<_> = result
+            .results
+            .iter()
+            .map(|entity| entity["$id"].as_str().expect("schema ID").to_owned())
+            .collect();
+        let expected: std::collections::BTreeSet<_> = versions
+            .iter()
+            .flat_map(|version| {
+                let base = format!("gts://gts.vendor.package.namespace.type.v{version}~");
+                let derived = format!("{base}acme.app._.derived.v1~");
+                [base, derived]
+            })
+            .collect();
+        assert_eq!(actual, expected, "{pattern}");
+        assert_eq!(result.count, expected.len(), "{pattern}");
+    }
+}
+
+#[test]
 fn test_gts_store_query_with_limit() {
     let mut store = GtsStore::new();
 
