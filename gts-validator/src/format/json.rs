@@ -262,8 +262,10 @@ mod tests {
                 "properties": {"selector": {"x-gts-pattern-ref": operand}}
             });
             let file = create_temp_json(&content.to_string());
-            let errors = scan_json_file(file.path(), None, 10_485_760, false).unwrap();
-            assert!(errors.is_empty(), "{operand}: {errors:?}");
+            for vendor in [None, Some("x")] {
+                let errors = scan_json_file(file.path(), vendor, 10_485_760, false).unwrap();
+                assert!(errors.is_empty(), "{operand} ({vendor:?}): {errors:?}");
+            }
         }
     }
 
