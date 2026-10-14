@@ -6,7 +6,7 @@ A complete Rust implementation of the Global Type System (GTS)
 
 GTS [Global Type System](https://github.com/globaltypesystem/gts-spec) is a simple, human-readable, globally unique identifier and referencing system for data type definitions (e.g., JSON Schemas) and data instances (e.g., JSON objects). This Rust implementation provides high-performance, type-safe operations for working with GTS identifiers.
 
-Target GTS specification: `0.17` (draft)
+Current supported GTS spec version: `0.17.0`
 
 ## Roadmap
 
