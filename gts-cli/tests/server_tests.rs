@@ -911,7 +911,7 @@ async fn test_gts_ref_validation_mode_gates_registration() {
             "$schema": "http://json-schema.org/draft-07/schema#",
             "type": "object",
             "properties": {
-                "ref": {"type": "string", "x-gts-ref": "gts.x.modes.srv.missing.v1~"}
+                "ref": {"type": "string", "x-gts-instance-ref": "gts.x.modes.srv.missing.v1~"}
             }
         })
     };

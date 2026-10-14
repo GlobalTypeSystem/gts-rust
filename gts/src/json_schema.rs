@@ -113,6 +113,30 @@ fn check_regex_profile(
     schema: &Value,
     resources: &[(String, &Value)],
 ) -> Result<(), jsonschema::ValidationError<'static>> {
+    check_schema_positions(schema, resources, None)
+}
+
+/// GTS vocabulary checked at every schema position, with `/$id` naming
+/// `selected`.
+#[derive(Clone, Copy)]
+struct GtsVocabulary<'s> {
+    selected: Option<&'s str>,
+}
+
+/// Checks the schema positions of `schema` and `resources` in one reference
+/// registry: the GTS regex profile and a single dialect, and with `gts` also
+/// the GTS vocabulary that compilation alone would not reject - an unknown
+/// `x-gts-*` keyword, including the removed `x-gts-ref`, and an unusable
+/// reference operand (README §9.6.3, §11.0).
+///
+/// Positions include definitions, inactive branches, trait schemas, and
+/// whatever a `$ref` reaches; literal data and property names are not
+/// keywords.
+fn check_schema_positions(
+    schema: &Value,
+    resources: &[(String, &Value)],
+    gts: Option<GtsVocabulary<'_>>,
+) -> Result<(), jsonschema::ValidationError<'static>> {
     let root = schema
         .get("$id")
         .and_then(Value::as_str)
@@ -137,11 +161,40 @@ fn check_regex_profile(
         )
         .map_err(jsonschema::ValidationError::schema)?;
     }
-    crate::schema_regex::check(&registry, &documents).map_err(jsonschema::ValidationError::schema)
+    crate::schema_regex::check(&registry, &documents)
+        .map_err(jsonschema::ValidationError::schema)?;
+    if let Some(GtsVocabulary { selected }) = gts {
+        crate::schema_regex::check_nodes(&registry, &documents, &mut |node, location| {
+            check_gts_node(node, selected).map_err(|reason| format!("at '{location}': {reason}"))
+        })
+        .map_err(jsonschema::ValidationError::schema)?;
+    }
+    Ok(())
 }
 
-/// Compiles `schema` with GTS formats, `x-gts-ref` and `x-gts-pattern-ref`
-/// enforcement.
+/// The GTS keywords of one schema node.
+fn check_gts_node(node: &Map<String, Value>, selected: Option<&str>) -> Result<(), String> {
+    if let Some(unknown) = node
+        .keys()
+        .find(|keyword| !crate::schema_modifiers::is_permitted_keyword(keyword))
+    {
+        return Err(format!(
+            "unknown GTS extension keyword '{unknown}'; the x-gts- namespace is reserved"
+        ));
+    }
+    for kind in crate::x_gts_ref::EntityRefKind::ALL {
+        if let Some(operand) = node.get(kind.keyword()) {
+            crate::x_gts_ref::resolve_declaration(kind, operand, selected)?;
+        }
+    }
+    if let Some(operand) = node.get(crate::x_gts_pattern_ref::X_GTS_PATTERN_REF) {
+        crate::x_gts_pattern_ref::resolve_operand(operand, selected)?;
+    }
+    Ok(())
+}
+
+/// Compiles `schema` with GTS formats, `x-gts-type-ref`, `x-gts-instance-ref`
+/// and `x-gts-pattern-ref` enforcement.
 ///
 /// `/$id` names the document's own top-level `$id`. `exists` enables
 /// store-aware reference checks; `None` checks patterns only.
@@ -159,10 +212,13 @@ pub fn gts_validator_for(
 }
 
 /// [`gts_validator_for`] on behalf of `selected_type`, the GTS type being
-/// validated, which `/$id` names wherever it is declared (spec v0.14 §9.6).
+/// validated, which `/$id` names wherever it is declared (README §9.6.1).
 ///
 /// `resources` are the other documents `schema` references, by URI; the
 /// validator follows every `$ref` itself, under the rules of its dialect.
+/// Every schema position of `schema` and `resources` is checked first, so an
+/// unknown `x-gts-*` keyword or an unusable reference operand is a schema
+/// error even where the validator would never evaluate it.
 ///
 /// # Errors
 ///
@@ -173,7 +229,13 @@ pub fn gts_validator_for_type(
     resources: &[(String, &Value)],
     exists: Option<crate::x_gts_ref::ReferenceExists>,
 ) -> Result<jsonschema::Validator, jsonschema::ValidationError<'static>> {
-    check_regex_profile(schema, resources)?;
+    check_schema_positions(
+        schema,
+        resources,
+        Some(GtsVocabulary {
+            selected: selected_type,
+        }),
+    )?;
     let builder = jsonschema::Registry::new()
         .extend(resources.iter().map(|(uri, document)| (uri, *document)))
         .map_err(jsonschema::ValidationError::from)?;
@@ -187,18 +249,17 @@ pub fn gts_validator_for_type(
     let registry = builder
         .prepare()
         .map_err(jsonschema::ValidationError::from)?;
-    let options = crate::x_gts_ref::with_x_gts_ref(
-        options_for(schema),
-        selected_type.map(str::to_owned),
-        exists,
-    );
+    let options = crate::x_gts_ref::with_x_gts_ref(options_for(schema), selected_type, exists);
     crate::x_gts_pattern_ref::with_x_gts_pattern_ref(options, selected_type.map(str::to_owned))
         .with_registry(&registry)
         .build(schema)
 }
 
-/// Compiles `schema` with GTS formats and `x-gts-pattern-ref`, the GTS keyword
-/// that belongs to `Valid(S)` without consulting the registry (README §4.3).
+/// Compiles `schema` with GTS formats and the GTS reference keywords, without
+/// consulting the registry: `x-gts-pattern-ref`, and the structural part of
+/// `x-gts-type-ref` and `x-gts-instance-ref` (syntax, kind and matching, as
+/// under `gts-ref-validation=none`), which is what `Valid(S)` compares
+/// (README §4.3, §9.6.1).
 ///
 /// `/$id` operands must already be resolved: none is selected here.
 ///
@@ -208,8 +269,9 @@ pub fn gts_validator_for_type(
 pub fn registry_independent_validator_for(
     schema: &Value,
 ) -> Result<jsonschema::Validator, jsonschema::ValidationError<'static>> {
-    check_regex_profile(schema, &[])?;
-    crate::x_gts_pattern_ref::with_x_gts_pattern_ref(options_for(schema), None).build(schema)
+    check_schema_positions(schema, &[], Some(GtsVocabulary { selected: None }))?;
+    let options = crate::x_gts_ref::with_x_gts_ref(options_for(schema), None, None);
+    crate::x_gts_pattern_ref::with_x_gts_pattern_ref(options, None).build(schema)
 }
 
 /// A validation result split by diagnostic source.
@@ -219,7 +281,7 @@ pub fn registry_independent_validator_for(
 pub struct Diagnosis {
     /// Standard-vocabulary diagnostics.
     pub standard: Vec<String>,
-    /// `x-gts-ref` violations.
+    /// Entity-reference violations.
     pub references: Vec<crate::x_gts_ref::XGtsRefValidationError>,
     /// Why a rejection carries no detail, when that happened.
     pub unexplained: Option<String>,
@@ -445,14 +507,29 @@ mod tests {
     }
 
     #[test]
-    fn unknown_formats_still_compile() {
-        let schema = serde_json::json!({
-            "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "type": "string",
-            "format": "some-vendor-format"
-        });
-        let validator = validator_for(&schema).expect("unknown format compiles");
-        assert!(validator.is_valid(&serde_json::json!("anything")));
+    fn unknown_formats_are_ignored() {
+        for dialect in [
+            "http://json-schema.org/draft-04/schema#",
+            "http://json-schema.org/draft-06/schema#",
+            "http://json-schema.org/draft-07/schema#",
+            "https://json-schema.org/draft/2019-09/schema",
+            "https://json-schema.org/draft/2020-12/schema",
+        ] {
+            for format in ["some-vendor-format", "gts-type-id", "gts-instance-id"] {
+                let schema = serde_json::json!({
+                    "$schema": dialect,
+                    "type": "string",
+                    "format": format
+                });
+                for validator in [
+                    validator_for(&schema).expect("unknown format compiles"),
+                    gts_validator_for(&schema, None).expect("unknown format compiles with GTS"),
+                ] {
+                    assert!(validator.is_valid(&serde_json::json!("anything")));
+                    assert!(!validator.is_valid(&serde_json::json!(123)));
+                }
+            }
+        }
     }
 
     #[test]

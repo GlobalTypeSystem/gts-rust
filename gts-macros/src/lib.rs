@@ -642,7 +642,7 @@ enum BaseAttr {
 /// How a host declares its `x-gts-traits-schema`. `inline(T)` embeds `T`'s
 /// schemars object subschema; a bare type `T` (a `#[struct_to_gts_schema]` GTS
 /// type) becomes an `allOf` + `$ref` to its `TYPE_ID`; `true`/`false` are
-/// boolean subschemas. `const`/`default`/`x-gts-ref` on trait properties use
+/// boolean subschemas. `const`/`default`/entity references on trait properties use
 /// standard `#[schemars(extend(...))]` / `#[serde(default)]` attributes.
 ///
 /// The `inline(T)` vs bare-`T` split is deliberately the same "embed vs
@@ -2937,7 +2937,7 @@ pub fn gts_instance_raw(input: TokenStream) -> TokenStream {
 /// ```ignore
 /// #[derive(schemars::JsonSchema, gts_macros::GtsTraitsSchema)]
 /// pub struct EventTraitsV1 {
-///     #[schemars(extend("x-gts-ref" = "gts.x.core.events.topic.v1~"))]
+///     #[schemars(extend("x-gts-instance-ref" = "gts.x.core.events.topic.v1~"))]
 ///     pub topic_ref: String,
 /// }
 /// ```

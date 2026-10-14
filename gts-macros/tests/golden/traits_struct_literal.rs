@@ -13,7 +13,7 @@ const TOPIC_REF: &str = gts_id!("x.core.events.topic.v1~");
 
 #[derive(JsonSchema, serde::Serialize, GtsTraitsSchema)]
 pub struct OrderTraits {
-    #[schemars(extend("x-gts-ref" = TOPIC_REF))]
+    #[schemars(extend("x-gts-instance-ref" = TOPIC_REF))]
     pub topic_ref: String,
     pub retention: String,
     pub indexed: bool,

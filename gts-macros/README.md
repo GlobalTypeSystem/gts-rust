@@ -483,16 +483,18 @@ The CLI automatically maps Rust types to JSON Schema types:
 | `Option<T>` | `[<T>, "null"]` | - | **No** |
 | `Uuid` (any type whose name contains `Uuid`/`uuid`) | `string` | `uuid` | Yes |
 | `HashMap<K,V>`, `BTreeMap<K,V>` | `object` | - | Yes |
-| `GtsInstanceId` | `string` | `gts-instance-id` | Yes |
-| `GtsTypeId` | `string` | `gts-type-id` | Yes |
+| `GtsInstanceId` | `string` | - | Yes |
+| `GtsTypeId` | `string` | - | Yes |
 | Anything else (nested structs, `DateTime`, ...) | `object` | - | Yes |
 
 **Notes**:
 - `Option<T>` fields are not marked as `required` in the generated schema. The generated
   schema is `{"type": ["<T>", "null"]}`, so any other keyword of `T` (`format`,
-  `items`, `x-gts-ref`) is dropped; when `T` has no scalar `type`, the result is
+  `items`, `x-gts-instance-ref`/`x-gts-type-ref`) is dropped; when `T` has no scalar `type`, the result is
   `{"oneOf": [<T>, {"type": "null"}]}`
-- The deprecated alias `GtsSchemaId` is accepted and maps to `gts-type-id`, same as `GtsTypeId`
+- `GtsInstanceId` adds `"x-gts-instance-ref": "gts.*"`; `GtsTypeId` adds
+  `"x-gts-type-ref": "gts.*"`. Neither emits a `format` keyword.
+- The deprecated alias `GtsSchemaId` is accepted and generates the same schema as `GtsTypeId`
 - There is no special handling for date/time types — `DateTime`, `NaiveDate` and friends fall
   into the `object` catch-all
 - Generic type parameters (e.g., `P` in `BaseEventV1<P>`) are mapped to `{"type": "object"}` placeholders

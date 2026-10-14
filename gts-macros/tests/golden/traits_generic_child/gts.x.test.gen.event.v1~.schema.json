@@ -6,10 +6,9 @@
   "properties": {
     "id": {
       "description": "GTS instance identifier",
-      "format": "gts-instance-id",
       "title": "GTS Instance ID",
       "type": "string",
-      "x-gts-ref": "gts.*"
+      "x-gts-instance-ref": "gts.*"
     },
     "payload": {
       "type": "object"
@@ -25,7 +24,7 @@
     "properties": {
       "topic_ref": {
         "type": "string",
-        "x-gts-ref": "gts.x.core.events.topic.v1~"
+        "x-gts-instance-ref": "gts.x.core.events.topic.v1~"
       }
     },
     "required": [

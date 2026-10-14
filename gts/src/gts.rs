@@ -107,17 +107,14 @@ impl schemars::JsonSchema for GtsInstanceId {
             "type": "string"
         });
 
-        if let Some(format) = json.get("format") {
-            schema_json["format"] = format.clone();
-        }
         if let Some(title) = json.get("title") {
             schema_json["title"] = title.clone();
         }
         if let Some(description) = json.get("description") {
             schema_json["description"] = description.clone();
         }
-        if let Some(gts_ref) = json.get("x-gts-ref") {
-            schema_json["x-gts-ref"] = gts_ref.clone();
+        if let Some(gts_ref) = json.get(crate::x_gts_ref::X_GTS_INSTANCE_REF) {
+            schema_json[crate::x_gts_ref::X_GTS_INSTANCE_REF] = gts_ref.clone();
         }
 
         // Convert JSON to Schema using TryFrom
@@ -137,17 +134,16 @@ impl GtsInstanceId {
     ///
     /// let schema = GtsInstanceId::json_schema_value();
     /// assert_eq!(schema["type"], "string");
-    /// assert_eq!(schema["format"], "gts-instance-id");
-    /// assert_eq!(schema["x-gts-ref"], format!("{}*", gts::GTS_ID_PREFIX));
+    /// assert!(schema.get("format").is_none());
+    /// assert_eq!(schema["x-gts-instance-ref"], format!("{}*", gts::GTS_ID_PREFIX));
     /// ```
     #[must_use]
     pub fn json_schema_value() -> serde_json::Value {
         serde_json::json!({
             "type": "string",
-            "format": "gts-instance-id",
             "title": "GTS Instance ID",
             "description": "GTS instance identifier",
-            "x-gts-ref": format!("{GTS_ID_PREFIX}*")
+            "x-gts-instance-ref": format!("{GTS_ID_PREFIX}*")
         })
     }
 
@@ -311,17 +307,14 @@ impl schemars::JsonSchema for GtsTypeId {
             "type": "string"
         });
 
-        if let Some(format) = json.get("format") {
-            schema_json["format"] = format.clone();
-        }
         if let Some(title) = json.get("title") {
             schema_json["title"] = title.clone();
         }
         if let Some(description) = json.get("description") {
             schema_json["description"] = description.clone();
         }
-        if let Some(gts_ref) = json.get("x-gts-ref") {
-            schema_json["x-gts-ref"] = gts_ref.clone();
+        if let Some(gts_ref) = json.get(crate::x_gts_ref::X_GTS_TYPE_REF) {
+            schema_json[crate::x_gts_ref::X_GTS_TYPE_REF] = gts_ref.clone();
         }
 
         // Convert JSON to Schema using TryFrom
@@ -341,17 +334,16 @@ impl GtsTypeId {
     ///
     /// let schema = GtsTypeId::json_schema_value();
     /// assert_eq!(schema["type"], "string");
-    /// assert_eq!(schema["format"], "gts-type-id");
-    /// assert_eq!(schema["x-gts-ref"], format!("{}*", gts::GTS_ID_PREFIX));
+    /// assert!(schema.get("format").is_none());
+    /// assert_eq!(schema["x-gts-type-ref"], format!("{}*", gts::GTS_ID_PREFIX));
     /// ```
     #[must_use]
     pub fn json_schema_value() -> serde_json::Value {
         serde_json::json!({
             "type": "string",
-            "format": "gts-type-id",
             "title": "GTS Type ID",
             "description": "GTS type identifier",
-            "x-gts-ref": format!("{GTS_ID_PREFIX}*")
+            "x-gts-type-ref": format!("{GTS_ID_PREFIX}*")
         })
     }
 
@@ -517,7 +509,29 @@ mod tests {
     #[test]
     fn test_json_schema_values_use_configured_id_prefix() {
         let expected = format!("{GTS_ID_PREFIX}*");
-        assert_eq!(GtsInstanceId::json_schema_value()["x-gts-ref"], expected);
-        assert_eq!(GtsTypeId::json_schema_value()["x-gts-ref"], expected);
+        assert!(GtsInstanceId::json_schema_value().get("format").is_none());
+        assert!(GtsTypeId::json_schema_value().get("format").is_none());
+        assert_eq!(
+            GtsInstanceId::json_schema_value()["x-gts-instance-ref"],
+            expected
+        );
+        assert_eq!(GtsTypeId::json_schema_value()["x-gts-type-ref"], expected);
+        // Each identifier type requires its own kind: the removed `x-gts-ref`
+        // and the other kind's keyword are absent.
+        assert!(
+            GtsInstanceId::json_schema_value()
+                .get("x-gts-ref")
+                .is_none()
+        );
+        assert!(
+            GtsInstanceId::json_schema_value()
+                .get("x-gts-type-ref")
+                .is_none()
+        );
+        assert!(
+            GtsTypeId::json_schema_value()
+                .get("x-gts-instance-ref")
+                .is_none()
+        );
     }
 }

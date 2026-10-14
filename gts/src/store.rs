@@ -512,7 +512,7 @@ impl GtsStore {
         Ok(resources)
     }
 
-    /// Collapses a slice of x-gts-ref validation errors into a single
+    /// Collapses a slice of entity-reference validation errors into a single
     /// `StoreError::ValidationError`, or `Ok(())` when there are none.
     fn check_x_gts_ref_errors(
         errors: &[crate::x_gts_ref::XGtsRefValidationError],
@@ -531,7 +531,7 @@ impl GtsStore {
             })
             .collect();
         Err(StoreError::ValidationError(format!(
-            "x-gts-ref validation failed: {}",
+            "entity reference validation failed: {}",
             messages.join("; ")
         )))
     }
@@ -564,7 +564,7 @@ impl GtsStore {
 
     /// Validates every reference in a registered schema document: `$ref` URI
     /// shapes (local `#` pointer or `gts://` type id — [`Self::validate_ref_uris`])
-    /// and `x-gts-ref` GTS ids ([`Self::validate_schema_x_gts_refs`]).
+    /// and entity-reference operands ([`Self::validate_schema_x_gts_refs`]).
     ///
     /// Pure structural check: no dependency resolution and no JSON Schema
     /// meta-compilation. Meta-compilation happens in [`Self::validate_schema`]
@@ -574,7 +574,7 @@ impl GtsStore {
     /// # Errors
     /// `StoreError::SchemaNotFound` if the id is missing or its content is not
     /// an object; `StoreError::InvalidRef`/`ValidationError` for a malformed
-    /// `$ref` or `x-gts-ref`.
+    /// `$ref` or entity-reference operand.
     pub(crate) fn validate_schema_refs(&mut self, gts_id: &str) -> Result<(), StoreError> {
         let schema_content = self.get_schema_content(gts_id)?;
         if !schema_content.is_object() {
@@ -585,7 +585,8 @@ impl GtsStore {
 
         // `$ref` URIs must be local (#...) or gts:// type ids.
         Self::validate_ref_uris(&schema_content)?;
-        // `x-gts-ref` values must be valid GTS ids.
+        // Entity-reference operands are checked early; registration without
+        // validation may reject them (README §9.6.3).
         Self::validate_schema_x_gts_refs(&schema_content)?;
 
         Ok(())
@@ -773,7 +774,7 @@ impl GtsStore {
     /// already be registered.
     ///
     /// Pipeline:
-    /// 1. [`Self::validate_schema_refs`] — `$ref`/`x-gts-ref` structure;
+    /// 1. [`Self::validate_schema_refs`] — `$ref`/entity-reference structure;
     /// 2. [`crate::schema_modifiers::validate_gts_keywords`] — format and
     ///    top-level placement of `x-gts-final`/`x-gts-abstract`/`x-gts-traits`/
     ///    `x-gts-traits-schema`;
@@ -783,7 +784,7 @@ impl GtsStore {
     ///    defers this whenever raw `gts://` refs are present, so it is done here
     ///    once every dependency is inlined, catching malformed schema bodies;
     /// 6. build the effective traits schema/values **exactly once** and validate
-    ///    them (OP#13): provided trait values are always type/enum/`x-gts-ref`
+    ///    them (OP#13): provided trait values are always type/enum/reference
     ///    checked; the required-trait completeness check is skipped for abstract
     ///    leaves.
     ///
@@ -803,7 +804,7 @@ impl GtsStore {
         self.validate_schema_with(type_id, GtsRefValidation::default())
     }
 
-    /// [`Self::validate_schema`] under an explicit `x-gts-ref` mode.
+    /// [`Self::validate_schema`] under an explicit reference policy.
     ///
     /// # Errors
     /// See [`Self::validate_schema`].
@@ -897,13 +898,13 @@ impl GtsStore {
         // Validate $ref URIs (must be local #... or gts:// type ids)
         Self::validate_ref_uris(&content)?;
 
-        // Validate x-gts-ref values (must be valid GTS ids)
+        // Entity-reference operands, wherever they sit, and their targets.
         Self::validate_schema_x_gts_refs(&content)?;
         self.check_constraint_targets(&content, refs)?;
 
         // `x-gts-pattern-ref` operands, wherever they sit: the compiled
         // validator below only sees the subschemas it reaches. No registry
-        // lookup, whatever `refs` asks of `x-gts-ref` (README §9.6.1).
+        // lookup, whatever `refs` asks of entity references (README §9.6.2).
         crate::x_gts_pattern_ref::check_operands(&content).map_err(|e| {
             StoreError::ValidationError(format!("x-gts-pattern-ref validation failed: {e}"))
         })?;
@@ -952,7 +953,7 @@ impl GtsStore {
             })?;
 
         // Trait values are always validated against the effective trait-schema
-        // (type/enum/`x-gts-ref` conformance), even for abstract types. Only the
+        // (type/enum/reference conformance), even for abstract types. Only the
         // required-trait *completeness* check is gated: an abstract type may
         // leave a required trait unresolved for a descendant to supply, so it is
         // validated with `check_unresolved = false`.
@@ -1011,7 +1012,7 @@ impl GtsStore {
         crate::schema_dialect::check_references(content, self).map_err(fail)
     }
 
-    /// Whether `reference` satisfies `refs` as an `x-gts-ref` target.
+    /// Whether `reference` satisfies `refs` as an entity-reference target.
     ///
     /// Non-identifiers are left to the pattern check, which reports them.
     fn reference_is_satisfied(&mut self, reference: &str, refs: GtsRefValidation) -> bool {
@@ -1062,7 +1063,7 @@ impl GtsStore {
 
     /// The candidate values in `document` that `refs` rejects.
     ///
-    /// Precomputed because the `x-gts-ref` keyword cannot borrow the store.
+    /// Precomputed because the reference keywords cannot borrow the store.
     fn unsatisfied_references(
         &mut self,
         document: &Value,
@@ -1077,10 +1078,11 @@ impl GtsStore {
         std::sync::Arc::new(move |reference: &str| !unsatisfied.contains(reference))
     }
 
-    /// Checks that every `x-gts-ref` constraint target in `content` resolves.
+    /// Checks that every entity-reference operand target in `content` resolves.
     ///
-    /// A non-wildcard pattern names one type; a wildcard is satisfied by any
-    /// registered match, so the registry is scanned for one.
+    /// A concrete operand names one entity; a wildcard is satisfied by any
+    /// registered match, of either kind, so the registry is scanned for one
+    /// (README §9.6.1).
     fn check_constraint_targets(
         &mut self,
         content: &Value,
@@ -1101,12 +1103,12 @@ impl GtsStore {
             };
             if !satisfied {
                 let requirement = if refs.checks_validity() {
-                    "no registered GTS type satisfies it and validates"
+                    "no registered GTS entity satisfies it and validates"
                 } else {
-                    "no registered GTS type satisfies it"
+                    "no registered GTS entity satisfies it"
                 };
                 return Err(StoreError::ValidationError(format!(
-                    "x-gts-ref validation failed: {location} constrains values to \
+                    "entity reference validation failed: {location} constrains values to \
                      '{spelling}', but {requirement}"
                 )));
             }
@@ -1127,17 +1129,17 @@ impl GtsStore {
     ///
     /// Stateless: no registered instance is required, but the type and its
     /// `$ref`/chain dependencies must be registered. Rejects abstract types
-    /// (OP#6) and enforces `x-gts-ref`.
+    /// (OP#6) and enforces entity references.
     ///
     /// # Errors
     /// `StoreError::ValidationError` on schema-compile failure, JSON Schema
-    /// validation failure, abstract type, or `x-gts-ref` violation;
+    /// validation failure, abstract type, or entity-reference violation;
     /// `StoreError::SchemaNotFound` if the type is not registered.
     pub fn validate_payload(&mut self, type_id: &str, payload: &Value) -> Result<(), StoreError> {
         self.validate_payload_with(type_id, payload, GtsRefValidation::default())
     }
 
-    /// [`Self::validate_payload`] under an explicit `x-gts-ref` mode.
+    /// [`Self::validate_payload`] under an explicit reference policy.
     ///
     /// # Errors
     /// See [`Self::validate_payload`].
@@ -1177,7 +1179,7 @@ impl GtsStore {
         // Payload validation needs only the type body — traits are
         // schema-level metadata (§9.7) and never appear in instances, so the
         // effective-traits build is deliberately skipped here. The validator
-        // follows the body's `$ref`s itself; this also enforces `x-gts-ref`.
+        // follows the body's `$ref`s itself; this also enforces entity references.
         let satisfied = self.unsatisfied_references(payload, refs);
         let resources = self
             .validation_resources(&content)
@@ -1218,7 +1220,7 @@ impl GtsStore {
         self.validate_instance_with(instance_id, GtsRefValidation::default())
     }
 
-    /// [`Self::validate_instance`] under an explicit `x-gts-ref` mode.
+    /// [`Self::validate_instance`] under an explicit reference policy.
     ///
     /// # Errors
     /// See [`Self::validate_instance`].

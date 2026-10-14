@@ -24,7 +24,7 @@ mod x_gts_pattern_ref;
 pub mod x_gts_ref;
 
 /// GTS specification revision implemented by compatibility and validation logic.
-pub const GTS_SPECIFICATION_VERSION: &str = "0.16";
+pub const GTS_SPECIFICATION_VERSION: &str = "0.17";
 
 /// Version of this Rust implementation.
 pub const GTS_IMPLEMENTATION_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -58,4 +58,8 @@ pub use schema_traits::{GtsTraitsSchema, inline_traits_schema_of};
 pub use store::{
     GtsReader, GtsStore, GtsStoreQueryResult, ResolvedType, SchemaComparison, StoreError,
 };
-pub use x_gts_ref::{GtsRefValidation, XGtsRefValidationError, XGtsRefValidator};
+pub use x_gts_pattern_ref::X_GTS_PATTERN_REF;
+pub use x_gts_ref::{
+    ENTITY_REF_KEYWORDS, EntityRefKind, GtsRefValidation, X_GTS_INSTANCE_REF, X_GTS_TYPE_REF,
+    XGtsRefValidationError, XGtsRefValidator,
+};

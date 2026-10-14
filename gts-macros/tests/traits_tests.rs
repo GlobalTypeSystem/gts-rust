@@ -19,7 +19,7 @@ const TOPIC_REF: &str = gts_id!("x.core.events.topic.v1~");
 
 #[derive(JsonSchema, serde::Serialize, GtsTraitsSchema)]
 pub struct EventTraits {
-    #[schemars(extend("x-gts-ref" = TOPIC_REF))]
+    #[schemars(extend("x-gts-instance-ref" = TOPIC_REF))]
     pub topic_ref: String,
     #[serde(default = "default_retention")]
     pub retention: String,
@@ -225,7 +225,7 @@ pub struct DefaultBaseV1 {
 #[derive(JsonSchema, serde::Serialize, GtsTraitsSchema)]
 #[schemars(extend("additionalProperties" = false))]
 pub struct ClosedTraits {
-    #[schemars(extend("x-gts-ref" = TOPIC_REF))]
+    #[schemars(extend("x-gts-instance-ref" = TOPIC_REF))]
     pub topic_ref: String,
 }
 
@@ -453,7 +453,7 @@ fn trait_accessors_return_the_declared_values() {
     let event_ts = json!({
         "type": "object",
         "properties": {
-            "topic_ref": { "type": "string", "x-gts-ref": gts_id!("x.core.events.topic.v1~") },
+            "topic_ref": { "type": "string", "x-gts-instance-ref": gts_id!("x.core.events.topic.v1~") },
             "retention": { "type": "string", "default": "P30D" }
         },
         "required": ["topic_ref"]

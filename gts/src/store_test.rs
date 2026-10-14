@@ -2845,9 +2845,9 @@ fn test_validate_schema_x_gts_refs_entity_not_schema() {
 
 #[test]
 fn test_validate_schema_x_gts_refs_validation_error() {
-    // Test error when x-gts-ref validation fails
+    // Test error when entity-reference validation fails
 
-    // Create a schema with invalid x-gts-ref
+    // Create a schema with an invalid entity-reference operand
     let schema_content = json!({
         "$id": "gts://gts.vendor.package.namespace.type.v1.0~",
         "$schema": "http://json-schema.org/draft-07/schema#",
@@ -2855,7 +2855,7 @@ fn test_validate_schema_x_gts_refs_validation_error() {
         "properties": {
             "invalidRef": {
                 "type": "string",
-                "x-gts-ref": "invalid-gts-id"  // Invalid GTS ID format
+                "x-gts-instance-ref": "invalid-gts-id"  // Invalid GTS ID format
             }
         }
     });
@@ -2864,7 +2864,7 @@ fn test_validate_schema_x_gts_refs_validation_error() {
     assert!(result.is_err());
     match result {
         Err(StoreError::ValidationError(msg)) => {
-            assert!(msg.contains("x-gts-ref validation failed"));
+            assert!(msg.contains("entity reference validation failed"), "{msg}");
         }
         _ => panic!("Expected ValidationError"),
     }
@@ -3043,11 +3043,11 @@ fn test_validate_instance_validation_failed() {
 
 #[test]
 fn test_validate_instance_x_gts_ref_validation_failed() {
-    // Test lines 556-568: x-gts-ref validation failed
+    // Test lines 556-568: entity-reference validation failed
     let mut store = GtsStore::new();
     let cfg = GtsConfig::default();
 
-    // Create a schema with x-gts-ref constraint
+    // Create a schema with an entity-reference constraint
     let schema = json!({
         "$id": "gts://gts.vendor.package.namespace.type.v1.0~",
         "$schema": "http://json-schema.org/draft-07/schema#",
@@ -3055,7 +3055,7 @@ fn test_validate_instance_x_gts_ref_validation_failed() {
         "properties": {
             "refField": {
                 "type": "string",
-                "x-gts-ref": "gts.vendor.package.namespace.other.v1.0~"
+                "x-gts-instance-ref": "gts.vendor.package.namespace.other.v1.0~"
             }
         }
     });
@@ -3064,7 +3064,7 @@ fn test_validate_instance_x_gts_ref_validation_failed() {
         .register_schema("gts.vendor.package.namespace.type.v1.0~", &schema)
         .expect("test");
 
-    // Create an instance with invalid x-gts-ref value
+    // Create an instance with an invalid entity-reference value
     // Use chained ID format
     let content = json!({
         "id": "gts.vendor.package.namespace.type.v1.0~a.b.c.d.v1",
@@ -3089,9 +3089,9 @@ fn test_validate_instance_x_gts_ref_validation_failed() {
     assert!(result.is_err());
     match result {
         Err(StoreError::ValidationError(msg)) => {
-            assert!(msg.contains("x-gts-ref validation failed"));
+            assert!(msg.contains("entity reference validation failed"), "{msg}");
         }
-        _ => panic!("Expected ValidationError for x-gts-ref validation"),
+        _ => panic!("Expected ValidationError for entity reference validation"),
     }
 }
 
@@ -5964,7 +5964,7 @@ fn test_validate_schema_rejects_gts_ref_with_non_pointer_fragment() {
 
 #[test]
 fn test_validate_and_resolve_meta_validates_resolved_schema() {
-    // `validate_schema_refs` only checks `$ref`/`x-gts-ref` structure, so a
+    // `validate_schema_refs` only checks `$ref`/entity-reference structure, so a
     // structurally malformed body slips past registration-time checks.
     // `validate_schema` must compile the fully-resolved schema and reject it.
     let mut store = GtsStore::new();
@@ -6186,10 +6186,25 @@ fn test_compatibility_inherits_closed_model_through_external_ref() {
         .resolve_schema_refs(&new_schema)
         .expect("resolve new derived schema");
 
+    // The inherited closure still rejects `email`, so both accept the same
+    // instances; merging `email` beside it would read the new schema as wider.
     let (backward, _) =
         crate::schema_evolution::check_backward_compatibility(&old_resolved, &new_resolved);
     let (forward, _) =
         crate::schema_evolution::check_forward_compatibility(&old_resolved, &new_resolved);
+    assert!(!backward.is_incompatible());
+    assert!(!forward.is_incompatible());
+
+    // An open schema accepts the undeclared names the inherited closure rejects.
+    let open_schema = json!({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {"name": {"type": "string"}}
+    });
+    let (backward, _) =
+        crate::schema_evolution::check_backward_compatibility(&old_resolved, &open_schema);
+    let (forward, _) =
+        crate::schema_evolution::check_forward_compatibility(&old_resolved, &open_schema);
     assert!(backward.is_compatible());
     assert!(forward.is_incompatible());
 }
@@ -6749,8 +6764,8 @@ fn test_wildcard_trait_ref_does_not_vouch_for_an_exact_one() {
         &json!({
             "type": "object",
             "properties": {
-                "strict": {"type": "string", "x-gts-ref": "gts.x.tv.pkg.target.v1~"},
-                "loose": {"type": "string", "x-gts-ref": "gts.*"},
+                "strict": {"type": "string", "x-gts-instance-ref": "gts.x.tv.pkg.target.v1~"},
+                "loose": {"type": "string", "x-gts-instance-ref": "gts.*"},
             },
         }),
         &json!({
@@ -6771,7 +6786,7 @@ fn test_trait_ref_into_an_unknown_type_is_rejected_unless_unchecked() {
         &json!({
             "type": "object",
             "properties": {
-                "topic": {"type": "string", "x-gts-ref": "gts.x.elsewhere.pkg.topic.v1~"},
+                "topic": {"type": "string", "x-gts-instance-ref": "gts.x.elsewhere.pkg.topic.v1~"},
             },
         }),
         &json!({"topic": "gts.x.elsewhere.pkg.topic.v1~x.tv._.orders.v1"}),
@@ -6849,7 +6864,7 @@ fn test_trait_ref_into_a_reader_supplied_type_is_not_tolerated() {
             "x-gts-traits-schema": {
                 "type": "object",
                 "properties": {
-                    "topic": {"type": "string", "x-gts-ref": "gts.x.tv.pkg.target.v1~"},
+                    "topic": {"type": "string", "x-gts-instance-ref": "gts.x.tv.pkg.target.v1~"},
                 },
             },
             "properties": {"id": {"type": "string"}},
@@ -6881,7 +6896,7 @@ fn test_trait_branch_that_does_not_apply_cannot_reject_the_values() {
     let constrained = json!({
         "required": ["other"],
         "properties": {
-            "topic": {"type": "string", "x-gts-ref": "gts.x.tv.pkg.target.v1~"},
+            "topic": {"type": "string", "x-gts-instance-ref": "gts.x.tv.pkg.target.v1~"},
             "other": {"type": "string"},
         },
     });
@@ -6916,7 +6931,7 @@ fn test_validate_payload_rejects_a_deep_document_it_cannot_afford_to_explain() {
                     "child": {"anyOf": [{"$ref": "#"}, {"$ref": "#"}]},
                     "ref": {
                         "type": "string",
-                        "x-gts-ref": "gts.vendor.package.namespace.target.v1.0~"
+                        "x-gts-instance-ref": "gts.vendor.package.namespace.target.v1.0~"
                     }
                 }
             }),
@@ -6967,8 +6982,8 @@ fn test_trait_existence_covers_references_in_branches_the_walk_skips() {
         &json!({
             "type": "object",
             "anyOf": [
-                {"properties": {"a": {"type": "string", "x-gts-ref": "gts.x.tv.pkg.target.v1~"}}},
-                {"properties": {"b": {"type": "string", "x-gts-ref": "gts.x.tv.pkg.target.v1~"}}},
+                {"properties": {"a": {"type": "string", "x-gts-instance-ref": "gts.x.tv.pkg.target.v1~"}}},
+                {"properties": {"b": {"type": "string", "x-gts-instance-ref": "gts.x.tv.pkg.target.v1~"}}},
             ],
         }),
         &json!({"a": first, "b": second}),
@@ -7078,7 +7093,7 @@ fn test_register_is_atomic_when_validation_rejects() {
             "$id": format!("gts://{id}"),
             "$schema": "http://json-schema.org/draft-07/schema#",
             "type": "object",
-            "properties": {"ref": {"type": "string", "x-gts-ref": target}}
+            "properties": {"ref": {"type": "string", "x-gts-instance-ref": target}}
         })
     };
 
@@ -7116,7 +7131,7 @@ fn test_gts_ref_validation_modes_gate_constraint_targets() {
     register_chain_schema(
         &mut store,
         holder,
-        json!({"properties": {"ref": {"type": "string", "x-gts-ref": target}}}),
+        json!({"properties": {"ref": {"type": "string", "x-gts-instance-ref": target}}}),
     );
 
     store
@@ -7139,7 +7154,7 @@ fn test_gts_ref_validation_modes_gate_referenced_values() {
     register_chain_schema(
         &mut store,
         holder,
-        json!({"properties": {"ref": {"type": "string", "x-gts-ref": target}}}),
+        json!({"properties": {"ref": {"type": "string", "x-gts-instance-ref": target}}}),
     );
 
     let payload = json!({"ref": format!("{target}x.v._.ghost.v1")});
@@ -7162,7 +7177,7 @@ fn unsupplied_required_trait() -> Value {
 
 #[test]
 fn test_validate_schema_decides_each_constraint_target_once() {
-    // Each type constrains `x-gts-ref` to the next two, wrapping around to the
+    // Each type constrains a type reference to the next two, wrapping around to the
     // first, so type `i` is reachable along Fibonacci(i) paths: validating it
     // once per path would not finish.
     const LEN: usize = 40;
@@ -7173,7 +7188,7 @@ fn test_validate_schema_decides_each_constraint_target_once() {
             let properties: serde_json::Map<String, Value> = [(i + 1) % LEN, (i + 2) % LEN]
                 .into_iter()
                 .map(|next| {
-                    let target = json!({"type": "string", "x-gts-ref": id(next)});
+                    let target = json!({"type": "string", "x-gts-type-ref": id(next)});
                     (format!("t{next}"), target)
                 })
                 .collect();
@@ -7199,7 +7214,7 @@ fn test_validate_schema_decides_each_constraint_target_once() {
 
 #[test]
 fn test_a_verdict_resting_on_a_failed_cycle_member_is_withdrawn() {
-    // `a` and `b` constrain `x-gts-ref` to each other, and `a` is invalid on
+    // `a` and `b` constrain type references to each other, and `a` is invalid on
     // its own. Deciding `a` decides `b` on the assumption that `a` is valid;
     // `b`'s verdict must not outlive that assumption.
     let mut store = GtsStore::new();
@@ -7209,19 +7224,19 @@ fn test_a_verdict_resting_on_a_failed_cycle_member_is_withdrawn() {
     let holder = "gts.x.withdraw.tr.holder.v1~";
     register_chain_schema(&mut store, base, json!({}));
     let mut a_schema = unsupplied_required_trait();
-    a_schema["properties"] = json!({"peer": {"type": "string", "x-gts-ref": b}});
+    a_schema["properties"] = json!({"peer": {"type": "string", "x-gts-type-ref": b}});
     register_chain_schema(&mut store, a, a_schema);
     register_chain_schema(
         &mut store,
         b,
-        json!({"properties": {"peer": {"type": "string", "x-gts-ref": a}}}),
+        json!({"properties": {"peer": {"type": "string", "x-gts-type-ref": a}}}),
     );
     register_chain_schema(
         &mut store,
         holder,
         json!({"properties": {
             "note": {"type": "string"},
-            "target": {"type": "string", "x-gts-ref": base}
+            "target": {"type": "string", "x-gts-type-ref": base}
         }}),
     );
 
@@ -7235,13 +7250,14 @@ fn test_a_verdict_resting_on_a_failed_cycle_member_is_withdrawn() {
 
 #[test]
 fn test_a_verdict_does_not_outlive_its_validation() {
-    // `holder` needs `target` valid, and `target` constrains `x-gts-ref` to
+    // `holder` needs `target` valid, and `target` constrains a reference to
     // `dependency`, which is registered only after the first attempt.
     let mut store = GtsStore::new();
     let holder = "gts.x.session.tr.holder.v1~";
     let target = "gts.x.session.tr.target.v1~";
     let dependency = "gts.x.session.tr.dependency.v1~";
-    let refers_to = |id: &str| json!({"properties": {"ref": {"type": "string", "x-gts-ref": id}}});
+    let refers_to =
+        |id: &str| json!({"properties": {"ref": {"type": "string", "x-gts-instance-ref": id}}});
     register_chain_schema(&mut store, holder, refers_to(target));
     register_chain_schema(&mut store, target, refers_to(dependency));
 
@@ -7500,7 +7516,7 @@ fn test_trait_self_reference_names_the_selected_leaf() {
             "x-gts-abstract": true,
             "x-gts-traits-schema": {
                 "type": "object",
-                "properties": {"owner": {"type": "string", "x-gts-ref": "/$id"}}
+                "properties": {"owner": {"type": "string", "x-gts-type-ref": "/$id"}}
             }
         }),
     );
@@ -8253,7 +8269,7 @@ fn op7_skips_pattern_operands_at_schema_locations() {
                 "type": "object",
                 "properties": {
                     "selector": {"type": "string", keyword: PATTERN_TARGET},
-                    "reference": {"type": "string", "x-gts-ref": PATTERN_TARGET},
+                    "reference": {"type": "string", "x-gts-instance-ref": PATTERN_TARGET},
                     "holder": {"type": "object", "default": {keyword: PATTERN_TARGET}},
                 },
                 "definitions": {"Selector": {"type": "string", keyword: PATTERN_TARGET}},
@@ -8273,10 +8289,11 @@ fn op7_skips_pattern_operands_at_schema_locations() {
     ] {
         assert!(!edges.contains_key(operand), "{operand}: {edges:?}");
     }
-    // Literal data and `x-gts-ref` operands are identifier strings like any other.
+    // Literal data and entity-reference operands are identifier strings like
+    // any other.
     for path in [
         "properties.holder.default.x-gts-pattern-ref",
-        "properties.reference.x-gts-ref",
+        "properties.reference.x-gts-instance-ref",
     ] {
         assert_eq!(
             edges.get(path).map(String::as_str),

@@ -68,7 +68,7 @@ pub(crate) fn validate_derivation(
     derived_id: &str,
 ) -> Vec<String> {
     // `/$id` names each side's own type, which the reduction below must see
-    // resolved to intersect operands.
+    // resolved to intersect operands of every GTS reference keyword.
     let base = declared_schema(
         &crate::x_gts_pattern_ref::with_resolved_self_operands(base_schema),
         0,
@@ -204,6 +204,9 @@ fn absorb_declaration(
                 }
             }
             X_GTS_PATTERN_REF => absorb_pattern_ref(declared, value),
+            keyword if crate::x_gts_ref::EntityRefKind::of_keyword(keyword).is_some() => {
+                absorb_entity_ref(declared, keyword, value);
+            }
             _ => {
                 declared.insert(keyword.clone(), value.clone());
             }
@@ -232,6 +235,44 @@ fn absorb_pattern_ref(declared: &mut serde_json::Map<String, Value>, candidate: 
         (Some(held), Some(scope)) if scope.covers(&held) => {}
         _ => {
             let both = serde_json::json!({ X_GTS_PATTERN_REF: candidate });
+            match declared.get_mut("allOf").and_then(Value::as_array_mut) {
+                Some(branches) => branches.push(both),
+                None => {
+                    declared.insert("allOf".to_owned(), Value::Array(vec![both]));
+                }
+            }
+        }
+    }
+}
+
+/// Conjoins an entity reference with the one of the same keyword already
+/// declared, as `allOf` does (README §9.6.1): the narrower scope wins, and a
+/// pair neither of which includes the other is kept as an `allOf` of both.
+/// References of the other kind are a separate keyword and conjoin as such.
+fn absorb_entity_ref(
+    declared: &mut serde_json::Map<String, Value>,
+    keyword: &str,
+    candidate: &Value,
+) {
+    use crate::x_gts_ref::EntityScope;
+
+    let Some(held) = declared.get(keyword) else {
+        declared.insert(keyword.to_owned(), candidate.clone());
+        return;
+    };
+    if held == candidate {
+        return;
+    }
+    match (
+        EntityScope::of(keyword, held),
+        EntityScope::of(keyword, candidate),
+    ) {
+        (Some(held), Some(scope)) if held.includes(&scope) => {
+            declared.insert(keyword.to_owned(), candidate.clone());
+        }
+        (Some(held), Some(scope)) if scope.includes(&held) => {}
+        _ => {
+            let both = serde_json::json!({ keyword: candidate });
             match declared.get_mut("allOf").and_then(Value::as_array_mut) {
                 Some(branches) => branches.push(both),
                 None => {
@@ -272,7 +313,13 @@ fn absorb_property(inherited: &mut Value, overlay: &Value, depth: usize) {
         .map(|(keyword, value)| (keyword.clone(), value.clone()))
         .collect();
     let mut additional_properties = inherited_map.get(ADDITIONAL_PROPERTIES).cloned();
-    for keyword in ["properties", "required", X_GTS_PATTERN_REF] {
+    for keyword in [
+        "properties",
+        "required",
+        X_GTS_PATTERN_REF,
+        crate::x_gts_ref::X_GTS_TYPE_REF,
+        crate::x_gts_ref::X_GTS_INSTANCE_REF,
+    ] {
         if let Some(value) = inherited_map.get(keyword) {
             composed.insert(keyword.to_owned(), value.clone());
         }
