@@ -9,7 +9,7 @@
 //! on `GtsStore` directly; the store implements `SchemaProvider` and exposes
 //! `resolve_schema_refs` as a thin wrapper.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
 use serde_json::{Map, Value};
@@ -40,6 +40,9 @@ pub(crate) struct SchemaResolver<'a> {
     /// embedded in one, mapped to its document. A same-document reference
     /// inside an embedded resource resolves from that resource.
     documents: RefCell<HashMap<ObjectKey, ObjectKey>>,
+    /// Whether the root declares Draft-07, which ignores `$ref` siblings.
+    /// GTS forbids dialect switches, so the root's dialect holds everywhere.
+    ignores_ref_siblings: Cell<bool>,
 }
 
 /// A JSON object, by identity.
@@ -50,6 +53,7 @@ impl<'a> SchemaResolver<'a> {
         Self {
             provider,
             documents: RefCell::default(),
+            ignores_ref_siblings: Cell::default(),
         }
     }
 
@@ -70,6 +74,10 @@ impl<'a> SchemaResolver<'a> {
     /// [`StoreError::CircularRef`] if a circular `$ref` is detected.
     pub(crate) fn resolve(&self, schema: &Value) -> Result<Value, StoreError> {
         self.documents.borrow_mut().clear();
+        self.ignores_ref_siblings.set(matches!(
+            crate::schema_dialect::document_dialect(schema),
+            Ok(jsonschema::Draft::Draft7)
+        ));
         self.register_document(schema);
         let mut visited = std::collections::HashSet::new();
         let mut cycle_found = false;
@@ -362,65 +370,75 @@ impl<'a> SchemaResolver<'a> {
             return resolved;
         }
 
-        // Otherwise combine the resolved schema with the siblings via `allOf`.
-        // A last-wins merge would let a sibling drop or loosen the target's
-        // constraints (e.g. `required`, `additionalProperties`).
-        let resolved_contains_local_ref = crate::schema_modifiers::contains_local_ref(&resolved);
-        match resolved {
-            Value::Object(resolved_map) => {
-                // Keep recursive local pointers at their authored position.
-                if resolved_contains_local_ref {
-                    let mut preserved = serde_json::Map::new();
-                    for (k, v) in map {
-                        if k == "$ref" {
-                            preserved.insert(k.clone(), v.clone());
-                        } else {
-                            preserved.insert(
-                                k.clone(),
-                                self.resolve_inner(
-                                    v,
-                                    local_root,
-                                    root_doc,
-                                    visited,
-                                    cycle_found,
-                                    unresolved_refs,
-                                ),
-                            );
-                        }
-                    }
-                    return Value::Object(preserved);
-                }
-
-                let mut siblings = serde_json::Map::new();
-                for (k, v) in map {
-                    if k != "$ref" {
-                        siblings.insert(
-                            k.clone(),
-                            self.resolve_inner(
-                                v,
-                                local_root,
-                                root_doc,
-                                visited,
-                                cycle_found,
-                                unresolved_refs,
-                            ),
-                        );
-                    }
-                }
-                if siblings.is_empty() {
-                    return Value::Object(resolved_map);
-                }
-                let mut merged = serde_json::Map::new();
-                merged.insert(
-                    "allOf".to_owned(),
-                    Value::Array(vec![Value::Object(resolved_map), Value::Object(siblings)]),
-                );
-                Value::Object(merged)
+        // Keep recursive local pointers as authored. Their siblings are resolved
+        // even in Draft-07: a kept pointer can still reach into one (a root
+        // `$ref` into its `definitions`).
+        if crate::schema_modifiers::contains_local_ref(&resolved) {
+            let mut preserved = serde_json::Map::new();
+            for (k, v) in map {
+                let v = if k == "$ref" {
+                    v.clone()
+                } else {
+                    self.resolve_inner(
+                        v,
+                        local_root,
+                        root_doc,
+                        visited,
+                        cycle_found,
+                        unresolved_refs,
+                    )
+                };
+                preserved.insert(k.clone(), v);
             }
-            // Non-object target (e.g. a boolean schema via a pointer fragment)
-            // with siblings: `$ref` wins per JSON Schema precedence.
-            other => other,
+            return Value::Object(preserved);
         }
+
+        // Draft-07 ignores `$ref` siblings; a root keeps its `$id` and `$schema`.
+        if self.ignores_ref_siblings.get() {
+            if !root_doc
+                .as_object()
+                .is_some_and(|root| std::ptr::eq(root, map))
+            {
+                return resolved;
+            }
+            let mut identity: serde_json::Map<String, Value> = ["$id", "$schema"]
+                .into_iter()
+                .filter_map(|key| map.get(key).map(|v| (key.to_owned(), v.clone())))
+                .collect();
+            if identity.is_empty() {
+                return resolved;
+            }
+            identity.insert("allOf".to_owned(), Value::Array(vec![resolved]));
+            return Value::Object(identity);
+        }
+
+        // Later dialects apply siblings with the target: the target joins their
+        // `allOf`, so `unevaluated*` siblings still see its annotations.
+        let mut all_of = vec![resolved];
+        let mut composed = serde_json::Map::new();
+        for (k, v) in map {
+            if k == "$ref" {
+                continue;
+            }
+            let v = self.resolve_inner(
+                v,
+                local_root,
+                root_doc,
+                visited,
+                cycle_found,
+                unresolved_refs,
+            );
+            match (k.as_str(), v) {
+                ("allOf", Value::Array(branches)) => all_of.extend(branches),
+                // Malformed: left for the meta-schema to reject.
+                ("allOf", v) => all_of.push(serde_json::json!({ "allOf": v })),
+                (_, v) => {
+                    composed.insert(k.clone(), v);
+                }
+            }
+        }
+        composed.insert("allOf".to_owned(), Value::Array(all_of));
+        Value::Object(composed)
     }
 
     /// Records `document` and the resources embedded in it, once.

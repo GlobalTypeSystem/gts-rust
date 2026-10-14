@@ -664,6 +664,16 @@ if !result.ok {
 // 3. Validates using JSON Schema
 ```
 
+```rust
+// Validate payloads without a store: compile once from a validated snapshot,
+// then reuse (cheap to clone, Send + Sync). Reference targets are not looked
+// up; see `ResolvedType::compile_payload_validator` for the exact rules.
+let snapshot = store.validate_schema_with(&type_id, gts::GtsRefValidation::None)?;
+drop(store);
+let validator = snapshot.compile_payload_validator()?;
+validator.validate(&payload)?;
+```
+
 #### OP#7 - Relationship Resolution
 
 ```rust

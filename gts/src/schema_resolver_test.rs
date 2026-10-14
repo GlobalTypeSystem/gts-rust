@@ -423,8 +423,9 @@ fn test_resolve_three_type_derivation_chain_inlines_nested_allof_refs() {
 
 #[test]
 fn test_resolve_ref_with_object_siblings_composes_into_allof() {
-    // A `$ref` carrying object-shaped sibling keywords composes the resolved
-    // target with the siblings via `allOf` (rather than a lossy last-wins merge).
+    // A `$ref` carrying object-shaped sibling keywords keeps the siblings at
+    // the reference site and adds the resolved target to its `allOf` (rather
+    // than a lossy last-wins merge).
     let p = MapProvider::new().with(
         "gts.x.core.events.base.v1~",
         json!({
@@ -446,10 +447,8 @@ fn test_resolve_ref_with_object_siblings_composes_into_allof() {
     assert_eq!(
         resolved,
         json!({
-            "allOf": [
-                {"type": "object", "properties": {"id": {"type": "string"}}},
-                {"properties": {"name": {"type": "string"}}}
-            ]
+            "properties": {"name": {"type": "string"}},
+            "allOf": [{"type": "object", "properties": {"id": {"type": "string"}}}]
         })
     );
 }
@@ -507,7 +506,7 @@ fn test_resolve_allows_duplicate_ref_in_allof() {
 fn test_resolve_pointer_to_boolean_with_siblings() {
     // A gts:// $ref with a pointer fragment that resolves to a non-object
     // (boolean) subschema, plus a sibling keyword. The ref resolves, so it must
-    // NOT be reported unresolved, and the resolved boolean wins per $ref precedence.
+    // NOT be reported unresolved, and the sibling still applies beside it.
     let p = MapProvider::new().with(
         "gts.x.core.events.flag.v1~",
         json!({
@@ -525,7 +524,7 @@ fn test_resolve_pointer_to_boolean_with_siblings() {
         }))
         .expect("resolved non-object ref with siblings must not be reported unresolved");
 
-    assert_eq!(resolved, json!(false));
+    assert_eq!(resolved, json!({"description": "extra", "allOf": [false]}));
 }
 
 #[test]
@@ -691,10 +690,8 @@ fn test_resolve_remote_fragment_siblings_resolve_against_caller_root() {
             "$defs": {"Shared": {"type": "integer"}},
             "properties": {
                 "combined": {
-                    "allOf": [
-                        {"type": "string"},
-                        {"properties": {"local": {"type": "integer"}}}
-                    ]
+                    "properties": {"local": {"type": "integer"}},
+                    "allOf": [{"type": "string"}]
                 }
             }
         })
@@ -958,5 +955,124 @@ fn test_resolve_reads_a_pointer_inside_an_embedded_resource_from_that_resource()
         inlined.pointer("/properties/item/properties/n"),
         Some(&json!({"type": "integer"})),
         "{inlined}"
+    );
+}
+
+const DRAFT_07: &str = "http://json-schema.org/draft-07/schema#";
+
+#[test]
+fn test_resolve_draft07_drops_ref_siblings() {
+    // Draft-07 ignores `$ref` siblings, custom keywords included, so the
+    // target replaces the reference site alone.
+    let resolved = resolve(
+        &MapProvider::new(),
+        json!({
+            "$schema": DRAFT_07,
+            "definitions": {"s": {"type": "string"}},
+            "properties": {
+                "n": {"$ref": "#/definitions/s", "minLength": 5, "x-gts-type-ref": "gts.x.a.b.c.v1~"}
+            }
+        }),
+    );
+
+    assert_eq!(
+        resolved.pointer("/properties/n"),
+        Some(&json!({"type": "string"}))
+    );
+}
+
+#[test]
+fn test_resolve_draft07_root_ref_keeps_identity_and_dialect() {
+    let resolved = resolve(
+        &MapProvider::new(),
+        json!({
+            "$id": "gts://gts.x.test.root.v1~",
+            "$schema": DRAFT_07,
+            "definitions": {"t": {"type": "object"}},
+            "$ref": "#/definitions/t",
+            "required": ["v"]
+        }),
+    );
+
+    assert_eq!(
+        resolved,
+        json!({
+            "$id": "gts://gts.x.test.root.v1~",
+            "$schema": DRAFT_07,
+            "allOf": [{"type": "object"}]
+        })
+    );
+}
+
+#[test]
+fn test_resolve_draft07_resolves_siblings_of_a_recursive_root_ref() {
+    // Siblings of a kept recursive `$ref` are inert in Draft-07, but the kept
+    // pointer reaches into one of them, so its references must be inlined.
+    let p = MapProvider::new().with(
+        "gts.x.test.other.v1~",
+        json!({"$id": "gts://gts.x.test.other.v1~", "$schema": DRAFT_07, "type": "string"}),
+    );
+    let resolved = resolve(
+        &p,
+        json!({
+            "$id": "gts://gts.x.test.root.v1~",
+            "$schema": DRAFT_07,
+            "$ref": "#/definitions/node",
+            "definitions": {"node": {"properties": {
+                "child": {"$ref": "#/definitions/node"},
+                "base": {"$ref": "gts://gts.x.test.other.v1~"}
+            }}}
+        }),
+    );
+
+    assert_eq!(resolved["$ref"], json!("#/definitions/node"));
+    assert_eq!(
+        resolved.pointer("/definitions/node/properties/base/type"),
+        Some(&json!("string")),
+        "{resolved}"
+    );
+}
+
+#[test]
+fn test_resolve_draft07_reports_a_missing_ref_beside_a_recursive_ref() {
+    // A kept pointer may reach into a sibling, so a sibling's reference is
+    // never presumed dead.
+    let err = SchemaResolver::new(&MapProvider::new())
+        .resolve(&json!({
+            "$schema": DRAFT_07,
+            "properties": {
+                "self": {"$ref": "#", "items": {"$ref": "gts://gts.x.test.missing.v1~"}}
+            }
+        }))
+        .expect_err("a missing sibling reference must be reported");
+
+    assert!(
+        matches!(&err, StoreError::UnresolvedRefs(refs) if refs == &["gts://gts.x.test.missing.v1~"]),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn test_resolve_ref_target_joins_an_authored_allof() {
+    let resolved = resolve(
+        &MapProvider::new(),
+        json!({
+            "$defs": {"t": {"properties": {"a": true}}},
+            "properties": {
+                "n": {
+                    "$ref": "#/$defs/t",
+                    "allOf": [{"required": ["a"]}],
+                    "unevaluatedProperties": false
+                }
+            }
+        }),
+    );
+
+    assert_eq!(
+        resolved.pointer("/properties/n"),
+        Some(&json!({
+            "unevaluatedProperties": false,
+            "allOf": [{"properties": {"a": true}}, {"required": ["a"]}]
+        }))
     );
 }

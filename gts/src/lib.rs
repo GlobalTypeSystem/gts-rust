@@ -56,7 +56,8 @@ pub use schema_narrow::{NarrowError, try_narrow};
 pub use schema_refs::{ExtractRefsError, InvalidRefReason, extract_gts_refs};
 pub use schema_traits::{GtsTraitsSchema, inline_traits_schema_of};
 pub use store::{
-    GtsReader, GtsStore, GtsStoreQueryResult, ResolvedType, SchemaComparison, StoreError,
+    CompilePayloadValidatorError, GtsReader, GtsStore, GtsStoreQueryResult, PayloadValidationError,
+    PayloadValidator, ResolvedType, SchemaComparison, StoreError,
 };
 pub use x_gts_pattern_ref::X_GTS_PATTERN_REF;
 pub use x_gts_ref::{
