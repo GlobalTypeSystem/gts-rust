@@ -679,14 +679,14 @@ mod tests {
         let (req, schema) = rust_type_to_json_schema("GtsInstanceId");
         assert!(req);
         assert_eq!(schema["type"], "string");
-        assert_eq!(schema["format"], "gts-instance-id");
+        assert!(schema.get("format").is_none());
         assert_eq!(
             schema["x-gts-instance-ref"],
             format!("{}*", gts::GTS_ID_PREFIX)
         );
 
         let (_, schema) = rust_type_to_json_schema("GtsTypeId");
-        assert_eq!(schema["format"], "gts-type-id");
+        assert!(schema.get("format").is_none());
         assert_eq!(schema["x-gts-type-ref"], format!("{}*", gts::GTS_ID_PREFIX));
 
         // Generic type parameter

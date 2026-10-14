@@ -9,7 +9,6 @@
     },
     "type": {
       "description": "GTS type identifier",
-      "format": "gts-type-id",
       "title": "GTS Type ID",
       "type": "string",
       "x-gts-type-ref": "gts.*"

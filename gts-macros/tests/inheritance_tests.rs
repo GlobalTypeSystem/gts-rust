@@ -527,8 +527,8 @@ mod tests {
             serde_json::to_string_pretty(type_prop).unwrap()
         );
         assert_eq!(
-            type_prop.get("format").and_then(|v| v.as_str()),
-            Some("gts-type-id"),
+            type_prop,
+            &GtsTypeId::json_schema_value(),
             "`type` property should be the inlined GtsTypeId fragment, got:\n{}",
             serde_json::to_string_pretty(type_prop).unwrap()
         );

@@ -107,9 +107,6 @@ impl schemars::JsonSchema for GtsInstanceId {
             "type": "string"
         });
 
-        if let Some(format) = json.get("format") {
-            schema_json["format"] = format.clone();
-        }
         if let Some(title) = json.get("title") {
             schema_json["title"] = title.clone();
         }
@@ -137,14 +134,13 @@ impl GtsInstanceId {
     ///
     /// let schema = GtsInstanceId::json_schema_value();
     /// assert_eq!(schema["type"], "string");
-    /// assert_eq!(schema["format"], "gts-instance-id");
+    /// assert!(schema.get("format").is_none());
     /// assert_eq!(schema["x-gts-instance-ref"], format!("{}*", gts::GTS_ID_PREFIX));
     /// ```
     #[must_use]
     pub fn json_schema_value() -> serde_json::Value {
         serde_json::json!({
             "type": "string",
-            "format": "gts-instance-id",
             "title": "GTS Instance ID",
             "description": "GTS instance identifier",
             "x-gts-instance-ref": format!("{GTS_ID_PREFIX}*")
@@ -311,9 +307,6 @@ impl schemars::JsonSchema for GtsTypeId {
             "type": "string"
         });
 
-        if let Some(format) = json.get("format") {
-            schema_json["format"] = format.clone();
-        }
         if let Some(title) = json.get("title") {
             schema_json["title"] = title.clone();
         }
@@ -341,14 +334,13 @@ impl GtsTypeId {
     ///
     /// let schema = GtsTypeId::json_schema_value();
     /// assert_eq!(schema["type"], "string");
-    /// assert_eq!(schema["format"], "gts-type-id");
+    /// assert!(schema.get("format").is_none());
     /// assert_eq!(schema["x-gts-type-ref"], format!("{}*", gts::GTS_ID_PREFIX));
     /// ```
     #[must_use]
     pub fn json_schema_value() -> serde_json::Value {
         serde_json::json!({
             "type": "string",
-            "format": "gts-type-id",
             "title": "GTS Type ID",
             "description": "GTS type identifier",
             "x-gts-type-ref": format!("{GTS_ID_PREFIX}*")
@@ -517,6 +509,8 @@ mod tests {
     #[test]
     fn test_json_schema_values_use_configured_id_prefix() {
         let expected = format!("{GTS_ID_PREFIX}*");
+        assert!(GtsInstanceId::json_schema_value().get("format").is_none());
+        assert!(GtsTypeId::json_schema_value().get("format").is_none());
         assert_eq!(
             GtsInstanceId::json_schema_value()["x-gts-instance-ref"],
             expected

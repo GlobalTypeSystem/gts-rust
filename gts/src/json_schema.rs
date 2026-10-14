@@ -507,14 +507,29 @@ mod tests {
     }
 
     #[test]
-    fn unknown_formats_still_compile() {
-        let schema = serde_json::json!({
-            "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "type": "string",
-            "format": "some-vendor-format"
-        });
-        let validator = validator_for(&schema).expect("unknown format compiles");
-        assert!(validator.is_valid(&serde_json::json!("anything")));
+    fn unknown_formats_are_ignored() {
+        for dialect in [
+            "http://json-schema.org/draft-04/schema#",
+            "http://json-schema.org/draft-06/schema#",
+            "http://json-schema.org/draft-07/schema#",
+            "https://json-schema.org/draft/2019-09/schema",
+            "https://json-schema.org/draft/2020-12/schema",
+        ] {
+            for format in ["some-vendor-format", "gts-type-id", "gts-instance-id"] {
+                let schema = serde_json::json!({
+                    "$schema": dialect,
+                    "type": "string",
+                    "format": format
+                });
+                for validator in [
+                    validator_for(&schema).expect("unknown format compiles"),
+                    gts_validator_for(&schema, None).expect("unknown format compiles with GTS"),
+                ] {
+                    assert!(validator.is_valid(&serde_json::json!("anything")));
+                    assert!(!validator.is_valid(&serde_json::json!(123)));
+                }
+            }
+        }
     }
 
     #[test]
