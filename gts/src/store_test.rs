@@ -6186,10 +6186,25 @@ fn test_compatibility_inherits_closed_model_through_external_ref() {
         .resolve_schema_refs(&new_schema)
         .expect("resolve new derived schema");
 
+    // The inherited closure still rejects `email`, so both accept the same
+    // instances; merging `email` beside it would read the new schema as wider.
     let (backward, _) =
         crate::schema_evolution::check_backward_compatibility(&old_resolved, &new_resolved);
     let (forward, _) =
         crate::schema_evolution::check_forward_compatibility(&old_resolved, &new_resolved);
+    assert!(!backward.is_incompatible());
+    assert!(!forward.is_incompatible());
+
+    // An open schema accepts the undeclared names the inherited closure rejects.
+    let open_schema = json!({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {"name": {"type": "string"}}
+    });
+    let (backward, _) =
+        crate::schema_evolution::check_backward_compatibility(&old_resolved, &open_schema);
+    let (forward, _) =
+        crate::schema_evolution::check_forward_compatibility(&old_resolved, &open_schema);
     assert!(backward.is_compatible());
     assert!(forward.is_incompatible());
 }

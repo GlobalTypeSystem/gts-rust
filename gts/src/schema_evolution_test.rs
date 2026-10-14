@@ -977,6 +977,72 @@ fn test_all_of_unions_required_across_branches() {
     assert_eq!(required, ["a", "b"]);
 }
 
+/// `additionalProperties` constrains only the names its own level's
+/// `properties` and `patternProperties` leave unmatched, so a name another
+/// `allOf` or `anyOf` level declares is still subject to it. Merging the two
+/// levels would exempt that name and widen the target.
+#[test]
+fn test_merging_never_moves_a_name_across_additional_properties() {
+    let string = json!({"type": "string"});
+    let declared =
+        json!({"type": "object", "additionalProperties": false, "properties": {"a": string}});
+    let typed_rest = json!({
+        "type": "object",
+        "additionalProperties": {"type": "integer"},
+        "properties": {"a": string},
+    });
+    let patterned = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "patternProperties": {"^a": string},
+    });
+    for combinator in ["allOf", "anyOf"] {
+        // Each `narrowed` rejects {"a": "x"}, which its `old` accepts.
+        for (old, narrowed) in [
+            // The name away from the constraint...
+            (
+                &declared,
+                json!({"type": "object", "additionalProperties": false, combinator: [{"properties": {"a": string}}]}),
+            ),
+            // ...or the constraint away from the name.
+            (
+                &declared,
+                json!({"type": "object", "properties": {"a": string}, combinator: [{"additionalProperties": false}]}),
+            ),
+            (
+                &typed_rest,
+                json!({"type": "object", "additionalProperties": {"type": "integer"}, combinator: [{"properties": {"a": string}}]}),
+            ),
+            (
+                &patterned,
+                json!({"type": "object", "additionalProperties": false, combinator: [{"patternProperties": {"^a": string}}]}),
+            ),
+        ] {
+            let result = check_schema_compatibility(old, &narrowed);
+            assert_ne!(
+                result.backward_compatibility,
+                CompatibilityVerdict::Compatible,
+                "{old} -> {narrowed}"
+            );
+            let result = check_schema_compatibility(&narrowed, old);
+            assert_ne!(
+                result.forward_compatibility,
+                CompatibilityVerdict::Compatible,
+                "{narrowed} -> {old}"
+            );
+        }
+        // A name the constrained level declares itself stays in its scope.
+        let same_scope = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {"a": {}},
+            combinator: [{"properties": {"a": string}}],
+        });
+        let result = check_schema_compatibility(&declared, &same_scope);
+        assert!(result.full_compatibility.is_compatible(), "{same_scope}");
+    }
+}
+
 #[test]
 fn test_definitions_container_change_alone_is_fully_compatible() {
     // `definitions` is reachable only through `$ref` and never contributes
@@ -2324,6 +2390,42 @@ fn negating_an_empty_scope_excludes_nothing() {
         entity_ref_verdicts(&plain, &negated),
         (Compatible, Compatible)
     );
+}
+
+#[test]
+fn negating_an_empty_scope_still_excludes_non_strings() {
+    // The reference keyword accepts every non-string whatever its scope, so a
+    // `not` around it rejects them unless something else restricts the
+    // subschema to strings.
+    let long_root = format!("gts.x.evo.refs.{}.v1~", "a".repeat(1024 - 19));
+    for (plain, negated) in [
+        (
+            json!({"type": "integer"}),
+            json!({"type": "integer", "not": {"x-gts-instance-ref": long_root}}),
+        ),
+        (json!({}), json!({"not": {"x-gts-instance-ref": long_root}})),
+    ] {
+        let (backward, _) = entity_ref_verdicts(&plain, &negated);
+        assert_eq!(backward, Incompatible, "{plain} -> {negated}");
+    }
+    for (plain, negated) in [
+        // The source holds only strings, which the empty scope never excludes.
+        (
+            json!({"type": "string"}),
+            json!({"type": "string", "not": {"x-gts-instance-ref": long_root}}),
+        ),
+        // The subschema holds only strings, so it accepts nothing at all.
+        (
+            json!({"type": "integer"}),
+            json!({"type": "integer", "not": {"type": "string", "x-gts-instance-ref": long_root}}),
+        ),
+    ] {
+        assert_eq!(
+            entity_ref_verdicts(&plain, &negated),
+            (Compatible, Compatible),
+            "{plain} -> {negated}"
+        );
+    }
 }
 
 #[test]

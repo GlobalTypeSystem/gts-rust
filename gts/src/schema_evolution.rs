@@ -296,9 +296,45 @@ fn merge_schema_map(
     unproven: &mut UnprovenPaths,
     depth: usize,
 ) {
+    if moves_additional_properties_scope(target, candidate) {
+        unproven.insert(path.to_owned());
+    }
     for (keyword, candidate_value) in candidate {
         merge_keyword(target, keyword, candidate_value, path, unproven, depth);
     }
+}
+
+/// Whether merging two levels would take a name out of an
+/// `additionalProperties` that constrains it.
+///
+/// `additionalProperties` applies only to the names its own level's
+/// `properties` and `patternProperties` leave unmatched. A name or pattern
+/// only the other level declares would join that set on the merged level,
+/// and the merged level would no longer be the intersection.
+fn moves_additional_properties_scope(a: &Map<String, Value>, b: &Map<String, Value>) -> bool {
+    let constrains = |level: &Map<String, Value>| {
+        level
+            .get("additionalProperties")
+            .is_some_and(|rest| match rest {
+                Value::Bool(allowed) => !allowed,
+                Value::Object(rest) => !rest.is_empty(),
+                _ => true,
+            })
+    };
+    let declares_beyond = |level: &Map<String, Value>, other: &Map<String, Value>| {
+        ["properties", "patternProperties"].iter().any(|keyword| {
+            let Some(declared) = level.get(*keyword) else {
+                return false;
+            };
+            let known = other.get(*keyword).and_then(Value::as_object);
+            declared.as_object().is_none_or(|declared| {
+                declared
+                    .keys()
+                    .any(|name| known.is_none_or(|known| !known.contains_key(name)))
+            })
+        })
+    };
+    (constrains(a) && declares_beyond(b, a)) || (constrains(b) && declares_beyond(a, b))
 }
 
 /// Intersects one keyword of a candidate branch into the accumulated level.
@@ -584,6 +620,9 @@ fn flatten_effective(schema: &Value, depth: usize) -> (Value, UnprovenPaths) {
         }
     }
     if let Value::Object(result_map) = &mut result {
+        if moves_additional_properties_scope(result_map, schema_map) {
+            unproven.insert(String::new());
+        }
         for (keyword, value) in schema_map {
             // Already folded above; the remaining keywords are this level's own
             // declaration.
@@ -1300,20 +1339,25 @@ fn check_entity_ref_compatibility(
             negated_reference(target, keyword),
         ) {
             (_, None) => {}
-            // Negating a scope that selects nothing excludes nothing.
-            (None, Some((excluded, _)))
-                if EntityScope::of(keyword, excluded).is_some_and(|scope| scope.is_empty()) => {}
-            (None, Some((excluded, rest))) => match negated_domain(&rest) {
-                None => errors.push(not_provable(changed)),
-                Some(NegatedDomain::Strings) if !admits_strings(source) => {}
-                Some(_) => errors.push(diagnostic(
-                    masked_for_negation(source),
-                    format!(
-                        "{} negated '{keyword}' constraint {excluded}",
-                        direction_verb(check_backward)
-                    ),
-                )),
-            },
+            (None, Some((excluded, rest))) => {
+                // A scope that selects nothing leaves the subschema only the
+                // non-strings the keyword passes through.
+                let selects_nothing =
+                    EntityScope::of(keyword, excluded).is_some_and(|scope| scope.is_empty());
+                match negated_domain(&rest) {
+                    None => errors.push(not_provable(changed)),
+                    Some(NegatedDomain::Strings) if selects_nothing || !admits_strings(source) => {}
+                    Some(NegatedDomain::Everything)
+                        if selects_nothing && admits_only_strings(source) => {}
+                    Some(_) => errors.push(diagnostic(
+                        masked_for_negation(source),
+                        format!(
+                            "{} negated '{keyword}' constraint {excluded}",
+                            direction_verb(check_backward)
+                        ),
+                    )),
+                }
+            }
             (Some((declared, declared_rest)), Some((excluded, excluded_rest))) => {
                 if declared == excluded && declared_rest == excluded_rest {
                     continue;
@@ -1445,14 +1489,19 @@ fn has_entity_ref(schema: &Map<String, Value>) -> bool {
 /// Whether the node provably accepts no instance: it admits only strings, and
 /// its entity references accept none (README §9.6.1).
 fn accepts_nothing(schema: &Map<String, Value>) -> bool {
-    let only_strings = match schema.get("type") {
+    admits_only_strings(schema)
+        && entity_scopes(schema).is_ok_and(|scopes| accepts_no_string(&scopes))
+}
+
+/// Whether the node's `type` rejects every non-string.
+fn admits_only_strings(schema: &Map<String, Value>) -> bool {
+    match schema.get("type") {
         Some(Value::String(name)) => name == "string",
         Some(Value::Array(names)) => {
             !names.is_empty() && names.iter().all(|name| name.as_str() == Some("string"))
         }
         _ => false,
-    };
-    only_strings && entity_scopes(schema).is_ok_and(|scopes| accepts_no_string(&scopes))
+    }
 }
 
 /// Whether the node's `not` holds a GTS reference keyword.
