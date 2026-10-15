@@ -1,0 +1,22 @@
+{
+  "$id": "gts://gts.x.test.optmid.event.v1~",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "Base event with a required payload",
+  "properties": {
+    "id": {
+      "description": "GTS instance identifier",
+      "title": "GTS Instance ID",
+      "type": "string",
+      "x-gts-instance-ref": "gts.*"
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "id",
+    "payload"
+  ],
+  "type": "object"
+}

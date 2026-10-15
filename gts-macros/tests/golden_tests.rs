@@ -142,6 +142,8 @@ golden_cases!(
     additional_properties_content_models,
     additional_properties_gts_root_open,
     additional_properties_gts_derived_open,
+    optional_generic_root,
+    optional_generic_mid_chain,
     traits_inline_chain,
     traits_bool_true,
     traits_bool_false,

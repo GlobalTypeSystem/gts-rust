@@ -1,0 +1,31 @@
+{
+  "$id": "gts://gts.x.test.optional.event.v1~x.test.optional.placed.v1~",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "allOf": [
+    {
+      "$ref": "gts://gts.x.test.optional.event.v1~"
+    },
+    {
+      "properties": {
+        "data": {
+          "additionalProperties": false,
+          "properties": {
+            "order_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "order_id"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "data"
+      ],
+      "type": "object"
+    }
+  ],
+  "description": "Leaf with a payload",
+  "type": "object"
+}
