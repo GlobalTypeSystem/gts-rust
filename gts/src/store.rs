@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use thiserror::Error;
 
 use crate::entities::GtsEntity;
@@ -163,6 +164,138 @@ pub struct ResolvedType {
     pub effective_traits: Value,
     /// Dialect-pinned, `allOf`-composed, `$ref`-inlined effective traits schema.
     pub effective_traits_schema: Value,
+}
+
+impl ResolvedType {
+    /// Compiles a store-independent validator for this type's payloads.
+    ///
+    /// Applies the rules of [`GtsStore::validate_payload_with`] with
+    /// [`GtsRefValidation::None`] to [`Self::schema`], which must contain every
+    /// resource it references. Where inlining `$ref`s is lossy, verdicts can differ.
+    ///
+    /// # Errors
+    /// [`CompilePayloadValidatorError`] for an abstract type or an unusable schema.
+    pub fn compile_payload_validator(
+        &self,
+    ) -> Result<PayloadValidator, CompilePayloadValidatorError> {
+        if self.is_abstract {
+            return Err(CompilePayloadValidatorError::Abstract(self.id.clone()));
+        }
+        let validator = crate::json_schema::gts_validator_for_type(
+            &self.schema,
+            Some(self.id.as_ref()),
+            &[],
+            None,
+        )
+        .map_err(|error| CompilePayloadValidatorError::InvalidSchema {
+            type_id: self.id.clone(),
+            reason: error.to_string(),
+        })?;
+        Ok(PayloadValidator(Arc::new(CompiledPayloadSchema {
+            type_id: self.id.clone(),
+            schema: self.schema.clone(),
+            validator,
+        })))
+    }
+}
+
+/// Why [`ResolvedType::compile_payload_validator`] produced no validator.
+#[derive(Debug, Clone, Error)]
+pub enum CompilePayloadValidatorError {
+    /// The type is abstract, so it has no direct instances to validate.
+    #[error("type '{0}' is abstract and cannot have direct instances")]
+    Abstract(crate::GtsTypeId),
+    /// The schema does not compile under GTS rules, e.g. it references a
+    /// resource outside itself or uses a regex outside the GTS profile.
+    #[error("Invalid schema for '{type_id}': {reason}")]
+    InvalidSchema {
+        type_id: crate::GtsTypeId,
+        reason: String,
+    },
+}
+
+/// Why [`PayloadValidator::validate`] rejected a payload.
+#[derive(Debug, Clone, Error)]
+pub enum PayloadValidationError {
+    /// JSON Schema constraint violations, one message each.
+    #[error("Validation failed: {}", .0.join(", "))]
+    Constraints(Vec<String>),
+    /// Entity-reference violations, reported only when every constraint holds.
+    #[error("entity reference validation failed: {}", describe_ref_errors(.0))]
+    References(Vec<crate::x_gts_ref::XGtsRefValidationError>),
+    /// A rejection left unexplained, since explaining it would cost exponentially
+    /// more than deciding it; either kind of violation may be behind it.
+    #[error("Validation failed: {0}")]
+    Unexplained(String),
+}
+
+impl From<CompilePayloadValidatorError> for StoreError {
+    fn from(error: CompilePayloadValidatorError) -> Self {
+        Self::ValidationError(error.to_string())
+    }
+}
+
+impl From<PayloadValidationError> for StoreError {
+    fn from(error: PayloadValidationError) -> Self {
+        Self::ValidationError(error.to_string())
+    }
+}
+
+/// A compiled payload validator for one [`ResolvedType`]; cheap to clone, `Send + Sync`.
+#[derive(Debug, Clone)]
+pub struct PayloadValidator(Arc<CompiledPayloadSchema>);
+
+#[derive(Debug)]
+struct CompiledPayloadSchema {
+    type_id: crate::GtsTypeId,
+    schema: Value,
+    validator: jsonschema::Validator,
+}
+
+const _: () = {
+    const fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<PayloadValidator>();
+};
+
+impl PayloadValidator {
+    /// The validated type.
+    #[must_use]
+    pub fn type_id(&self) -> &crate::GtsTypeId {
+        &self.0.type_id
+    }
+
+    /// Validates `payload`; reference targets are not looked up, defaults not inserted.
+    ///
+    /// # Errors
+    /// [`PayloadValidationError`] for an invalid payload.
+    pub fn validate(&self, payload: &Value) -> Result<(), PayloadValidationError> {
+        let diagnosis = crate::json_schema::diagnose(&self.0.validator, &self.0.schema, payload);
+        if let Some(reason) = diagnosis.unexplained {
+            return Err(PayloadValidationError::Unexplained(reason));
+        }
+        if !diagnosis.standard.is_empty() {
+            return Err(PayloadValidationError::Constraints(diagnosis.standard));
+        }
+        if !diagnosis.references.is_empty() {
+            return Err(PayloadValidationError::References(diagnosis.references));
+        }
+        Ok(())
+    }
+}
+
+/// Joins entity-reference violations into one message, each at its location.
+fn describe_ref_errors(errors: &[crate::x_gts_ref::XGtsRefValidationError]) -> String {
+    errors
+        .iter()
+        .map(|err| {
+            if err.field_path.is_empty() {
+                err.reason.clone()
+            } else {
+                format!("{}: {}", err.field_path, err.reason)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// Whether a [`GtsStore::register`] call changed the store.
@@ -520,19 +653,9 @@ impl GtsStore {
         if errors.is_empty() {
             return Ok(());
         }
-        let messages: Vec<String> = errors
-            .iter()
-            .map(|err| {
-                if err.field_path.is_empty() {
-                    err.reason.clone()
-                } else {
-                    format!("{}: {}", err.field_path, err.reason)
-                }
-            })
-            .collect();
         Err(StoreError::ValidationError(format!(
             "entity reference validation failed: {}",
-            messages.join("; ")
+            describe_ref_errors(errors)
         )))
     }
 
