@@ -1144,6 +1144,58 @@ Example:
 }
 ```
 
+### Optional Generic Fields
+
+A struct may declare its generic field as `Option<P>` when an instance can legitimately carry no
+payload - for example a notification-only event whose meaning is fully carried by its other fields:
+
+```rust
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = true,
+    type_id = gts_id!("x.core.events.event.v1~"),
+    description = "Base event; the payload may be absent",
+    properties = "event_type,id,data"
+)]
+pub struct EventV1<P> {
+    #[serde(rename = "type")]
+    pub event_type: GtsTypeId,
+    pub id: Uuid,
+    pub data: Option<P>,
+}
+```
+
+The slot stays the generic field derived types extend, with two differences from a bare `P`:
+
+- the declaring struct's schema renders it as `{"type": ["object", "null"]}` and leaves it out of
+  `required`;
+- `None` is omitted when serializing, and an absent member or `null` deserializes as `None`.
+
+A derived type that fills the slot with a payload requires it: its schema adds the slot to `required`
+and narrows it to its payload object, so an instance of `OrderPlacedV1` must carry its order data.
+
+A derived type that declares no payload (`properties = ""`, typically a unit struct) is a body-less
+type: the slot stays optional and nullable, so its instances may omit it, send `null`, or send `{}`.
+This is how to declare body-less types under an abstract base, whose instances must name a derived
+type:
+
+```rust
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = EventV1,
+    type_id = gts_id!("x.core.events.event.v1~x.shop.orders.cancelled.v1~"),
+    description = "Order cancelled; carries no payload",
+    properties = ""
+)]
+pub struct OrderCancelledV1;
+```
+
+Under a concrete base, a body-less instance can also be an instance of the base itself
+(`EventV1<()>`).
+
+This works at any level of a chain: a derived struct in the middle (`base = Parent`) may make its
+own slot optional the same way.
+
 ### Schema Generation Methods
 
 The macro generates methods for runtime schema access:

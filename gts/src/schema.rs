@@ -76,6 +76,10 @@ pub trait GtsSchema {
     /// For example, `BaseEventV1<P>` has `payload` as the generic field.
     const GENERIC_FIELD: Option<&'static str> = None;
 
+    /// `true` if [`Self::GENERIC_FIELD`] is declared `Option<P>`: instances of
+    /// this type may omit it, while a derived type that fills it requires it.
+    const GENERIC_FIELD_OPTIONAL: bool = false;
+
     /// `true` if this type declares `x-gts-final` (not inheritable). Set by
     /// `#[struct_to_gts_schema]` from `gts_final = true`; read by the
     /// derive-from-final compile-time guard.
@@ -388,6 +392,41 @@ pub fn deserialize_gts<'de, T: GtsDeserialize<'de>, D: serde::Deserializer<'de>>
     deserializer: D,
 ) -> Result<T, D::Error> {
     T::gts_deserialize(deserializer)
+}
+
+/// Serialize an optional value via `GtsSerialize` trait: `Some` as the value, `None` as `null`.
+///
+/// Used with `#[serde(serialize_with = "gts::serialize_gts_option")]` on `Option<P>`
+/// generic fields in base structs.
+///
+/// # Errors
+///
+/// Returns an error if serialization fails.
+// `serialize_with` hands the function a reference to the field's own type.
+#[allow(clippy::ref_option)]
+pub fn serialize_gts_option<T: GtsSerialize, S: serde::Serializer>(
+    value: &Option<T>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match value {
+        Some(inner) => serializer.serialize_some(&GtsSerializeWrapper(inner)),
+        None => serializer.serialize_none(),
+    }
+}
+
+/// Deserialize an optional value via `GtsDeserialize` trait: `null` as `None`.
+///
+/// Used with `#[serde(default, deserialize_with = "gts::deserialize_gts_option")]` on
+/// `Option<P>` generic fields in base structs; `default` covers an absent member.
+///
+/// # Errors
+///
+/// Returns an error if deserialization fails.
+pub fn deserialize_gts_option<'de, T: GtsDeserialize<'de>, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    let wrapped: Option<GtsDeserializeWrapper<T>> = serde::Deserialize::deserialize(deserializer)?;
+    Ok(wrapped.map(|wrapper| wrapper.0))
 }
 
 /// Wrapper to serialize a GtsSerialize type using serde's Serialize trait.
