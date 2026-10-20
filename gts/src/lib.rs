@@ -61,6 +61,6 @@ pub use store::{
 };
 pub use x_gts_pattern_ref::X_GTS_PATTERN_REF;
 pub use x_gts_ref::{
-    ENTITY_REF_KEYWORDS, EntityRefKind, GtsRefValidation, X_GTS_INSTANCE_REF, X_GTS_TYPE_REF,
-    XGtsRefValidationError, XGtsRefValidator,
+    GtsRefKeyword, GtsRefValidation, X_GTS_INSTANCE_REF, X_GTS_TYPE_REF, XGtsRefValidationError,
+    XGtsRefValidator,
 };

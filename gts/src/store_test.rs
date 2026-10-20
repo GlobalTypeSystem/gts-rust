@@ -2864,7 +2864,7 @@ fn test_validate_schema_x_gts_refs_validation_error() {
     assert!(result.is_err());
     match result {
         Err(StoreError::ValidationError(msg)) => {
-            assert!(msg.contains("entity reference validation failed"), "{msg}");
+            assert!(msg.contains("GTS reference validation failed"), "{msg}");
         }
         _ => panic!("Expected ValidationError"),
     }
@@ -3089,7 +3089,7 @@ fn test_validate_instance_x_gts_ref_validation_failed() {
     assert!(result.is_err());
     match result {
         Err(StoreError::ValidationError(msg)) => {
-            assert!(msg.contains("entity reference validation failed"), "{msg}");
+            assert!(msg.contains("GTS reference validation failed"), "{msg}");
         }
         _ => panic!("Expected ValidationError for entity reference validation"),
     }

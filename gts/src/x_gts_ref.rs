@@ -6,6 +6,8 @@
 //! an Instance ID. Syntax and matching come from `gts-id`; this module adds the
 //! operand contract, the candidate kind, registry lookup, and the JSON Schema
 //! integration.
+//! Shared diagnostics also cover `x-gts-pattern-ref`, whose checks are defined
+//! in `x_gts_pattern_ref` and never consult the registry.
 //!
 //! # Operands
 //!
@@ -60,11 +62,52 @@ pub const X_GTS_TYPE_REF: &str = "x-gts-type-ref";
 /// Constrains a string to a GTS Instance Identifier.
 pub const X_GTS_INSTANCE_REF: &str = "x-gts-instance-ref";
 /// Both entity-reference keywords.
-pub const ENTITY_REF_KEYWORDS: [&str; 2] = [X_GTS_TYPE_REF, X_GTS_INSTANCE_REF];
+pub(crate) const ENTITY_REF_KEYWORDS: [&str; 2] = [X_GTS_TYPE_REF, X_GTS_INSTANCE_REF];
+
+/// The GTS reference keyword responsible for a validation violation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum GtsRefKeyword {
+    /// `x-gts-type-ref`: a concrete GTS Type Identifier.
+    Type,
+    /// `x-gts-instance-ref`: a concrete GTS Instance Identifier.
+    Instance,
+    /// `x-gts-pattern-ref`: a GTS identifier pattern.
+    Pattern,
+}
+
+impl GtsRefKeyword {
+    /// The keyword's JSON Schema spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Type => X_GTS_TYPE_REF,
+            Self::Instance => X_GTS_INSTANCE_REF,
+            Self::Pattern => crate::x_gts_pattern_ref::X_GTS_PATTERN_REF,
+        }
+    }
+
+    /// Recognizes a GTS reference keyword by its JSON Schema spelling.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            X_GTS_TYPE_REF => Some(Self::Type),
+            X_GTS_INSTANCE_REF => Some(Self::Instance),
+            crate::x_gts_pattern_ref::X_GTS_PATTERN_REF => Some(Self::Pattern),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for GtsRefKeyword {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 /// The identifier kind an entity reference requires of its candidate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum EntityRefKind {
+pub(crate) enum EntityRefKind {
     /// `x-gts-type-ref`: a Type ID, ending in `~`.
     Type,
     /// `x-gts-instance-ref`: an Instance ID.
@@ -111,9 +154,21 @@ impl EntityRefKind {
     }
 }
 
-/// Error type for entity-reference validation failures
+impl From<EntityRefKind> for GtsRefKeyword {
+    fn from(kind: EntityRefKind) -> Self {
+        match kind {
+            EntityRefKind::Type => Self::Type,
+            EntityRefKind::Instance => Self::Instance,
+        }
+    }
+}
+
+/// A GTS reference validation failure, including pattern-reference violations.
 #[derive(Debug, Clone)]
 pub struct XGtsRefValidationError {
+    /// The violated keyword: `x-gts-type-ref`, `x-gts-instance-ref`, or
+    /// `x-gts-pattern-ref`. `None` for a general failure to check references.
+    pub keyword: Option<GtsRefKeyword>,
     pub field_path: String,
     pub value: String,
     pub ref_pattern: String,
@@ -121,14 +176,24 @@ pub struct XGtsRefValidationError {
 }
 
 impl XGtsRefValidationError {
+    /// Creates an error without attributing it to a particular keyword.
+    /// Use [`Self::with_keyword`] for a known reference-keyword violation.
     #[must_use]
     pub fn new(field_path: String, value: String, ref_pattern: String, reason: String) -> Self {
         Self {
+            keyword: None,
             field_path,
             value,
             ref_pattern,
             reason,
         }
+    }
+
+    /// Identifies the reference keyword that produced this error.
+    #[must_use]
+    pub fn with_keyword(mut self, keyword: GtsRefKeyword) -> Self {
+        self.keyword = Some(keyword);
+        self
     }
 }
 
@@ -136,7 +201,7 @@ impl fmt::Display for XGtsRefValidationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "entity reference validation failed for field '{}': {}",
+            "GTS reference validation failed for field '{}': {}",
             self.field_path, self.reason
         )
     }
@@ -468,12 +533,11 @@ impl EntityScope {
     }
 }
 
-/// Whether `error` was raised by an entity-reference keyword rather than by
-/// the standard vocabulary.
+/// Whether `error` was raised by any of the three GTS reference keywords.
 pub(crate) fn is_x_gts_ref_error(error: &jsonschema::ValidationError<'_>) -> bool {
     matches!(
         error.kind(),
-        ValidationErrorKind::Custom { keyword, .. } if ENTITY_REF_KEYWORDS.contains(&keyword.as_str())
+        ValidationErrorKind::Custom { keyword, .. } if GtsRefKeyword::from_name(keyword).is_some()
     )
 }
 
@@ -486,10 +550,10 @@ fn attributed_refs(
         return Some(vec![describe_error(schema, error)]);
     }
 
-    // Multiple matching branches are a composition error, not a ref error.
+    // Multiple matching branches are a composition error, not a ref error,
+    // even when a further branch fails on a reference.
     let (ValidationErrorKind::AnyOf { context: branches }
-    | ValidationErrorKind::OneOfNotValid { context: branches }
-    | ValidationErrorKind::OneOfMultipleValid { context: branches }) = error.kind()
+    | ValidationErrorKind::OneOfNotValid { context: branches }) = error.kind()
     else {
         return None;
     };
@@ -501,7 +565,7 @@ fn attributed_refs(
     (!attributed.is_empty()).then_some(attributed)
 }
 
-/// Splits standard and entity-reference diagnostics.
+/// Splits other constraint diagnostics from GTS reference diagnostics.
 pub(crate) fn split_errors<'i>(
     schema: &Value,
     errors: impl Iterator<Item = jsonschema::ValidationError<'i>>,
@@ -517,7 +581,7 @@ pub(crate) fn split_errors<'i>(
     (standard, references)
 }
 
-/// Builds an entity-reference diagnostic from the validator error paths.
+/// Builds a GTS reference diagnostic from the validator error paths.
 fn describe_error(
     schema: &Value,
     error: &jsonschema::ValidationError<'_>,
@@ -530,15 +594,19 @@ fn describe_error(
         Value::String(text) => text.clone(),
         other => other.to_string(),
     };
-    XGtsRefValidationError::new(
+    let mut diagnosis = XGtsRefValidationError::new(
         error.instance_path().to_string(),
         value,
         declared.to_owned(),
         error.to_string(),
-    )
+    );
+    if let ValidationErrorKind::Custom { keyword, .. } = error.kind() {
+        diagnosis.keyword = GtsRefKeyword::from_name(keyword);
+    }
+    diagnosis
 }
 
-/// Reports applicable entity-reference violations and fails closed.
+/// Reports applicable GTS reference violations and fails closed.
 ///
 /// `exists` enables store-aware checks; `None` checks structure only.
 pub(crate) fn validate_instance_refs(
@@ -554,7 +622,7 @@ pub(crate) fn validate_instance_refs(
                 instance_path.to_owned(),
                 String::new(),
                 String::new(),
-                format!("entity reference checking needs a compilable schema: {e}"),
+                format!("GTS reference validation needs a compilable schema: {e}"),
             )];
         }
     };
@@ -607,7 +675,7 @@ impl XGtsRefValidator {
         Self
     }
 
-    /// Validate an instance against the entity references in a schema, without
+    /// Validate an instance against the GTS reference keywords in a schema, without
     /// registry lookup.
     ///
     /// # Arguments
@@ -660,12 +728,15 @@ impl XGtsRefValidator {
                         || (format!("{declared:?}"), String::new()),
                         |spelling| (spelling.to_owned(), spelling.to_owned()),
                     );
-                    errors.push(XGtsRefValidationError::new(
-                        declaration_path(schema_path, location, kind.keyword()),
-                        value,
-                        ref_pattern,
-                        reason,
-                    ));
+                    errors.push(
+                        XGtsRefValidationError::new(
+                            declaration_path(schema_path, location, kind.keyword()),
+                            value,
+                            ref_pattern,
+                            reason,
+                        )
+                        .with_keyword(kind.into()),
+                    );
                 }
             }
         });
