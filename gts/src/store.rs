@@ -220,8 +220,9 @@ pub enum PayloadValidationError {
     /// JSON Schema constraint violations, one message each.
     #[error("Validation failed: {}", .0.join(", "))]
     Constraints(Vec<String>),
-    /// Entity-reference violations, reported only when every constraint holds.
-    #[error("entity reference validation failed: {}", describe_ref_errors(.0))]
+    /// GTS reference violations (`x-gts-type-ref`, `x-gts-instance-ref`, or
+    /// `x-gts-pattern-ref`), reported only when every other constraint holds.
+    #[error("GTS reference validation failed: {}", describe_ref_errors(.0))]
     References(Vec<crate::x_gts_ref::XGtsRefValidationError>),
     /// A rejection left unexplained, since explaining it would cost exponentially
     /// more than deciding it; either kind of violation may be behind it.
@@ -264,7 +265,17 @@ impl PayloadValidator {
         &self.0.type_id
     }
 
+    /// Checks `payload` without collecting diagnostics.
+    ///
+    /// Applies the same constraints as [`Self::validate`], including GTS reference
+    /// keywords; reference targets are not looked up, defaults not inserted.
+    #[must_use]
+    pub fn is_valid(&self, payload: &Value) -> bool {
+        self.0.validator.is_valid(payload)
+    }
+
     /// Validates `payload`; reference targets are not looked up, defaults not inserted.
+    /// Use [`Self::is_valid`] when only the verdict is needed.
     ///
     /// # Errors
     /// [`PayloadValidationError`] for an invalid payload.
@@ -283,7 +294,7 @@ impl PayloadValidator {
     }
 }
 
-/// Joins entity-reference violations into one message, each at its location.
+/// Joins GTS reference violations into one message, each at its location.
 fn describe_ref_errors(errors: &[crate::x_gts_ref::XGtsRefValidationError]) -> String {
     errors
         .iter()
@@ -645,7 +656,7 @@ impl GtsStore {
         Ok(resources)
     }
 
-    /// Collapses a slice of entity-reference validation errors into a single
+    /// Collapses a slice of GTS reference validation errors into a single
     /// `StoreError::ValidationError`, or `Ok(())` when there are none.
     fn check_x_gts_ref_errors(
         errors: &[crate::x_gts_ref::XGtsRefValidationError],
@@ -654,7 +665,7 @@ impl GtsStore {
             return Ok(());
         }
         Err(StoreError::ValidationError(format!(
-            "entity reference validation failed: {}",
+            "GTS reference validation failed: {}",
             describe_ref_errors(errors)
         )))
     }
@@ -1231,7 +1242,7 @@ impl GtsStore {
                     "no registered GTS entity satisfies it"
                 };
                 return Err(StoreError::ValidationError(format!(
-                    "entity reference validation failed: {location} constrains values to \
+                    "GTS reference validation failed: {location} constrains values to \
                      '{spelling}', but {requirement}"
                 )));
             }
@@ -1320,8 +1331,12 @@ impl GtsStore {
         }
         // Inlined, the body shows whether a rejection is affordable to explain.
         let resolved = self.resolve_schema_refs(&content).ok();
-        let diagnosis =
-            crate::json_schema::diagnose_resolved(&validator, &content, resolved.as_ref(), payload);
+        let diagnosis = crate::json_schema::diagnose_rejection(
+            &validator,
+            &content,
+            resolved.as_ref(),
+            payload,
+        );
         let mut errors = diagnosis.standard;
         errors.extend(diagnosis.unexplained);
         if !errors.is_empty() {

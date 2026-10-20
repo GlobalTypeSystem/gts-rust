@@ -279,9 +279,9 @@ pub fn registry_independent_validator_for(
 /// `unexplained` still represents a rejection and must be treated as failure.
 #[derive(Debug, Default)]
 pub struct Diagnosis {
-    /// Standard-vocabulary diagnostics.
+    /// Constraint diagnostics other than GTS reference violations.
     pub standard: Vec<String>,
-    /// Entity-reference violations.
+    /// GTS reference violations, including `x-gts-pattern-ref`.
     pub references: Vec<crate::x_gts_ref::XGtsRefValidationError>,
     /// Why a rejection carries no detail, when that happened.
     pub unexplained: Option<String>,
@@ -290,24 +290,24 @@ pub struct Diagnosis {
 /// Validates exactly, omitting details when explaining recursive combinators
 /// would grow exponentially.
 pub fn diagnose(validator: &jsonschema::Validator, schema: &Value, instance: &Value) -> Diagnosis {
-    diagnose_resolved(validator, schema, Some(schema), instance)
+    if validator.is_valid(instance) {
+        return Diagnosis::default();
+    }
+    diagnose_rejection(validator, schema, Some(schema), instance)
 }
 
-/// [`diagnose`] for a `schema` whose references `validator` follows itself.
+/// Explains an instance already known to fail `validator`, without repeating
+/// the validity check. The validator follows `schema`'s references itself.
 ///
 /// `resolved` is `schema` with its references inlined, the shape whose
 /// recursion bounds what explaining a rejection costs. Without it (a `$ref`
 /// cycle defeats inlining), a rejection is left unexplained.
-pub fn diagnose_resolved(
+pub fn diagnose_rejection(
     validator: &jsonschema::Validator,
     schema: &Value,
     resolved: Option<&Value>,
     instance: &Value,
 ) -> Diagnosis {
-    if validator.is_valid(instance) {
-        return Diagnosis::default();
-    }
-
     if !resolved.is_some_and(has_linear_recursion) {
         return Diagnosis {
             unexplained: Some(
@@ -420,6 +420,47 @@ mod tests {
     fn diagnose_json(schema: &serde_json::Value, instance: &serde_json::Value) -> Diagnosis {
         let validator = gts_validator_for(schema, None).expect("schema compiles");
         diagnose(&validator, schema, instance)
+    }
+
+    #[test]
+    fn a_known_rejection_does_not_repeat_the_validity_check() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Reject(Arc<AtomicUsize>);
+
+        impl<'i> jsonschema::Keyword<'i> for Reject {
+            fn validate(
+                &self,
+                _instance: &'i Value,
+            ) -> Result<(), jsonschema::ValidationError<'i>> {
+                Err(jsonschema::ValidationError::custom("rejected"))
+            }
+
+            fn is_valid(&self, _instance: &Value) -> bool {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                false
+            }
+        }
+
+        let checks = Arc::new(AtomicUsize::new(0));
+        let keyword_checks = Arc::clone(&checks);
+        let schema = serde_json::json!({"reject": true});
+        let instance = serde_json::json!(null);
+        let validator = jsonschema::options()
+            .with_keyword("reject", move |_, _, _| {
+                Ok(Box::new(Reject(Arc::clone(&keyword_checks))))
+            })
+            .build(&schema)
+            .expect("schema compiles");
+
+        assert!(!validator.is_valid(&instance));
+        let diagnosis = diagnose_rejection(&validator, &schema, Some(&schema), &instance);
+
+        assert_eq!(checks.load(Ordering::Relaxed), 1);
+        assert_eq!(diagnosis.standard, ["rejected"]);
+        assert!(diagnosis.references.is_empty(), "{diagnosis:?}");
+        assert!(diagnosis.unexplained.is_none(), "{diagnosis:?}");
     }
 
     #[test]

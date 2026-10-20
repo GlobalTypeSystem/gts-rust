@@ -674,6 +674,9 @@ let validator = snapshot.compile_payload_validator()?;
 validator.validate(&payload)?;
 ```
 
+Use `validator.is_valid(&payload)` for a verdict without diagnostics. Each
+`XGtsRefValidationError` names the violated keyword (`GtsRefKeyword`), pattern references included.
+
 #### OP#7 - Relationship Resolution
 
 ```rust

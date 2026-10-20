@@ -1,8 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use gts::{
-    CompilePayloadValidatorError, GtsRefValidation, GtsStore, PayloadValidationError, ResolvedType,
-    StoreError,
+    CompilePayloadValidatorError, GtsRefKeyword, GtsRefValidation, GtsStore,
+    PayloadValidationError, ResolvedType, StoreError,
 };
 use serde_json::{Value, json};
 
@@ -24,10 +24,12 @@ fn schema() -> Value {
 
 /// Compiles `snapshot`'s payload validator and validates one payload with it.
 fn validate(snapshot: &ResolvedType, payload: &Value) -> Result<(), PayloadValidationError> {
-    snapshot
+    let validator = snapshot
         .compile_payload_validator()
-        .expect("snapshot compiles")
-        .validate(payload)
+        .expect("snapshot compiles");
+    let result = validator.validate(payload);
+    assert_eq!(validator.is_valid(payload), result.is_ok(), "{payload}");
+    result
 }
 
 fn resolve(document: &Value) -> ResolvedType {
@@ -152,7 +154,146 @@ fn resolved_payload_enforces_pattern_reference_coverage() {
     document["properties"]["name"]["x-gts-pattern-ref"] = json!("gts.x.test.target.*");
     let snapshot = resolve(&document);
     validate(&snapshot, &json!({"name": "gts.x.test.target.item.v1~"})).unwrap();
-    assert!(validate(&snapshot, &json!({"name": TYPE_ID})).is_err());
+    let error = validate(&snapshot, &json!({"name": TYPE_ID})).unwrap_err();
+    assert!(
+        matches!(error, PayloadValidationError::References(_)),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn resolved_payload_identifies_all_three_reference_keywords() {
+    let operand = "gts.x.test.target.*";
+    for dialect in [DRAFT7, DRAFT2019, DRAFT2020] {
+        let mut document = schema();
+        document["$schema"] = json!(dialect);
+        document["properties"] = json!({
+            "name": {"type": "string", "x-gts-type-ref": operand},
+            "instance": {"type": "string", "x-gts-instance-ref": operand},
+            "pattern": {"type": "string", "x-gts-pattern-ref": operand}
+        });
+        let payload = json!({"name": "bad", "instance": TYPE_ID, "pattern": "gts.y.*"});
+        let error = validate(&resolve(&document), &payload).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .starts_with("GTS reference validation failed:")
+        );
+        let PayloadValidationError::References(errors) = error else {
+            panic!("expected reference diagnostics, got {error:?}");
+        };
+        assert_eq!(errors.len(), 3, "{errors:?}");
+        for (keyword, field) in [
+            (GtsRefKeyword::Type, "name"),
+            (GtsRefKeyword::Instance, "instance"),
+            (GtsRefKeyword::Pattern, "pattern"),
+        ] {
+            let error = errors
+                .iter()
+                .find(|error| error.keyword == Some(keyword))
+                .unwrap_or_else(|| panic!("missing {keyword:?}: {errors:?}"));
+            assert_eq!(
+                document["properties"][field][keyword.as_str()],
+                json!(operand)
+            );
+            assert_eq!(error.field_path, format!("/{field}"));
+            assert_eq!(error.value, payload[field].as_str().unwrap());
+            assert_eq!(error.ref_pattern, operand);
+        }
+    }
+}
+
+#[test]
+fn resolved_payload_classifies_reference_failures_inside_combinators() {
+    for combinator in ["anyOf", "oneOf"] {
+        let mut document = schema();
+        document["properties"]["name"] = json!({combinator: [
+            {"x-gts-type-ref": "gts.x.test.target.*"},
+            {"x-gts-instance-ref": "gts.x.test.target.*"},
+            {"x-gts-pattern-ref": "gts.x.test.target.*"}
+        ]});
+        let error = validate(&resolve(&document), &json!({"name": "bad"})).unwrap_err();
+        let PayloadValidationError::References(errors) = error else {
+            panic!("expected reference diagnostics, got {error:?}");
+        };
+        assert_eq!(errors.len(), 3, "{errors:?}");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.keyword == Some(GtsRefKeyword::Pattern))
+        );
+
+        document["properties"]["name"][combinator]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"type": "integer"}));
+        let error = validate(&resolve(&document), &json!({"name": "bad"})).unwrap_err();
+        assert!(
+            matches!(error, PayloadValidationError::Constraints(_)),
+            "mixed branch failures remain a combinator error: {error:?}"
+        );
+    }
+}
+
+#[test]
+fn resolved_payload_reports_several_matching_one_of_branches_as_a_constraint() {
+    // Two branches match, so the failing reference branch does not explain the
+    // rejection: satisfying the reference would only add a third match.
+    for keyword in ["x-gts-type-ref", "x-gts-instance-ref", "x-gts-pattern-ref"] {
+        let mut document = schema();
+        document["properties"]["name"] = json!({"oneOf": [
+            {"type": "string"},
+            {"minLength": 1},
+            {keyword: "gts.x.test.target.*"}
+        ]});
+        let mut store = GtsStore::new();
+        store.register_schema(TYPE_ID, &document).unwrap();
+        let snapshot = store
+            .validate_schema_with(TYPE_ID, GtsRefValidation::None)
+            .unwrap();
+        let payload = json!({"name": "bad"});
+
+        let error = validate(&snapshot, &payload).unwrap_err();
+        assert!(
+            matches!(error, PayloadValidationError::Constraints(_)),
+            "{keyword}: {error:?}"
+        );
+        let error = store
+            .validate_payload_with(TYPE_ID, &payload, GtsRefValidation::None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("more than one of the schemas"),
+            "{keyword}: {error}"
+        );
+    }
+}
+
+#[test]
+fn resolved_payload_pattern_refs_do_not_require_registered_targets() {
+    let mut document = schema();
+    document["properties"]["name"]["x-gts-pattern-ref"] = json!("gts.x.test.target.*");
+    let mut store = GtsStore::new();
+    store.register_schema(TYPE_ID, &document).unwrap();
+    for policy in [
+        GtsRefValidation::None,
+        GtsRefValidation::AnyPresent,
+        GtsRefValidation::AnyValid,
+    ] {
+        for value in ["gts.x.test.target.item.v1~", "gts.x.test.target.*"] {
+            store
+                .validate_payload_with(TYPE_ID, &json!({"name": value}), policy)
+                .unwrap();
+        }
+        let error = store
+            .validate_payload_with(TYPE_ID, &json!({"name": "gts.y.*"}), policy)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("GTS reference validation failed:")
+        );
+    }
 }
 
 #[test]
@@ -282,6 +423,7 @@ fn assert_matches_store(documents: &[(&str, Value)], type_id: &str, payloads: &[
         let actual = validator
             .validate(payload)
             .map_err(|error| error.to_string());
+        assert_eq!(validator.is_valid(payload), actual.is_ok(), "{payload}");
         assert_eq!(
             actual.is_ok(),
             expected.is_ok(),

@@ -101,6 +101,38 @@ mod tests {
     }
 
     #[test]
+    fn validate_instance_reports_pattern_reference_violations() {
+        let validator = XGtsRefValidator::new();
+        let operand = "gts.x.test.target.*";
+        for dialect in [
+            "http://json-schema.org/draft-07/schema#",
+            "https://json-schema.org/draft/2019-09/schema",
+            "https://json-schema.org/draft/2020-12/schema",
+        ] {
+            let schema = json!({
+                "$schema": dialect,
+                "properties": {"p": {"type": "string", "x-gts-pattern-ref": operand}}
+            });
+            for value in [operand, "gts.x.test.target.item.v1~"] {
+                assert!(
+                    validator
+                        .validate_instance(&json!({"p": value}), &schema, "/payload")
+                        .is_empty(),
+                    "{dialect}: {value}"
+                );
+            }
+            for value in ["gts.y.*", "not-a-pattern"] {
+                let errors = validator.validate_instance(&json!({"p": value}), &schema, "/payload");
+                assert_eq!(errors.len(), 1, "{dialect}: {errors:?}");
+                assert_eq!(errors[0].keyword, Some(GtsRefKeyword::Pattern));
+                assert_eq!(errors[0].field_path, "/payload/p");
+                assert_eq!(errors[0].ref_pattern, operand);
+                assert_eq!(errors[0].value, value);
+            }
+        }
+    }
+
+    #[test]
     fn test_validate_schema_with_x_gts_ref() {
         let validator = XGtsRefValidator::new();
         let schema = json!({
@@ -157,6 +189,7 @@ mod tests {
 
         let errors = validator.validate_schema(&schema, "", None);
         assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].keyword, Some(GtsRefKeyword::Instance));
         assert!(errors[0].reason.contains("/$id"), "{:?}", errors[0]);
     }
 
@@ -281,8 +314,12 @@ mod tests {
         assert_eq!(error.value, "invalid_value");
         assert_eq!(error.ref_pattern, "gts.x.*");
         assert_eq!(error.reason, "Test reason");
+        assert!(error.keyword.is_none());
 
+        let error = error.with_keyword(GtsRefKeyword::Type);
+        assert_eq!(error.keyword, Some(GtsRefKeyword::Type));
         let display = format!("{error}");
+        assert!(display.starts_with("GTS reference validation failed"));
         assert!(display.contains("test_field"));
         assert!(display.contains("Test reason"));
     }
