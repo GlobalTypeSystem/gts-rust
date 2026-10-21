@@ -87,7 +87,7 @@ pub fn walk_json_value(
             // BEFORE normalization to avoid misleading errors. Validating the
             // operand itself is the schema validator's job.
             if (is_xgts_ref && (candidate_str.starts_with('/') || candidate_str == "*"))
-                || (is_pattern_ref && candidate_str == "/$id")
+                || (is_pattern_ref && candidate_str == gts::SELF_ID_REF)
             {
                 return;
             }

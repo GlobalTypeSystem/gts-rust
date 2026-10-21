@@ -63,6 +63,10 @@ pub const X_GTS_TYPE_REF: &str = "x-gts-type-ref";
 pub const X_GTS_INSTANCE_REF: &str = "x-gts-instance-ref";
 /// Both entity-reference keywords.
 pub(crate) const ENTITY_REF_KEYWORDS: [&str; 2] = [X_GTS_TYPE_REF, X_GTS_INSTANCE_REF];
+/// The reserved `/$id` operand of the GTS reference keywords: names the leaf
+/// GTS Type Schema selected for validation, even where the constraint is
+/// inherited (README §9.6.1).
+pub const SELF_ID_REF: &str = "/$id";
 
 /// The GTS reference keyword responsible for a validation violation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -232,9 +236,6 @@ pub(crate) fn candidate_reference_values(instance: &Value) -> Vec<String> {
     found.into_iter().collect()
 }
 
-/// The one pointer operand a declaration may use (README §9.6.1).
-const SELF_ID_POINTER: &str = "/$id";
-
 /// How far entity-reference targets are checked (README §9.6.1).
 ///
 /// Syntax and pattern conformance are checked in every mode; the mode only
@@ -316,17 +317,17 @@ pub(crate) fn resolve_declaration(
         ));
     };
 
-    if spelling == SELF_ID_POINTER {
+    if spelling == SELF_ID_REF {
         let Some(selected) = selected else {
             return Err(format!(
-                "{keyword} operand '{SELF_ID_POINTER}' has no selected GTS Type Schema '$id' \
+                "{keyword} operand '{SELF_ID_REF}' has no selected GTS Type Schema '$id' \
                  to resolve to"
             ));
         };
         return match GtsId::try_new(selected) {
             Ok(id) if id.is_type() => Ok(GtsIdPattern::from(id)),
             _ => Err(format!(
-                "{keyword} operand '{SELF_ID_POINTER}' resolves to '{selected}', which is not a \
+                "{keyword} operand '{SELF_ID_REF}' resolves to '{selected}', which is not a \
                  concrete GTS Type Identifier"
             )),
         };
@@ -335,7 +336,7 @@ pub(crate) fn resolve_declaration(
     let pattern = GtsIdPattern::try_new(spelling).map_err(|e| {
         format!(
             "{keyword} operand '{spelling}': {}; expected a GTS identifier, a wildcard pattern \
-             or '{SELF_ID_POINTER}'",
+             or '{SELF_ID_REF}'",
             e.cause
         )
     })?;
@@ -748,7 +749,7 @@ impl XGtsRefValidator {
     /// document itself is the type being validated.
     pub(crate) fn self_id(schema: &Value) -> Option<String> {
         schema
-            .pointer(SELF_ID_POINTER)
+            .get("$id")
             .and_then(Value::as_str)
             .map(Self::strip_gts_uri_prefix)
     }
