@@ -8,12 +8,10 @@
 use serde_json::{Map, Value};
 
 use crate::gts::{GTS_ID_URI_PREFIX, GtsIdPattern};
+use crate::x_gts_ref::SELF_ID_REF;
 
 /// The keyword name.
 pub const X_GTS_PATTERN_REF: &str = "x-gts-pattern-ref";
-
-/// The selected-type self-reference, the one pointer operand allowed.
-const SELF_ID_POINTER: &str = "/$id";
 
 /// The pattern an operand denotes, or why the schema is invalid.
 ///
@@ -24,10 +22,10 @@ pub fn resolve_operand(declared: &Value, selected: Option<&str>) -> Result<GtsId
             "{X_GTS_PATTERN_REF} operand must be a string, got {declared}"
         ));
     };
-    if declared == SELF_ID_POINTER {
+    if declared == SELF_ID_REF {
         let Some(selected) = selected else {
             return Err(format!(
-                "{X_GTS_PATTERN_REF} operand '{SELF_ID_POINTER}' has no selected GTS Type \
+                "{X_GTS_PATTERN_REF} operand '{SELF_ID_REF}' has no selected GTS Type \
                  Schema '$id' to resolve to"
             ));
         };
@@ -36,7 +34,7 @@ pub fn resolve_operand(declared: &Value, selected: Option<&str>) -> Result<GtsId
             .filter(|_| selected.ends_with('~'))
             .ok_or_else(|| {
                 format!(
-                    "{X_GTS_PATTERN_REF} operand '{SELF_ID_POINTER}' resolves to '{selected}', \
+                    "{X_GTS_PATTERN_REF} operand '{SELF_ID_REF}' resolves to '{selected}', \
                      which is not a GTS Type Identifier"
                 )
             });
@@ -44,7 +42,7 @@ pub fn resolve_operand(declared: &Value, selected: Option<&str>) -> Result<GtsId
     GtsIdPattern::try_new(declared).map_err(|reason| {
         format!(
             "{X_GTS_PATTERN_REF} operand '{declared}': {}; expected a GTS identifier, a \
-             wildcard pattern or '{SELF_ID_POINTER}'",
+             wildcard pattern or '{SELF_ID_REF}'",
             reason.cause
         )
     })
@@ -94,7 +92,7 @@ pub fn with_x_gts_pattern_ref(
         let operand = resolve_operand(declared, selected.as_deref())
             .map_err(jsonschema::ValidationError::schema)?;
         let spelling = match declared.as_str() {
-            Some(SELF_ID_POINTER) | None => selected.clone().unwrap_or_default(),
+            Some(SELF_ID_REF) | None => selected.clone().unwrap_or_default(),
             Some(spelling) => spelling.to_owned(),
         };
         Ok(Box::new(PatternRefKeyword { operand, spelling }))
@@ -168,7 +166,7 @@ pub fn with_self_operands_naming<'s>(
     crate::schema_modifiers::for_each_schema_node(schema, &mut |node, _| {
         if SELF_REFERENCING_KEYWORDS
             .iter()
-            .any(|keyword| node.get(*keyword).and_then(Value::as_str) == Some(SELF_ID_POINTER))
+            .any(|keyword| node.get(*keyword).and_then(Value::as_str) == Some(SELF_ID_REF))
         {
             holders.insert(std::ptr::from_ref(node));
         }
@@ -192,7 +190,7 @@ fn substitute(
                 .collect();
             if holders.contains(&std::ptr::from_ref(map)) {
                 for keyword in SELF_REFERENCING_KEYWORDS {
-                    if map.get(keyword).and_then(Value::as_str) == Some(SELF_ID_POINTER) {
+                    if map.get(keyword).and_then(Value::as_str) == Some(SELF_ID_REF) {
                         copy.insert(keyword.to_owned(), Value::String(selected.to_owned()));
                     }
                 }
