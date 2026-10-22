@@ -3,12 +3,13 @@
 //! involved — so they exercise `SchemaResolver::resolve` in isolation.
 //! End-to-end coverage of the `GtsStore` wrapper and provider lookup semantics
 //! lives in `store_test.rs`.
+//! Partial resolution is the default here; `resolve_fully` exercises full mode.
 
 use std::collections::HashMap;
 
 use serde_json::{Value, json};
 
-use super::{SchemaProvider, SchemaResolver};
+use super::{ResolutionMode, SchemaProvider, SchemaResolver};
 use crate::store::StoreError;
 
 /// Minimal [`SchemaProvider`]: a map from canonical type id to schema document.
@@ -36,10 +37,10 @@ impl SchemaProvider for MapProvider {
 
 // By-value `json!(...)` literals read cleaner at the call sites.
 #[allow(clippy::needless_pass_by_value)]
-fn resolve(provider: &MapProvider, schema: Value) -> Value {
+fn resolve_partial(provider: &MapProvider, schema: Value) -> Value {
     SchemaResolver::new(provider)
         .resolve(&schema)
-        .expect("schema should resolve")
+        .expect("schema should resolve in partial mode")
 }
 
 #[test]
@@ -52,7 +53,7 @@ fn test_resolve_passthrough_values_without_refs() {
         json!("test"),
         json!({"outer": {"inner": {"deep": "value"}}}),
     ] {
-        assert_eq!(resolve(&p, v.clone()), v);
+        assert_eq!(resolve_partial(&p, v.clone()), v);
     }
 }
 
@@ -69,7 +70,7 @@ fn test_resolve_inlines_exact_ref() {
         }),
     );
 
-    let resolved = resolve(&p, json!({"$ref": "gts://gts.x.core.events.type.v1~"}));
+    let resolved = resolve_partial(&p, json!({"$ref": "gts://gts.x.core.events.type.v1~"}));
 
     assert_eq!(
         resolved,
@@ -93,7 +94,7 @@ fn test_resolve_inlines_nested_ref() {
         }),
     );
 
-    let resolved = resolve(
+    let resolved = resolve_partial(
         &p,
         json!({
             "type": "object",
@@ -132,7 +133,7 @@ fn test_resolve_allof_inlines_refs_and_preserves_structure() {
         }),
     );
 
-    let resolved = resolve(
+    let resolved = resolve_partial(
         &p,
         json!({
             "type": "object",
@@ -172,7 +173,7 @@ fn test_resolve_anyof_inlines_refs() {
         }),
     );
 
-    let resolved = resolve(
+    let resolved = resolve_partial(
         &p,
         json!({"anyOf": [{"$ref": "gts://gts.x.core.events.a.v1~"}, {"type": "null"}]}),
     );
@@ -210,7 +211,7 @@ fn test_resolve_oneof_inlines_refs() {
             }),
         );
 
-    let resolved = resolve(
+    let resolved = resolve_partial(
         &p,
         json!({
             "oneOf": [
@@ -253,7 +254,7 @@ fn test_resolve_strips_type_level_modifiers_from_inlined_ref() {
         }),
     );
 
-    let resolved = resolve(
+    let resolved = resolve_partial(
         &p,
         json!({"allOf": [{"$ref": "gts://gts.x.core.events.modbase.v1~"}]}),
     );
@@ -298,7 +299,7 @@ fn test_resolve_traits_schema_allof_inlines_refs() {
             }),
         );
 
-    let resolved = resolve(
+    let resolved = resolve_partial(
         &p,
         json!({
             "$id": "gts://gts.x.core.events.event.v1~",
@@ -371,7 +372,7 @@ fn test_resolve_three_type_derivation_chain_inlines_nested_allof_refs() {
             }),
         );
 
-    let resolved = resolve(
+    let resolved = resolve_partial(
         &p,
         json!({
             "$id": "gts://gts.x.core.events.base.v1~x.core.events.enriched.v1~x.core.events.audit.v1~",
@@ -436,7 +437,7 @@ fn test_resolve_ref_with_object_siblings_composes_into_allof() {
         }),
     );
 
-    let resolved = resolve(
+    let resolved = resolve_partial(
         &p,
         json!({
             "$ref": "gts://gts.x.core.events.base.v1~",
@@ -499,7 +500,7 @@ fn test_resolve_allows_duplicate_ref_in_allof() {
     });
 
     assert!(SchemaResolver::new(&p).resolve(&schema).is_ok());
-    assert!(resolve(&p, schema).is_object());
+    assert!(resolve_partial(&p, schema).is_object());
 }
 
 #[test]
@@ -938,13 +939,13 @@ fn test_resolve_reads_a_pointer_inside_an_embedded_resource_from_that_resource()
     });
     let p = MapProvider::new().with("gts.x.test.embedded.lib.v1~", lib.clone());
 
-    let on_its_own = resolve(&p, lib);
+    let on_its_own = resolve_partial(&p, lib);
     assert_eq!(
         on_its_own.pointer("/properties/legacy/properties/n"),
         Some(&json!({"type": "integer"}))
     );
 
-    let inlined = resolve(
+    let inlined = resolve_partial(
         &p,
         json!({
             "$id": "gts://gts.x.test.embedded.holder.v1~",
@@ -964,7 +965,7 @@ const DRAFT_07: &str = "http://json-schema.org/draft-07/schema#";
 fn test_resolve_draft07_drops_ref_siblings() {
     // Draft-07 ignores `$ref` siblings, custom keywords included, so the
     // target replaces the reference site alone.
-    let resolved = resolve(
+    let resolved = resolve_partial(
         &MapProvider::new(),
         json!({
             "$schema": DRAFT_07,
@@ -983,7 +984,7 @@ fn test_resolve_draft07_drops_ref_siblings() {
 
 #[test]
 fn test_resolve_draft07_root_ref_keeps_identity_and_dialect() {
-    let resolved = resolve(
+    let resolved = resolve_partial(
         &MapProvider::new(),
         json!({
             "$id": "gts://gts.x.test.root.v1~",
@@ -1012,7 +1013,7 @@ fn test_resolve_draft07_resolves_siblings_of_a_recursive_root_ref() {
         "gts.x.test.other.v1~",
         json!({"$id": "gts://gts.x.test.other.v1~", "$schema": DRAFT_07, "type": "string"}),
     );
-    let resolved = resolve(
+    let resolved = resolve_partial(
         &p,
         json!({
             "$id": "gts://gts.x.test.root.v1~",
@@ -1054,7 +1055,7 @@ fn test_resolve_draft07_reports_a_missing_ref_beside_a_recursive_ref() {
 
 #[test]
 fn test_resolve_ref_target_joins_an_authored_allof() {
-    let resolved = resolve(
+    let resolved = resolve_partial(
         &MapProvider::new(),
         json!({
             "$defs": {"t": {"properties": {"a": true}}},
@@ -1075,4 +1076,362 @@ fn test_resolve_ref_target_joins_an_authored_allof() {
             "allOf": [{"properties": {"a": true}}, {"required": ["a"]}]
         }))
     );
+}
+
+const DRAFT_2020_12: &str = "https://json-schema.org/draft/2020-12/schema";
+
+fn resolve_fully(provider: &MapProvider, schema: &Value) -> Result<Value, StoreError> {
+    SchemaResolver::new(provider)
+        .with_resolution_mode(ResolutionMode::Full)
+        .resolve(schema)
+}
+
+fn resolve_in_both_modes(provider: &MapProvider, schema: &Value) -> [Result<Value, StoreError>; 2] {
+    [
+        SchemaResolver::new(provider).resolve(schema),
+        resolve_fully(provider, schema),
+    ]
+}
+
+#[test]
+fn test_ref_shaped_literals_are_data() {
+    let p = MapProvider::new();
+    for literal in [json!({"$ref": "#"}), json!({"$ref": "#/nope"})] {
+        for dialect in [
+            DRAFT_07,
+            "https://json-schema.org/draft/2019-09/schema",
+            DRAFT_2020_12,
+        ] {
+            let schema = json!({
+                "$schema": dialect,
+                "type": "object",
+                "default": literal,
+                "examples": [literal],
+                "const": literal,
+                "enum": [literal],
+                "x-annotation": {"nested": [literal]},
+                "x-gts-traits": {"value": literal},
+                "properties": {"a": {"default": literal, "const": literal}}
+            });
+            for result in resolve_in_both_modes(&p, &schema) {
+                assert_eq!(result.expect("literals are not references"), schema);
+            }
+        }
+    }
+}
+
+#[test]
+fn test_resolution_is_idempotent() {
+    let p = MapProvider::new().with(
+        "gts.x.test.idem.target.v1~",
+        json!({"type": "object", "default": {"$ref": "#"}}),
+    );
+    let schema = json!({
+        "$schema": DRAFT_2020_12,
+        "$defs": {"A": {"type": "string", "default": {"$ref": "#/$defs/A"}}},
+        "default": {"$ref": "#"},
+        "properties": {
+            "a": {"$ref": "#/$defs/A"},
+            "b": {"$ref": "gts://gts.x.test.idem.target.v1~"}
+        }
+    });
+    let once = resolve_partial(&p, schema);
+    assert_eq!(once["default"], json!({"$ref": "#"}));
+    assert_eq!(resolve_partial(&p, once.clone()), once);
+}
+
+#[test]
+fn test_pointer_into_literal_data_resolves_the_copy_as_a_schema() {
+    let schema = json!({
+        "$schema": DRAFT_2020_12,
+        "$defs": {"T": {"type": "string"}},
+        "default": {"properties": {"v": {"$ref": "#/$defs/T"}}},
+        "properties": {"node": {"$ref": "#/default"}}
+    });
+    let resolved = resolve_partial(&MapProvider::new(), schema.clone());
+    assert_eq!(resolved["default"], schema["default"]);
+    assert_eq!(
+        resolved.pointer("/properties/node/properties/v"),
+        Some(&json!({"type": "string"}))
+    );
+}
+
+#[test]
+fn test_keyword_named_property_maps_are_containers() {
+    let resolved = resolve_partial(
+        &MapProvider::new(),
+        json!({
+            "$schema": DRAFT_07,
+            "definitions": {"A": {"type": "string"}},
+            "required": ["$ref"],
+            "properties": {"$ref": {"$ref": "#/definitions/A"}},
+            "patternProperties": {"$ref": {"$ref": "#/definitions/A"}},
+            "dependencies": {"$ref": {"$ref": "#/definitions/A"}}
+        }),
+    );
+    for keyword in ["properties", "patternProperties", "dependencies"] {
+        assert_eq!(
+            resolved[keyword]["$ref"],
+            json!({"type": "string"}),
+            "{keyword}"
+        );
+    }
+}
+
+#[test]
+fn test_subschema_positions_follow_the_dialect() {
+    let p = MapProvider::new();
+    let draft7 = resolve_partial(
+        &p,
+        json!({
+            "$schema": DRAFT_07,
+            "definitions": {"A": {"type": "string"}},
+            "items": [{"$ref": "#/definitions/A"}],
+            "prefixItems": [{"$ref": "#/nope"}]
+        }),
+    );
+    assert_eq!(draft7["items"], json!([{"type": "string"}]));
+    assert_eq!(draft7["prefixItems"], json!([{"$ref": "#/nope"}]));
+
+    let draft2020 = resolve_partial(
+        &p,
+        json!({
+            "$schema": DRAFT_2020_12,
+            "$defs": {"A": {"type": "string"}},
+            "prefixItems": [{"$ref": "#/$defs/A"}],
+            "dependencies": {"x": {"$ref": "#/nope"}}
+        }),
+    );
+    assert_eq!(draft2020["prefixItems"], json!([{"type": "string"}]));
+    assert_eq!(draft2020["dependencies"], json!({"x": {"$ref": "#/nope"}}));
+}
+
+#[test]
+fn test_resolve_fully_rejects_local_recursion() {
+    let p = MapProvider::new();
+    for schema in [
+        json!({"$schema": DRAFT_07, "properties": {"self": {"$ref": "#"}}}),
+        json!({
+            "$schema": DRAFT_07,
+            "$ref": "#/definitions/node",
+            "definitions": {"node": {"properties": {"next": {"$ref": "#/definitions/node"}}}}
+        }),
+        json!({
+            "$schema": DRAFT_2020_12,
+            "$defs": {
+                "a": {"properties": {"b": {"$ref": "#/$defs/b"}}},
+                "b": {"properties": {"a": {"$ref": "#/$defs/a"}}}
+            },
+            "properties": {"root": {"$ref": "#/$defs/a"}}
+        }),
+        json!({
+            "$schema": DRAFT_2020_12,
+            "x-gts-traits-schema": {"properties": {"again": {"$ref": "#/x-gts-traits-schema"}}}
+        }),
+    ] {
+        SchemaResolver::new(&p)
+            .resolve(&schema)
+            .expect("recursion is legal");
+        assert!(
+            matches!(resolve_fully(&p, &schema), Err(StoreError::CircularRef)),
+            "{schema}"
+        );
+    }
+}
+
+#[test]
+fn test_resolve_fully_rejects_recursion_through_a_gts_reference() {
+    let id = "gts.x.test.mat.tree.v1~";
+    let p = MapProvider::new().with(
+        id,
+        json!({
+            "$id": format!("gts://{id}"),
+            "$schema": DRAFT_07,
+            "properties": {"child": {"$ref": format!("gts://{id}")}}
+        }),
+    );
+    let holder =
+        json!({"$schema": DRAFT_07, "properties": {"tree": {"$ref": format!("gts://{id}")}}});
+    assert!(matches!(
+        resolve_fully(&p, &holder),
+        Err(StoreError::CircularRef)
+    ));
+    // A local recursion inside another type is no less recursive.
+    let local = MapProvider::new().with(
+        id,
+        json!({"$schema": DRAFT_07, "properties": {"child": {"$ref": "#"}}}),
+    );
+    assert!(matches!(
+        resolve_fully(&local, &holder),
+        Err(StoreError::CircularRef)
+    ));
+}
+
+#[test]
+fn test_resolve_fully_inlines_finite_and_repeated_references() {
+    let p = MapProvider::new().with(
+        "gts.x.test.mat.leaf.v1~",
+        json!({
+            "$schema": DRAFT_2020_12,
+            "$defs": {"S": {"type": "string"}},
+            "properties": {"s": {"$ref": "#/$defs/S"}}
+        }),
+    );
+    let schema = json!({
+        "$schema": DRAFT_2020_12,
+        "$defs": {"A": {"$ref": "gts://gts.x.test.mat.leaf.v1~"}},
+        "default": {"$ref": "#"},
+        "properties": {
+            "a": {"$ref": "#/$defs/A"},
+            "b": {"$ref": "#/$defs/A"},
+            "c": {"allOf": [{"$ref": "gts://gts.x.test.mat.leaf.v1~"}, {"$ref": "#/$defs/A"}]}
+        }
+    });
+    let fully_resolved = resolve_fully(&p, &schema).expect("finite references resolve fully");
+    assert_eq!(fully_resolved, resolve_partial(&p, schema));
+    assert_eq!(fully_resolved["default"], json!({"$ref": "#"}));
+    assert_eq!(
+        fully_resolved.pointer("/properties/b/properties/s"),
+        Some(&json!({"type": "string"}))
+    );
+}
+
+#[test]
+fn test_resolve_fully_reports_references_it_cannot_inline() {
+    let p = MapProvider::new();
+    let anchor = json!({
+        "$schema": DRAFT_2020_12,
+        "$defs": {"n": {"$anchor": "node", "type": "string"}},
+        "properties": {"a": {"$ref": "#node"}}
+    });
+    SchemaResolver::new(&p)
+        .resolve(&anchor)
+        .expect("partial resolution keeps an anchor reference");
+    assert!(matches!(
+        resolve_fully(&p, &anchor),
+        Err(StoreError::UnresolvedRefs(refs)) if refs == ["#node"]
+    ));
+
+    let dynamic = json!({"$schema": DRAFT_2020_12, "items": {"$dynamicRef": "#meta"}});
+    assert!(matches!(
+        resolve_fully(&p, &dynamic),
+        Err(StoreError::UnresolvedRefs(refs)) if refs == ["#meta"]
+    ));
+    // Draft-07 has no `$dynamicRef`: there it is an unknown keyword.
+    let draft7 = json!({"$schema": DRAFT_07, "items": {"$dynamicRef": "#meta"}});
+    assert_eq!(resolve_fully(&p, &draft7).expect("not a reference"), draft7);
+
+    assert!(matches!(
+        resolve_fully(&p, &json!({"properties": {"a": {"$ref": "#/nope"}}})),
+        Err(StoreError::UnresolvedRefs(refs)) if refs == ["#/nope"]
+    ));
+
+    let unknown = json!({
+        "$schema": "https://example.test/custom-meta",
+        "items": {"$dynamicRef": "#meta"},
+        "default": {"$dynamicRef": "#literal"}
+    });
+    assert!(matches!(
+        resolve_fully(&p, &unknown),
+        Err(StoreError::UnresolvedRefs(refs)) if refs == ["#meta"]
+    ));
+}
+
+#[test]
+fn test_resolve_in_reads_pointers_and_dialect_from_the_host() {
+    let p = MapProvider::new().with("gts.x.test.frag.v1~", json!({"type": "integer"}));
+    let host = json!({
+        "$schema": DRAFT_07,
+        "definitions": {"R": {"type": "string", "enum": ["P30D"]}},
+        "x-gts-traits-schema": {
+            "properties": {
+                "retention": {"$ref": "#/definitions/R"},
+                "pair": {"items": [{"$ref": "#/definitions/R"}]},
+                "count": {"$ref": "gts://gts.x.test.frag.v1~"},
+                "sample": {"default": {"$ref": "#/nope"}}
+            }
+        }
+    });
+    let resolved = SchemaResolver::new(&p)
+        .resolve_in(&host["x-gts-traits-schema"], &host)
+        .expect("trait schema resolves in its host");
+    assert_eq!(
+        resolved["properties"],
+        json!({
+            "retention": {"type": "string", "enum": ["P30D"]},
+            "pair": {"items": [{"type": "string", "enum": ["P30D"]}]},
+            "count": {"type": "integer"},
+            "sample": {"default": {"$ref": "#/nope"}}
+        })
+    );
+
+    let missing = json!({"x-gts-traits-schema": {"$ref": "#/$defs/Missing"}});
+    assert!(matches!(
+        SchemaResolver::new(&p).resolve_in(&missing["x-gts-traits-schema"], &missing),
+        Err(StoreError::UnresolvedRefs(refs)) if refs == ["#/$defs/Missing"]
+    ));
+}
+
+#[test]
+fn test_resolve_in_keeps_fragment_recursion_targeting_the_host() {
+    let p = MapProvider::new();
+    // A host pointer would dangle in the fragment: it is rebased onto the
+    // host's `$id`, and the host bundled.
+    let host = json!({
+        "$id": "gts://gts.x.test.host.v1~",
+        "$schema": DRAFT_2020_12,
+        "$defs": {"node": {"properties": {"next": {"$ref": "#/$defs/node"}}}},
+        "x-gts-traits-schema": {"$ref": "#/$defs/node"}
+    });
+    let fragment = &host["x-gts-traits-schema"];
+    let resolved = SchemaResolver::new(&p)
+        .resolve_in(fragment, &host)
+        .expect("recursion into the host is legal");
+    assert_eq!(
+        resolved.pointer("/properties/next"),
+        Some(&json!({"$ref": "gts://gts.x.test.host.v1~#/$defs/node"}))
+    );
+    assert_eq!(
+        resolved["$defs"]["gts://gts.x.test.host.v1~"]["$id"],
+        "gts://gts.x.test.host.v1~"
+    );
+    crate::json_schema::validator_for(&resolved).expect("the bundle compiles");
+    assert!(matches!(
+        SchemaResolver::new(&p)
+            .with_resolution_mode(ResolutionMode::Full)
+            .resolve_in(fragment, &host),
+        Err(StoreError::CircularRef)
+    ));
+    // Without an `$id` there is nothing to rebase onto.
+    let anonymous = json!({
+        "$defs": {"node": {"properties": {"next": {"$ref": "#/$defs/node"}}}},
+        "x-gts-traits-schema": {"$ref": "#/$defs/node"}
+    });
+    assert!(matches!(
+        SchemaResolver::new(&p).resolve_in(&anonymous["x-gts-traits-schema"], &anonymous),
+        Err(StoreError::CircularRef)
+    ));
+
+    // An embedded resource keeps its `$id`, so `#` still names it.
+    let host = json!({
+        "$schema": DRAFT_2020_12,
+        "x-gts-traits-schema": {
+            "$id": "https://example.test/trait",
+            "properties": {"next": {"$ref": "#"}}
+        }
+    });
+    let fragment = &host["x-gts-traits-schema"];
+    let resolved = SchemaResolver::new(&p)
+        .resolve_in(fragment, &host)
+        .expect("recursion inside an embedded resource is kept");
+    assert_eq!(
+        resolved.pointer("/properties/next/properties/next"),
+        Some(&json!({"$ref": "#"}))
+    );
+    assert!(matches!(
+        SchemaResolver::new(&p)
+            .with_resolution_mode(ResolutionMode::Full)
+            .resolve_in(fragment, &host),
+        Err(StoreError::CircularRef)
+    ));
 }

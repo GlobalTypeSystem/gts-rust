@@ -94,7 +94,12 @@ fn direct_subresources(
     subresources
 }
 
-fn is_direct_subresource(value: &Value, subresources: &[&Value]) -> bool {
+/// Subschemas of `node` under `dialect`, trait schema included.
+pub(crate) fn subschemas_of(node: &Value, dialect: Draft) -> Vec<&Value> {
+    direct_subresources(node, dialect, EnterTraitSchema::Yes)
+}
+
+pub(crate) fn is_direct_subresource(value: &Value, subresources: &[&Value]) -> bool {
     // Equality is insufficient: identical JSON may also occur in literal data.
     subresources
         .iter()
@@ -161,7 +166,6 @@ impl<'a> SchemaScope<'a> {
 
 type SchemaNodeVisitor<'a> =
     dyn FnMut(&serde_json::Map<String, Value>, &str, SchemaScope<'_>) -> Result<(), String> + 'a;
-type SchemaNodePredicate<'a> = dyn FnMut(&Map<String, Value>) -> bool + 'a;
 type SchemaNodeWalker<'a> = dyn FnMut(&Map<String, Value>, &str) + 'a;
 type ScopedSchemaNodeWalker<'a> = dyn FnMut(&Map<String, Value>, &str, SchemaScope<'_>) + 'a;
 
@@ -278,20 +282,11 @@ fn is_local_ref(node: &Map<String, Value>) -> bool {
 }
 
 /// Whether a schema position contains a local JSON Pointer reference.
-pub(crate) fn contains_local_ref(schema: &Value) -> bool {
-    any_schema_node(schema, &mut is_local_ref)
-}
-
-/// Whether any schema node satisfies `predicate`.
-pub(crate) fn any_schema_node(node: &Value, predicate: &mut SchemaNodePredicate<'_>) -> bool {
+pub(crate) fn contains_local_ref(schema: &Value, dialect: Draft) -> bool {
     let mut found = false;
-    let result = visit_schema_nodes(node, "", EnterTraitSchema::Yes, &mut |map, _, _| {
-        if !found {
-            found = predicate(map);
-        }
-        Ok(())
+    for_each_schema_node_in_dialect(schema, dialect, &mut |map, _, _| {
+        found = found || is_local_ref(map);
     });
-    debug_assert!(result.is_ok());
     found
 }
 
