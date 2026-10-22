@@ -187,6 +187,62 @@ fn is_type_named(ty: &syn::Type, name: &str) -> bool {
     }
 }
 
+/// How a field carries the struct's generic parameter, if it does.
+///
+/// A base struct's generic field is the extension slot derived types fill.
+/// `P` makes the slot mandatory; `Option<P>` lets an instance omit it (or send
+/// `null`), which the base schema then admits.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GenericSlot {
+    /// The field is typed `P`.
+    Required,
+    /// The field is typed `Option<P>`.
+    Optional,
+}
+
+/// Classify `ty` against the generic parameter named `generic_param`.
+fn generic_slot(ty: &syn::Type, generic_param: &str) -> Option<GenericSlot> {
+    let type_str = quote::quote!(#ty).to_string().replace(' ', "");
+    if type_str == generic_param {
+        return Some(GenericSlot::Required);
+    }
+
+    let syn::Type::Path(type_path) = ty else {
+        return None;
+    };
+    if type_path.qself.is_some() {
+        return None;
+    }
+    let segments: Vec<String> = type_path
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect();
+    let is_option = matches!(
+        segments
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .as_slice(),
+        ["Option"] | ["std" | "core", "option", "Option"]
+    );
+    if !is_option {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(arguments) = &type_path.path.segments.last()?.arguments
+    else {
+        return None;
+    };
+    match arguments.args.iter().collect::<Vec<_>>().as_slice() {
+        [syn::GenericArgument::Type(inner)] => {
+            let inner_str = quote::quote!(#inner).to_string().replace(' ', "");
+            (inner_str == generic_param).then_some(GenericSlot::Optional)
+        }
+        _ => None,
+    }
+}
+
 /// Extract serde rename value from field attributes
 fn get_serde_rename(field: &syn::Field) -> Option<String> {
     for attr in &field.attrs {
@@ -211,6 +267,24 @@ fn get_serde_rename(field: &syn::Field) -> Option<String> {
         }
     }
     None
+}
+
+/// Names of the options already set in `#[serde(...)]` attributes on `field`,
+/// such as `default` or `skip_serializing_if`.
+fn serde_field_options(field: &syn::Field) -> Vec<String> {
+    field
+        .attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("serde"))
+        .filter_map(|attr| {
+            attr.parse_args_with(
+                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+            )
+            .ok()
+        })
+        .flatten()
+        .filter_map(|meta| meta.path().get_ident().map(ToString::to_string))
+        .collect()
 }
 
 /// Check if a field has a serde rename matching any of the given names
@@ -593,18 +667,54 @@ fn add_gts_serde_attrs(input: &mut syn::DeriveInput, base: &BaseAttr) {
         && let syn::Fields::Named(ref mut fields) = data_struct.fields
     {
         for field in &mut fields.named {
-            // Check if this field's type is the generic parameter
-            let field_type = &field.ty;
-            let field_type_str = quote::quote!(#field_type).to_string().replace(' ', "");
-            if field_type_str == generic_param {
-                // Add serde attributes to this field
-                let field_attr: syn::Attribute = syn::parse_quote!(
-                    #[serde(
-                        serialize_with = "::gts::serialize_gts",
-                        deserialize_with = "::gts::deserialize_gts"
-                    )]
-                );
-                field.attrs.push(field_attr);
+            // Route the generic field through GtsSerialize/GtsDeserialize. An
+            // optional slot also defaults to `None` when the member is absent,
+            // and omits the member for `None`: derived types narrow the slot to
+            // their payload object, so a serialized `null` would fail the very
+            // type the instance names, while an absent member is valid at every
+            // level of the chain. Options the field already sets are left out,
+            // since serde rejects a repeated one.
+            let Some(slot) = generic_slot(&field.ty, &generic_param) else {
+                continue;
+            };
+            let present = serde_field_options(field);
+            let missing = |option: &str| !present.iter().any(|name| name == option);
+            let (serialize_with, deserialize_with) = match slot {
+                GenericSlot::Required => ("::gts::serialize_gts", "::gts::deserialize_gts"),
+                GenericSlot::Optional => (
+                    "::gts::serialize_gts_option",
+                    "::gts::deserialize_gts_option",
+                ),
+            };
+            let mut options: Vec<proc_macro2::TokenStream> = Vec::new();
+            if slot == GenericSlot::Optional {
+                if missing("default") {
+                    options.push(quote! { default });
+                }
+                if missing("skip_serializing_if") {
+                    options.push(quote! { skip_serializing_if = "Option::is_none" });
+                }
+            }
+            // `with` sets both directions.
+            if missing("with") {
+                if missing("serialize_with") {
+                    options.push(quote! { serialize_with = #serialize_with });
+                }
+                if missing("deserialize_with") {
+                    options.push(quote! { deserialize_with = #deserialize_with });
+                }
+            }
+            if !options.is_empty() {
+                field.attrs.push(syn::parse_quote!(#[serde(#(#options),*)]));
+            }
+            if slot == GenericSlot::Optional {
+                // Hide `default` from the JsonSchema derive only. Seeing it
+                // next to `serialize_with`, schemars renders the default
+                // through a nested `impl Serialize for ..<Option<P>>`, where
+                // `P` is out of scope (E0401). The slot's schema is replaced
+                // with a placeholder anyway, and `Option` keeps it out of
+                // `required` without `default`.
+                field.attrs.push(syn::parse_quote!(#[schemars(!default)]));
             }
         }
     }
@@ -1163,19 +1273,19 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         .map(|tp| tp.ident.to_string());
 
     let mut generic_field_name: Option<String> = None;
+    let mut generic_field_slot: Option<GenericSlot> = None;
 
     // Find the field that uses the generic type (only for structs with fields)
     // Use the SERIALIZED name (serde rename if present, otherwise field ident)
     if let (Some(gp), Some(fields)) = (&generic_param_name, struct_fields) {
         for field in fields {
-            let field_type = &field.ty;
-            let field_type_str = quote::quote!(#field_type).to_string().replace(' ', "");
-            if field_type_str == *gp
+            if let Some(slot) = generic_slot(&field.ty, gp)
                 && let Some(ident) = &field.ident
             {
                 // Use serde rename if present, otherwise use the field identifier
                 generic_field_name =
                     Some(get_serde_rename(field).unwrap_or_else(|| ident.to_string()));
+                generic_field_slot = Some(slot);
                 break;
             }
         }
@@ -1187,6 +1297,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     } else {
         quote! { None }
     };
+    let generic_field_optional = generic_field_slot == Some(GenericSlot::Optional);
 
     // Generate BASE_TYPE_ID constant (private) and compile-time assertion for base struct matching
     let base_schema_id_const = if let Some(parent_id_lit) = &parent_id_lit {
@@ -1314,6 +1425,33 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                     path.push(field);
                 }
                 path
+            }
+        },
+        BaseAttr::IsBase => quote! {},
+    };
+
+    // A parent whose generic field is `Option<P>` admits instances without it.
+    // A derived type that fills that slot with a payload requires it: add the
+    // slot to `required` on the overlay level that holds it. A derived type
+    // that declares no properties is a body-less type: its instances may still
+    // omit the slot or send `null`, so the slot stays optional and nullable
+    // (and, being closed and empty, admits only `{}` when present). A bare-`P`
+    // slot is already required by the parent itself.
+    let declares_payload = !property_names.is_empty();
+    let require_parent_slot = match &args.base {
+        BaseAttr::Parent(parent_ident) => quote! {
+            if <#parent_ident<()> as ::gts::GtsSchema>::GENERIC_FIELD_OPTIONAL
+                && let Some((slot, outer)) = path_refs.split_last()
+            {
+                let mut level = &mut overlay;
+                for segment in outer {
+                    level = &mut level["properties"][*segment];
+                }
+                if #declares_payload {
+                    level["required"] = serde_json::json!([slot]);
+                } else {
+                    level["properties"][*slot]["type"] = serde_json::json!(["object", "null"]);
+                }
             }
         },
         BaseAttr::IsBase => quote! {},
@@ -1871,6 +2009,11 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         let generic_param = input.generics.type_params().next().unwrap();
         let generic_ident = &generic_param.ident;
         let generic_field_for_path = generic_field_name.as_deref().unwrap_or_default();
+        let generic_slot_placeholder = if generic_field_slot == Some(GenericSlot::Optional) {
+            quote! { serde_json::json!({ "type": ["object", "null"] }) }
+        } else {
+            quote! { serde_json::json!({ "type": "object" }) }
+        };
 
         quote! {
             #outer_generic_path_method
@@ -1962,13 +2105,12 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                     schema_val.get("additionalProperties").cloned();
 
                 // Replace the generic field with a simple {"type": "object"} placeholder
-                // The generic field should not be expanded, regardless of the concrete type parameter
+                // (`["object", "null"]` for an `Option<P>` slot). The generic field
+                // should not be expanded, regardless of the concrete type parameter.
                 if let Some(generic_field) = Self::GENERIC_FIELD {
                     if let Some(props) = properties.as_object_mut() {
                         if props.contains_key(generic_field) {
-                            props.insert(generic_field.to_owned(), serde_json::json!({
-                                "type": "object"
-                            }));
+                            props.insert(generic_field.to_owned(), #generic_slot_placeholder);
                         }
                     }
                 }
@@ -2032,13 +2174,15 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 // invariants (gts-spec sec 3.1).
                 let owned_path = Self::outer_generic_path();
                 let path_refs: Vec<&str> = owned_path.iter().copied().collect();
-                let innermost_generic_field =
-                    <#generic_ident as ::gts::GtsSchema>::GENERIC_FIELD;
+                // Our own generic field already holds its placeholder (nullable
+                // for an `Option<P>` slot), so pass no generic field: the type
+                // argument's slot is not ours, and naming it would let the
+                // schema for this type ID vary with the argument.
                 let mut nested_properties = Self::wrap_in_nesting_path(
                     &path_refs,
                     properties,
                     required.clone(),
-                    innermost_generic_field,
+                    None,
                 );
                 #apply_declared_additional_properties_to_derived_level
 
@@ -2055,6 +2199,11 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 // tightness invariant the macro maintains is carried by the
                 // parent's `additionalProperties: false`, which the validator
                 // applies via the resolved $ref inside `allOf[0]`.
+                let mut overlay = serde_json::json!({
+                    "type": "object",
+                    "properties": nested_properties
+                });
+                #require_parent_slot
                 let mut schema = serde_json::json!({
                     "$id": format!("gts://{}", type_id),
                     "$schema": ::gts::JSON_SCHEMA_DRAFT_07,
@@ -2062,10 +2211,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                     "type": "object",
                     "allOf": [
                         { "$ref": format!("gts://{}", parent_type_id) },
-                        {
-                            "type": "object",
-                            "properties": nested_properties
-                        }
+                        overlay
                     ]
                 });
                 if let Some(definitions) = definitions {
@@ -2175,6 +2321,11 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 #apply_declared_additional_properties_to_derived_level
                 // No top-level `additionalProperties: false` here either -
                 // see the matching comment in `gts_schema_for!` above.
+                let mut overlay = serde_json::json!({
+                    "type": "object",
+                    "properties": nested_properties
+                });
+                #require_parent_slot
                 let mut schema = serde_json::json!({
                     "$id": format!("gts://{}", type_id),
                     "$schema": ::gts::JSON_SCHEMA_DRAFT_07,
@@ -2182,10 +2333,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                     "type": "object",
                     "allOf": [
                         { "$ref": format!("gts://{}", parent_type_id) },
-                        {
-                            "type": "object",
-                            "properties": nested_properties
-                        }
+                        overlay
                     ]
                 });
                 if let Some(definitions) = definitions {
@@ -2310,33 +2458,47 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                         // Use serde rename if present, otherwise use field name
                         let serialize_name =
                             get_serde_rename(field).unwrap_or_else(|| ident.to_string());
-                        // Check if this field's type is the generic parameter
-                        let is_generic = generic_param_name.as_ref().is_some_and(|gp| {
-                            let field_type = &field.ty;
-                            let field_type_str =
-                                quote::quote!(#field_type).to_string().replace(' ', "");
-                            field_type_str == *gp
-                        });
-                        Some((ident.clone(), serialize_name, is_generic))
+                        // Check whether this field carries the generic parameter
+                        let slot = generic_param_name
+                            .as_ref()
+                            .and_then(|gp| generic_slot(&field.ty, gp));
+                        Some((ident.clone(), serialize_name, slot))
                     })
                     .collect()
             })
             .unwrap_or_default();
 
-        let num_fields = fields_for_serialize.len();
+        // The length hint counts every field but an absent optional slot,
+        // which is skipped rather than written as `null` (see
+        // `add_gts_serde_attrs`).
+        let num_required_fields = fields_for_serialize
+            .iter()
+            .filter(|(_, _, slot)| *slot != Some(GenericSlot::Optional))
+            .count();
+        let optional_slot_len: Vec<_> = fields_for_serialize
+            .iter()
+            .filter(|(_, _, slot)| *slot == Some(GenericSlot::Optional))
+            .map(|(ident, _, _)| quote! { + usize::from(self.#ident.is_some()) })
+            .collect();
         let field_serialize_calls: Vec<_> = fields_for_serialize
             .iter()
-            .map(|(ident, serialize_name, is_generic)| {
-                if *is_generic {
-                    // For generic fields, use GtsSerializeWrapper
-                    quote! {
-                        state.serialize_field(#serialize_name, &::gts::GtsSerializeWrapper(&self.#ident))?;
+            .map(|(ident, serialize_name, slot)| match slot {
+                // For generic fields, use GtsSerializeWrapper
+                Some(GenericSlot::Required) => quote! {
+                    state.serialize_field(#serialize_name, &::gts::GtsSerializeWrapper(&self.#ident))?;
+                },
+                Some(GenericSlot::Optional) => quote! {
+                    match &self.#ident {
+                        Some(value) => state.serialize_field(
+                            #serialize_name,
+                            &::gts::GtsSerializeWrapper(value),
+                        )?,
+                        None => state.skip_field(#serialize_name)?,
                     }
-                } else {
-                    quote! {
-                        state.serialize_field(#serialize_name, &self.#ident)?;
-                    }
-                }
+                },
+                None => quote! {
+                    state.serialize_field(#serialize_name, &self.#ident)?;
+                },
             })
             .collect();
 
@@ -2348,9 +2510,18 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
             .iter()
             .map(|(_, name, _)| name.as_str())
             .collect();
-        let _fields_is_generic: Vec<_> = fields_for_serialize
+        // An absent optional slot is `None`; every other absent field is an error.
+        let field_finish_code: Vec<_> = fields_for_serialize
             .iter()
-            .map(|(_, _, is_generic)| *is_generic)
+            .map(|(ident, name, slot)| {
+                if *slot == Some(GenericSlot::Optional) {
+                    quote! { let #ident = #ident.unwrap_or(None); }
+                } else {
+                    quote! {
+                        let #ident = #ident.ok_or_else(|| serde::de::Error::missing_field(#name))?;
+                    }
+                }
+            })
             .collect();
 
         let struct_name_str = struct_name.to_string();
@@ -2406,25 +2577,27 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         // Generate field visit code - for generic fields, use GtsDeserializeWrapper
         let field_visit_code: Vec<_> = fields_for_serialize
             .iter()
-            .map(|(ident, name, is_generic)| {
-                if *is_generic {
-                    quote! {
-                        Field::#ident => {
-                            if #ident.is_some() {
-                                return Err(serde::de::Error::duplicate_field(#name));
-                            }
-                            let wrapper: ::gts::GtsDeserializeWrapper<_> = map.next_value()?;
-                            #ident = Some(wrapper.0);
+            .map(|(ident, name, slot)| {
+                let read_value = match slot {
+                    Some(GenericSlot::Required) => quote! {
+                        let wrapper: ::gts::GtsDeserializeWrapper<_> = map.next_value()?;
+                        #ident = Some(wrapper.0);
+                    },
+                    // `null` reads as `None`, like an absent member.
+                    Some(GenericSlot::Optional) => quote! {
+                        let wrapper: Option<::gts::GtsDeserializeWrapper<_>> = map.next_value()?;
+                        #ident = Some(wrapper.map(|wrapper| wrapper.0));
+                    },
+                    None => quote! {
+                        #ident = Some(map.next_value()?);
+                    },
+                };
+                quote! {
+                    Field::#ident => {
+                        if #ident.is_some() {
+                            return Err(serde::de::Error::duplicate_field(#name));
                         }
-                    }
-                } else {
-                    quote! {
-                        Field::#ident => {
-                            if #ident.is_some() {
-                                return Err(serde::de::Error::duplicate_field(#name));
-                            }
-                            #ident = Some(map.next_value()?);
-                        }
+                        #read_value
                     }
                 }
             })
@@ -2438,7 +2611,10 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                     __S: serde::Serializer,
                 {
                     use serde::ser::SerializeStruct;
-                    let mut state = serializer.serialize_struct(#struct_name_str, #num_fields)?;
+                    let mut state = serializer.serialize_struct(
+                        #struct_name_str,
+                        #num_required_fields #(#optional_slot_len)*,
+                    )?;
                     #(#field_serialize_calls)*
                     state.end()
                 }
@@ -2486,8 +2662,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                                 }
                             }
 
-                            #(let #field_idents = #field_idents
-                                .ok_or_else(|| serde::de::Error::missing_field(#field_names))?;)*
+                            #(#field_finish_code)*
 
                             Ok(#struct_name {
                                 #(#field_idents,)*
@@ -2689,6 +2864,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         impl #impl_generics ::gts::GtsSchema for #struct_name #ty_generics #gts_schema_where_clause {
             const TYPE_ID: &'static str = #type_id_lit;
             const GENERIC_FIELD: Option<&'static str> = #generic_field_option;
+            const GENERIC_FIELD_OPTIONAL: bool = #generic_field_optional;
             // Modifiers, so children / `gts_instance!` can guard at compile time
             // on the parent's / target's finality / abstractness.
             const GTS_FINAL: bool = #gts_final_value;

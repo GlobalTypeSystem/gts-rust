@@ -1,0 +1,36 @@
+{
+  "$id": "gts://gts.x.test.optmid.event.v1~x.test.optmid.record.v1~x.test.optmid.login.v1~",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "allOf": [
+    {
+      "$ref": "gts://gts.x.test.optmid.event.v1~x.test.optmid.record.v1~"
+    },
+    {
+      "properties": {
+        "payload": {
+          "properties": {
+            "details": {
+              "additionalProperties": false,
+              "properties": {
+                "ip": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "ip"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "details"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "object"
+    }
+  ],
+  "description": "Leaf with a payload",
+  "type": "object"
+}

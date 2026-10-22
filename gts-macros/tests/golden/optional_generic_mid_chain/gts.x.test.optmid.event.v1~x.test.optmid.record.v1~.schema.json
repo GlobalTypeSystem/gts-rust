@@ -1,0 +1,34 @@
+{
+  "$id": "gts://gts.x.test.optmid.event.v1~x.test.optmid.record.v1~",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "allOf": [
+    {
+      "$ref": "gts://gts.x.test.optmid.event.v1~"
+    },
+    {
+      "properties": {
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "actor": {
+              "type": "string"
+            },
+            "details": {
+              "type": [
+                "object",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "actor"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "object"
+    }
+  ],
+  "description": "Mid-chain record whose details may be absent",
+  "type": "object"
+}

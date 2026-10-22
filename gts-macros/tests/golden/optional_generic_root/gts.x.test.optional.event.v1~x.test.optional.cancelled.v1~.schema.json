@@ -1,0 +1,25 @@
+{
+  "$id": "gts://gts.x.test.optional.event.v1~x.test.optional.cancelled.v1~",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "allOf": [
+    {
+      "$ref": "gts://gts.x.test.optional.event.v1~"
+    },
+    {
+      "properties": {
+        "data": {
+          "additionalProperties": false,
+          "properties": {},
+          "required": [],
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  ],
+  "description": "Body-less leaf",
+  "type": "object"
+}

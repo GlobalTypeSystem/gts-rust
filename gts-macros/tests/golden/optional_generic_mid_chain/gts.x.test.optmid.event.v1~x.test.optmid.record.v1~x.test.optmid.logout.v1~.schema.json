@@ -1,0 +1,30 @@
+{
+  "$id": "gts://gts.x.test.optmid.event.v1~x.test.optmid.record.v1~x.test.optmid.logout.v1~",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "allOf": [
+    {
+      "$ref": "gts://gts.x.test.optmid.event.v1~x.test.optmid.record.v1~"
+    },
+    {
+      "properties": {
+        "payload": {
+          "properties": {
+            "details": {
+              "additionalProperties": false,
+              "properties": {},
+              "required": [],
+              "type": [
+                "object",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    }
+  ],
+  "description": "Body-less leaf",
+  "type": "object"
+}
