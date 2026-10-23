@@ -1,17 +1,21 @@
 //! `$ref` resolution for registered GTS schemas: inlining `gts://` and local
-//! `#/` references into a self-contained body. A `$ref` target is inlined at a
-//! non-root position, so its root-only keys (`$id`/`$schema` and the `x-gts-*`
+//! `#/` references into the body. A `$ref` target is inlined at a non-root
+//! position, so its root-only keys (`$id`/`$schema` and the `x-gts-*`
 //! type-level modifiers) are stripped on the way in. `allOf` and the other
 //! combinators are preserved verbatim — composition is left to the JSON Schema
 //! validator, not flattened here.
+//!
+//! Only schema positions are walked; `default`, `const` and other data are
+//! copied verbatim.
 //!
 //! [`SchemaResolver`] depends only on the narrow [`SchemaProvider`] lookup, not
 //! on `GtsStore` directly; the store implements `SchemaProvider` and exposes
 //! `resolve_schema_refs` as a thin wrapper.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use jsonschema::Draft;
 use serde_json::{Map, Value};
 
 use crate::gts::GTS_ID_URI_PREFIX;
@@ -33,338 +37,390 @@ pub(crate) trait SchemaProvider {
 /// Maximum `$ref` chain depth before resolution fails.
 const MAX_REF_CHAIN_DEPTH: usize = 32;
 
+/// How completely references must be inlined.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum ResolutionMode {
+    /// Recursive same-document `$ref`s are kept, so recursive schemas resolve.
+    #[default]
+    Partial,
+    /// No reference may remain; recursion is [`StoreError::CircularRef`].
+    Full,
+}
+
 /// Inlines `$ref`s in a JSON Schema using a [`SchemaProvider`] for lookups.
 pub(crate) struct SchemaResolver<'a> {
     provider: &'a dyn SchemaProvider,
+    resolution_mode: ResolutionMode,
+    /// Keep resource references when resolving a recursive fragment.
+    contextual: bool,
     /// Every document the current resolution has met, and every resource
     /// embedded in one, mapped to its document. A same-document reference
     /// inside an embedded resource resolves from that resource.
     documents: RefCell<HashMap<ObjectKey, ObjectKey>>,
-    /// Whether the root declares Draft-07, which ignores `$ref` siblings.
-    /// GTS forbids dialect switches, so the root's dialect holds everywhere.
+    /// The host document's dialect; GTS forbids dialect switches.
+    dialect: Cell<Draft>,
+    /// Whether the dialect is Draft-07, which ignores `$ref` siblings.
     ignores_ref_siblings: Cell<bool>,
+    /// Whether the node being resolved is its host document.
+    resolves_host: Cell<bool>,
 }
 
 /// A JSON object, by identity.
 type ObjectKey = *const Map<String, Value>;
 
+#[derive(Default)]
+struct Walk {
+    /// `$ref` targets on the current DFS path.
+    visited: HashSet<String>,
+    /// External targets whose type-level metadata is omitted.
+    inlined_roots: HashSet<ObjectKey>,
+    cycle_found: bool,
+    unresolved_refs: Vec<String>,
+    needs_bundle: bool,
+}
+
 impl<'a> SchemaResolver<'a> {
     pub(crate) fn new(provider: &'a dyn SchemaProvider) -> Self {
         Self {
             provider,
+            resolution_mode: ResolutionMode::Partial,
+            contextual: false,
             documents: RefCell::default(),
+            dialect: Cell::new(Draft::default()),
             ignores_ref_siblings: Cell::default(),
+            resolves_host: Cell::default(),
         }
     }
 
-    /// Strict `$ref` resolution that returns an error if any supported local
-    /// JSON Pointer or external GTS `$ref` cannot be resolved, or a circular
-    /// `$ref` is detected.
+    pub(crate) fn with_resolution_mode(mut self, resolution_mode: ResolutionMode) -> Self {
+        self.resolution_mode = resolution_mode;
+        self
+    }
+
+    /// # Errors
+    /// See [`Self::resolve_in`].
+    pub(crate) fn resolve(&self, schema: &Value) -> Result<Value, StoreError> {
+        self.resolve_in(schema, schema)
+    }
+
+    /// Resolves `node`, the document `host` or a schema inside it; local
+    /// pointers and the dialect come from `host`. Under
+    /// [`ResolutionMode::Partial`], a fragment's recursive pointer into `host`
+    /// is rebased onto `host`'s `$id`, and `host` is bundled into the result.
     ///
-    /// Uses DFS-path cycle detection: a `$ref` target is held in the seen-set
-    /// only while its resolution is in progress on the current DFS stack and
-    /// removed once that subtree finishes. Re-entry into an in-progress target
-    /// is a true cycle. Multiple independent occurrences of the same `$ref`
-    /// (e.g. duplicate refs in `allOf`) are NOT flagged — redundant manual
-    /// aggregation across an `$id` chain is allowed.
+    /// Cycle detection is per DFS path: repeated independent `$ref`s to one
+    /// target (e.g. duplicates in `allOf`) are not recursion.
     ///
     /// # Errors
-    /// Returns [`StoreError::UnresolvedRefs`] if any supported local JSON
-    /// Pointer or external GTS `$ref` cannot be resolved, or
-    /// [`StoreError::CircularRef`] if a circular `$ref` is detected.
-    pub(crate) fn resolve(&self, schema: &Value) -> Result<Value, StoreError> {
+    /// [`StoreError::CircularRef`] for recursion that is not kept;
+    /// [`StoreError::UnresolvedRefs`] for an unresolvable `$ref`, or under
+    /// [`ResolutionMode::Full`] any reference left (`#anchor`, `$dynamicRef`).
+    pub(crate) fn resolve_in(&self, node: &Value, host: &Value) -> Result<Value, StoreError> {
         self.documents.borrow_mut().clear();
-        self.ignores_ref_siblings.set(matches!(
-            crate::schema_dialect::document_dialect(schema),
-            Ok(jsonschema::Draft::Draft7)
-        ));
-        self.register_document(schema);
-        let mut visited = std::collections::HashSet::new();
-        let mut cycle_found = false;
-        let mut unresolved_refs = Vec::new();
-        let resolved = self.resolve_inner(
-            schema,
-            schema,
-            schema,
-            &mut visited,
-            &mut cycle_found,
-            &mut unresolved_refs,
-        );
-        if cycle_found {
-            Err(StoreError::CircularRef)
-        } else if !unresolved_refs.is_empty() {
-            Err(StoreError::UnresolvedRefs(unresolved_refs))
-        } else {
-            Ok(resolved)
+        let dialect = Draft::default().detect(host);
+        self.dialect.set(dialect);
+        self.ignores_ref_siblings.set(dialect == Draft::Draft7);
+        self.resolves_host.set(std::ptr::eq(node, host));
+        self.register_document(host);
+        let mut walk = Walk::default();
+        let resolved = self.resolve_inner(node, host, host, &mut walk);
+        if (walk.cycle_found || walk.needs_bundle)
+            && walk.unresolved_refs.is_empty()
+            && self.resolution_mode == ResolutionMode::Partial
+            && !self.resolves_host.get()
+            && !self.contextual
+            && resource_uri(host).is_some()
+        {
+            return Self {
+                contextual: true,
+                ..Self::new(self.provider)
+            }
+            .resolve_in(node, host);
         }
+        if walk.cycle_found {
+            return Err(StoreError::CircularRef);
+        }
+        if !walk.unresolved_refs.is_empty() {
+            return Err(StoreError::UnresolvedRefs(walk.unresolved_refs));
+        }
+        if self.resolution_mode == ResolutionMode::Full {
+            let remaining = remaining_refs(&resolved, dialect);
+            if !remaining.is_empty() {
+                return Err(StoreError::UnresolvedRefs(remaining));
+            }
+        }
+        if walk.needs_bundle {
+            return self.bundle_resources(resolved, host);
+        }
+        Ok(resolved)
     }
 
-    #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
+    /// Embed authored resources so references keep their original targets.
+    fn bundle_resources(&self, mut fragment: Value, host: &Value) -> Result<Value, StoreError> {
+        let mut resources = HashMap::new();
+        let mut pending = vec![host];
+        while let Some(document) = pending.pop() {
+            let id = resource_uri(document).ok_or(StoreError::CircularRef)?;
+            if resources.insert(id.to_owned(), document).is_some() {
+                continue;
+            }
+            let mut references = Vec::new();
+            crate::schema_modifiers::for_each_schema_node_in_dialect(
+                document,
+                self.dialect.get(),
+                &mut |node, _, _| {
+                    if let Some(reference) = node
+                        .get("$ref")
+                        .and_then(Value::as_str)
+                        .and_then(|uri| uri.strip_prefix(GTS_ID_URI_PREFIX))
+                    {
+                        let (id, _) = reference.split_once('#').unwrap_or((reference, ""));
+                        references.push(id.to_owned());
+                    }
+                },
+            );
+            for reference in references {
+                if resources.contains_key(&format!("{GTS_ID_URI_PREFIX}{reference}")) {
+                    continue;
+                }
+                let document = self.provider.schema_content(&reference).ok_or_else(|| {
+                    StoreError::UnresolvedRefs(vec![format!("{GTS_ID_URI_PREFIX}{reference}")])
+                })?;
+                pending.push(document);
+            }
+        }
+        let defs = if self.dialect.get() == Draft::Draft7 {
+            "definitions"
+        } else {
+            "$defs"
+        };
+        let Some(Value::Object(defs)) = fragment
+            .as_object_mut()
+            .map(|map| map.entry(defs).or_insert_with(|| Value::Object(Map::new())))
+        else {
+            return Err(StoreError::CircularRef);
+        };
+        for (id, document) in resources {
+            let mut key = id;
+            while defs.contains_key(&key) {
+                key.push('_');
+            }
+            defs.insert(key, document.clone());
+        }
+        Ok(fragment)
+    }
+
     fn resolve_inner(
         &self,
         schema: &Value,
         local_root: &Value,
         root_doc: &Value,
-        visited: &mut std::collections::HashSet<String>,
-        cycle_found: &mut bool,
-        unresolved_refs: &mut Vec<String>,
+        walk: &mut Walk,
     ) -> Value {
-        // Recursively resolve $ref references in the schema
-        match schema {
-            Value::Object(map) => {
-                let local_root = if self.is_embedded(schema) {
-                    schema
-                } else {
-                    local_root
-                };
-                if let Some(Value::String(ref_uri)) = map.get("$ref") {
-                    // Handle internal JSON Schema references like #/$defs/GtsInstanceId
-                    // These should be inlined to match schemars 0.8 behavior (is_referenceable=false)
-                    match ref_uri.as_str() {
-                        "#/$defs/GtsInstanceId" => {
-                            return crate::GtsInstanceId::json_schema_value();
-                        }
-                        "#/$defs/GtsTypeId" | "#/$defs/GtsSchemaId" => {
-                            return crate::GtsTypeId::json_schema_value();
-                        }
-                        s if s == "#" || s.starts_with("#/") => {
-                            if let Some(pointer) = ref_uri.strip_prefix('#') {
-                                let local_ref_key =
-                                    format!("local:{:p}:{ref_uri}", std::ptr::from_ref(local_root));
-                                if visited.contains(&local_ref_key) {
-                                    // Only recursion inside the document being
-                                    // resolved keeps the same anchor.
-                                    if !self.is_in(local_root, root_doc) {
-                                        *cycle_found = true;
-                                    }
-                                    return Value::Object(map.clone());
-                                }
-                                if visited.len() >= MAX_REF_CHAIN_DEPTH {
-                                    unresolved_refs.push(format!(
-                                        "{ref_uri} (nested deeper than \
-                                         {MAX_REF_CHAIN_DEPTH} chained $refs)"
-                                    ));
-                                    return Value::Object(map.clone());
-                                }
-                                if let Some((target, target_root)) =
-                                    self.locate(local_root, pointer)
-                                {
-                                    visited.insert(local_ref_key.clone());
-                                    let resolved = self.resolve_inner(
-                                        target,
-                                        target_root,
-                                        root_doc,
-                                        visited,
-                                        cycle_found,
-                                        unresolved_refs,
-                                    );
-                                    visited.remove(&local_ref_key);
-                                    return self.resolved_ref_with_siblings(
-                                        map,
-                                        resolved,
-                                        local_root,
-                                        root_doc,
-                                        visited,
-                                        cycle_found,
-                                        unresolved_refs,
-                                    );
-                                }
-                                unresolved_refs.push(ref_uri.clone());
-                            }
+        let Value::Object(map) = schema else {
+            return schema.clone();
+        };
+        let local_root = if self.is_embedded(schema) {
+            schema
+        } else {
+            local_root
+        };
+        let Some(Value::String(ref_uri)) = map.get("$ref") else {
+            // Flattening combinators would change intersection semantics.
+            return Value::Object(self.resolve_keywords(schema, local_root, root_doc, walk));
+        };
 
-                            // Unsupported or missing internal references are
-                            // kept in the lenient output after being reported.
-                            let mut new_map = serde_json::Map::new();
-                            for (k, v) in map {
-                                new_map.insert(
-                                    k.clone(),
-                                    self.resolve_inner(
-                                        v,
-                                        local_root,
-                                        root_doc,
-                                        visited,
-                                        cycle_found,
-                                        unresolved_refs,
-                                    ),
-                                );
-                            }
-                            return Value::Object(new_map);
-                        }
-                        _ => {} // Fall through to external ref handling
-                    }
-
-                    // Normalize the ref: strip gts:// prefix to get canonical GTS ID
-                    let canonical_ref = ref_uri.strip_prefix(GTS_ID_URI_PREFIX).unwrap_or(ref_uri);
-                    let (lookup_ref, pointer_fragment) =
-                        if let Some((id, fragment)) = canonical_ref.split_once('#') {
-                            let pointer = if fragment.is_empty() {
-                                Some("")
-                            } else if fragment.starts_with('/') {
-                                Some(fragment)
-                            } else {
-                                None
-                            };
-                            (id, pointer)
-                        } else {
-                            (canonical_ref, None)
-                        };
-
-                    // Cycle detection: skip if we've already visited this ref
-                    if visited.contains(canonical_ref) {
-                        // Circular $ref detected. Keep this `$ref` in lenient
-                        // output to avoid weakening the schema while preventing
-                        // infinite recursion.
-                        *cycle_found = true;
-                        let mut new_map = serde_json::Map::new();
-                        for (k, v) in map {
-                            new_map.insert(
-                                k.clone(),
-                                if k == "$ref" {
-                                    v.clone()
-                                } else {
-                                    self.resolve_inner(
-                                        v,
-                                        local_root,
-                                        root_doc,
-                                        visited,
-                                        cycle_found,
-                                        unresolved_refs,
-                                    )
-                                },
-                            );
-                        }
-                        return Value::Object(new_map);
-                    }
-
-                    if visited.len() >= MAX_REF_CHAIN_DEPTH {
-                        unresolved_refs.push(format!(
-                            "{canonical_ref} (nested deeper than \
-                             {MAX_REF_CHAIN_DEPTH} chained $refs)"
-                        ));
-                        return Value::Object(map.clone());
-                    }
-
-                    // Try to resolve the reference using the canonical ID
-                    if let Some(content) = self.provider.schema_content(lookup_ref) {
-                        self.register_document(content);
-                        let target_content = match pointer_fragment {
-                            Some(pointer) => self.locate(content, pointer),
-                            None if canonical_ref.contains('#') => None,
-                            None => Some((content, content)),
-                        };
-
-                        if let Some((target_content, target_root)) = target_content {
-                            // Mark as visited before recursing
-                            visited.insert(canonical_ref.to_owned());
-                            // Recursively resolve refs in the referenced schema
-                            let mut resolved = self.resolve_inner(
-                                target_content,
-                                target_root,
-                                root_doc,
-                                visited,
-                                cycle_found,
-                                unresolved_refs,
-                            );
-                            visited.remove(canonical_ref);
-
-                            // Strip keys meaningful only at the referenced type's root.
-                            if let Value::Object(ref mut resolved_map) = resolved {
-                                resolved_map.remove("$id");
-                                resolved_map.remove("$schema");
-                                resolved_map.remove(crate::schema_modifiers::X_GTS_FINAL);
-                                resolved_map.remove(crate::schema_modifiers::X_GTS_ABSTRACT);
-                                resolved_map.remove(crate::schema_traits::X_GTS_TRAITS);
-                                resolved_map.remove(crate::schema_traits::X_GTS_TRAITS_SCHEMA);
-                            }
-
-                            return self.resolved_ref_with_siblings(
-                                map,
-                                resolved,
-                                local_root,
-                                root_doc,
-                                visited,
-                                cycle_found,
-                                unresolved_refs,
-                            );
-                        }
-                    }
-                    if !ref_uri.starts_with('#') {
-                        unresolved_refs.push(ref_uri.clone());
-                    }
-
-                    // If we can't resolve, keep the $ref in lenient output. Dropping
-                    // it would silently weaken the schema, especially when only
-                    // annotation siblings such as `description` remain.
-                    let mut new_map = serde_json::Map::new();
-                    for (k, v) in map {
-                        new_map.insert(
-                            k.clone(),
-                            if k == "$ref" {
-                                v.clone()
-                            } else {
-                                self.resolve_inner(
-                                    v,
-                                    local_root,
-                                    root_doc,
-                                    visited,
-                                    cycle_found,
-                                    unresolved_refs,
-                                )
-                            },
-                        );
-                    }
-                    return Value::Object(new_map);
-                }
-
-                // Flattening combinators would change intersection semantics.
-
-                // Recursively process all properties
-                let mut new_map = serde_json::Map::new();
-                for (k, v) in map {
-                    new_map.insert(
-                        k.clone(),
-                        self.resolve_inner(
-                            v,
-                            local_root,
-                            root_doc,
-                            visited,
-                            cycle_found,
-                            unresolved_refs,
-                        ),
-                    );
-                }
-                Value::Object(new_map)
+        // Handle internal JSON Schema references like #/$defs/GtsInstanceId
+        // These should be inlined to match schemars 0.8 behavior (is_referenceable=false)
+        match ref_uri.as_str() {
+            "#/$defs/GtsInstanceId" => {
+                return crate::GtsInstanceId::json_schema_value();
             }
-            Value::Array(arr) => Value::Array(
-                arr.iter()
-                    .map(|v| {
-                        self.resolve_inner(
-                            v,
-                            local_root,
-                            root_doc,
-                            visited,
-                            cycle_found,
-                            unresolved_refs,
-                        )
+            "#/$defs/GtsTypeId" | "#/$defs/GtsSchemaId" => {
+                return crate::GtsTypeId::json_schema_value();
+            }
+            s if s == "#" || s.starts_with("#/") => {
+                let pointer = &ref_uri[1..];
+                if self.contextual
+                    && pointer.is_empty()
+                    && let Some(id) = resource_uri(local_root)
+                {
+                    walk.needs_bundle = true;
+                    let resolved = serde_json::json!({"$ref": format!("{id}{ref_uri}")});
+                    return self
+                        .resolved_ref_with_siblings(schema, resolved, local_root, root_doc, walk);
+                }
+                let local_ref_key = format!("local:{:p}:{ref_uri}", std::ptr::from_ref(local_root));
+                if walk.visited.contains(&local_ref_key) {
+                    let mut kept = map.clone();
+                    if (self.contextual || self.rebases_recursion(local_root, root_doc))
+                        && let Some(id) = resource_uri(local_root)
+                    {
+                        kept.insert("$ref".to_owned(), Value::String(format!("{id}{ref_uri}")));
+                        walk.needs_bundle = true;
+                    } else if !self.keeps_recursion(local_root, root_doc) {
+                        walk.cycle_found = true;
+                    }
+                    return Value::Object(kept);
+                }
+                if walk.visited.len() >= MAX_REF_CHAIN_DEPTH {
+                    walk.unresolved_refs.push(format!(
+                        "{ref_uri} (nested deeper than {MAX_REF_CHAIN_DEPTH} chained $refs)"
+                    ));
+                    return Value::Object(map.clone());
+                }
+                if let Some((target, target_root)) = self.locate(local_root, pointer) {
+                    walk.visited.insert(local_ref_key.clone());
+                    let resolved = self.resolve_inner(target, target_root, root_doc, walk);
+                    walk.visited.remove(&local_ref_key);
+                    return self
+                        .resolved_ref_with_siblings(schema, resolved, local_root, root_doc, walk);
+                }
+                walk.unresolved_refs.push(ref_uri.clone());
+
+                // Keep the reference while collecting resolution errors.
+                return Value::Object(self.resolve_keywords(schema, local_root, root_doc, walk));
+            }
+            _ => {} // Fall through to external ref handling
+        }
+
+        // Normalize the ref: strip gts:// prefix to get canonical GTS ID
+        let canonical_ref = ref_uri.strip_prefix(GTS_ID_URI_PREFIX).unwrap_or(ref_uri);
+        let (lookup_ref, pointer_fragment) =
+            if let Some((id, fragment)) = canonical_ref.split_once('#') {
+                let pointer = if fragment.is_empty() {
+                    Some("")
+                } else if fragment.starts_with('/') {
+                    Some(fragment)
+                } else {
+                    None
+                };
+                (id, pointer)
+            } else {
+                (canonical_ref, None)
+            };
+
+        // Cycle detection: skip if we've already visited this ref
+        if walk.visited.contains(canonical_ref) {
+            // Keep the cycle edge rather than weakening the schema.
+            if self.contextual {
+                walk.needs_bundle = true;
+            } else {
+                walk.cycle_found = true;
+            }
+            return Value::Object(self.resolve_keywords(schema, local_root, root_doc, walk));
+        }
+
+        if walk.visited.len() >= MAX_REF_CHAIN_DEPTH {
+            walk.unresolved_refs.push(format!(
+                "{canonical_ref} (nested deeper than {MAX_REF_CHAIN_DEPTH} chained $refs)"
+            ));
+            return Value::Object(map.clone());
+        }
+
+        // Try to resolve the reference using the canonical ID
+        if let Some(content) = self.provider.schema_content(lookup_ref) {
+            self.register_document(content);
+            let target_content = match pointer_fragment {
+                Some(pointer) => self.locate(content, pointer),
+                None if canonical_ref.contains('#') => None,
+                None => Some((content, content)),
+            };
+
+            if let Some((target_content, target_root)) = target_content {
+                // Mark as visited before recursing
+                walk.visited.insert(canonical_ref.to_owned());
+                let inlined_root =
+                    object_key(target_content).filter(|key| walk.inlined_roots.insert(*key));
+                // Recursively resolve refs in the referenced schema
+                let mut resolved = self.resolve_inner(target_content, target_root, root_doc, walk);
+                if let Some(key) = inlined_root {
+                    walk.inlined_roots.remove(&key);
+                }
+                walk.visited.remove(canonical_ref);
+
+                // Strip keys meaningful only at the referenced type's root.
+                if let Value::Object(ref mut resolved_map) = resolved {
+                    resolved_map.retain(|key, _| !is_type_root_keyword(key));
+                }
+
+                return self
+                    .resolved_ref_with_siblings(schema, resolved, local_root, root_doc, walk);
+            }
+        }
+        if !ref_uri.starts_with('#') {
+            walk.unresolved_refs.push(ref_uri.clone());
+        }
+
+        // Keep unresolved references while collecting errors; dropping them
+        // would weaken the schema.
+        Value::Object(self.resolve_keywords(schema, local_root, root_doc, walk))
+    }
+
+    /// `node`'s keywords with its subschemas resolved and data copied.
+    fn resolve_keywords(
+        &self,
+        node: &Value,
+        local_root: &Value,
+        root_doc: &Value,
+        walk: &mut Walk,
+    ) -> Map<String, Value> {
+        let Value::Object(map) = node else {
+            return Map::new();
+        };
+        let subschemas = crate::schema_modifiers::subschemas_of(node, self.dialect.get());
+        let inlined = walk.inlined_roots.contains(&std::ptr::from_ref(map));
+        map.iter()
+            .filter(|(key, _)| !inlined || !is_type_root_keyword(key))
+            .map(|(k, v)| {
+                let v = self.resolve_subschemas(v, &subschemas, local_root, root_doc, walk);
+                (k.clone(), v)
+            })
+            .collect()
+    }
+
+    fn resolve_subschemas(
+        &self,
+        value: &Value,
+        subschemas: &[&Value],
+        local_root: &Value,
+        root_doc: &Value,
+        walk: &mut Walk,
+    ) -> Value {
+        if crate::schema_modifiers::is_direct_subresource(value, subschemas) {
+            return self.resolve_inner(value, local_root, root_doc, walk);
+        }
+        match value {
+            Value::Object(map) if !subschemas.is_empty() => Value::Object(
+                map.iter()
+                    .map(|(k, v)| {
+                        let v = self.resolve_subschemas(v, subschemas, local_root, root_doc, walk);
+                        (k.clone(), v)
                     })
                     .collect(),
             ),
-            _ => schema.clone(),
+            Value::Array(items) if !subschemas.is_empty() => Value::Array(
+                items
+                    .iter()
+                    .map(|v| self.resolve_subschemas(v, subschemas, local_root, root_doc, walk))
+                    .collect(),
+            ),
+            _ => value.clone(),
         }
     }
 
     /// Combines a resolved `$ref` target with its sibling constraints.
-    #[allow(clippy::too_many_arguments)]
     fn resolved_ref_with_siblings(
         &self,
-        map: &serde_json::Map<String, Value>,
+        node: &Value,
         resolved: Value,
         local_root: &Value,
         root_doc: &Value,
-        visited: &mut std::collections::HashSet<String>,
-        cycle_found: &mut bool,
-        unresolved_refs: &mut Vec<String>,
+        walk: &mut Walk,
     ) -> Value {
+        let Value::Object(map) = node else {
+            return resolved;
+        };
         // If the original object has only $ref, return the resolved schema.
         if map.len() == 1 {
             return resolved;
@@ -373,24 +429,8 @@ impl<'a> SchemaResolver<'a> {
         // Keep recursive local pointers as authored. Their siblings are resolved
         // even in Draft-07: a kept pointer can still reach into one (a root
         // `$ref` into its `definitions`).
-        if crate::schema_modifiers::contains_local_ref(&resolved) {
-            let mut preserved = serde_json::Map::new();
-            for (k, v) in map {
-                let v = if k == "$ref" {
-                    v.clone()
-                } else {
-                    self.resolve_inner(
-                        v,
-                        local_root,
-                        root_doc,
-                        visited,
-                        cycle_found,
-                        unresolved_refs,
-                    )
-                };
-                preserved.insert(k.clone(), v);
-            }
-            return Value::Object(preserved);
+        if crate::schema_modifiers::contains_local_ref(&resolved, self.dialect.get()) {
+            return Value::Object(self.resolve_keywords(node, local_root, root_doc, walk));
         }
 
         // Draft-07 ignores `$ref` siblings; a root keeps its `$id` and `$schema`.
@@ -401,7 +441,7 @@ impl<'a> SchemaResolver<'a> {
             {
                 return resolved;
             }
-            let mut identity: serde_json::Map<String, Value> = ["$id", "$schema"]
+            let mut identity: Map<String, Value> = ["$id", "$schema"]
                 .into_iter()
                 .filter_map(|key| map.get(key).map(|v| (key.to_owned(), v.clone())))
                 .collect();
@@ -415,25 +455,15 @@ impl<'a> SchemaResolver<'a> {
         // Later dialects apply siblings with the target: the target joins their
         // `allOf`, so `unevaluated*` siblings still see its annotations.
         let mut all_of = vec![resolved];
-        let mut composed = serde_json::Map::new();
-        for (k, v) in map {
-            if k == "$ref" {
-                continue;
-            }
-            let v = self.resolve_inner(
-                v,
-                local_root,
-                root_doc,
-                visited,
-                cycle_found,
-                unresolved_refs,
-            );
+        let mut composed = Map::new();
+        for (k, v) in self.resolve_keywords(node, local_root, root_doc, walk) {
             match (k.as_str(), v) {
+                ("$ref", _) => {}
                 ("allOf", Value::Array(branches)) => all_of.extend(branches),
                 // Malformed: left for the meta-schema to reject.
                 ("allOf", v) => all_of.push(serde_json::json!({ "allOf": v })),
                 (_, v) => {
-                    composed.insert(k.clone(), v);
+                    composed.insert(k, v);
                 }
             }
         }
@@ -463,6 +493,23 @@ impl<'a> SchemaResolver<'a> {
                 .get(&key)
                 .is_some_and(|document| *document != key)
         })
+    }
+
+    /// Whether a recursive pointer resolved from `resource` may stay: it must
+    /// name the same node in the result. An embedded resource keeps its `$id`;
+    /// `root_doc` stays the root only when resolved whole, not as a fragment.
+    fn keeps_recursion(&self, resource: &Value, root_doc: &Value) -> bool {
+        self.resolution_mode == ResolutionMode::Partial
+            && self.is_in(resource, root_doc)
+            && (self.resolves_host.get() || !std::ptr::eq(resource, root_doc))
+    }
+
+    /// Whether a recursive pointer resolved from `root_doc` must be rebased: it
+    /// would dangle in a fragment.
+    fn rebases_recursion(&self, resource: &Value, root_doc: &Value) -> bool {
+        self.resolution_mode == ResolutionMode::Partial
+            && !self.resolves_host.get()
+            && std::ptr::eq(resource, root_doc)
     }
 
     /// Whether `resource` is `document` or embedded in it.
@@ -496,8 +543,51 @@ impl<'a> SchemaResolver<'a> {
     }
 }
 
+/// The resource URI used when bundling or rebasing references.
+fn resource_uri(resource: &Value) -> Option<&str> {
+    resource
+        .get("$id")
+        .and_then(Value::as_str)
+        .filter(|id| id.contains("://") && !id.contains('#'))
+}
+
 fn object_key(value: &Value) -> Option<ObjectKey> {
     value.as_object().map(std::ptr::from_ref)
+}
+
+fn is_type_root_keyword(key: &str) -> bool {
+    matches!(
+        key,
+        "$id"
+            | "$schema"
+            | crate::schema_modifiers::X_GTS_FINAL
+            | crate::schema_modifiers::X_GTS_ABSTRACT
+            | crate::schema_traits::X_GTS_TRAITS
+            | crate::schema_traits::X_GTS_TRAITS_SCHEMA
+    )
+}
+
+/// References left in schema positions of `schema`.
+fn remaining_refs(schema: &Value, dialect: Draft) -> Vec<String> {
+    let mut refs = Vec::new();
+    crate::schema_modifiers::for_each_schema_node_in_dialect(
+        schema,
+        dialect,
+        &mut |node, _, scope| {
+            let keywords: &[&str] = match scope.dialect {
+                Draft::Draft201909 => &["$ref", "$recursiveRef"],
+                Draft::Draft202012 | Draft::Unknown => &["$ref", "$dynamicRef"],
+                _ => &["$ref"],
+            };
+            refs.extend(
+                keywords
+                    .iter()
+                    .filter_map(|keyword| node.get(*keyword).and_then(Value::as_str))
+                    .map(str::to_owned),
+            );
+        },
+    );
+    refs
 }
 
 /// An array index token, read as `serde_json`'s own pointer lookup reads one.
@@ -515,21 +605,28 @@ mod tests {
 
     #[test]
     fn local_ref_detection_only_visits_schema_locations() {
-        assert!(!contains_local_ref(&json!({
-            "const": {"$ref": "#/$defs/literal"},
-            "default": {"$ref": "#/$defs/literal"},
-            "examples": [{"$ref": "#/$defs/literal"}],
-            "enum": [{"$ref": "#/$defs/literal"}],
-            "properties": {
-                "$ref": {"const": "a property name, not a reference"}
-            }
-        })));
+        let draft = jsonschema::Draft::default();
+        assert!(!contains_local_ref(
+            &json!({
+                "const": {"$ref": "#/$defs/literal"},
+                "default": {"$ref": "#/$defs/literal"},
+                "examples": [{"$ref": "#/$defs/literal"}],
+                "enum": [{"$ref": "#/$defs/literal"}],
+                "properties": {
+                    "$ref": {"const": "a property name, not a reference"}
+                }
+            }),
+            draft
+        ));
 
-        assert!(contains_local_ref(&json!({
-            "properties": {
-                "child": {"$ref": "#/$defs/child"}
-            }
-        })));
+        assert!(contains_local_ref(
+            &json!({
+                "properties": {
+                    "child": {"$ref": "#/$defs/child"}
+                }
+            }),
+            draft
+        ));
     }
 }
 

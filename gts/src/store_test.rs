@@ -4526,7 +4526,7 @@ fn assert_resolved_type(
 }
 
 #[test]
-fn test_resolved_type_single_level_full_artifacts() {
+fn test_resolved_type_single_level_body_and_traits() {
     // Single level, no `$ref`s: the resolved `schema` is the body verbatim
     // (x-gts-* extension keys retained), provided trait values win, and the
     // effective trait-schema is the lone level's trait-schema with the leaf
@@ -4623,11 +4623,9 @@ fn test_resolved_type_single_level_default_materialized() {
 }
 
 #[test]
-fn test_resolved_type_abstract_full_artifacts() {
-    // Abstract type: artifacts are still fully materialized — the unresolved
-    // required `topicRef` is simply absent from the effective traits (no error),
-    // the `tier` default is materialized, and the trait-schema is surfaced with
-    // its `required` intact.
+fn test_resolved_type_abstract_defaults_and_required_traits() {
+    // Abstract types still fill defaults and expose the trait schema, but may
+    // leave required traits unresolved.
     let mut store = GtsStore::new();
     store
         .register_schema(
@@ -8340,4 +8338,524 @@ fn op7_reports_values_of_pattern_fields() {
         json!(PATTERN_TARGET),
         "{graph}"
     );
+}
+
+fn assert_reference_free(value: &Value) {
+    assert!(!value.to_string().contains("\"$ref\""), "{value}");
+}
+
+#[test]
+fn test_validate_schema_keeps_ref_shaped_literals() {
+    let mut store = GtsStore::new();
+    let id = "gts.x.literal.tr.toy.v1~";
+    register_chain_schema(
+        &mut store,
+        id,
+        json!({
+            "default": {"$ref": "#"},
+            "properties": {"p": {"const": {"$ref": "#/nope"}, "enum": [{"$ref": "#/nope"}]}},
+            "definitions": {"T": {"type": "string"}},
+            "x-gts-traits-schema": {
+                "type": "object",
+                "properties": {"sample": {"type": "object", "default": {"$ref": "#/definitions/T"}}}
+            }
+        }),
+    );
+
+    let resolved = store
+        .validate_schema_with(id, GtsRefValidation::None)
+        .expect("literals are not references");
+    assert_eq!(resolved.schema["default"], json!({"$ref": "#"}));
+    assert_eq!(
+        resolved.schema.pointer("/properties/p/const"),
+        Some(&json!({"$ref": "#/nope"}))
+    );
+    assert_eq!(
+        resolved
+            .effective_traits_schema
+            .pointer("/properties/sample/default"),
+        Some(&json!({"$ref": "#/definitions/T"}))
+    );
+    assert_eq!(
+        resolved.effective_traits["sample"],
+        json!({"$ref": "#/definitions/T"})
+    );
+    assert_eq!(
+        store
+            .resolve_schema_refs(&resolved.schema)
+            .expect("resolves again"),
+        resolved.schema,
+        "resolution is idempotent"
+    );
+}
+
+#[test]
+fn test_resolve_schema_refs_rejects_recursion_validate_schema_accepts() {
+    let mut store = GtsStore::new();
+    let root = "gts.x.matrec.tr.root.v1~";
+    let defs = "gts.x.matrec.tr.defs.v1~";
+    let external = "gts.x.matrec.tr.external.v1~";
+    let (a, b) = ("gts.x.matrec.tr.a.v1~", "gts.x.matrec.tr.b.v1~");
+    register_chain_schema(
+        &mut store,
+        root,
+        json!({"properties": {"children": {"type": "array", "items": {"$ref": "#"}}}}),
+    );
+    register_chain_schema(
+        &mut store,
+        defs,
+        json!({
+            "definitions": {"node": {"properties": {"next": {"$ref": "#/definitions/node"}}}},
+            "properties": {"head": {"$ref": "#/definitions/node"}}
+        }),
+    );
+    register_chain_schema(
+        &mut store,
+        external,
+        json!({"properties": {"self": {"$ref": format!("gts://{external}")}}}),
+    );
+    register_chain_schema(
+        &mut store,
+        a,
+        json!({"properties": {"b": {"$ref": format!("gts://{b}")}}}),
+    );
+    register_chain_schema(
+        &mut store,
+        b,
+        json!({"properties": {"a": {"$ref": format!("gts://{a}")}}}),
+    );
+
+    for id in [root, defs, external, a] {
+        store
+            .validate_schema_with(id, GtsRefValidation::None)
+            .unwrap_or_else(|e| panic!("{id}: recursion is legal: {e}"));
+        let content = store.get_schema_content(id).unwrap();
+        let err = store
+            .resolve_schema_refs(&content)
+            .expect_err("recursion cannot be fully resolved");
+        assert!(matches!(err, StoreError::CircularRef), "{id}: {err:?}");
+    }
+}
+
+#[test]
+fn test_resolve_schema_refs_inlines_finite_body_and_traits() {
+    let mut store = GtsStore::new();
+    let target = "gts.x.matfin.tr.target.v1~";
+    let holder = "gts.x.matfin.tr.holder.v1~";
+    register_chain_schema(
+        &mut store,
+        target,
+        json!({
+            "definitions": {"S": {"type": "string"}},
+            "properties": {"s": {"$ref": "#/definitions/S"}}
+        }),
+    );
+    register_chain_schema(
+        &mut store,
+        holder,
+        json!({
+            "definitions": {"T": {"$ref": format!("gts://{target}")}},
+            "properties": {
+                "a": {"$ref": "#/definitions/T"},
+                "b": {"$ref": "#/definitions/T"},
+                "c": {"$ref": format!("gts://{target}")}
+            },
+            "x-gts-traits-schema": {
+                "type": "object",
+                "properties": {"t": {"$ref": format!("gts://{target}")}}
+            }
+        }),
+    );
+
+    let resolved = store.validate_schema(holder).expect("finite references");
+    let body = store.resolve_schema_refs(&resolved.schema).unwrap();
+    let traits = store
+        .resolve_schema_refs(&resolved.effective_traits_schema)
+        .unwrap();
+    assert_reference_free(&body);
+    assert_reference_free(&traits);
+    assert_eq!(body, resolved.schema);
+    assert_eq!(traits, resolved.effective_traits_schema);
+}
+
+#[test]
+fn test_resolve_schema_refs_rejects_authored_and_inherited_trait_recursion() {
+    let mut store = GtsStore::new();
+    let base = "gts.x.mattr.tr.base.v1~";
+    let leaf = "gts.x.mattr.tr.base.v1~x.mattr._.leaf.v1~";
+    let pointer = "gts.x.mattr.tr.pointer.v1~";
+    // An embedded resource keeps its `$id`, so its recursion stays legal.
+    register_chain_schema(
+        &mut store,
+        base,
+        json!({"x-gts-traits-schema": {
+            "$id": "https://example.test/trait",
+            "type": "object",
+            "properties": {"next": {"$ref": "#"}}
+        }}),
+    );
+    register_chain_schema(&mut store, leaf, json!({}));
+    // A host pointer would dangle in the cut-out trait schema.
+    register_chain_schema(
+        &mut store,
+        pointer,
+        json!({
+            "definitions": {"node": {"type": "object", "properties": {"next": {"$ref": "#/definitions/node"}}}},
+            "x-gts-traits-schema": {"$ref": "#/definitions/node"}
+        }),
+    );
+
+    for id in [base, leaf] {
+        let resolved = store
+            .validate_schema_with(id, GtsRefValidation::None)
+            .unwrap_or_else(|e| panic!("{id}: recursive trait resource is legal: {e}"));
+        let err = store
+            .resolve_schema_refs(&resolved.effective_traits_schema)
+            .expect_err("authored and inherited trait recursion cannot be fully resolved");
+        assert!(matches!(err, StoreError::CircularRef), "{id}: {err:?}");
+    }
+
+    let resolved = store
+        .validate_schema_with(pointer, GtsRefValidation::None)
+        .expect("a recursive trait pointer into the host is legal");
+    assert!(
+        resolved
+            .effective_traits_schema
+            .to_string()
+            .contains(&format!("gts://{pointer}#/definitions/node")),
+        "the recursion keeps targeting the host: {}",
+        resolved.effective_traits_schema
+    );
+    assert!(matches!(
+        store.resolve_schema_refs(&resolved.effective_traits_schema),
+        Err(StoreError::CircularRef)
+    ));
+}
+
+#[test]
+fn test_trait_schema_recursion_into_the_host_root_targets_the_host() {
+    let mut store = GtsStore::new();
+    let id = "gts.x.mathost.tr.node.v1~";
+    register_chain_schema(
+        &mut store,
+        id,
+        json!({
+            "required": ["kind"],
+            "properties": {"kind": {"type": "string"}},
+            "x-gts-traits-schema": {"type": "object", "properties": {"next": {"$ref": "#"}}},
+            "x-gts-traits": {"next": {"kind": "leaf"}}
+        }),
+    );
+    let resolved = store
+        .validate_schema_with(id, GtsRefValidation::None)
+        .expect("recursion through the host is legal");
+    assert!(matches!(
+        store.resolve_schema_refs(&resolved.effective_traits_schema),
+        Err(StoreError::CircularRef)
+    ));
+
+    // `#` is the host, not the trait schema: a value must satisfy the body.
+    let bad = "gts.x.mathost.tr.bad.v1~";
+    register_chain_schema(
+        &mut store,
+        bad,
+        json!({
+            "required": ["kind"],
+            "properties": {"kind": {"type": "string"}},
+            "x-gts-traits-schema": {"type": "object", "properties": {"next": {"$ref": "#"}}},
+            "x-gts-traits": {"next": {"kind": 1}}
+        }),
+    );
+    let err = store
+        .validate_schema_with(bad, GtsRefValidation::None)
+        .expect_err("the trait value violates the host body");
+    assert!(err.to_string().contains("trait validation"), "{err}");
+}
+
+#[test]
+fn test_resolve_schema_refs_leaves_entity_reference_policy_alone() {
+    let mut store = GtsStore::new();
+    let id = "gts.x.matpol.tr.holder.v1~";
+    register_chain_schema(
+        &mut store,
+        id,
+        json!({"properties": {"r": {"type": "string", "x-gts-instance-ref": "gts.x.matpol.tr.missing.v1~"}}}),
+    );
+
+    let resolved = store
+        .validate_schema_with(id, GtsRefValidation::None)
+        .expect("entity-reference target checks are disabled");
+    store
+        .resolve_schema_refs(&resolved.schema)
+        .expect("schema resolution does not check entity-reference targets");
+    assert!(matches!(
+        store.validate_schema(id),
+        Err(StoreError::ValidationError(_))
+    ));
+}
+
+#[test]
+fn test_resolve_schema_refs_rejects_external_trait_recursion() {
+    let mut store = GtsStore::new();
+    let tree = "gts.x.matinh.tr.tree.v1~";
+    let base = "gts.x.matinh.tr.base.v1~";
+    register_chain_schema(
+        &mut store,
+        tree,
+        json!({"properties": {"child": {"$ref": "#"}}}),
+    );
+    register_chain_schema(
+        &mut store,
+        base,
+        json!({"x-gts-traits-schema": {"$ref": format!("gts://{tree}")}}),
+    );
+    let resolved = store
+        .validate_schema_with(base, GtsRefValidation::None)
+        .expect("ordinary validation accepts recursive external traits");
+    let content = store.get_schema_content(base).unwrap();
+    assert!(matches!(
+        store.resolve_schema_refs(&content),
+        Err(StoreError::CircularRef)
+    ));
+    assert!(matches!(
+        store.resolve_schema_refs(&resolved.effective_traits_schema),
+        Err(StoreError::CircularRef)
+    ));
+}
+
+#[test]
+fn test_resolve_schema_refs_is_strict_validation_is_not() {
+    let mut store = GtsStore::new();
+    let id = "gts.x.strictpub.tr.node.v1~";
+    register_chain_schema(
+        &mut store,
+        id,
+        json!({
+            "definitions": {"node": {"properties": {"next": {"$ref": "#/definitions/node"}}}},
+            "properties": {"self": {"$ref": "#"}, "head": {"$ref": "#/definitions/node"}}
+        }),
+    );
+    for schema in [
+        json!({"$ref": "#"}),
+        json!({"properties": {"self": {"$ref": "#"}}}),
+        store.get_schema_content(id).unwrap(),
+    ] {
+        assert!(
+            matches!(
+                store.resolve_schema_refs(&schema),
+                Err(StoreError::CircularRef)
+            ),
+            "{schema}"
+        );
+    }
+    store
+        .validate_schema_with(id, GtsRefValidation::None)
+        .expect("ordinary validation accepts recursion");
+    store
+        .validate_payload_with(
+            id,
+            &json!({"self": {}, "head": {"next": {}}}),
+            GtsRefValidation::None,
+        )
+        .expect("payload validation accepts recursion");
+}
+
+#[test]
+fn test_inherited_recursive_traits_with_an_allof_base_reference() {
+    let base = "gts.x.review.tr.base.v1~";
+    let leaf = "gts.x.review.tr.base.v1~x.review.tr.leaf.v1~";
+    for dialect in [
+        "http://json-schema.org/draft-07/schema#",
+        "https://json-schema.org/draft/2020-12/schema",
+    ] {
+        for embedded_resource in [false, true] {
+            let mut store = GtsStore::new();
+            let mut trait_schema = json!({
+                "type": "object", "properties": {"next": {"$ref": "#"}}
+            });
+            if embedded_resource {
+                trait_schema["$id"] = json!("https://example.test/recursive-traits");
+            }
+            store
+                .register_schema(
+                    base,
+                    &json!({
+                        "$id": format!("gts://{base}"), "$schema": dialect,
+                        "type": "object", "properties": {"kind": {"type": "string"}},
+                        "x-gts-traits-schema": trait_schema
+                    }),
+                )
+                .unwrap();
+            let content = json!({
+                "$id": format!("gts://{leaf}"), "$schema": dialect,
+                "allOf": [{"$ref": format!("gts://{base}")}, {"type": "object"}]
+            });
+            store.register_schema(leaf, &content).unwrap();
+
+            let resolved = store
+                .validate_schema_with(leaf, GtsRefValidation::None)
+                .unwrap_or_else(|e| panic!("{dialect}, embedded={embedded_resource}: {e}"));
+            let body = store.resolve_schema_refs(&content).unwrap();
+            assert_reference_free(&body);
+            assert_eq!(body["allOf"][0]["properties"]["kind"]["type"], "string");
+            assert!(matches!(
+                store.resolve_schema_refs(&resolved.effective_traits_schema),
+                Err(StoreError::CircularRef)
+            ));
+        }
+    }
+}
+
+#[test]
+fn test_host_relative_traits_with_recursive_gts_references() {
+    let id = "gts.x.review.tr.mixed.v1~";
+    let peer = "gts.x.review.tr.peer.v1~";
+    for dialect in [
+        "http://json-schema.org/draft-07/schema#",
+        "https://json-schema.org/draft/2020-12/schema",
+    ] {
+        for mutual in [false, true] {
+            for invalid in [false, true] {
+                let mut store = GtsStore::new();
+                store
+                    .register_schema(peer, &json!({
+                        "$id": format!("gts://{peer}"), "$schema": dialect,
+                        "type": "object", "required": ["kind"],
+                        "properties": {
+                            "kind": {"type": "string"},
+                            "children": {"type": "array", "items": {"$ref": format!("gts://{id}")}}
+                        }
+                    }))
+                    .unwrap();
+                let child = if mutual { peer } else { id };
+                let kind = if invalid { json!(1) } else { json!("leaf") };
+                let content = json!({
+                    "$id": format!("gts://{id}"), "$schema": dialect,
+                    "type": "object", "required": ["kind"],
+                    "properties": {
+                        "kind": {"type": "string"},
+                        "children": {"type": "array", "items": {"$ref": format!("gts://{child}")}}
+                    },
+                    "definitions": {"Tag": {"type": "string", "default": "default-tag"}},
+                    "x-gts-traits-schema": {"type": "object", "properties": {
+                        "next": {"$ref": "#"}, "tag": {"$ref": "#/definitions/Tag"},
+                        "literal": {"type": "object", "default": {
+                            "$ref": "gts://gts.x.review.tr.missing.v1~"
+                        }}
+                    }},
+                    "x-gts-traits": {"next": {"kind": kind, "children": []}}
+                });
+                store.register_schema(id, &content).unwrap();
+                let result = store.validate_schema_with(id, GtsRefValidation::None);
+                if invalid {
+                    let error = result.expect_err("trait values must satisfy the host body");
+                    assert!(error.to_string().contains("trait validation"), "{error}");
+                    assert!(!error.to_string().contains("compile"), "{error}");
+                } else {
+                    let resolved = result.unwrap_or_else(|e| {
+                        panic!("{dialect}, mutual={mutual}: ordinary recursion is legal: {e}")
+                    });
+                    assert_eq!(resolved.effective_traits["tag"], "default-tag");
+                    assert_eq!(
+                        resolved.effective_traits["literal"],
+                        json!({
+                            "$ref": "gts://gts.x.review.tr.missing.v1~"
+                        })
+                    );
+                    assert!(matches!(
+                        store.resolve_schema_refs(&content),
+                        Err(StoreError::CircularRef)
+                    ));
+                    assert!(matches!(
+                        store.resolve_schema_refs(&resolved.effective_traits_schema),
+                        Err(StoreError::CircularRef)
+                    ));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_recursive_trait_inheritance_uses_host_dialect() {
+    let base = "gts.x.review.tr.dialect.v1~";
+    let leaf = "gts.x.review.tr.dialect.v1~x.review.tr.leaf.v1~";
+    for dialect in [
+        "http://json-schema.org/draft-07/schema#",
+        "https://json-schema.org/draft/2020-12/schema",
+    ] {
+        for explicit_base in [false, true] {
+            let mut store = GtsStore::new();
+            store
+                .register_schema(
+                    base,
+                    &json!({
+                        "$id": format!("gts://{base}"), "$schema": dialect, "type": "object",
+                        "x-gts-traits-schema": {
+                            "type": "object", "properties": {"next": {"$ref": "#"}}
+                        }
+                    }),
+                )
+                .unwrap();
+            let mut content = json!({
+                "$id": format!("gts://{leaf}"), "$schema": dialect, "type": "object",
+                "x-gts-traits-schema": {
+                    "type": "object", "properties": {"x": {"type": "string", "default": "leaf"}}
+                }
+            });
+            if explicit_base {
+                content["allOf"] = json!([{"$ref": format!("gts://{base}")}]);
+            }
+            store.register_schema(leaf, &content).unwrap();
+            let resolved = store
+                .validate_schema_with(leaf, GtsRefValidation::None)
+                .unwrap_or_else(|e| panic!("{dialect}, explicit_base={explicit_base}: {e}"));
+            assert_eq!(resolved.effective_traits["x"], "leaf");
+            assert!(matches!(
+                store.resolve_schema_refs(&resolved.effective_traits_schema),
+                Err(StoreError::CircularRef)
+            ));
+        }
+    }
+}
+
+#[test]
+fn test_external_trait_definition_recursion_keeps_its_resource() {
+    let tree = "gts.x.review.tr.tree.v1~";
+    let holder = "gts.x.review.tr.holder.v1~";
+    for dialect in [
+        "http://json-schema.org/draft-07/schema#",
+        "https://json-schema.org/draft/2020-12/schema",
+    ] {
+        let mut store = GtsStore::new();
+        store
+            .register_schema(
+                tree,
+                &json!({
+                    "$id": format!("gts://{tree}"), "$schema": dialect, "type": "object",
+                    "definitions": {"node": {"type": "object", "properties": {
+                        "value": {"type": "integer"}, "next": {"$ref": "#/definitions/node"}
+                    }}},
+                    "properties": {"root": {"$ref": "#/definitions/node"}}
+                }),
+            )
+            .unwrap();
+        store
+            .register_schema(
+                holder,
+                &json!({
+                    "$id": format!("gts://{holder}"), "$schema": dialect, "type": "object",
+                    "x-gts-traits-schema": {"$ref": format!("gts://{tree}")},
+                    "x-gts-traits": {"root": {"value": 1, "next": {"value": 2}}}
+                }),
+            )
+            .unwrap();
+        let resolved = store
+            .validate_schema_with(holder, GtsRefValidation::None)
+            .unwrap_or_else(|e| panic!("{dialect}: recursive external traits are valid: {e}"));
+        assert!(matches!(
+            store.resolve_schema_refs(&resolved.effective_traits_schema),
+            Err(StoreError::CircularRef)
+        ));
+    }
 }

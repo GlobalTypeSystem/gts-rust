@@ -11,7 +11,7 @@ use crate::schema_evolution::{
     CompatibilityDiagnostic, CompatibilityVerdict, ObjectLevel, check_backward_diagnostics,
     check_forward_diagnostics, classify_object_levels,
 };
-use crate::schema_resolver::SchemaProvider;
+use crate::schema_resolver::{ResolutionMode, SchemaProvider, SchemaResolver};
 use crate::x_gts_ref::GtsRefValidation;
 
 #[derive(Debug, Error)]
@@ -139,8 +139,7 @@ impl SchemaComparison {
     }
 }
 
-/// Resolved view of a GTS type: self-contained unless a `$ref` cycle makes
-/// inlining impossible, in which case `schema` is the body as authored.
+/// Validated view of a GTS type; recursive schemas may retain references.
 ///
 /// A pure value computed from store contents — the library holds **no cache**
 /// of these. Because schemas are append-only by versioned id (a new version is
@@ -157,12 +156,14 @@ pub struct ResolvedType {
     pub is_abstract: bool,
     /// `true` when the type declares `x-gts-final: true` — it cannot be extended.
     pub is_final: bool,
-    /// Type body with all `#/` and `gts://` `$ref`s inlined, or the body as
-    /// authored when a `$ref` cycle makes inlining impossible.
+    /// Type body with `$ref`s inlined except recursive local ones, or as
+    /// authored when a cross-document cycle prevents inlining. Use
+    /// [`GtsStore::resolve_schema_refs`] to require a reference-free document.
     pub schema: Value,
     /// Chain-merged (RFC 7396) and default-materialized trait values.
     pub effective_traits: Value,
-    /// Dialect-pinned, `allOf`-composed, `$ref`-inlined effective traits schema.
+    /// Dialect-pinned, `allOf`-composed effective traits schema, possibly recursive.
+    /// Use [`GtsStore::resolve_schema_refs`] to require a reference-free document.
     pub effective_traits_schema: Value,
 }
 
@@ -610,13 +611,21 @@ impl GtsStore {
         self.by_id.iter()
     }
 
-    /// Strict `$ref` resolution that errors on an unresolved supported local
-    /// JSON Pointer or external GTS `$ref`, or a circular `$ref`.
+    /// Inlines every `#/` and `gts://` `$ref`, leaving no reference in any
+    /// schema position.
     ///
     /// # Errors
-    /// [`StoreError::UnresolvedRefs`] or [`StoreError::CircularRef`].
+    /// [`StoreError::CircularRef`] for any recursion, or
+    /// [`StoreError::UnresolvedRefs`] for a reference it cannot inline.
     pub fn resolve_schema_refs(&self, schema: &Value) -> Result<Value, StoreError> {
-        crate::schema_resolver::SchemaResolver::new(self).resolve(schema)
+        SchemaResolver::new(self)
+            .with_resolution_mode(ResolutionMode::Full)
+            .resolve(schema)
+    }
+
+    /// Inlines `$ref`s, keeping recursive same-document ones.
+    fn resolve_schema_refs_partial(&self, schema: &Value) -> Result<Value, StoreError> {
+        SchemaResolver::new(self).resolve(schema)
     }
 
     /// The registered documents `schema` reaches through `gts://` references,
@@ -782,11 +791,13 @@ impl GtsStore {
             })?;
 
             let base_resolved = self
-                .resolve_schema_refs(&base_content)
+                .resolve_schema_refs_partial(&base_content)
                 .map_err(|e| StoreError::ValidationError(format!("Schema '{base_id}' has {e}")))?;
-            let derived_resolved = self.resolve_schema_refs(&derived_content).map_err(|e| {
-                StoreError::ValidationError(format!("Schema '{derived_id}' has {e}"))
-            })?;
+            let derived_resolved =
+                self.resolve_schema_refs_partial(&derived_content)
+                    .map_err(|e| {
+                        StoreError::ValidationError(format!("Schema '{derived_id}' has {e}"))
+                    })?;
 
             let errors = crate::schema_derivation::validate_derivation_compatibility(
                 &base_resolved,
@@ -832,14 +843,12 @@ impl GtsStore {
     ///
     /// Collects `x-gts-traits-schema` subschemas and `x-gts-traits` values from
     /// each level's **raw** content (before `$ref` resolution inlines external
-    /// schemas and drops the `x-gts-*` extension keys), inlines JSON Pointer
-    /// `$ref`s against their host document, resolves any `gts://` `$ref`s inside
-    /// the collected subschemas, RFC 7396-merges the values (descendant
+    /// schemas and drops the `x-gts-*` extension keys), resolves their `$ref`s
+    /// within the host document, RFC 7396-merges the values (descendant
     /// last-wins for scalars/arrays, recursive merge for objects, `null` deletes
     /// the key), then composes the effective trait-schema and materializes the
     /// values. The leaf's `$schema` dialect is re-injected into the composed
-    /// schema. Used by [`Self::validate_schema`] (OP#13) and
-    /// [`crate::ops::GtsOps`]'s entity-level trait check.
+    /// schema. Used by [`Self::validate_schema`] (OP#13).
     ///
     /// # Errors
     /// `StoreError::ValidationError` if the id is invalid, an ancestor schema is
@@ -851,7 +860,7 @@ impl GtsStore {
         let gid = GtsId::try_new(type_id)
             .map_err(|e| StoreError::ValidationError(format!("Invalid GTS ID: {e}")))?;
 
-        let mut trait_schemas: Vec<Value> = Vec::new();
+        let mut resolved_trait_schemas: Vec<Value> = Vec::new();
         let mut merged_traits = serde_json::Map::new();
 
         for schema_id in &gid.chain_ids() {
@@ -861,29 +870,27 @@ impl GtsStore {
                 ))
             })?;
 
-            // Collect this level's trait schemas, then inline any JSON Pointer
-            // (`#/...`) `$ref`s against this host document (`content`) while it
-            // is still the document root — see `inline_local_pointers`.
+            // Per gts-spec §9.7.5 a pointer in a trait schema resolves against
+            // its host document.
             let mut level_trait_schemas = Vec::new();
             crate::schema_traits::collect_trait_schema_from_value(
                 &content,
                 &mut level_trait_schemas,
             );
             for ts in level_trait_schemas {
-                trait_schemas.push(crate::schema_traits::inline_local_pointers(ts, &content));
+                let resolved = SchemaResolver::new(self)
+                    .resolve_in(ts, &content)
+                    .map_err(|e| {
+                        StoreError::ValidationError(format!(
+                            "Schema '{type_id}' trait schema has {e}"
+                        ))
+                    })?;
+                resolved_trait_schemas.push(resolved);
             }
 
             let mut level_traits = serde_json::Map::new();
             crate::schema_traits::collect_traits_from_value(&content, &mut level_traits);
             crate::schema_traits::merge_rfc7396_into(&mut merged_traits, &level_traits);
-        }
-
-        let mut resolved_trait_schemas: Vec<Value> = Vec::with_capacity(trait_schemas.len());
-        for ts in &trait_schemas {
-            let resolved = self.resolve_schema_refs(ts).map_err(|e| {
-                StoreError::ValidationError(format!("Schema '{type_id}' trait schema has {e}"))
-            })?;
-            resolved_trait_schemas.push(resolved);
         }
 
         // Dialect comes from the leaf document's `$schema`, re-injected into the
@@ -912,11 +919,9 @@ impl GtsStore {
     /// 2. [`crate::schema_modifiers::validate_gts_keywords`] — format and
     ///    top-level placement of `x-gts-final`/`x-gts-abstract`/`x-gts-traits`/
     ///    `x-gts-traits-schema`;
-    /// 3. [`Self::validate_schema_chain`] — derived-vs-base compatibility (OP#12);
-    /// 4. resolve: inline `#/` and `gts://` `$ref`s into a self-contained body;
-    /// 5. meta-compile the resolved body against JSON Schema — registration
-    ///    defers this whenever raw `gts://` refs are present, so it is done here
-    ///    once every dependency is inlined, catching malformed schema bodies;
+    /// 3. schema chain validation — derived-vs-base compatibility (OP#12);
+    /// 4. resolve supported `$ref`s, preserving legal recursion;
+    /// 5. validate the authored schema and compile it with its referenced resources;
     /// 6. build the effective traits schema/values **exactly once** and validate
     ///    them (OP#13): provided trait values are always type/enum/reference
     ///    checked; the required-trait completeness check is skipped for abstract
@@ -1052,9 +1057,8 @@ impl GtsStore {
 
         // Resolve schema references. JSON Schema allows recursion, so a cyclic
         // `$ref` graph makes the document unresolvable rather than invalid:
-        // inlining is skipped here and whatever must materialize the document
-        // (a trait-schema chain) reports the cycle at that point.
-        let resolved_schema = match self.resolve_schema_refs(&content) {
+        // inlining is skipped here when it cannot finish.
+        let resolved_schema = match self.resolve_schema_refs_partial(&content) {
             Ok(resolved) => Some(resolved),
             Err(StoreError::CircularRef) => None,
             Err(e) => {
@@ -1330,7 +1334,7 @@ impl GtsStore {
             return Ok(());
         }
         // Inlined, the body shows whether a rejection is affordable to explain.
-        let resolved = self.resolve_schema_refs(&content).ok();
+        let resolved = self.resolve_schema_refs_partial(&content).ok();
         let diagnosis = crate::json_schema::diagnose_rejection(
             &validator,
             &content,
@@ -1417,14 +1421,14 @@ impl GtsStore {
         // and a different one through OP#9. Resolution also makes a base type's
         // properties and `const` values visible to the cast itself.
         from_schema.content = self
-            .resolve_schema_refs(&from_schema.content)
+            .resolve_schema_refs_partial(&from_schema.content)
             .map_err(|e| {
                 StoreError::SchemaNotFound(format!(
                     "Could not resolve source schema '{instance_type_id}': {e}"
                 ))
             })?;
         target_schema.content = self
-            .resolve_schema_refs(&target_schema.content)
+            .resolve_schema_refs_partial(&target_schema.content)
             .map_err(|e| {
                 StoreError::SchemaNotFound(format!(
                     "Could not resolve target schema '{target_type_id}': {e}"
@@ -1480,7 +1484,7 @@ impl GtsStore {
             )
         };
         // Both ids named a registered schema above and are now cached, so a
-        // shared borrow reaches each document in place. `resolve_schema_refs`
+        // shared borrow reaches each document in place. `resolve_schema_refs_partial`
         // also takes `&self` and returns a fresh owned document, so neither
         // side needs a clone of the registered entity.
         let (Some(old_content), Some(new_content)) = (
@@ -1493,7 +1497,7 @@ impl GtsStore {
                 "Schema not found".to_owned(),
             );
         };
-        let old_schema = match self.resolve_schema_refs(old_content) {
+        let old_schema = match self.resolve_schema_refs_partial(old_content) {
             Ok(schema) => schema,
             Err(error) => {
                 return resolution_failure(format!(
@@ -1501,7 +1505,7 @@ impl GtsStore {
                 ));
             }
         };
-        let new_schema = match self.resolve_schema_refs(new_content) {
+        let new_schema = match self.resolve_schema_refs_partial(new_content) {
             Ok(schema) => schema,
             Err(error) => {
                 return resolution_failure(format!(
@@ -1578,12 +1582,16 @@ impl GtsStore {
         old_schema: &Value,
         new_schema: &Value,
     ) -> Result<SchemaComparison, StoreError> {
-        let old_resolved = self.resolve_schema_refs(old_schema).map_err(|error| {
-            StoreError::SchemaNotFound(format!("Could not resolve the old document: {error}"))
-        })?;
-        let new_resolved = self.resolve_schema_refs(new_schema).map_err(|error| {
-            StoreError::SchemaNotFound(format!("Could not resolve the new document: {error}"))
-        })?;
+        let old_resolved = self
+            .resolve_schema_refs_partial(old_schema)
+            .map_err(|error| {
+                StoreError::SchemaNotFound(format!("Could not resolve the old document: {error}"))
+            })?;
+        let new_resolved = self
+            .resolve_schema_refs_partial(new_schema)
+            .map_err(|error| {
+                StoreError::SchemaNotFound(format!("Could not resolve the new document: {error}"))
+            })?;
         Ok(SchemaComparison::of_resolved(&old_resolved, &new_resolved))
     }
 

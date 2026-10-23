@@ -674,6 +674,11 @@ let validator = snapshot.compile_payload_validator()?;
 validator.validate(&payload)?;
 ```
 
+`validate_schema` accepts recursive schemas. For reference-free documents, call
+`store.resolve_schema_refs(&snapshot.schema)` and
+`store.resolve_schema_refs(&snapshot.effective_traits_schema)` before dropping
+the store. Either call returns `StoreError::CircularRef` on recursion.
+
 Use `validator.is_valid(&payload)` for a verdict without diagnostics. Each
 `XGtsRefValidationError` names the violated keyword (`GtsRefKeyword`), pattern references included.
 

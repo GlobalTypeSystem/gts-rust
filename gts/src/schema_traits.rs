@@ -117,6 +117,7 @@ impl EffectiveTraits {
         validate_trait_schema_compatibility(
             &self.resolved_trait_schemas,
             self.selected_type.as_deref(),
+            dialect,
         )?;
 
         if !self.has_schema() {
@@ -344,12 +345,21 @@ fn validate_trait_schema_integrity(
 fn validate_trait_schema_compatibility(
     resolved_trait_schemas: &[Value],
     selected_type: Option<&str>,
+    dialect: Option<&str>,
 ) -> Result<(), Vec<String>> {
-    let resolve = |schema: Value| match selected_type {
-        Some(selected) => {
-            crate::x_gts_pattern_ref::with_self_operands_naming(&schema, selected).into_owned()
+    let resolve = |schema: Value| {
+        let mut schema = match selected_type {
+            Some(selected) => {
+                crate::x_gts_pattern_ref::with_self_operands_naming(&schema, selected).into_owned()
+            }
+            None => schema,
+        };
+        if let Some(dialect) = dialect
+            && let Some(map) = schema.as_object_mut()
+        {
+            map.insert("$schema".to_owned(), Value::String(dialect.to_owned()));
         }
-        None => schema,
+        schema
     };
     let mut errors = Vec::new();
 
@@ -485,117 +495,6 @@ fn effective_schema_is_false_recursive(schema: &Value, depth: usize) -> bool {
 // ---------------------------------------------------------------------------
 // Collection helpers (pub(crate) so the store can call them)
 // ---------------------------------------------------------------------------
-
-/// Inline JSON Pointer `$ref`s (`#/...`) inside a trait-schema fragment by
-/// resolving them against `root` — the host document the fragment was lifted
-/// from.
-///
-/// The extracted `x-gts-traits-schema` fragment carries no `$defs` of its own,
-/// so a root-relative pointer like `#/$defs/Retention` would dangle once the
-/// fragment is composed into the effective trait-schema's `allOf` (the document
-/// root there no longer holds those `$defs`). Per gts-spec §9.7.5, a `$ref`
-/// inside `x-gts-traits-schema` MUST resolve under standard JSON Schema rules,
-/// and a JSON Pointer fragment resolves against the host document — which is
-/// `root` here. Inlining at collection time, while `root` is still the document
-/// root, keeps the composed fragment self-contained.
-///
-/// Only pointers that actually resolve against `root` are inlined; anything
-/// else (notably `gts://` refs and the synthetic `#/$defs/GtsInstanceId` family
-/// that schema resolution special-cases) is left untouched. An embedded
-/// resource with an `$id` of its own is copied as is: its references resolve
-/// from it, which `$ref` resolution does once the fragment is a document. A
-/// pointer into one resolves the target's own references from that resource.
-/// Recursion is bounded by [`MAX_RECURSION_DEPTH`].
-///
-/// `fragment` must lie in `root`: embedded resources are known by identity.
-pub(crate) fn inline_local_pointers(fragment: &Value, root: &Value) -> Value {
-    let embedded = crate::schema_modifiers::embedded_resources(root);
-    let is_resource = |node: &Value| {
-        node.as_object()
-            .is_some_and(|map| embedded.contains(&std::ptr::from_ref(map)))
-    };
-    inline_local_pointers_recursive(fragment, root, &is_resource, 0)
-}
-
-fn inline_local_pointers_recursive(
-    value: &Value,
-    root: &Value,
-    is_resource: &dyn Fn(&Value) -> bool,
-    depth: usize,
-) -> Value {
-    if depth >= MAX_RECURSION_DEPTH || is_resource(value) {
-        return value.clone();
-    }
-    match value {
-        Value::Object(map) => {
-            if let Some(Value::String(r)) = map.get("$ref")
-                && let Some(ptr) = r.strip_prefix("#/")
-                && let Some(target) = root.pointer(&format!("/{ptr}"))
-            {
-                // Resolve the target from the innermost resource holding it,
-                // then overlay any sibling keywords (JSON Schema
-                // `$ref`-with-siblings) resolved from the same root as the ref.
-                let target_root = innermost_resource(root, ptr, is_resource);
-                let mut resolved =
-                    inline_local_pointers_recursive(target, target_root, is_resource, depth + 1);
-                if map.len() > 1
-                    && let Value::Object(resolved_map) = &mut resolved
-                {
-                    for (k, v) in map {
-                        if k != "$ref" {
-                            resolved_map.insert(
-                                k.clone(),
-                                inline_local_pointers_recursive(v, root, is_resource, depth + 1),
-                            );
-                        }
-                    }
-                }
-                return resolved;
-            }
-            let mut out = serde_json::Map::with_capacity(map.len());
-            for (k, v) in map {
-                out.insert(
-                    k.clone(),
-                    inline_local_pointers_recursive(v, root, is_resource, depth + 1),
-                );
-            }
-            Value::Object(out)
-        }
-        Value::Array(arr) => Value::Array(
-            arr.iter()
-                .map(|v| inline_local_pointers_recursive(v, root, is_resource, depth + 1))
-                .collect(),
-        ),
-        _ => value.clone(),
-    }
-}
-
-/// The innermost resource on the way from `root` along the JSON Pointer
-/// `/pointer`, excluding its target: `root` when none is crossed.
-fn innermost_resource<'v>(
-    root: &'v Value,
-    pointer: &str,
-    is_resource: &dyn Fn(&Value) -> bool,
-) -> &'v Value {
-    let mut node = root;
-    let mut innermost = root;
-    for token in pointer.split('/') {
-        if is_resource(node) {
-            innermost = node;
-        }
-        let token = token.replace("~1", "/").replace("~0", "~");
-        let next = match node {
-            Value::Object(map) => map.get(&token),
-            Value::Array(items) => token.parse::<usize>().ok().and_then(|i| items.get(i)),
-            _ => None,
-        };
-        let Some(next) = next else {
-            break;
-        };
-        node = next;
-    }
-    innermost
-}
 
 /// Recursively search a schema value for `x-gts-traits-schema` entries.
 ///
@@ -1072,21 +971,6 @@ mod tests {
                 .any(|m| m.contains("must be an object subschema or a boolean")),
             "expected the non-object/non-boolean arm, got: {err:?}"
         );
-    }
-
-    #[test]
-    fn test_inline_local_pointers_ref_with_siblings_overlay() {
-        // `$ref` with sibling keywords: the pointer target is inlined and the
-        // sibling (`description`) is overlaid onto the result.
-        let root = json!({
-            "$defs": {"X": {"type": "string", "minLength": 1}}
-        });
-        let fragment = json!({"$ref": "#/$defs/X", "description": "extra"});
-        let inlined = inline_local_pointers(&fragment, &root);
-        assert_eq!(inlined["type"], json!("string"));
-        assert_eq!(inlined["minLength"], json!(1));
-        assert_eq!(inlined["description"], json!("extra"));
-        assert!(inlined.get("$ref").is_none());
     }
 
     #[test]
@@ -2633,42 +2517,6 @@ mod tests {
             res.is_err(),
             "entity reference violation should be reported: {res:?}"
         );
-    }
-
-    #[test]
-    fn test_inline_local_pointers_resolves_against_root() {
-        let root = json!({
-            "$defs": { "Retention": {"type": "string", "enum": ["P30D"]} },
-            "x-gts-traits-schema": {
-                "type": "object",
-                "properties": { "retention": {"$ref": "#/$defs/Retention"} }
-            }
-        });
-        let fragment = &root["x-gts-traits-schema"];
-        let inlined = super::inline_local_pointers(fragment, &root);
-        let retention = &inlined["properties"]["retention"];
-        assert!(
-            retention.get("$ref").is_none(),
-            "local pointer must be inlined: {retention}"
-        );
-        assert_eq!(retention["enum"], json!(["P30D"]));
-    }
-
-    #[test]
-    fn test_inline_local_pointers_leaves_unresolvable_and_gts_refs_untouched() {
-        let root = json!({ "type": "object" }); // no $defs
-        // A `gts://` ref and an unresolvable `#/...` pointer are both left as-is
-        // (the former is handled later by try_resolve_schema_refs; the
-        // latter has no target in `root`).
-        let fragment = json!({
-            "allOf": [
-                {"$ref": "gts://gts.x.a.b.v1~"},
-                {"$ref": "#/$defs/Missing"}
-            ]
-        });
-        let inlined = super::inline_local_pointers(&fragment, &root);
-        assert_eq!(inlined["allOf"][0]["$ref"], "gts://gts.x.a.b.v1~");
-        assert_eq!(inlined["allOf"][1]["$ref"], "#/$defs/Missing");
     }
 }
 
