@@ -9,8 +9,32 @@ use crate::store::GtsReader;
 /// Default directory names excluded from recursive file traversal when the
 /// caller does not provide an explicit exclude list (e.g. the CLI `--exclude-dir`
 /// option). Kept here so direct library users get sensible behavior.
-const DEFAULT_EXCLUDE_LIST: &[&str] = &["node_modules", "dist", "build", ".git", "target"];
+pub const DEFAULT_EXCLUDE_LIST: &[&str] = &["node_modules", "dist", "build", ".git", "target"];
 const VALID_EXTENSIONS: &[&str] = &[".json", ".jsonc", ".gts", ".yaml", ".yml"];
+
+/// Recursively walks `root` (following symlinks), pruning directories whose
+/// name is in `exclude` before descending into them. The root itself is never
+/// pruned, so an explicitly requested directory is scanned even if its name is
+/// excluded. Traversal errors are yielded so each caller decides how to report
+/// them; file selection is likewise left to the caller.
+pub fn walk_dir(
+    root: &Path,
+    exclude: &[String],
+) -> impl Iterator<Item = walkdir::Result<walkdir::DirEntry>> + use<> {
+    let exclude = exclude.to_vec();
+    WalkDir::new(root)
+        .follow_links(true)
+        .into_iter()
+        .filter_entry(move |e| {
+            if e.depth() > 0
+                && e.file_type().is_dir()
+                && let Some(name) = e.file_name().to_str()
+            {
+                return !exclude.iter().any(|x| x == name);
+            }
+            true
+        })
+}
 
 pub struct GtsFileReader {
     paths: Vec<PathBuf>,
@@ -73,23 +97,7 @@ impl GtsFileReader {
                     }
                 }
             } else if resolved_path.is_dir() {
-                // Clone into a local so the closure does not borrow `self`.
-                let exclude = self.exclude.clone();
-                for entry in WalkDir::new(&resolved_path)
-                    .follow_links(true)
-                    .into_iter()
-                    .filter_entry(move |e| {
-                        // Prune excluded directories before descending into them.
-                        if e.depth() > 0
-                            && e.file_type().is_dir()
-                            && let Some(name) = e.file_name().to_str()
-                        {
-                            return !exclude.iter().any(|x| x == name);
-                        }
-                        true
-                    })
-                    .flatten()
-                {
+                for entry in walk_dir(&resolved_path, &self.exclude).flatten() {
                     let path = entry.path();
 
                     if path.is_file()

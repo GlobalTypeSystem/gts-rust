@@ -1,4 +1,5 @@
 use gts::entities::{GtsConfig, GtsEntity, GtsFile};
+use gts::files_reader::walk_dir;
 use gts::gts::{GTS_ID_PREFIX, GTS_ID_URI_PREFIX, GtsId};
 use gts::store::GtsStore;
 use serde::{Deserialize, Serialize};
@@ -6,7 +7,6 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
-use walkdir::WalkDir;
 
 /// The GTS schema extension keyword. It is a fixed keyword (not derived from
 /// `GTS_ID_PREFIX`), so the marker below is matched verbatim.
@@ -116,23 +116,7 @@ impl GtsJsonValidator {
         let mut files: Vec<PathBuf> = Vec::new();
         let mut seen = HashSet::new();
 
-        // Clone into a local so the traversal closure does not borrow `self`
-        // (the loop body needs `&mut self` to record issues).
-        let exclude = self.exclude.clone();
-        for entry in WalkDir::new(&resolved)
-            .follow_links(true)
-            .into_iter()
-            .filter_entry(move |e| {
-                // Prune excluded directories before descending into them.
-                if e.depth() > 0
-                    && e.file_type().is_dir()
-                    && let Some(name) = e.file_name().to_str()
-                {
-                    return !exclude.iter().any(|x| x == name);
-                }
-                true
-            })
-        {
+        for entry in walk_dir(&resolved, &self.exclude) {
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(e) => {

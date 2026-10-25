@@ -27,7 +27,7 @@ pub struct Cli {
     #[arg(
         long,
         value_delimiter = ',',
-        default_value = "node_modules,dist,build,.git,target"
+        default_values = gts::files_reader::DEFAULT_EXCLUDE_LIST.iter().copied()
     )]
     pub exclude_dir: Vec<String>,
 
