@@ -30,6 +30,9 @@ pub struct GtsJsonValidationResult {
     pub schemas: usize,
     pub instances: usize,
     pub issues: Vec<GtsJsonValidationIssue>,
+    /// Non-fatal diagnostics (e.g. unreadable subdirectories or dangling
+    /// symlinks hit during traversal). They are reported but do not affect `ok`.
+    pub warnings: Vec<GtsJsonValidationIssue>,
 }
 
 pub struct GtsJsonValidator {
@@ -40,6 +43,7 @@ pub struct GtsJsonValidator {
     documents: usize,
     entities: Vec<GtsEntity>,
     issues: Vec<GtsJsonValidationIssue>,
+    warnings: Vec<GtsJsonValidationIssue>,
 }
 
 impl GtsJsonValidator {
@@ -54,6 +58,7 @@ impl GtsJsonValidator {
             documents: 0,
             entities: Vec::new(),
             issues: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 
@@ -78,6 +83,7 @@ impl GtsJsonValidator {
             schemas: schemas_count,
             instances: instances_count,
             issues: self.issues,
+            warnings: self.warnings,
         }
     }
 
@@ -130,12 +136,15 @@ impl GtsJsonValidator {
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(e) => {
-                    // Surface traversal errors instead of silently dropping them.
+                    // Surface traversal errors instead of silently dropping
+                    // them, but as warnings: an unreadable subdirectory or a
+                    // dangling symlink is an environment problem, not a GTS
+                    // validation failure.
                     let file = e.path().map_or_else(
                         || resolved.to_string_lossy().to_string(),
                         |p| p.to_string_lossy().to_string(),
                     );
-                    self.issues.push(GtsJsonValidationIssue {
+                    self.warnings.push(GtsJsonValidationIssue {
                         file,
                         stage: "discovery".to_owned(),
                         message: e.to_string(),
@@ -706,6 +715,26 @@ mod tests {
 
         assert!(result.ok, "issues: {:?}", result.issues);
         assert_eq!(result.schemas, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_traversal_error_is_warning_not_failure() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "base.schema.json", &base_schema());
+        std::os::unix::fs::symlink(
+            dir.path().join("missing-target"),
+            dir.path().join("dangling"),
+        )
+        .unwrap();
+
+        let result = run(dir.path());
+
+        assert!(result.ok, "issues: {:?}", result.issues);
+        assert_eq!(result.schemas, 1);
+        assert_eq!(result.warnings.len(), 1, "warnings: {:?}", result.warnings);
+        assert_eq!(result.warnings[0].stage, "discovery");
+        assert!(result.warnings[0].file.ends_with("dangling"));
     }
 
     #[test]
