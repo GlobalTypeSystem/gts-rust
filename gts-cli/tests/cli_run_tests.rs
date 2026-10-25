@@ -23,7 +23,7 @@ fn validate_all_cli(path: &str) -> Cli {
         verbose: 0,
         config: None,
         path: None,
-        exclude: vec![],
+        exclude_dir: vec![],
         command: Commands::ValidateAll {
             path: Some(path.to_owned()),
         },
@@ -66,7 +66,7 @@ async fn test_run_validate_all_requires_path() -> Result<()> {
         verbose: 0,
         config: None,
         path: None,
-        exclude: vec![],
+        exclude_dir: vec![],
         command: Commands::ValidateAll { path: None },
     };
 
@@ -81,7 +81,7 @@ async fn test_run_validate_id_command() -> Result<()> {
         verbose: 0,
         config: None,
         path: None,
-        exclude: vec![],
+        exclude_dir: vec![],
         command: Commands::ValidateId {
             gts_id: "test:schema:v1".to_owned(),
         },
@@ -100,7 +100,7 @@ async fn test_run_parse_id_command() -> Result<()> {
         verbose: 0,
         config: None,
         path: None,
-        exclude: vec![],
+        exclude_dir: vec![],
         command: Commands::ParseId {
             gts_id: "test:schema:v1".to_owned(),
         },
@@ -116,7 +116,7 @@ async fn test_run_match_id_pattern_command() -> Result<()> {
         verbose: 0,
         config: None,
         path: None,
-        exclude: vec![],
+        exclude_dir: vec![],
         command: Commands::MatchIdPattern {
             pattern: "test:*:v1".to_owned(),
             candidate: "test:schema:v1".to_owned(),
@@ -133,7 +133,7 @@ async fn test_run_uuid_command() -> Result<()> {
         verbose: 0,
         config: None,
         path: None,
-        exclude: vec![],
+        exclude_dir: vec![],
         command: Commands::Uuid {
             gts_id: "test:schema:v1".to_owned(),
             scope: "major".to_owned(),
@@ -150,7 +150,7 @@ async fn test_run_validate_instance_command() -> Result<()> {
         verbose: 0,
         config: None,
         path: None,
-        exclude: vec![],
+        exclude_dir: vec![],
         command: Commands::ValidateInstance {
             gts_id: "test:instance:v1".to_owned(),
         },
@@ -168,7 +168,7 @@ async fn test_run_resolve_relationships_command() -> Result<()> {
         verbose: 0,
         config: None,
         path: None,
-        exclude: vec![],
+        exclude_dir: vec![],
         command: Commands::ResolveRelationships {
             gts_id: "test:schema:v1".to_owned(),
         },
@@ -184,7 +184,7 @@ async fn test_run_compatibility_command() -> Result<()> {
         verbose: 0,
         config: None,
         path: None,
-        exclude: vec![],
+        exclude_dir: vec![],
         command: Commands::Compatibility {
             old_type_id: "test:schema:v1".to_owned(),
             new_type_id: "test:schema:v2".to_owned(),
@@ -201,7 +201,7 @@ async fn test_run_cast_command() -> Result<()> {
         verbose: 0,
         config: None,
         path: None,
-        exclude: vec![],
+        exclude_dir: vec![],
         command: Commands::Cast {
             from_id: "test:instance:v1".to_owned(),
             to_type_id: "test:schema:v2".to_owned(),
@@ -218,7 +218,7 @@ async fn test_run_query_command() -> Result<()> {
         verbose: 0,
         config: None,
         path: None,
-        exclude: vec![],
+        exclude_dir: vec![],
         command: Commands::Query {
             expr: "test:*".to_owned(),
             limit: 10,
@@ -235,7 +235,7 @@ async fn test_run_attr_command() -> Result<()> {
         verbose: 0,
         config: None,
         path: None,
-        exclude: vec![],
+        exclude_dir: vec![],
         command: Commands::Attr {
             gts_with_path: "test:instance:v1@field.nested".to_owned(),
         },
@@ -251,7 +251,7 @@ async fn test_run_list_command() -> Result<()> {
         verbose: 0,
         config: None,
         path: None,
-        exclude: vec![],
+        exclude_dir: vec![],
         command: Commands::List { limit: 50 },
     };
 
@@ -268,7 +268,7 @@ async fn test_run_openapi_spec_command() -> Result<()> {
         verbose: 0,
         config: None,
         path: None,
-        exclude: vec![],
+        exclude_dir: vec![],
         command: Commands::OpenapiSpec {
             out: output_path.to_str().unwrap().to_owned(),
             host: "127.0.0.1".to_owned(),
@@ -300,7 +300,7 @@ async fn test_run_generate_from_rust_command() -> Result<()> {
         verbose: 0,
         config: None,
         path: None,
-        exclude: vec![],
+        exclude_dir: vec![],
         command: Commands::GenerateFromRust {
             source: source_path.to_str().unwrap().to_owned(),
             output: Some(output_path.to_str().unwrap().to_owned()),
@@ -319,7 +319,7 @@ async fn test_run_with_verbose_flag() -> Result<()> {
         verbose: 2, // DEBUG level
         config: None,
         path: None,
-        exclude: vec![],
+        exclude_dir: vec![],
         command: Commands::ValidateId {
             gts_id: "test:schema:v1".to_owned(),
         },
@@ -342,7 +342,7 @@ async fn test_run_with_config_and_path() -> Result<()> {
         verbose: 0,
         config: Some(config_path.to_str().unwrap().to_owned()),
         path: Some(data_path.to_str().unwrap().to_owned()),
-        exclude: vec![],
+        exclude_dir: vec![],
         command: Commands::List { limit: 100 },
     };
 

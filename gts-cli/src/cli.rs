@@ -22,13 +22,14 @@ pub struct Cli {
     #[arg(long)]
     pub path: Option<String>,
 
-    /// Comma-separated directory names to exclude when scanning `--path`
+    /// Directory names to skip when scanning `--path` (comma-separated or
+    /// repeated). Overrides the default list.
     #[arg(
         long,
         value_delimiter = ',',
         default_value = "node_modules,dist,build,.git,target"
     )]
-    pub exclude: Vec<String>,
+    pub exclude_dir: Vec<String>,
 
     #[command(subcommand)]
     pub command: Commands,
@@ -189,10 +190,11 @@ async fn run_command(cli: Cli) -> Result<()> {
     // Parse path into Vec<String>
     let cli_path = cli.path.clone();
     let path = cli.path.map(|p| vec![p]);
-    let exclude = cli.exclude.clone();
+    let exclude_dir = cli.exclude_dir.clone();
 
     // Create GtsOps
-    let mut ops = GtsOps::new_with_exclude(path, cli.config, cli.verbose as usize, exclude.clone());
+    let mut ops =
+        GtsOps::new_with_exclude(path, cli.config, cli.verbose as usize, exclude_dir.clone());
 
     match cli.command {
         Commands::Server { host, port } => {
@@ -218,7 +220,7 @@ async fn run_command(cli: Cli) -> Result<()> {
                 .or(cli_path)
                 .ok_or_else(|| anyhow::anyhow!("validate-all requires --path"))?;
             let result =
-                crate::json_validation::GtsJsonValidator::new(&scan, ops.cfg.clone(), exclude)
+                crate::json_validation::GtsJsonValidator::new(&scan, ops.cfg.clone(), exclude_dir)
                     .validate();
             print_result(&result)?;
             if !result.ok {
@@ -390,6 +392,34 @@ mod tests {
                 assert_eq!(output, Some("/out/path".to_owned()));
                 assert_eq!(exclude, vec!["tests/*", "examples/*"]);
             }
+            _ => panic!("Expected GenerateFromRust command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_exclude_dir() {
+        let cli = Cli::try_parse_from(["gts", "list"]).unwrap();
+        assert_eq!(
+            cli.exclude_dir,
+            vec!["node_modules", "dist", "build", ".git", "target"]
+        );
+
+        let cli = Cli::try_parse_from([
+            "gts",
+            "--exclude-dir",
+            "a,b",
+            "--exclude-dir",
+            "c",
+            "generate-from-rust",
+            "--source",
+            "/src",
+            "--exclude",
+            "tests/*",
+        ])
+        .unwrap();
+        assert_eq!(cli.exclude_dir, vec!["a", "b", "c"]);
+        match cli.command {
+            Commands::GenerateFromRust { exclude, .. } => assert_eq!(exclude, vec!["tests/*"]),
             _ => panic!("Expected GenerateFromRust command"),
         }
     }

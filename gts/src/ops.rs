@@ -269,7 +269,7 @@ impl GtsOps {
     }
 
     /// Like [`GtsOps::new`] but with an explicit list of directory names to skip
-    /// while scanning `path` (e.g. from the CLI `--exclude` option).
+    /// while scanning `path` (e.g. from the CLI `--exclude-dir` option).
     #[must_use]
     pub fn new_with_exclude(
         path: Option<Vec<String>>,

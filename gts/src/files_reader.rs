@@ -7,7 +7,7 @@ use crate::entities::{GtsConfig, GtsEntity, GtsFile};
 use crate::store::GtsReader;
 
 /// Default directory names excluded from recursive file traversal when the
-/// caller does not provide an explicit exclude list (e.g. the CLI `--exclude`
+/// caller does not provide an explicit exclude list (e.g. the CLI `--exclude-dir`
 /// option). Kept here so direct library users get sensible behavior.
 const DEFAULT_EXCLUDE_LIST: &[&str] = &["node_modules", "dist", "build", ".git", "target"];
 const VALID_EXTENSIONS: &[&str] = &[".json", ".jsonc", ".gts", ".yaml", ".yml"];
@@ -20,7 +20,7 @@ pub struct GtsFileReader {
     initialized: bool,
 }
 
-/// Default exclude list as owned strings (the CLI `--exclude` option overrides it).
+/// Default exclude list as owned strings (the CLI `--exclude-dir` option overrides it).
 fn default_exclude() -> Vec<String> {
     DEFAULT_EXCLUDE_LIST
         .iter()
@@ -35,7 +35,7 @@ impl GtsFileReader {
     }
 
     /// Like [`GtsFileReader::new`] but with an explicit list of directory names
-    /// to skip during recursive traversal (e.g. from the CLI `--exclude` option).
+    /// to skip during recursive traversal (e.g. from the CLI `--exclude-dir` option).
     #[must_use]
     pub fn new_with_exclude(path: &[String], cfg: Option<GtsConfig>, exclude: Vec<String>) -> Self {
         let paths = path
