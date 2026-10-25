@@ -108,8 +108,8 @@ impl GtsFileReader {
                 serde_saphyr::from_str(&content)?
             }
             _ => {
-                // Default: parse as JSON
-                serde_json::from_str(&content)?
+                // Default: parse as JSON (JSONC for *.jsonc)
+                crate::jsonc::from_str_for_path(file_path, &content)?
             }
         };
 
@@ -427,6 +427,38 @@ mod tests {
         let yaml_result_yml = GtsFileReader::load_json_file(&yml_path);
         assert!(yaml_result_yml.is_ok());
         assert_eq!(yaml_result_yml.unwrap()["name"], "test2");
+    }
+
+    #[test]
+    fn test_load_json_file_jsonc() {
+        let temp_dir = TempDir::new().unwrap();
+        let content =
+            "// Invalid: reason\n{\n  /* id */ \"name\": \"test\", // c\n  \"value\": 42,\n}\n";
+
+        let jsonc_path = temp_dir.path().join("test.jsonc");
+        fs::write(&jsonc_path, content).unwrap();
+        let json = GtsFileReader::load_json_file(&jsonc_path).unwrap();
+        assert_eq!(json, serde_json::json!({"name": "test", "value": 42}));
+
+        // Comments stay invalid in strict *.json files.
+        let json_path = temp_dir.path().join("test.json");
+        fs::write(&json_path, content).unwrap();
+        assert!(GtsFileReader::load_json_file(&json_path).is_err());
+    }
+
+    #[test]
+    fn test_iter_reads_jsonc_entities() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(
+            temp_dir.path().join("schema.schema.jsonc"),
+            "// a schema\n{\n  \"$id\": \"gts://gts.x.test.jsonc.thing.v1~\", // id\n  \"$schema\": \"http://json-schema.org/draft-07/schema#\",\n  \"type\": \"object\",\n}\n",
+        )
+        .unwrap();
+
+        let paths = vec![temp_dir.path().to_string_lossy().to_string()];
+        let mut reader = GtsFileReader::new(&paths, None);
+        let ids: Vec<String> = reader.iter().filter_map(|e| e.effective_id()).collect();
+        assert_eq!(ids, vec!["gts.x.test.jsonc.thing.v1~".to_owned()]);
     }
 
     #[test]

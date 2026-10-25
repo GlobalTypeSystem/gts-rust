@@ -100,6 +100,54 @@ fn test_validate_fs_valid_json() {
     );
 }
 
+const JSONC_CONTENT: &str = "// Invalid: reason\n{\n  /* type */ \"schema\": \"gts.x.core.pkg.mytype.v1~\", // c\n  \"refs\": [\"gts.x.core.pkg.other.v1~\",],\n}\n";
+
+#[test]
+fn test_validate_fs_valid_jsonc() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("test.jsonc"), JSONC_CONTENT).unwrap();
+
+    let fs_config = default_fs_config(vec![tmp.path().to_path_buf()]);
+    let report = validate_fs(&fs_config, &default_validation_config()).unwrap();
+
+    assert_eq!(report.scanned_files, 1);
+    assert!(
+        report.ok,
+        "expected ok, got errors: {:?} {:?}",
+        report.validation_errors, report.scan_errors
+    );
+}
+
+#[test]
+fn test_validate_fs_jsonc_ids_are_validated() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(
+        tmp.path().join("test.jsonc"),
+        "{\n  // comment\n  \"schema\": \"gts.invalid\",\n}\n",
+    )
+    .unwrap();
+
+    let fs_config = default_fs_config(vec![tmp.path().to_path_buf()]);
+    let report = validate_fs(&fs_config, &default_validation_config()).unwrap();
+
+    assert_eq!(report.scanned_files, 1);
+    assert!(report.scan_errors.is_empty(), "{:?}", report.scan_errors);
+    assert_eq!(report.validation_errors.len(), 1);
+    assert_eq!(report.validation_errors[0].json_path, "$.schema");
+}
+
+#[test]
+fn test_validate_fs_comments_in_json_produce_scan_error() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("test.json"), JSONC_CONTENT).unwrap();
+
+    let fs_config = default_fs_config(vec![tmp.path().to_path_buf()]);
+    let report = validate_fs(&fs_config, &default_validation_config()).unwrap();
+
+    assert_eq!(report.failed_files, 1);
+    assert!(!report.ok);
+}
+
 #[test]
 fn test_validate_fs_valid_yaml() {
     let tmp = TempDir::new().unwrap();

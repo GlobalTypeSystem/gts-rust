@@ -1,16 +1,19 @@
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
-    http::StatusCode,
-    middleware,
-    response::IntoResponse,
+    body::{Body, Bytes},
+    extract::{FromRequest, Path, Query, Request, State},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use gts::GtsOps;
 use gts::GtsRefValidation;
+use gts::jsonc::{self, JSONC_MEDIA_TYPE};
 use gts::ops::AddEntityRejection;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 
 use crate::logging::LoggingMiddleware;
@@ -83,7 +86,8 @@ impl GtsHttpServer {
             .route("/cast", post(cast))
             .route("/query", get(query))
             .route("/attr", get(attr))
-            .with_state(state);
+            .with_state(state)
+            .layer(middleware::from_fn(accept_jsonc_body));
 
         // Add custom logging middleware if verbose >= 1
         if verbose >= 1 {
@@ -179,6 +183,44 @@ impl GtsRefValidationQuery {
             .as_deref()
             .map_or_else(|| Ok(GtsRefValidation::default()), GtsRefValidation::parse)
     }
+}
+
+fn is_jsonc_request(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|mime| mime.trim().eq_ignore_ascii_case(JSONC_MEDIA_TYPE))
+}
+
+/// Accept `application/jsonc` bodies on every endpoint: comments and trailing
+/// commas are blanked out and the request is passed on as `application/json`,
+/// so the `Json` extractors and their rejections apply unchanged.
+///
+/// The body is buffered with axum's `Bytes` extractor, so the effective
+/// `DefaultBodyLimit` (axum's default unless a `DefaultBodyLimit` layer is
+/// applied outside this middleware) and its 413/400 rejections are the same as
+/// for `application/json`.
+async fn accept_jsonc_body(request: Request, next: Next) -> Response {
+    if !is_jsonc_request(request.headers()) {
+        return next.run(request).await;
+    }
+    let (mut parts, body) = request.into_parts();
+    let bytes = match Bytes::from_request(Request::from_parts(parts.clone(), body), &()).await {
+        Ok(bytes) => bytes,
+        Err(rejection) => return rejection.into_response(),
+    };
+    // Stripping preserves the length, so `Content-Length` stays valid.
+    let stripped = match std::str::from_utf8(&bytes).map(jsonc::strip) {
+        Ok(Cow::Owned(text)) => Some(text),
+        _ => None,
+    };
+    let body = stripped.map_or_else(|| Body::from(bytes), Body::from);
+    parts.headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    next.run(Request::from_parts(parts, body)).await
 }
 
 fn unprocessable(error: &str) -> axum::response::Response {

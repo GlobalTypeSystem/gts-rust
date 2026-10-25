@@ -151,7 +151,12 @@ pub fn validate_fs(
                 heuristic,
                 &validation_config.skip_tokens,
             ),
-            Some(ContentFormat::Json) => {
+            Some(content_format @ (ContentFormat::Json | ContentFormat::Jsonc)) => {
+                let content = if content_format == ContentFormat::Jsonc {
+                    gts::jsonc::strip(&content)
+                } else {
+                    content.as_str().into()
+                };
                 match format::json::scan_json_content(
                     &content,
                     file_path,

@@ -2,6 +2,7 @@ pub mod entities;
 pub mod files_reader;
 pub mod gts;
 mod json_schema;
+pub mod jsonc;
 pub mod ops;
 pub mod path_resolver;
 pub mod regex_profile;

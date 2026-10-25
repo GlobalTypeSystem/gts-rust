@@ -2,7 +2,7 @@
 //!
 //! Each sub-module handles a specific file format:
 //! - `markdown` — Markdown files with code-block state machine
-//! - `json` — JSON tree-walker
+//! - `json` — JSON tree-walker (also JSONC, after `gts::jsonc::strip`)
 //! - `yaml` — YAML scanner (delegates to JSON walker via `serde_json::Value`)
 
 pub mod json;

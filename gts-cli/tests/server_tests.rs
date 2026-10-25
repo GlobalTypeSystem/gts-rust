@@ -932,3 +932,150 @@ async fn test_gts_ref_validation_mode_gates_registration() {
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+const JSONC_SCHEMA: &str = r#"// Thing type
+{
+  "$id": "gts://gts.x.test.jsonc.thing.v1~", // type id
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  /* block comment */
+  "type": "object",
+  "properties": {
+    "id": { "type": "string" },
+  },
+}
+"#;
+
+#[allow(clippy::unwrap_used)]
+async fn post(app: Router, uri: &str, content_type: &str, body: &str) -> (StatusCode, Vec<u8>) {
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", content_type)
+                .body(Body::from(body.to_owned()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, body.to_vec())
+}
+
+#[tokio::test]
+async fn test_add_entity_accepts_jsonc_body() {
+    for verbose in [0, 2] {
+        let ops = create_test_ops();
+        let state = AppState {
+            ops: Arc::new(Mutex::new(ops)),
+        };
+        let app = GtsHttpServer::create_router(state.clone(), verbose);
+
+        let (status, body) = post(app, "/entities", "application/jsonc", JSONC_SCHEMA).await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["id"], "gts.x.test.jsonc.thing.v1~");
+
+        let stored = state
+            .ops
+            .lock()
+            .unwrap()
+            .get_entity("gts.x.test.jsonc.thing.v1~");
+        assert_eq!(stored.content.unwrap()["type"], "object");
+    }
+}
+
+#[tokio::test]
+async fn test_jsonc_media_type_parameters_and_case() {
+    let app = create_test_router(create_test_ops(), 0);
+    let (status, body) = post(
+        app,
+        "/extract-id",
+        "Application/JSONC; charset=utf-8",
+        "{\"$id\": \"gts://gts.x.test.jsonc.thing.v1~\", /* c */ \"type\": \"object\",}",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(result["id"], "gts.x.test.jsonc.thing.v1~");
+}
+
+#[tokio::test]
+async fn test_jsonc_bulk_body() {
+    let app = create_test_router(create_test_ops(), 0);
+    let body = format!("[\n  // one schema\n  {JSONC_SCHEMA},\n]");
+    let (status, body) = post(app, "/type-schemas", "application/jsonc", &body).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+}
+
+#[tokio::test]
+async fn test_comments_rejected_in_application_json_body() {
+    let app = create_test_router(create_test_ops(), 0);
+    let (status, _) = post(app, "/entities", "application/json", JSONC_SCHEMA).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_malformed_jsonc_body_keeps_json_rejections() {
+    let app = create_test_router(create_test_ops(), 0);
+    let (status, _) = post(app, "/entities", "application/jsonc", "{\"a\": 1 /* open").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // Well-formed JSONC with the wrong shape is a data error, as for JSON.
+    let app = create_test_router(create_test_ops(), 0);
+    let (status, _) = post(app, "/type-schemas", "application/jsonc", "{} // obj").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn test_jsonc_body_limit_matches_json() {
+    // axum's default body limit applies to JSONC exactly as to JSON.
+    let big = format!("[{}0]", "0,".repeat(1_100_000));
+    for content_type in ["application/json", "application/jsonc"] {
+        let app = create_test_router(create_test_ops(), 0);
+        let (status, _) = post(app, "/entities/bulk", content_type, &big).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{content_type}");
+    }
+
+    // An outer `DefaultBodyLimit` is honored for JSONC too.
+    let app =
+        create_test_router(create_test_ops(), 0).layer(axum::extract::DefaultBodyLimit::max(16));
+    let (status, _) = post(
+        app,
+        "/extract-id",
+        "application/jsonc",
+        "{\"a\": 1} // long comment",
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn test_jsonc_body_with_byte_order_mark() {
+    let app = create_test_router(create_test_ops(), 0);
+    let body = "\u{feff}{\"$id\": \"gts://gts.x.test.jsonc.thing.v1~\", // c\n}";
+    let (status, body) = post(app, "/extract-id", "application/jsonc", body).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+}
+
+#[tokio::test]
+#[allow(clippy::unwrap_used)]
+async fn test_non_utf8_jsonc_body_is_bad_request() {
+    let app = create_test_router(create_test_ops(), 0);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/extract-id")
+                .header("content-type", "application/jsonc")
+                .body(Body::from(b"{\"a\": \"\xff\"} // c".to_vec()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}

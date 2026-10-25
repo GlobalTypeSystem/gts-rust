@@ -52,9 +52,9 @@ pub enum Commands {
         #[arg(long, default_value = "major")]
         scope: String,
     },
-    /// Validate all JSON documents in a file or directory
+    /// Validate all JSON/JSONC documents in a file or directory
     ValidateJson {
-        /// JSON file or directory to scan
+        /// JSON/JSONC file or directory to scan
         #[arg(long)]
         path: Option<String>,
     },

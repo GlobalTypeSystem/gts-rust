@@ -12,5 +12,7 @@ pub mod fs;
 pub enum ContentFormat {
     Markdown,
     Json,
+    /// JSON with `//` / `/* */` comments and trailing commas.
+    Jsonc,
     Yaml,
 }

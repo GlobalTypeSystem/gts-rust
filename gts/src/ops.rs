@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::Path;
 
 use crate::entities::{GtsConfig, GtsEntity};
 use crate::files_reader::GtsFileReader;
@@ -262,7 +262,7 @@ pub struct GtsOps {
 impl GtsOps {
     #[must_use]
     pub fn new(path: Option<Vec<String>>, config: Option<String>, verbose: usize) -> Self {
-        let cfg = Self::load_config(config);
+        let cfg = Self::load_config_in(config, Path::new(""));
         let store = match path.as_ref() {
             Some(p) => {
                 let reader = Box::new(GtsFileReader::new(p, Some(cfg.clone())))
@@ -280,28 +280,45 @@ impl GtsOps {
         }
     }
 
-    fn load_config(config_path: Option<String>) -> GtsConfig {
-        // Try user-provided path
-        if let Some(path) = config_path
-            && let Ok(cfg) = Self::load_config_from_path(&PathBuf::from(path))
-        {
-            return cfg;
-        }
-
-        // Try default path (relative to current directory)
-        #[allow(unknown_lints, gts_id_hardcoded_prefix)]
-        let default_path = PathBuf::from("gts.config.json");
-        if let Ok(cfg) = Self::load_config_from_path(&default_path) {
-            return cfg;
-        }
-
-        // Fall back to defaults
-        GtsConfig::default()
+    /// Load the user-provided config, else the first existing default config
+    /// file in `dir`, else the defaults. Unreadable or malformed files are
+    /// skipped with a warning.
+    fn load_config_in(config_path: Option<String>, dir: &Path) -> GtsConfig {
+        config_path
+            .and_then(|path| Self::try_load_config(Path::new(&path)))
+            .or_else(|| Self::default_config_path(dir).and_then(|p| Self::try_load_config(&p)))
+            .unwrap_or_default()
     }
 
-    fn load_config_from_path(path: &PathBuf) -> Result<GtsConfig, Box<dyn std::error::Error>> {
+    /// The first of `gts.config.json` / `gts.config.jsonc` that exists in `dir`.
+    fn default_config_path(dir: &Path) -> Option<std::path::PathBuf> {
+        #[allow(unknown_lints, gts_id_hardcoded_prefix)]
+        let default_names = ["gts.config.json", "gts.config.jsonc"];
+        let mut existing = default_names
+            .iter()
+            .map(|name| dir.join(name))
+            .filter(|path| path.is_file());
+        let path = existing.next()?;
+        for ignored in existing {
+            tracing::warn!(
+                "Both {} and {} exist; using {}",
+                path.display(),
+                ignored.display(),
+                path.display()
+            );
+        }
+        Some(path)
+    }
+
+    fn try_load_config(path: &Path) -> Option<GtsConfig> {
+        Self::load_config_from_path(path)
+            .inspect_err(|e| tracing::warn!("Ignoring GTS config {}: {e}", path.display()))
+            .ok()
+    }
+
+    fn load_config_from_path(path: &Path) -> Result<GtsConfig, Box<dyn std::error::Error>> {
         let content = fs::read_to_string(path)?;
-        let data: HashMap<String, Value> = serde_json::from_str(&content)?;
+        let data: HashMap<String, Value> = crate::jsonc::from_str_for_path(path, &content)?;
         Ok(Self::create_config_from_data(&data))
     }
 
@@ -4119,6 +4136,61 @@ mod tests {
         let default_cfg = GtsConfig::default();
         assert_eq!(config.entity_id_fields, default_cfg.entity_id_fields);
         assert_eq!(config.type_id_fields, default_cfg.type_id_fields);
+    }
+
+    #[test]
+    fn test_load_config_from_jsonc_path() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let content = "{\n  // custom id fields\n  \"entity_id_fields\": [\"customId\",],\n}\n";
+
+        let jsonc_path = temp_dir.path().join("config.jsonc");
+        fs::write(&jsonc_path, content).unwrap();
+        let config = GtsOps::load_config_from_path(&jsonc_path).unwrap();
+        assert_eq!(config.entity_id_fields, vec!["customId"]);
+
+        let json_path = temp_dir.path().join("config.json");
+        fs::write(&json_path, content).unwrap();
+        assert!(GtsOps::load_config_from_path(&json_path).is_err());
+    }
+
+    #[test]
+    fn test_load_config_in_default_files() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let default_fields = GtsConfig::default().entity_id_fields;
+        let load =
+            |config: Option<&str>| GtsOps::load_config_in(config.map(str::to_owned), dir.path());
+        let jsonc_path = dir.path().join("gts.config.jsonc");
+        let json_path = dir.path().join("gts.config.json");
+
+        assert_eq!(load(None).entity_id_fields, default_fields);
+
+        fs::write(
+            &jsonc_path,
+            "{\"entity_id_fields\": [\"fromJsonc\"], // c\n}",
+        )
+        .unwrap();
+        assert_eq!(load(None).entity_id_fields, vec!["fromJsonc"]);
+
+        // gts.config.json takes precedence over gts.config.jsonc.
+        fs::write(&json_path, r#"{"entity_id_fields": ["fromJson"]}"#).unwrap();
+        assert_eq!(load(None).entity_id_fields, vec!["fromJson"]);
+
+        // A malformed preferred file falls back to the defaults, not to the other file.
+        fs::write(&json_path, "{ // not json").unwrap();
+        assert_eq!(load(None).entity_id_fields, default_fields);
+
+        // An explicit config wins; a broken one falls back to the default files.
+        let custom = dir.path().join("custom.jsonc");
+        fs::write(&custom, "{\"entity_id_fields\": [\"custom\"]}").unwrap();
+        assert_eq!(
+            load(Some(&custom.to_string_lossy())).entity_id_fields,
+            vec!["custom"]
+        );
+        fs::remove_file(&json_path).unwrap();
+        assert_eq!(
+            load(Some("/nonexistent/gts.config.json")).entity_id_fields,
+            vec!["fromJsonc"]
+        );
     }
 
     #[test]

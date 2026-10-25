@@ -1,6 +1,6 @@
 # gts-validator
 
-GTS identifier validator for documentation and configuration files (.md, .json, .yaml).
+GTS identifier validator for documentation and configuration files (.md, .json, .jsonc, .yaml, .yml).
 
 ## Overview
 

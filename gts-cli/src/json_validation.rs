@@ -1,5 +1,6 @@
 use gts::entities::{GtsConfig, GtsEntity, GtsFile};
 use gts::gts::{GTS_ID_PREFIX, GtsId};
+use gts::jsonc;
 use gts::store::GtsStore;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -84,13 +85,10 @@ impl GtsJsonValidator {
             .unwrap_or_else(|_| self.path.clone());
 
         if resolved.is_file() {
-            if resolved
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
-            {
+            if Self::is_json_family(&resolved) {
                 return vec![resolved];
             }
-            self.add_issue_path(&resolved, "discovery", "Expected a .json file");
+            self.add_issue_path(&resolved, "discovery", "Expected a .json or .jsonc file");
             return vec![];
         }
 
@@ -120,11 +118,7 @@ impl GtsJsonValidator {
                 continue;
             }
 
-            if path.is_file()
-                && path
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
-            {
+            if path.is_file() && Self::is_json_family(path) {
                 let rp = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
                 let key = rp.to_string_lossy().to_string();
                 if seen.insert(key) {
@@ -137,6 +131,13 @@ impl GtsJsonValidator {
         files
     }
 
+    fn is_json_family(path: &Path) -> bool {
+        jsonc::is_jsonc_path(path)
+            || path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+    }
+
     fn read_file(&mut self, file_path: &Path) {
         self.files += 1;
         let content_str = match std::fs::read_to_string(file_path) {
@@ -147,7 +148,7 @@ impl GtsJsonValidator {
             }
         };
 
-        let content: Value = match serde_json::from_str(&content_str) {
+        let content: Value = match jsonc::from_str_for_path(file_path, &content_str) {
             Ok(v) => v,
             Err(e) => {
                 self.add_issue_path(file_path, "json", &e.to_string());
@@ -393,5 +394,62 @@ impl GtsJsonValidator {
             message: message.to_owned(),
             index: None,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    const SCHEMA_JSONC: &str = r#"// Thing type
+{
+  "$id": "gts://gts.x.test.jsonc.thing.v1~", // type id
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  /* block comment */
+  "type": "object",
+  "properties": {
+    "id": { "type": "string" },
+  },
+}
+"#;
+
+    fn validate(dir: &TempDir) -> GtsJsonValidationResult {
+        GtsJsonValidator::new(&dir.path().to_string_lossy(), GtsConfig::default()).validate()
+    }
+
+    #[test]
+    fn validates_jsonc_documents() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("thing.schema.jsonc"), SCHEMA_JSONC).unwrap();
+        fs::write(
+            dir.path().join("one.jsonc"),
+            "{\n  // instance\n  \"id\": \"gts.x.test.jsonc.thing.v1~x.test.jsonc.one.v1\",\n}\n",
+        )
+        .unwrap();
+
+        let result = validate(&dir);
+        assert!(result.ok, "{:?}", result.issues);
+        assert_eq!((result.files, result.schemas, result.instances), (2, 1, 1));
+
+        let single = GtsJsonValidator::new(
+            &dir.path().join("thing.schema.jsonc").to_string_lossy(),
+            GtsConfig::default(),
+        )
+        .validate();
+        assert!(single.ok, "{:?}", single.issues);
+        assert_eq!(single.schemas, 1);
+    }
+
+    #[test]
+    fn comments_in_json_files_are_reported() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("thing.schema.json"), SCHEMA_JSONC).unwrap();
+
+        let result = validate(&dir);
+        assert!(!result.ok);
+        assert_eq!(result.issues.len(), 1);
+        assert_eq!(result.issues[0].stage, "json");
     }
 }
