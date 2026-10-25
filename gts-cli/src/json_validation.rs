@@ -277,11 +277,16 @@ impl GtsJsonValidator {
 
         for (idx, entity) in self.entities.iter_mut().enumerate() {
             let Some(mut key) = Self::registry_key(entity) else {
-                // A schema ($schema present) that yields no registrable GTS id
-                // has a malformed or non-GTS $id — report it instead of
-                // silently dropping it. Non-schema documents without an id are
-                // simply ignored.
-                if entity.is_schema || entity.selected_entity_field.is_some() {
+                // A schema ($schema present) or an instance with an id field
+                // that yields no registrable GTS id has a malformed or non-GTS
+                // id — report it instead of silently dropping it. Documents
+                // without an id are simply ignored. The marker check is
+                // repeated per document so that an unrelated item in a JSON
+                // array is not flagged just because a sibling is GTS-related.
+                if (entity.is_schema || entity.selected_entity_field.is_some())
+                    && serde_json::to_string(&entity.content)
+                        .is_ok_and(|text| Self::is_gts_related(&text))
+                {
                     self.issues.push(GtsJsonValidationIssue {
                         file: Self::entity_file(entity),
                         stage: "registry".to_owned(),
@@ -697,6 +702,35 @@ mod tests {
                 .iter()
                 .any(|issue| issue.stage == "registry" && issue.message.contains("malformed"))
         );
+    }
+
+    #[test]
+    fn test_non_gts_array_items_are_ignored() {
+        let dir = TempDir::new().unwrap();
+        // Only the first item is GTS-related; the unrelated instance and the
+        // plain JSON Schema next to it must not be flagged as malformed.
+        let doc = format!(
+            r#"[
+                {},
+                {{ "id": "local-1" }},
+                {{
+                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "$id": "https://example.com/plain.json",
+                    "type": "object"
+                }},
+                {{ "id": "gts://gtx.cli.core.test.bad.v1~" }}
+            ]"#,
+            base_schema()
+        );
+        write(dir.path(), "mixed.json", &doc);
+
+        let result = run(dir.path());
+
+        assert_eq!(result.documents, 4);
+        assert_eq!(result.schemas, 1);
+        assert_eq!(result.issues.len(), 1, "issues: {:?}", result.issues);
+        assert_eq!(result.issues[0].stage, "registry");
+        assert_eq!(result.issues[0].index, Some(3));
     }
 
     #[test]
