@@ -168,7 +168,9 @@ pub async fn run_with_cli(cli: Cli) -> Result<()> {
     };
 
     // Only initialize logging if not already initialized (for testing)
+    // Logs go to stderr so they never corrupt the JSON results on stdout.
     let _ = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_max_level(log_level)
         .with_target(false)
         .try_init();
