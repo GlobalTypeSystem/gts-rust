@@ -38,6 +38,7 @@ Other GTS spec [Reference Implementation](https://github.com/globaltypesystem/gt
 - [x] **x-gts-type-ref / x-gts-instance-ref** - kind-specific GTS entity references in schemas (spec §9.6.1)
 - [x] **x-gts-pattern-ref** - pattern-valued string fields: GTS identifier pattern syntax and coverage by an operand, independent of the registry (spec §9.6.2, §10)
 - [x] **YAML support** - to support YAML files (*.yml, *.yaml) as input files
+- [x] **JSONC support** - to support JSONC files (*.jsonc) as input files
 - [ ] **TypeSpec support** - add [typespec.io](https://typespec.io/) files (*.tsp) support
 - [x] **UUID for instances** - to support UUID as ID in JSON instances (anonymous instances)
 
@@ -164,7 +165,7 @@ gts validate-id --gts-id "invalid-id"
 Extract GTS identifiers from JSON objects. This happens automatically when loading files.
 
 ```bash
-# List all entities (extracts IDs from all JSON/YAML files)
+# List all entities (extracts IDs from all JSON/JSONC/YAML files)
 gts --path ../gts-spec/examples list --limit 10
 ```
 
@@ -919,6 +920,11 @@ curl -X POST http://localhost:8000/entities \
   -H "Content-Type: application/json" \
   -d '{"gtsId": "gts.x.core.events.event.v1.0", "data": "..."}'
 
+# Add entity from a JSONC body (comments and trailing commas allowed)
+curl -X POST http://localhost:8000/entities \
+  -H "Content-Type: application/jsonc" \
+  --data-binary @event.jsonc
+
 # Validate type schema (OP#12 - schema-vs-schema chain validation)
 curl -X POST http://localhost:8000/validate-type-schema \
   -H "Content-Type: application/json" \
@@ -927,7 +933,7 @@ curl -X POST http://localhost:8000/validate-type-schema \
 
 ## Configuration
 
-Create a `gts.config.json` file to customize entity ID field detection:
+Create a `gts.config.json` (or `gts.config.jsonc`, which may contain comments) file to customize entity ID field detection:
 
 ```json
 {

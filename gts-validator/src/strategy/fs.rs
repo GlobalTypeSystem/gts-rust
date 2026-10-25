@@ -64,7 +64,7 @@ fn is_not_skip_dir(entry: &walkdir::DirEntry) -> bool {
 fn matches_file_pattern(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|e| e.to_str()),
-        Some("md" | "json" | "yaml" | "yml")
+        Some("md" | "json" | "jsonc" | "yaml" | "yml")
     )
 }
 
@@ -214,6 +214,7 @@ pub fn content_format_for(path: &Path) -> Option<ContentFormat> {
     match path.extension().and_then(|e| e.to_str()) {
         Some("md") => Some(ContentFormat::Markdown),
         Some("json") => Some(ContentFormat::Json),
+        Some("jsonc") => Some(ContentFormat::Jsonc),
         Some("yaml" | "yml") => Some(ContentFormat::Yaml),
         _ => None,
     }

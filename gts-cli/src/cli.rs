@@ -52,9 +52,9 @@ pub enum Commands {
         #[arg(long, default_value = "major")]
         scope: String,
     },
-    /// Validate all JSON documents in a file or directory
+    /// Validate all JSON/JSONC documents in a file or directory
     ValidateJson {
-        /// JSON file or directory to scan
+        /// JSON/JSONC file or directory to scan
         #[arg(long)]
         path: Option<String>,
     },
@@ -168,7 +168,9 @@ pub async fn run_with_cli(cli: Cli) -> Result<()> {
     };
 
     // Only initialize logging if not already initialized (for testing)
+    // Logs go to stderr so they never corrupt the JSON results on stdout.
     let _ = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_max_level(log_level)
         .with_target(false)
         .try_init();

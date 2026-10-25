@@ -18,7 +18,7 @@ use gts_validator::{DiscoveryMode, FsSourceConfig, ValidationConfig, VendorPolic
 
 /// GTS Documentation Validator (DE0903)
 ///
-/// Validates GTS identifiers in .md/.json/.yaml/.yml files.
+/// Validates GTS identifiers in .md/.json/.jsonc/.yaml/.yml files.
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 #[allow(clippy::struct_excessive_bools)]
@@ -53,7 +53,7 @@ struct Cli {
     #[arg(long, default_value = "10485760")]
     max_file_size: u64,
 
-    /// Scan JSON/YAML object keys for GTS identifiers (default: off)
+    /// Scan JSON/JSONC/YAML object keys for GTS identifiers (default: off)
     #[arg(long)]
     scan_keys: bool,
 
