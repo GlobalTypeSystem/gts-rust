@@ -22,6 +22,15 @@ pub struct Cli {
     #[arg(long)]
     pub path: Option<String>,
 
+    /// Directory names to skip when scanning `--path` (comma-separated or
+    /// repeated). Overrides the default list.
+    #[arg(
+        long,
+        value_delimiter = ',',
+        default_values = gts::files_reader::DEFAULT_EXCLUDE_LIST.iter().copied()
+    )]
+    pub exclude_dir: Vec<String>,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -52,8 +61,8 @@ pub enum Commands {
         #[arg(long, default_value = "major")]
         scope: String,
     },
-    /// Validate all JSON documents in a file or directory
-    ValidateJson {
+    /// Batch-validate GTS schemas and instances found in JSON files under a file or directory
+    ValidateAll {
         /// JSON file or directory to scan
         #[arg(long)]
         path: Option<String>,
@@ -181,9 +190,11 @@ async fn run_command(cli: Cli) -> Result<()> {
     // Parse path into Vec<String>
     let cli_path = cli.path.clone();
     let path = cli.path.map(|p| vec![p]);
+    let exclude_dir = cli.exclude_dir.clone();
 
     // Create GtsOps
-    let mut ops = GtsOps::new(path, cli.config, cli.verbose as usize);
+    let mut ops =
+        GtsOps::new_with_exclude(path, cli.config, cli.verbose as usize, exclude_dir.clone());
 
     match cli.command {
         Commands::Server { host, port } => {
@@ -204,20 +215,17 @@ async fn run_command(cli: Cli) -> Result<()> {
             });
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
-        Commands::ValidateJson { path: scan_path } => {
+        Commands::ValidateAll { path: scan_path } => {
             let scan = scan_path
                 .or(cli_path)
-                .ok_or_else(|| anyhow::anyhow!("validate-json requires --path"))?;
+                .ok_or_else(|| anyhow::anyhow!("validate-all requires --path"))?;
             let result =
-                crate::json_validation::GtsJsonValidator::new(&scan, ops.cfg.clone()).validate();
-            for issue in &result.issues {
-                let suffix = issue.index.map(|i| format!("#{i}")).unwrap_or_default();
-                eprintln!(
-                    "{}{}: {}: {}",
-                    issue.file, suffix, issue.stage, issue.message
-                );
-            }
+                crate::json_validation::GtsJsonValidator::new(&scan, ops.cfg.clone(), exclude_dir)
+                    .validate();
             print_result(&result)?;
+            if !result.ok {
+                anyhow::bail!("validation failed: {} issue(s) found", result.issues.len());
+            }
         }
         Commands::ValidateId { gts_id } => {
             let result = GtsOps::validate_id(&gts_id);
@@ -384,6 +392,34 @@ mod tests {
                 assert_eq!(output, Some("/out/path".to_owned()));
                 assert_eq!(exclude, vec!["tests/*", "examples/*"]);
             }
+            _ => panic!("Expected GenerateFromRust command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_exclude_dir() {
+        let cli = Cli::try_parse_from(["gts", "list"]).unwrap();
+        assert_eq!(
+            cli.exclude_dir,
+            vec!["node_modules", "dist", "build", ".git", "target"]
+        );
+
+        let cli = Cli::try_parse_from([
+            "gts",
+            "--exclude-dir",
+            "a,b",
+            "--exclude-dir",
+            "c",
+            "generate-from-rust",
+            "--source",
+            "/src",
+            "--exclude",
+            "tests/*",
+        ])
+        .unwrap();
+        assert_eq!(cli.exclude_dir, vec!["a", "b", "c"]);
+        match cli.command {
+            Commands::GenerateFromRust { exclude, .. } => assert_eq!(exclude, vec!["tests/*"]),
             _ => panic!("Expected GenerateFromRust command"),
         }
     }
