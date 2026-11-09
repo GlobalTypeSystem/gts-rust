@@ -13,7 +13,6 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.core.notify.event.v1~"),
     description = "Base event whose payload slot may be absent",
@@ -28,7 +27,6 @@ pub struct NotifyEventV1<P> {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = NotifyEventV1,
     type_id = gts_id!("x.core.notify.event.v1~x.core.notify.order_placed.v1~"),
     description = "Order placed",
@@ -203,7 +201,6 @@ A body-less derived type: fills the slot with no payload
 ============================================================ */
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = NotifyEventV1,
     type_id = gts_id!("x.core.notify.event.v1~x.core.notify.order_cancelled.v1~"),
     description = "Order cancelled; carries no payload",

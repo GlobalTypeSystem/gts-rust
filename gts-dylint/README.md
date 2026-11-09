@@ -74,7 +74,6 @@ The same marker works in the `type_id` argument of `#[struct_to_gts_schema]`:
 use gts_macros::{struct_to_gts_schema, gts_id};
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.core.events.topic.v1~"),
     description = "Topic type",

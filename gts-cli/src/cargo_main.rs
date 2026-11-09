@@ -33,7 +33,7 @@ async fn main() {
     let cli = Cli::parse_from(args);
 
     if let Err(e) = run_with_cli(cli).await {
-        eprintln!("Error: {e}");
+        eprintln!("Error: {e:#}");
         std::process::exit(1);
     }
 }

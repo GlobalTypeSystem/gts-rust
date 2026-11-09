@@ -7,7 +7,6 @@ use gts_macros::struct_to_gts_schema;
 use schemars::JsonSchema;
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.golden.open.v1~"),
     description = "Open traits host",

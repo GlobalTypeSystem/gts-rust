@@ -40,7 +40,6 @@ mod test_structs {
     }
 
     #[struct_to_gts_schema(
-        dir_path = "schemas",
         base = true,
         type_id = gts_id!("x.core.events.type.v1~"),
         description = "Base event type definition",
@@ -59,7 +58,6 @@ mod test_structs {
     }
 
     #[struct_to_gts_schema(
-        dir_path = "schemas",
         base = BaseEventV1,
         type_id = gts_id!("x.core.events.type.v1~x.core.audit.event.v1~"),
         description = "Audit event with user context",
@@ -75,7 +73,6 @@ mod test_structs {
     }
 
     #[struct_to_gts_schema(
-        dir_path = "schemas",
         base = AuditPayloadV1,
         type_id = gts_id!("x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~"),
         description = "Order placement audit event",
@@ -92,7 +89,6 @@ mod test_structs {
     }
 
     #[struct_to_gts_schema(
-        dir_path = "schemas",
         base = PlaceOrderDataV1,
         type_id = gts_id!("x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~x.marketplace.order_purchase.payload.v1~"),
         description = "Order placement audit event",

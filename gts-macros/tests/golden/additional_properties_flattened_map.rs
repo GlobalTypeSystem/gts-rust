@@ -16,7 +16,6 @@ pub struct ExtensibleMetadata {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.golden.flattenedmap.v1~"),
     description = "Host with a nested struct opened by a flattened map",

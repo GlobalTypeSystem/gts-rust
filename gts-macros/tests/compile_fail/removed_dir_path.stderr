@@ -1,0 +1,5 @@
+error: struct_to_gts_schema: `dir_path` has been removed; choose the output directory with `gts generate-from-rust --output DIR`
+ --> tests/compile_fail/removed_dir_path.rs:6:5
+  |
+6 |     dir_path = "schemas",
+  |     ^^^^^^^^

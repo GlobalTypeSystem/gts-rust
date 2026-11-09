@@ -14,7 +14,6 @@ pub struct UnmarkedTraits {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = "gts.x.app.entities.thing.v1~",
     description = "Thing",

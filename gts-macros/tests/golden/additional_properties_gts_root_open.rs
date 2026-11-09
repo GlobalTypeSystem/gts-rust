@@ -6,7 +6,6 @@ use gts::{GtsSchema, GtsTypeId};
 use gts_macros::struct_to_gts_schema;
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.golden.rootopen.v1~"),
     description = "GTS base type with an explicitly open root",

@@ -42,7 +42,7 @@ Other GTS spec [Reference Implementation](https://github.com/globaltypesystem/gt
 - [x] **UUID for instances** - to support UUID as ID in JSON instances (anonymous instances)
 
 Rust-specific features:
-- [x] Generate GTS schemas from Rust source code, see [gts-macros/README.md](gts-macros/README.md) and [gts-macros-test/README.md](gts-macros-test/README.md)
+- [x] Generate GTS schemas from Rust source code (`gts generate-from-rust --source src/ --output schemas/`), see [gts-macros/README.md](gts-macros/README.md) and [gts-macros-test/README.md](gts-macros-test/README.md)
 - [x] Schema inheritance and composition for nested generic types with automatic `allOf` generation
 - [ ] Automatically refer to GTS schemas for referenced objects
 

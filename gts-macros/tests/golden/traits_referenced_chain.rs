@@ -26,7 +26,6 @@ pub enum Priority {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.traits.priority.v1~"),
     description = "Reusable priority trait with an open payload slot",
@@ -42,7 +41,6 @@ pub struct PriorityTraitV1<P> {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = PriorityTraitV1,
     type_id = gts_id!("x.test.traits.priority.v1~x.test.urgent.detail.v1~"),
     description = "Priority trait specifying the payload slot",
@@ -56,7 +54,6 @@ pub struct UrgentDetailTraitV1 {
 // --- hosts (reference the trait types via the referenced form) ---------------
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.golden.refchain.v1~"),
     description = "Base host referencing the base priority trait type",
@@ -74,7 +71,6 @@ pub struct RefBaseV1<P> {
 // `priority`, `payload`) that this host does not resolve, so OP#13 completeness
 // is skipped for it. The point of the case is the `$ref` emission.
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = RefBaseV1,
     type_id = gts_id!("x.test.golden.refchain.v1~x.test.urgent.event.v1~"),
     description = "Derived host referencing the derived priority trait type",

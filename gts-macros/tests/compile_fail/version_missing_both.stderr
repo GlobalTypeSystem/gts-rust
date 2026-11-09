@@ -1,5 +1,5 @@
 error: struct_to_gts_schema: Invalid GTS type ID: Invalid GTS segment #1 @ offset 4: 'x.core.events.type~': Too few tokens (got 4, min 5). Expected format: gts.vendor.package.namespace.type.vMAJOR[.MINOR]
- --> tests/compile_fail/version_missing_both.rs:9:15
+ --> tests/compile_fail/version_missing_both.rs:8:15
   |
-9 |     type_id = "gts.x.core.events.type~",
+8 |     type_id = "gts.x.core.events.type~",
   |               ^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -47,7 +47,6 @@ pub struct EventTraits {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.golden.event.v1~"),
     description = "Base event",
@@ -62,7 +61,6 @@ pub struct EventV1<P> {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = EventV1,
     type_id = gts_id!("x.test.golden.event.v1~x.test.order.placed.v1~"),
     description = "Order placed",

@@ -2,10 +2,10 @@ error[E0080]: evaluation panicked: struct_to_gts_schema: `traits` values were pr
   --> tests/compile_fail/traits_without_schema_on_base.rs:6:1
    |
  6 | / #[struct_to_gts_schema(
- 7 | |     dir_path = "schemas",
- 8 | |     base = true,
- 9 | |     type_id = "gts.x.app.entities.thing.v1~",
-...  |
-12 | |     traits = serde_json::json!({ "retention": "P30D" }),
-13 | | )]
+ 7 | |     base = true,
+ 8 | |     type_id = "gts.x.app.entities.thing.v1~",
+ 9 | |     description = "Thing",
+10 | |     properties = "id",
+11 | |     traits = serde_json::json!({ "retention": "P30D" }),
+12 | | )]
    | |__^ evaluation of `_` failed here

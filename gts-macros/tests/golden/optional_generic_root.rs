@@ -7,7 +7,6 @@ use gts::{GtsInstanceId, GtsSchema};
 use gts_macros::struct_to_gts_schema;
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.optional.event.v1~"),
     description = "Base event whose payload may be absent",
@@ -20,7 +19,6 @@ pub struct EventV1<P> {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = EventV1,
     type_id = gts_id!("x.test.optional.event.v1~x.test.optional.placed.v1~"),
     description = "Leaf with a payload",
@@ -32,7 +30,6 @@ pub struct PlacedV1 {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = EventV1,
     type_id = gts_id!("x.test.optional.event.v1~x.test.optional.cancelled.v1~"),
     description = "Body-less leaf",

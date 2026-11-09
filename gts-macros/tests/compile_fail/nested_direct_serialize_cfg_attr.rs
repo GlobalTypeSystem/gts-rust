@@ -4,7 +4,6 @@ use gts::GtsInstanceId;
 use gts_macros::struct_to_gts_schema;
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = "gts.x.core.events.base.v1~",
     description = "Base event type",
@@ -17,7 +16,6 @@ pub struct BaseEventV1<P> {
 
 #[cfg_attr(all(), derive(serde::Serialize, serde::Deserialize))]
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = BaseEventV1,
     type_id = "gts.x.core.events.base.v1~x.app.audit.event.v1~",
     description = "Audit event with user context",

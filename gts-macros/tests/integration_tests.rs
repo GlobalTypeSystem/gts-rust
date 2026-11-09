@@ -15,7 +15,6 @@ use gts_macros::{gts_id, struct_to_gts_schema};
 /// Inspired by examples/examples/events/schemas/gts.x.core.events.topic.v1~.schema.json
 #[derive(Debug, Clone)]
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.core.events.topic.v1~"),
     description = "Event Topic (Stream) definition",
@@ -39,7 +38,6 @@ pub struct EventTopicV1 {
 /// Product entity for testing GTS schema generation
 #[derive(Debug, Clone)]
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.entities.product.v1~"),
     description = "Product entity with pricing information",
@@ -63,7 +61,6 @@ pub struct NestedGtsIds {
 
 #[derive(Debug, Clone)]
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.entities.nested_ids.v1~"),
     description = "Entity whose retained definition contains GTS ID references",
@@ -287,18 +284,6 @@ fn test_schema_id_constant() {
     assert_eq!(
         ProductV1::gts_type_id().clone().into_string(),
         gts_id!("x.test.entities.product.v1~")
-    );
-}
-
-#[test]
-fn test_file_path_constant() {
-    assert_eq!(
-        EventTopicV1::GTS_SCHEMA_FILE_PATH,
-        "schemas/gts.x.core.events.topic.v1~.schema.json"
-    );
-    assert_eq!(
-        ProductV1::GTS_SCHEMA_FILE_PATH,
-        "schemas/gts.x.test.entities.product.v1~.schema.json"
     );
 }
 
@@ -1142,7 +1127,6 @@ fn test_runtime_schema_inline_resolution_single_segment() {
 
 #[derive(Debug, Clone)]
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.versioned.minor.v1.0~"),
     description = "Test struct with minor version",
@@ -1155,7 +1139,6 @@ pub struct MinorVersionV1_0 {
 
 #[derive(Debug, Clone)]
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.versioned.complex.v2.5~"),
     description = "Test struct with complex minor version",
@@ -1213,7 +1196,6 @@ fn test_version_extraction_underscore_format() {
 
 #[derive(Debug, Clone)]
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.single.segment.v1~"),
     description = "Base struct with single segment",

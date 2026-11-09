@@ -773,7 +773,6 @@ enum TraitsSchemaSpec {
 
 #[allow(clippy::struct_excessive_bools)]
 struct GtsSchemaArgs {
-    dir_path: String,
     type_id: String,
     /// The original `LitStr` for `type_id`, preserving its span so that
     /// downstream lint passes can distinguish `gts_id!("...")`
@@ -799,7 +798,6 @@ struct GtsSchemaArgs {
 
 impl Parse for GtsSchemaArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        let mut dir_path: Option<String> = None;
         let mut type_id: Option<String> = None;
         let mut type_id_lit: Option<LitStr> = None;
         let mut schema_id_alias_used = false;
@@ -817,8 +815,10 @@ impl Parse for GtsSchemaArgs {
 
             match key.to_string().as_str() {
                 "dir_path" => {
-                    let value: LitStr = input.parse()?;
-                    dir_path = Some(value.value());
+                    return Err(syn::Error::new_spanned(
+                        key,
+                        "struct_to_gts_schema: `dir_path` has been removed; choose the output directory with `gts generate-from-rust --output DIR`",
+                    ));
                 }
                 key_str @ ("type_id" | "schema_id") => {
                     if type_id.is_some() {
@@ -913,7 +913,7 @@ impl Parse for GtsSchemaArgs {
                 _ => {
                     return Err(syn::Error::new_spanned(
                         key,
-                        "Unknown attribute. Expected: dir_path, type_id (or deprecated `schema_id`), description, properties, base, traits_schema, traits, gts_abstract, or gts_final",
+                        "Unknown attribute. Expected: type_id (or deprecated `schema_id`), description, properties, base, traits_schema, traits, gts_abstract, or gts_final",
                     ));
                 }
             }
@@ -924,8 +924,6 @@ impl Parse for GtsSchemaArgs {
         }
 
         Ok(GtsSchemaArgs {
-            dir_path: dir_path
-                .ok_or_else(|| input.error("Missing required attribute: dir_path"))?,
             type_id: type_id
                 .ok_or_else(|| input.error("Missing required attribute: type_id"))?,
             type_id_lit: type_id_lit
@@ -986,7 +984,7 @@ fn classify_traits_schema_expr(expr: syn::Expr) -> syn::Result<TraitsSchemaSpec>
 /// ## 1. Compile-Time Validation & Guarantees
 ///
 /// The macro validates your annotations at compile time, catching errors early:
-/// - ✅ All required attributes exist (`dir_path`, `type_id`, `description`, `properties`)
+/// - ✅ All required attributes exist (`base`, `type_id`, `description`, `properties`)
 /// - ✅ Every property in `properties` exists as a field in the struct
 /// - ✅ Only structs with named fields are supported (no tuple/unit structs or enums)
 /// - ✅ Single generic parameter maximum (prevents inheritance ambiguity)
@@ -997,7 +995,7 @@ fn classify_traits_schema_expr(expr: syn::Expr) -> syn::Result<TraitsSchemaSpec>
 ///
 /// After annotating your structs, run:
 /// ```bash
-/// cargo gts generate --source src/
+/// cargo gts generate-from-rust --source src/
 /// ```
 ///
 /// Or use the GTS CLI directly:
@@ -1005,7 +1003,9 @@ fn classify_traits_schema_expr(expr: syn::Expr) -> syn::Result<TraitsSchemaSpec>
 /// gts generate-from-rust --source src/ --output schemas/
 /// ```
 ///
-/// This will generate JSON Schema files at the specified `dir_path` with names derived from `type_id` for each annotated struct (e.g., `{dir_path}/{type_id}.schema.json`).
+/// The CLI writes `{type_id}.schema.json` files directly into `--output DIR`,
+/// defaulting to `./schemas` relative to the command's working directory.
+/// Use the `GtsSchema` methods to construct schemas in memory.
 ///
 /// ## 3. Runtime API
 ///
@@ -1027,7 +1027,6 @@ fn classify_traits_schema_expr(expr: syn::Expr) -> syn::Result<TraitsSchemaSpec>
 ///
 /// # Arguments
 ///
-/// * `dir_path` - Directory where the schema file will be generated (relative to crate root)
 /// * `type_id` - GTS identifier in format: `gts.vendor.package.namespace.type.vMAJOR~`
 ///   - **Automatic inheritance**: If the `type_id` contains multiple segments separated by `~`, inheritance is automatically detected
 ///   - Example: `gts.x.core.events.type.v1~x.core.audit.event.v1~` inherits from `gts.x.core.events.type.v1~`
@@ -1050,13 +1049,13 @@ fn classify_traits_schema_expr(expr: syn::Expr) -> syn::Result<TraitsSchemaSpec>
 /// use gts_macros::struct_to_gts_schema;
 ///
 /// #[struct_to_gts_schema(
-///     dir_path = "schemas",
+///     base = true,
 ///     type_id = "gts.x.core.events.topic.v1~",
 ///     description = "Event broker topics",
-///     properties = "id,persisted,retention_days,name"
+///     properties = "id,persisted,retention_days"
 /// )]
 /// struct User {
-///     id: String,
+///     id: gts::GtsInstanceId,
 ///     persisted: bool,
 ///     retention_days: i32,
 ///     internal_field: i32, // Not included in schema (not in properties list)
@@ -1221,10 +1220,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     }
     let expected_parent_type_id = extract_parent_type_id(&args.type_id);
 
-    // Build the schema output file path from dir_path + schema_id
     let struct_name = &input.ident;
-    let dir_path = &args.dir_path;
-    let type_id = &args.type_id;
     let type_id_lit = &args.type_id_lit;
     // Derived uses (gts_type_id(), gts_make_instance_id()) get a mixed_site
     // span so downstream lint passes don't fire duplicate errors for the same
@@ -1257,8 +1253,6 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     } else {
         quote! {}
     };
-
-    let schema_file_path = format!("{dir_path}/{type_id}.schema.json");
 
     // Extract generics to properly handle generic structs
     // Use modified_input.generics which has the GtsSchema bounds added
@@ -2798,11 +2792,6 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         #no_direct_serde_impl
 
         impl #impl_generics #struct_name #ty_generics #gts_schema_where_clause {
-            /// File path where the GTS schema will be generated by the CLI.
-            #[doc(hidden)]
-            #[allow(dead_code)]
-            const GTS_SCHEMA_FILE_PATH: &'static str = #schema_file_path;
-
             /// GTS schema description.
             #[doc(hidden)]
             #[allow(dead_code)]
