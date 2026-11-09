@@ -26,7 +26,6 @@ pub struct EventTraits {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.behav.event.v1~"),
     description = "Base event",
@@ -41,7 +40,6 @@ pub struct EventV1<P> {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = EventV1,
     type_id = gts_id!("x.test.behav.event.v1~x.test.order.placed.v1~"),
     description = "Order placed",
@@ -69,7 +67,6 @@ pub struct OrderPlacedV1 {
 /// but supplying no `x-gts-traits`. A concrete type must resolve every required
 /// trait, so registration must fail.
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.behav.req.v1~"),
     description = "Non-abstract base with an unresolved required trait",
@@ -85,7 +82,6 @@ pub struct ReqV1<P> {
 /// Abstract base carrying the required `topic_ref` trait with no values — legal,
 /// because abstract types are exempt from the completeness check.
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.behav.absreq.v1~"),
     description = "Abstract base with a required trait and no values",
@@ -102,7 +98,6 @@ pub struct AbsReqV1<P> {
 /// Concrete leaf under [`AbsReqV1`] that supplies no `x-gts-traits` — it leaves
 /// the inherited required `topic_ref` unresolved, so it must fail.
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = AbsReqV1,
     type_id = gts_id!("x.test.behav.absreq.v1~x.test.absreq.leaf.v1~"),
     description = "Concrete leaf leaving an inherited required trait unresolved",
@@ -125,7 +120,6 @@ pub struct RetentionInt {
 
 /// Abstract base declaring `retention` as a string trait.
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.behav.compat.v1~"),
     description = "Base declaring retention as a string trait",
@@ -143,7 +137,6 @@ pub struct CompatV1<P> {
 /// incompatible with the parent's string declaration. Its `retention` value
 /// cannot satisfy both branches of the composed `allOf`, so it must fail.
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = CompatV1,
     type_id = gts_id!("x.test.behav.compat.v1~x.test.compat.bad.v1~"),
     description = "Derived type whose trait schema contradicts the parent's",
@@ -166,7 +159,6 @@ pub struct IndexedTraits {
 
 /// Abstract base locking `indexed` to `true` via a `const` in its trait schema.
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.behav.const.v1~"),
     description = "Base locking the indexed trait to true",
@@ -183,7 +175,6 @@ pub struct ConstBaseV1<P> {
 /// Concrete leaf trying to override the `const`-locked `indexed` with `false` —
 /// the materialized trait value cannot satisfy `const: true`, so it must fail.
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = ConstBaseV1,
     type_id = gts_id!("x.test.behav.const.v1~x.test.const.bad.v1~"),
     description = "Leaf overriding a const-locked trait",
@@ -208,7 +199,6 @@ pub struct DefaultedTraits {
 /// Non-abstract base whose only required trait has a `default`. It supplies no
 /// `x-gts-traits`, but materialization fills `retention`, so completeness passes.
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.behav.defmat.v1~"),
     description = "Concrete base relying on a trait default for completeness",
@@ -236,7 +226,6 @@ pub struct ExtraTraits {
 
 /// Abstract base whose trait schema is closed (`additionalProperties: false`).
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.behav.closed.v1~"),
     description = "Base with a closed trait surface",
@@ -254,7 +243,6 @@ pub struct ClosedBaseV1<P> {
 /// declared `additionalProperties: false`, the composed `allOf` rejects the new
 /// property against the ancestor branch, so registration must fail.
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = ClosedBaseV1,
     type_id = gts_id!("x.test.behav.closed.v1~x.test.extend.bad.v1~"),
     description = "Leaf extending a closed trait surface with a new property",
@@ -286,7 +274,6 @@ pub struct NarrowPriorityTraits {
 
 /// Abstract base declaring `priority` as an open string trait.
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.behav.narrow.v1~"),
     description = "Base declaring an open-string priority trait",
@@ -304,7 +291,6 @@ pub struct NarrowBaseV1<P> {
 /// with an in-enum value. The registry composes base + leaf trait-schemas via
 /// `allOf`; "high" satisfies both branches.
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = NarrowBaseV1,
     type_id = gts_id!("x.test.behav.narrow.v1~x.test.urgent.ok.v1~"),
     description = "Leaf narrowing priority and supplying a valid value",
@@ -322,7 +308,6 @@ pub struct NarrowOkLeafV1 {
 /// base's `string` branch yet violates the leaf's enum branch, so the composed
 /// `allOf` rejects it.
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = NarrowBaseV1,
     type_id = gts_id!("x.test.behav.narrow.v1~x.test.urgent.bad.v1~"),
     description = "Leaf narrowing priority but supplying an out-of-enum value",

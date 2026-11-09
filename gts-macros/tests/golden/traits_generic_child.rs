@@ -18,7 +18,6 @@ pub struct EventTraits {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.gen.event.v1~"),
     description = "Abstract generic base",
@@ -33,7 +32,6 @@ pub struct EventV1<P> {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = EventV1,
     type_id = gts_id!("x.test.gen.event.v1~x.test.audit.event.v1~"),
     description = "Still-generic abstract mid resolving the inherited topic trait",

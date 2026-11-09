@@ -34,7 +34,6 @@ use gts_macros::{gts_id, struct_to_gts_schema};
 // =============================================================================
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.value_dispatch.envelope.v1~"),
     description = "EnvelopeV1 carrying an opaque (default) or typed payload",
@@ -49,7 +48,6 @@ pub struct EnvelopeV1<P> {
 // ── Level-2 direct leaf #1 ───────────────────────────────────────────────────
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = EnvelopeV1,
     type_id = gts_id!("x.test.value_dispatch.envelope.v1~x.test.value_dispatch.alpha.v1~"),
     description = "Alpha leaf — directly under EnvelopeV1",
@@ -63,7 +61,6 @@ pub struct AlphaLeafV1 {
 // ── Level-2 direct leaf #2 ───────────────────────────────────────────────────
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = EnvelopeV1,
     type_id = gts_id!("x.test.value_dispatch.envelope.v1~x.test.value_dispatch.gamma.v1~"),
     description = "Gamma leaf — directly under EnvelopeV1, different shape from Alpha",
@@ -78,7 +75,6 @@ pub struct GammaLeafV1 {
 // ── Level-2 intermediate (generic) ───────────────────────────────────────────
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = EnvelopeV1,
     type_id = gts_id!("x.test.value_dispatch.envelope.v1~x.test.value_dispatch.intermediate.v1~"),
     description = "IntermediateV1 node — common fields plus a generic `extension` for level-3 leaves",
@@ -93,7 +89,6 @@ pub struct IntermediateV1<Q = ()> {
 // ── Level-3 leaf (under IntermediateV1) ────────────────────────────────────────
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = IntermediateV1,
     type_id = gts_id!("x.test.value_dispatch.envelope.v1~x.test.value_dispatch.intermediate.v1~x.test.value_dispatch.beta.v1~"),
     description = "Beta leaf — under IntermediateV1, 3 segments deep",

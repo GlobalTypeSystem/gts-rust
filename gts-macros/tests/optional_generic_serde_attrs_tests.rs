@@ -11,7 +11,6 @@ use gts_macros::struct_to_gts_schema;
 use serde_json::{Value, json};
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.core.annotated.event.v1~"),
     description = "Base event whose optional slot is already annotated",
@@ -26,7 +25,6 @@ pub struct AnnotatedEventV1<P> {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = AnnotatedEventV1,
     type_id = gts_id!("x.core.annotated.event.v1~x.core.annotated.record.v1~"),
     description = "Mid-chain record whose optional slot is already annotated",
@@ -40,7 +38,6 @@ pub struct AnnotatedRecordV1<D> {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = AnnotatedRecordV1,
     type_id = gts_id!(
         "x.core.annotated.event.v1~x.core.annotated.record.v1~x.core.annotated.login.v1~"

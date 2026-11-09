@@ -18,7 +18,6 @@ pub struct Profile {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.golden.nestedclosed.v1~"),
     description = "Host with recursively closed nested data structs",

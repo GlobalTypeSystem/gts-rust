@@ -13,7 +13,6 @@ pub struct ExtensionPoint {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.golden.explicitopen.v1~"),
     description = "Host with an explicitly open nested extension point",

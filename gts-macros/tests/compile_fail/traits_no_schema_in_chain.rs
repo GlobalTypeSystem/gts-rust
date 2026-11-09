@@ -5,7 +5,6 @@
 use gts_macros::struct_to_gts_schema;
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = "gts.x.app.entities.thing.v1~",
     description = "Base without any traits-schema",
@@ -17,7 +16,6 @@ pub struct BaseV1<P> {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = BaseV1,
     type_id = "gts.x.app.entities.thing.v1~x.app.child.thing.v1~",
     description = "Derived supplying traits with no schema anywhere in the chain",

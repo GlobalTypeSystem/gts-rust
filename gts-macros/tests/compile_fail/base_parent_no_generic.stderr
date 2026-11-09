@@ -1,18 +1,18 @@
 error[E0107]: struct takes 0 generic arguments but 1 generic argument was supplied
-  --> tests/compile_fail/base_parent_no_generic.rs:23:12
+  --> tests/compile_fail/base_parent_no_generic.rs:21:12
    |
-23 |       base = LeafTypeV1,
+21 |       base = LeafTypeV1,
    |  ____________^^^^^^^^^^-
    | |            |
    | |            expected 0 generic arguments
-24 | |     type_id = "gts.x.app.entities.leaf.v1~x.app.entities.child.v1~",
-25 | |     description = "Child trying to extend leaf type (invalid)",
-26 | |     properties = "extra_field"
-27 | | )]
+22 | |     type_id = "gts.x.app.entities.leaf.v1~x.app.entities.child.v1~",
+23 | |     description = "Child trying to extend leaf type (invalid)",
+24 | |     properties = "extra_field"
+25 | | )]
    | |__- help: remove the unnecessary generics
    |
 note: struct defined here, with 0 generic parameters
-  --> tests/compile_fail/base_parent_no_generic.rs:15:12
+  --> tests/compile_fail/base_parent_no_generic.rs:14:12
    |
-15 | pub struct LeafTypeV1 {
+14 | pub struct LeafTypeV1 {
    |            ^^^^^^^^^^

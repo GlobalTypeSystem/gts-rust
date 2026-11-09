@@ -17,7 +17,6 @@ Chained inheritance
 ============================================================ */
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.core.events.type.v1~"),
     description = "Base event type definition",
@@ -34,7 +33,6 @@ pub struct BaseEventV1<P> {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = BaseEventV1,
     type_id = gts_id!("x.core.events.type.v1~x.core.audit.event.v1~"),
     description = "Audit event with user context",
@@ -49,7 +47,6 @@ pub struct AuditPayloadV1<D> {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = AuditPayloadV1,
     type_id = gts_id!("x.core.events.type.v1~x.core.audit.event.v1~x.marketplace.orders.purchase.v1~"),
     description = "Order placement audit event",
@@ -66,7 +63,6 @@ pub struct PlaceOrderDataV1 {
 ============================================================ */
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = BaseEventV1,
     type_id = gts_id!("x.core.events.type.v1~x.core.simple.event.v1~"),
     description = "Simple event payload with just a message",
@@ -84,7 +80,6 @@ pub struct NestedContact {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.nested.definition.v1~"),
     description = "Schema containing an ordinary nested Rust struct",
@@ -115,7 +110,6 @@ fn composed_contact_schema(generator: &mut schemars::SchemaGenerator) -> schemar
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.nested.composed_definition.v1~"),
     description = "Schema composing a definition with sibling properties",
@@ -156,7 +150,6 @@ fn composed_alias_schema(generator: &mut schemars::SchemaGenerator) -> schemars:
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.nested.aliased_definition.v1~"),
     description = "Schema composing an aliased definition with sibling properties",
@@ -171,7 +164,6 @@ pub struct SchemaWithAliasedDefinitionV1 {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.nested.shared_definition.v1~"),
     description = "Schema using one definition as a combinator branch and as a property",
@@ -200,7 +192,6 @@ pub enum UntaggedChoice {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.nested.content_model.v1~"),
     description = "Schema exercising nested content-model closure",
@@ -221,7 +212,6 @@ Base struct ID field validation tests
 ============================================================ */
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.core.events.topic.v1~"),
     description = "Base topic type definition with id field",
@@ -236,7 +226,6 @@ pub struct TopicV1WithIdV1<P> {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.core.events.topic.v1~"),
     description = "Base topic type definition with gts_id field",
@@ -251,7 +240,6 @@ pub struct TopicV1WithGtsIdV1<P> {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.core.events.topic.v1~"),
     description = "Base topic type definition with gtsId field",
@@ -266,7 +254,6 @@ pub struct TopicV1WithGtsIdCamelV1<P> {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.core.events.topic.v1~"),
     description = "Base topic type definition with gts_type field",
@@ -281,7 +268,6 @@ pub struct TopicV1WithGtsTypeV1<P> {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.core.events.topic.v1~"),
     description = "Base topic type definition with gtsType field",
@@ -300,7 +286,6 @@ Chained inheritance w/o new attributes
 ============================================================ */
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.core.events.topic.v1~"),
     description = "Base topic type definition",
@@ -315,7 +300,6 @@ pub struct TopicV1<P> {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = TopicV1,
     type_id = gts_id!("x.core.events.topic.v1~x.commerce.orders.topic.v1~"),
     description = "Order topic configuration",
@@ -330,7 +314,6 @@ Test serde rename on generic field - the serialized name should be used
 ============================================================ */
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.core.events.container.v1~"),
     description = "Container with renamed generic field",
@@ -345,7 +328,6 @@ pub struct ContainerV1<T> {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = ContainerV1,
     type_id = gts_id!("x.core.events.container.v1~x.app.entities.content.v1~"),
     description = "Content extending container",

@@ -7,7 +7,6 @@ use gts::{GtsInstanceId, GtsSchema};
 use gts_macros::struct_to_gts_schema;
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.optmid.event.v1~"),
     description = "Base event with a required payload",
@@ -20,7 +19,6 @@ pub struct EventV1<P> {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = EventV1,
     type_id = gts_id!("x.test.optmid.event.v1~x.test.optmid.record.v1~"),
     description = "Mid-chain record whose details may be absent",
@@ -33,7 +31,6 @@ pub struct RecordV1<D> {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = RecordV1,
     type_id = gts_id!("x.test.optmid.event.v1~x.test.optmid.record.v1~x.test.optmid.login.v1~"),
     description = "Leaf with a payload",
@@ -45,7 +42,6 @@ pub struct LoginV1 {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = RecordV1,
     type_id = gts_id!("x.test.optmid.event.v1~x.test.optmid.record.v1~x.test.optmid.logout.v1~"),
     description = "Body-less leaf",

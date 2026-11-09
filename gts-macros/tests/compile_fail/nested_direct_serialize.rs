@@ -6,7 +6,6 @@ use gts_macros::struct_to_gts_schema;
 
 // Base type with generic payload field
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = "gts.x.core.events.base.v1~",
     description = "Base event type",
@@ -20,7 +19,6 @@ pub struct BaseEventV1<P> {
 
 // Nested type that extends BaseEventV1
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = BaseEventV1,
     type_id = "gts.x.core.events.base.v1~x.app.audit.event.v1~",
     description = "Audit event with user context",

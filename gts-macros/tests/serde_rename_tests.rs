@@ -18,7 +18,6 @@ Serde rename tests - event_type field with serde(rename = "type")
 ============================================================ */
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.core.events.type.v1~"),
     description = "Base event type with serde(rename = \"type\")",
@@ -35,7 +34,6 @@ pub struct BaseEventV1SerdeRenameV1<P> {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.core.events.gts_type.v1~"),
     description = "Base event type with serde(rename = \"gts_type\")",
@@ -52,7 +50,6 @@ pub struct BaseEventV1GtsTypeRenameV1<P> {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.core.events.schema.v1~"),
     description = "Base event type with serde(rename = \"schema\")",

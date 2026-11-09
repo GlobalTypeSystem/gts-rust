@@ -1,0 +1,8 @@
+error[E0599]: no associated item named `GTS_SCHEMA_FILE_PATH` found for struct `UserV1` in the current scope
+  --> tests/compile_fail/removed_file_path_metadata.rs:16:21
+   |
+11 | pub struct UserV1 {
+   | ----------------- associated item `GTS_SCHEMA_FILE_PATH` not found for this struct
+...
+16 |     let _ = UserV1::GTS_SCHEMA_FILE_PATH;
+   |                     ^^^^^^^^^^^^^^^^^^^^ associated item not found in `UserV1`

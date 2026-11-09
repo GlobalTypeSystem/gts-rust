@@ -1,15 +1,15 @@
 error[E0277]: the trait bound `AuditEventV1: serde::Serialize` is not satisfied
-  --> tests/compile_fail/nested_direct_serialize.rs:39:35
+  --> tests/compile_fail/nested_direct_serialize.rs:37:35
    |
-39 |     let _ = serde_json::to_value(&nested);
+37 |     let _ = serde_json::to_value(&nested);
    |             --------------------  ^^^^^^ unsatisfied trait bound
    |             |
    |             required by a bound introduced by this call
    |
 help: the trait `_::_serde::Serialize` is not implemented for `AuditEventV1`
-  --> tests/compile_fail/nested_direct_serialize.rs:30:1
+  --> tests/compile_fail/nested_direct_serialize.rs:28:1
    |
-30 | pub struct AuditEventV1 {
+28 | pub struct AuditEventV1 {
    | ^^^^^^^^^^^^^^^^^^^^^^^
    = note: for local types consider adding `#[derive(serde::Serialize)]` to your `AuditEventV1` type
    = note: for types from other crates check whether the crate offers a `serde` feature flag

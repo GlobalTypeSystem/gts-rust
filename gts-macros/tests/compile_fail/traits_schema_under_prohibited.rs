@@ -12,7 +12,6 @@ pub struct ChildTraits {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = "gts.x.app.entities.sealed.v1~",
     description = "Base prohibiting traits",
@@ -25,7 +24,6 @@ pub struct SealedBaseV1<P> {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = SealedBaseV1,
     type_id = "gts.x.app.entities.sealed.v1~x.app.child.thing.v1~",
     description = "Derived declaring a traits_schema under a prohibiting base",

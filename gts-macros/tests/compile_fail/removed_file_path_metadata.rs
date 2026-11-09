@@ -1,4 +1,4 @@
-//! Test: Missing required attribute dir_path
+//! Schema types expose no output-file metadata.
 
 use gts_macros::struct_to_gts_schema;
 
@@ -8,8 +8,10 @@ use gts_macros::struct_to_gts_schema;
     description = "User entity",
     properties = "id"
 )]
-pub struct User {
-    pub id: String,
+pub struct UserV1 {
+    pub id: gts::GtsInstanceId,
 }
 
-fn main() {}
+fn main() {
+    let _ = UserV1::GTS_SCHEMA_FILE_PATH;
+}

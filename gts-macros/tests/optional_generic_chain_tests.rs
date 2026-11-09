@@ -14,7 +14,6 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.core.audit.event.v1~"),
     description = "Base audit event",
@@ -29,7 +28,6 @@ pub struct AuditEventV1<P> {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = AuditEventV1,
     type_id = gts_id!("x.core.audit.event.v1~x.core.audit.record.v1~"),
     description = "Audit record whose details may be absent",
@@ -42,7 +40,6 @@ pub struct AuditRecordV1<D> {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = AuditRecordV1,
     type_id = gts_id!("x.core.audit.event.v1~x.core.audit.record.v1~x.core.audit.login.v1~"),
     description = "Login audit record",
@@ -221,7 +218,6 @@ A body-less leaf: fills the middle slot with no payload
 ============================================================ */
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = AuditRecordV1,
     type_id = gts_id!("x.core.audit.event.v1~x.core.audit.record.v1~x.core.audit.logout.v1~"),
     description = "Logout audit record; carries no details",
@@ -330,7 +326,6 @@ A generic leaf whose own optional slot shares the middle slot's name
 ============================================================ */
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = AuditRecordV1,
     type_id = gts_id!("x.core.audit.event.v1~x.core.audit.record.v1~x.core.audit.access.v1~"),
     description = "Access audit record whose own details may be absent",

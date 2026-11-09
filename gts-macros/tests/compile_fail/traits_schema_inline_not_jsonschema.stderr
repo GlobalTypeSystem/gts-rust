@@ -1,7 +1,7 @@
 error[E0277]: the trait bound `PlainTraits: GtsTraitsSchema` is not satisfied
-  --> tests/compile_fail/traits_schema_inline_not_jsonschema.rs:21:28
+  --> tests/compile_fail/traits_schema_inline_not_jsonschema.rs:20:28
    |
-21 |     traits_schema = inline(PlainTraits),
+20 |     traits_schema = inline(PlainTraits),
    |                            ^^^^^^^^^^^ unsatisfied trait bound
    |
 help: the trait `GtsTraitsSchema` is not implemented for `PlainTraits`
@@ -13,19 +13,19 @@ note: required by a bound in `_assert_inline_traits_schema`
   --> tests/compile_fail/traits_schema_inline_not_jsonschema.rs:15:1
    |
 15 | / #[struct_to_gts_schema(
-16 | |     dir_path = "schemas",
-17 | |     base = true,
-18 | |     type_id = "gts.x.app.entities.thing.v1~",
-...  |
-21 | |     traits_schema = inline(PlainTraits),
-22 | | )]
+16 | |     base = true,
+17 | |     type_id = "gts.x.app.entities.thing.v1~",
+18 | |     description = "Thing",
+19 | |     properties = "id",
+20 | |     traits_schema = inline(PlainTraits),
+21 | | )]
    | |__^ required by this bound in `_assert_inline_traits_schema`
    = note: this error originates in the attribute macro `struct_to_gts_schema` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `PlainTraits: JsonSchema` is not satisfied
-  --> tests/compile_fail/traits_schema_inline_not_jsonschema.rs:21:28
+  --> tests/compile_fail/traits_schema_inline_not_jsonschema.rs:20:28
    |
-21 |     traits_schema = inline(PlainTraits),
+20 |     traits_schema = inline(PlainTraits),
    |                            ^^^^^^^^^^^ unsatisfied trait bound
    |
 help: the trait `JsonSchema` is not implemented for `PlainTraits`

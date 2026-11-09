@@ -10,7 +10,6 @@ use gts::GtsInstanceId;
 use gts_macros::{gts_instance, struct_to_gts_schema};
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = "gts.acme.core.test.base.v1~",
     description = "Generic base type for compile_fail/instance_chained_carrier_no_turbofish",
@@ -23,7 +22,6 @@ pub struct BaseV1<P> {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = BaseV1,
     type_id = "gts.acme.core.test.base.v1~acme.core.test.leaf.v1~",
     description = "Derived leaf type for compile_fail/instance_chained_carrier_no_turbofish",

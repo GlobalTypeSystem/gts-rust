@@ -1,9 +1,15 @@
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use gts::{GTS_ID_URI_PREFIX, GtsInstanceId, GtsTypeId};
 use regex::Regex;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+mod source;
+
+use source::extract_schemas;
+#[cfg(test)]
+use source::parse_macro_attrs;
 use walkdir::WalkDir;
 
 /// Directories that are automatically ignored (e.g., trybuild `compile_fail` tests)
@@ -30,7 +36,6 @@ impl std::fmt::Display for SkipReason {
 /// Parsed macro attributes from `#[struct_to_gts_schema(...)]`
 #[derive(Debug, Clone)]
 struct MacroAttrs {
-    dir_path: String,
     type_id: String,
     description: Option<String>,
     properties: Option<String>,
@@ -46,11 +51,49 @@ enum BaseAttr {
     Parent(String),
 }
 
+struct SchemaDeclaration {
+    type_id: String,
+    schema: serde_json::Value,
+    source_file: PathBuf,
+    struct_name: String,
+}
+
+/// Preflight every destination before creating directories or writing files.
+fn write_schemas(schemas: &BTreeMap<String, SchemaDeclaration>, output_dir: &Path) -> Result<()> {
+    for type_id in schemas.keys() {
+        let path = output_dir.join(format!("{type_id}.schema.json"));
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
+                bail!(
+                    "Refusing to write schema to non-regular file {}",
+                    path.display()
+                );
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("Cannot inspect {}", path.display()));
+            }
+        }
+    }
+    if !schemas.is_empty() {
+        fs::create_dir_all(output_dir)
+            .with_context(|| format!("Cannot create output directory {}", output_dir.display()))?;
+    }
+    for (type_id, declaration) in schemas {
+        let path = output_dir.join(format!("{type_id}.schema.json"));
+        fs::write(&path, serde_json::to_string_pretty(&declaration.schema)?)
+            .with_context(|| format!("Cannot write schema {}", path.display()))?;
+        println!("  Generated schema: {type_id} @ {}", path.display());
+    }
+    Ok(())
+}
+
 /// Generate GTS schemas from Rust source code with `#[struct_to_gts_schema]` annotations
 ///
 /// # Arguments
 /// * `source` - Source directory or file to scan
-/// * `output` - Optional output directory override
+/// * `output` - Final output directory; defaults to `./schemas` relative to the working directory
 /// * `exclude_patterns` - Patterns to exclude (supports simple glob matching)
 /// * `verbose` - Verbosity level (0 = normal, 1+ = show skipped files)
 ///
@@ -58,7 +101,9 @@ enum BaseAttr {
 ///
 /// Returns an error if:
 /// - The source path does not exist
-/// - The output path is outside the source repository
+/// - A source cannot be read or parsed, or a type ID is invalid
+/// - Different declarations use the same type ID
+/// - An output file is a symlink or another non-regular file
 /// - File I/O operations fail
 pub fn generate_schemas_from_rust(
     source: &str,
@@ -73,10 +118,7 @@ pub fn generate_schemas_from_rust(
         bail!("Source path does not exist: {source}");
     }
 
-    // Canonicalize source path to detect path traversal attempts
-    let source_canonical = source_path.canonicalize()?;
-
-    let mut schemas_generated = 0;
+    let mut schemas: BTreeMap<String, SchemaDeclaration> = BTreeMap::new();
     let mut files_scanned = 0;
     let mut files_skipped = 0;
 
@@ -84,8 +126,27 @@ pub fn generate_schemas_from_rust(
     for entry in WalkDir::new(source_path)
         .follow_links(true)
         .into_iter()
-        .filter_map(Result::ok)
+        .filter_entry(|entry| {
+            !entry.file_type().is_dir()
+                || (!should_exclude_path(entry.path(), exclude_patterns)
+                    && !is_in_auto_ignored_dir(entry.path()))
+        })
     {
+        let entry = match entry {
+            Ok(entry) => entry,
+            // Pruning misses the excluded dir itself for `dir/**`; skip errors under it.
+            Err(error)
+                if error.path().is_some_and(|path| {
+                    should_exclude_path(path, exclude_patterns) || is_in_auto_ignored_dir(path)
+                }) =>
+            {
+                continue;
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Failed to scan {}", source_path.display()));
+            }
+        };
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) != Some("rs") {
             continue;
@@ -118,28 +179,41 @@ pub fn generate_schemas_from_rust(
         }
 
         files_scanned += 1;
-        if let Ok(content) = fs::read_to_string(path) {
-            // Check for gts:ignore directive
-            if has_ignore_directive(&content) {
-                files_skipped += 1;
-                if verbose > 0 {
-                    println!(
-                        "  Skipped: {} ({})",
-                        path.display(),
-                        SkipReason::IgnoreDirective
+        let content = fs::read_to_string(path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+        if has_ignore_directive(&content) {
+            files_skipped += 1;
+            if verbose > 0 {
+                println!(
+                    "  Skipped: {} ({})",
+                    path.display(),
+                    SkipReason::IgnoreDirective
+                );
+            }
+            continue;
+        }
+
+        for declaration in extract_schemas(&content, path)? {
+            if let Some(previous) = schemas.get(&declaration.type_id) {
+                if previous.schema != declaration.schema {
+                    bail!(
+                        "Conflicting schemas for {}: {}:{} and {}:{}",
+                        declaration.type_id,
+                        previous.source_file.display(),
+                        previous.struct_name,
+                        declaration.source_file.display(),
+                        declaration.struct_name
                     );
                 }
-                continue;
-            }
-
-            // Parse the file and extract schema information
-            let results = extract_and_generate_schemas(&content, output, &source_canonical, path)?;
-            schemas_generated += results.len();
-            for (schema_id, file_path) in results {
-                println!("  Generated schema: {schema_id} @ {file_path}");
+            } else {
+                schemas.insert(declaration.type_id.clone(), declaration);
             }
         }
     }
+
+    let output_dir = Path::new(output.unwrap_or("schemas"));
+    write_schemas(&schemas, output_dir)?;
+    let schemas_generated = schemas.len();
 
     println!("\nSummary:");
     println!("  Files scanned: {files_scanned}");
@@ -215,159 +289,6 @@ fn has_ignore_directive(content: &str) -> bool {
         }
     }
     false
-}
-
-/// Parse the attribute body of `#[struct_to_gts_schema(...)]` to extract individual attributes
-fn parse_macro_attrs(attr_body: &str) -> Option<MacroAttrs> {
-    // Patterns for extracting individual attributes
-    let dir_path_re = Regex::new(r#"dir_path\s*=\s*"([^"]+)""#).ok()?;
-    let type_id_re = Regex::new(r#"\btype_id\s*=\s*"([^"]+)""#).ok()?;
-    let schema_id_re = Regex::new(r#"\bschema_id\s*=\s*"([^"]+)""#).ok()?;
-    let description_re = Regex::new(r#"description\s*=\s*"([^"]+)""#).ok()?;
-    let properties_re = Regex::new(r#"properties\s*=\s*"([^"]+)""#).ok()?;
-    let base_true_re = Regex::new(r"\bbase\s*=\s*true\b").ok()?;
-    let base_parent_re = Regex::new(r"\bbase\s*=\s*([A-Z]\w*)").ok()?;
-
-    // Extract required fields
-    let dir_path = dir_path_re.captures(attr_body)?.get(1)?.as_str().to_owned();
-    // Accept canonical `type_id` first, fall back to deprecated `schema_id` alias.
-    let type_id = type_id_re
-        .captures(attr_body)
-        .and_then(|c| c.get(1).map(|m| m.as_str().to_owned()))
-        .or_else(|| {
-            schema_id_re
-                .captures(attr_body)
-                .and_then(|c| c.get(1).map(|m| m.as_str().to_owned()))
-        })?;
-
-    // Extract optional fields
-    let description = description_re
-        .captures(attr_body)
-        .and_then(|c| c.get(1).map(|m| m.as_str().to_owned()));
-    let properties = properties_re
-        .captures(attr_body)
-        .and_then(|c| c.get(1).map(|m| m.as_str().to_owned()));
-
-    // Parse base attribute
-    let base = if base_true_re.is_match(attr_body) {
-        BaseAttr::IsBase
-    } else {
-        let cap = base_parent_re.captures(attr_body)?;
-        BaseAttr::Parent(cap.get(1)?.as_str().to_owned())
-    };
-
-    Some(MacroAttrs {
-        dir_path,
-        type_id,
-        description,
-        properties,
-        base,
-    })
-}
-
-/// Extract schema metadata from Rust source and generate JSON files
-/// Returns a vector of (`schema_id`, `file_path`) tuples for each generated schema
-fn extract_and_generate_schemas(
-    content: &str,
-    output_override: Option<&str>,
-    source_root: &Path,
-    source_file: &Path,
-) -> Result<Vec<(String, String)>> {
-    // Match #[struct_to_gts_schema(...)] followed by struct definition
-    // Captures: (1) attribute body, (2) struct name, (3) optional generics, (4) struct body or semicolon for unit structs
-    let re = Regex::new(
-        r"(?s)#\[struct_to_gts_schema\(([^)]+)\)\]\s*(?:#\[[^\]]+\]\s*)*(?:pub\s+)?struct\s+(\w+)(?:<([^>]+)>)?\s*(?:\{([^}]*)\}|;)",
-    )?;
-
-    // Pre-compile field regex outside the loop
-    let field_re = Regex::new(r"(?m)^\s*(?:pub\s+)?(\w+)\s*:\s*([^,\n]+)")?;
-
-    let mut results = Vec::new();
-
-    for cap in re.captures_iter(content) {
-        let attr_body = &cap[1];
-        let struct_name = &cap[2];
-        let _generics = cap.get(3).map(|m| m.as_str());
-        let struct_body = cap.get(4).map_or("", |m| m.as_str());
-
-        // Parse macro attributes
-        let Some(attrs) = parse_macro_attrs(attr_body) else {
-            continue;
-        };
-
-        // Convert schema_id to filename-safe format
-        // e.g., "gts.x.core.events.type.v1~" -> "gts.x.core.events.type.v1~"
-        let schema_file_rel = format!("{}/{}.schema.json", attrs.dir_path, attrs.type_id);
-
-        // Determine output path
-        let output_path = if let Some(output_dir) = output_override {
-            // Use CLI-provided output directory
-            Path::new(output_dir).join(&schema_file_rel)
-        } else {
-            // Use path from macro (relative to source file's directory)
-            let source_dir = source_file.parent().unwrap_or(source_root);
-            source_dir.join(&schema_file_rel)
-        };
-
-        // Security check: ensure output path doesn't escape source repository
-        let output_canonical = if output_path.exists() {
-            output_path.canonicalize()?
-        } else {
-            // For non-existent files, canonicalize the parent directory
-            let parent = output_path.parent().unwrap_or(Path::new("."));
-            fs::create_dir_all(parent)?;
-            let parent_canonical = parent.canonicalize()?;
-            let file_name = output_path
-                .file_name()
-                .ok_or_else(|| anyhow::anyhow!("Invalid output path: no file name"))?;
-            parent_canonical.join(file_name)
-        };
-
-        // Check if output path is within source repository
-        if !output_canonical.starts_with(source_root) {
-            bail!(
-                "Security error in {}:{} - dir_path '{}' attempts to write outside source repository. \
-                Resolved to: {}, but must be within: {}",
-                source_file.display(),
-                struct_name,
-                attrs.dir_path,
-                output_canonical.display(),
-                source_root.display()
-            );
-        }
-
-        // Parse struct fields
-        let mut field_types = HashMap::new();
-
-        for field_cap in field_re.captures_iter(struct_body) {
-            let field_name = &field_cap[1];
-            let field_type = field_cap[2].trim().trim_end_matches(',');
-            field_types.insert(field_name.to_owned(), field_type.to_owned());
-        }
-
-        // Build JSON schema
-        let schema = build_json_schema(
-            &attrs.type_id,
-            struct_name,
-            attrs.description.as_deref(),
-            attrs.properties.as_deref(),
-            &attrs.base,
-            &field_types,
-        );
-
-        // Create parent directories
-        if let Some(parent) = output_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        // Write schema file
-        fs::write(&output_path, serde_json::to_string_pretty(&schema)?)?;
-
-        // Add to results (schema_id, file_path)
-        results.push((attrs.type_id, output_path.display().to_string()));
-    }
-
-    Ok(results)
 }
 
 /// Build a JSON Schema object from parsed metadata
@@ -604,14 +525,12 @@ mod tests {
     #[test]
     fn test_parse_macro_attrs_base_true() {
         let attr_body = r#"
-            dir_path = "schemas",
             base = true,
             schema_id = "gts.x.core.events.type.v1~",
             description = "Base event type"
         "#;
 
         let attrs = parse_macro_attrs(attr_body).unwrap();
-        assert_eq!(attrs.dir_path, "schemas");
         assert_eq!(attrs.type_id, "gts.x.core.events.type.v1~");
         assert_eq!(attrs.description.as_deref(), Some("Base event type"));
         assert!(matches!(attrs.base, BaseAttr::IsBase));
@@ -620,13 +539,11 @@ mod tests {
     #[test]
     fn test_parse_macro_attrs_base_parent() {
         let attr_body = r#"
-            dir_path = "schemas",
             base = BaseEventV1,
             schema_id = "gts.x.core.events.type.v1~x.core.audit.event.v1~"
         "#;
 
         let attrs = parse_macro_attrs(attr_body).unwrap();
-        assert_eq!(attrs.dir_path, "schemas");
         assert_eq!(
             attrs.type_id,
             "gts.x.core.events.type.v1~x.core.audit.event.v1~"
@@ -719,7 +636,7 @@ mod tests {
         field_types.insert("active".to_owned(), "bool".to_owned());
 
         let schema = build_json_schema(
-            "gts.x.test.base.v1~",
+            "gts.x.test.entities.base.v1~",
             "BaseStruct",
             Some("A base test struct"),
             None, // Include all properties
@@ -727,7 +644,7 @@ mod tests {
             &field_types,
         );
 
-        assert_eq!(schema["$id"], "gts://gts.x.test.base.v1~");
+        assert_eq!(schema["$id"], "gts://gts.x.test.entities.base.v1~");
         assert_eq!(schema["$schema"], "http://json-schema.org/draft-07/schema#");
         assert_eq!(schema["title"], "BaseStruct");
         assert_eq!(schema["type"], "object");
@@ -754,7 +671,7 @@ mod tests {
         field_types.insert("optional_field".to_owned(), "Option<i32>".to_owned());
 
         let schema = build_json_schema(
-            "gts.x.test.base.v1~x.test.child.v1~",
+            "gts.x.test.entities.base.v1~x.test.entities.child.v1~",
             "ChildStruct",
             Some("A child test struct"),
             None,
@@ -762,7 +679,10 @@ mod tests {
             &field_types,
         );
 
-        assert_eq!(schema["$id"], "gts://gts.x.test.base.v1~x.test.child.v1~");
+        assert_eq!(
+            schema["$id"],
+            "gts://gts.x.test.entities.base.v1~x.test.entities.child.v1~"
+        );
         assert_eq!(schema["title"], "ChildStruct (extends BaseStruct)");
         assert_eq!(schema["type"], "object");
         assert_eq!(schema["description"], "A child test struct");
@@ -772,7 +692,7 @@ mod tests {
         assert_eq!(all_of.len(), 2);
 
         // First element should be $ref to parent
-        assert_eq!(all_of[0]["$ref"], "gts://gts.x.test.base.v1~");
+        assert_eq!(all_of[0]["$ref"], "gts://gts.x.test.entities.base.v1~");
 
         // Second element should have child properties
         assert!(all_of[1]["properties"]["child_field"].is_object());
@@ -787,14 +707,12 @@ mod tests {
     #[test]
     fn test_parse_macro_attrs_with_schema_id() {
         let attr_body = r#"
-            dir_path = "schemas",
             base = true,
-            schema_id = "gts.x.custom.id.v1~"
+            schema_id = "gts.x.custom.entities.id.v1~"
         "#;
 
         let attrs = parse_macro_attrs(attr_body).unwrap();
-        assert_eq!(attrs.type_id, "gts.x.custom.id.v1~");
-        assert_eq!(attrs.dir_path, "schemas");
+        assert_eq!(attrs.type_id, "gts.x.custom.entities.id.v1~");
         assert!(matches!(attrs.base, BaseAttr::IsBase));
         assert!(attrs.description.is_none());
     }
@@ -813,9 +731,8 @@ mod tests {
 use gts::GtsInstanceId;
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.test.person.v1~",
+    schema_id = "gts.x.test.entities.person.v1~",
     description = "A test person struct"
 )]
 pub struct Person {
@@ -826,18 +743,25 @@ pub struct Person {
 "#;
         fs::write(&test_file, content).unwrap();
 
-        // Call extract_and_generate_schemas
-        let results = extract_and_generate_schemas(
-            content,
+        generate_schemas_from_rust(
+            test_file.to_str().unwrap(),
             Some(temp_path.to_str().unwrap()),
-            &temp_path,
-            &test_file,
+            &[],
+            0,
         )
         .unwrap();
+        let results: Vec<_> = extract_schemas(content, &test_file)
+            .unwrap()
+            .into_iter()
+            .map(|s| {
+                let path = temp_path.join(format!("{}.schema.json", s.type_id));
+                (s.type_id, path.display().to_string())
+            })
+            .collect();
 
         // Verify results
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].0, "gts.x.test.person.v1~");
+        assert_eq!(results[0].0, "gts.x.test.entities.person.v1~");
 
         // Verify schema file was created
         let schema_path = Path::new(&results[0].1);
@@ -847,7 +771,7 @@ pub struct Person {
         let schema_content = fs::read_to_string(schema_path).unwrap();
         let schema: serde_json::Value = serde_json::from_str(&schema_content).unwrap();
 
-        assert_eq!(schema["$id"], "gts://gts.x.test.person.v1~");
+        assert_eq!(schema["$id"], "gts://gts.x.test.entities.person.v1~");
         assert_eq!(schema["title"], "Person");
         assert_eq!(schema["type"], "object");
         assert_eq!(schema["description"], "A test person struct");
@@ -870,9 +794,8 @@ pub struct Person {
 use gts::GtsInstanceId;
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
-    schema_id = "gts.x.test.base.v1~",
+    schema_id = "gts.x.test.entities.base.v1~",
     description = "Base event"
 )]
 pub struct BaseEvent {
@@ -881,9 +804,8 @@ pub struct BaseEvent {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = BaseEvent,
-    schema_id = "gts.x.test.base.v1~x.test.child.v1~",
+    schema_id = "gts.x.test.entities.base.v1~x.test.entities.child.v1~",
     description = "Child event"
 )]
 pub struct ChildEvent {
@@ -893,14 +815,21 @@ pub struct ChildEvent {
 "#;
         fs::write(&test_file, content).unwrap();
 
-        // Call extract_and_generate_schemas
-        let results = extract_and_generate_schemas(
-            content,
+        generate_schemas_from_rust(
+            test_file.to_str().unwrap(),
             Some(temp_path.to_str().unwrap()),
-            &temp_path,
-            &test_file,
+            &[],
+            0,
         )
         .unwrap();
+        let results: Vec<_> = extract_schemas(content, &test_file)
+            .unwrap()
+            .into_iter()
+            .map(|s| {
+                let path = temp_path.join(format!("{}.schema.json", s.type_id));
+                (s.type_id, path.display().to_string())
+            })
+            .collect();
 
         // Verify results - should have 2 schemas
         assert_eq!(results.len(), 2);
@@ -908,11 +837,11 @@ pub struct ChildEvent {
         // Find base and child schemas
         let base_result = results
             .iter()
-            .find(|(id, _)| id == "gts.x.test.base.v1~")
+            .find(|(id, _)| id == "gts.x.test.entities.base.v1~")
             .unwrap();
         let child_result = results
             .iter()
-            .find(|(id, _)| id == "gts.x.test.base.v1~x.test.child.v1~")
+            .find(|(id, _)| id == "gts.x.test.entities.base.v1~x.test.entities.child.v1~")
             .unwrap();
 
         // Verify base schema
@@ -933,7 +862,7 @@ pub struct ChildEvent {
         // Verify allOf structure with parent reference
         let all_of = child_schema["allOf"].as_array().unwrap();
         assert_eq!(all_of.len(), 2);
-        assert_eq!(all_of[0]["$ref"], "gts://gts.x.test.base.v1~");
+        assert_eq!(all_of[0]["$ref"], "gts://gts.x.test.entities.base.v1~");
         assert!(all_of[1]["properties"]["event_type"].is_object());
     }
 
@@ -1008,22 +937,21 @@ pub struct ChildEvent {
     #[test]
     fn test_parse_macro_attrs_edge_cases() {
         // With base true
-        let attr1 = r#"dir_path = "schemas", base = true, schema_id = "gts.x.test.v1~""#;
+        let attr1 = r#"base = true, schema_id = "gts.x.test.entities.item.v1~""#;
         let result1 = parse_macro_attrs(attr1).unwrap();
-        assert_eq!(result1.dir_path, "schemas");
-        assert_eq!(result1.type_id, "gts.x.test.v1~");
+        assert_eq!(result1.type_id, "gts.x.test.entities.item.v1~");
         assert!(matches!(result1.base, BaseAttr::IsBase));
 
         // With base parent
-        let attr2 = r#"dir_path = "schemas", base = ParentStruct, schema_id = "gts.x.test.v1~""#;
+        let attr2 = r#"base = ParentStruct, schema_id = "gts.x.test.entities.item.v1~""#;
         let result2 = parse_macro_attrs(attr2).unwrap();
         assert!(matches!(result2.base, BaseAttr::Parent(ref p) if p == "ParentStruct"));
 
         // Missing field
-        assert!(parse_macro_attrs(r#"dir_path = "schemas""#).is_none());
+        assert!(parse_macro_attrs("base = true").is_err());
 
         // Malformed
-        assert!(parse_macro_attrs(r"invalid syntax here").is_none());
+        assert!(parse_macro_attrs(r"invalid syntax here").is_err());
     }
 
     #[test]

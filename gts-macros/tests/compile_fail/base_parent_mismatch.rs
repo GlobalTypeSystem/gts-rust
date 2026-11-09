@@ -5,7 +5,6 @@ use gts_macros::struct_to_gts_schema;
 
 // Define a base type with one schema ID (must be generic)
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = "gts.x.core.events.type.v1~",
     description = "Base event type",
@@ -21,7 +20,6 @@ pub struct BaseEventV1<P> {
 // Parent's ID is "gts.x.core.events.type.v1~" but type_id's parent
 // segment is "gts.x.wrong.parent.type.v1~"
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = BaseEventV1,
     type_id = "gts.x.wrong.parent.type.v1~x.core.audit.event.v1~",
     description = "This should fail",

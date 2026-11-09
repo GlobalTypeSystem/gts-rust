@@ -139,7 +139,7 @@ pub enum Commands {
         /// Source directory or file to scan for annotated structs
         #[arg(long)]
         source: String,
-        /// Output directory for generated schemas (optional: uses paths from macro if not specified)
+        /// Final output directory, relative to the working directory (default: ./schemas)
         #[arg(long)]
         output: Option<String>,
         /// Exclude patterns (can be specified multiple times). Supports glob patterns.

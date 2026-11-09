@@ -1,5 +1,5 @@
 error: hard-coded GTS ID prefix in string literal - use GTS_ID_PREFIX constant or the gts_id! macro instead
-  --> $DIR/trigger_struct_to_gts_schema.rs:11:15
+  --> $DIR/trigger_struct_to_gts_schema.rs:10:15
    |
 LL |     type_id = "gts.x.core.events.type.v1~",
    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^

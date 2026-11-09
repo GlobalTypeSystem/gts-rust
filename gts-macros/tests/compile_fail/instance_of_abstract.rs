@@ -7,7 +7,6 @@ use gts::GtsInstanceId;
 use gts_macros::{gts_instance, struct_to_gts_schema};
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = "gts.x.app.events.thing.v1~",
     description = "Abstract thing",

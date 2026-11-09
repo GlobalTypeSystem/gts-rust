@@ -12,7 +12,6 @@ use gts_macros::{gts_id, struct_to_gts_schema};
 
 #[derive(Debug, Clone)]
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     schema_id = gts_id!("x.test.deprecated.alias.v1~"),
     description = "Verifies the deprecated `schema_id` alias still parses",

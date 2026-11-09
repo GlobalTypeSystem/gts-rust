@@ -16,7 +16,6 @@ pub enum Choice {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.golden.contentmodels.v1~"),
     description = "Host preserving map and combinator content models",

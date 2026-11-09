@@ -6,7 +6,6 @@ use gts::{GtsSchema, GtsTypeId};
 use gts_macros::struct_to_gts_schema;
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.golden.openchain.v1~"),
     description = "Abstract base with a payload extension slot",
@@ -22,7 +21,6 @@ pub struct OpenChainBaseV1<P> {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = OpenChainBaseV1,
     type_id = gts_id!("x.test.golden.openchain.v1~x.test.audit.payload.v1~"),
     description = "Derived payload with an explicitly open content model",
@@ -37,7 +35,6 @@ pub struct OpenDerivedPayloadV1<D> {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = OpenDerivedPayloadV1,
     type_id = gts_id!(
         "x.test.golden.openchain.v1~x.test.audit.payload.v1~x.test.final.payload.v1~"

@@ -21,7 +21,6 @@ pub struct OrderTraits {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = true,
     type_id = gts_id!("x.test.golden.litevent.v1~"),
     description = "Abstract base declaring the order trait shape",
@@ -36,7 +35,6 @@ pub struct LitEventV1<P> {
 }
 
 #[struct_to_gts_schema(
-    dir_path = "schemas",
     base = LitEventV1,
     type_id = gts_id!("x.test.golden.litevent.v1~x.test.order.placed.v1~"),
     description = "Leaf resolving every trait via a struct literal",

@@ -1,5 +1,5 @@
 error: struct_to_gts_schema: Property 'nonexistent' not found in struct. Available fields: ["id"]
-  --> tests/compile_fail/invalid_file_extension.rs:12:12
+  --> tests/compile_fail/invalid_file_extension.rs:11:12
    |
-12 | pub struct User {
+11 | pub struct User {
    |            ^^^^
