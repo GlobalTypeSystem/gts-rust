@@ -179,7 +179,11 @@ fn identical_declarations_are_written_once_and_regular_files_can_be_regenerated(
 
 #[test]
 fn source_read_and_syntax_errors_fail_before_writing() {
-    for invalid in [b"pub struct Broken {".as_slice(), b"\xff"] {
+    for invalid in [
+        b"#[struct_to_gts_schema(base = true)] pub struct Broken {".as_slice(),
+        b"#[struct_to_gts_schema] pub struct Bare;",
+        b"\xff",
+    ] {
         let temp = TempDir::new().unwrap();
         let source_dir = temp.path().join("src");
         fs::create_dir(&source_dir).unwrap();
@@ -195,6 +199,56 @@ fn source_read_and_syntax_errors_fail_before_writing() {
         assert!(String::from_utf8_lossy(&result.stderr).contains("invalid.rs"));
         assert!(!temp.path().join("schemas").exists());
     }
+}
+
+#[test]
+fn syntax_errors_outside_declaration_files_are_ignored() {
+    let temp = TempDir::new().unwrap();
+    let source_dir = temp.path().join("src");
+    fs::create_dir(&source_dir).unwrap();
+    fs::write(
+        source_dir.join("valid.rs"),
+        declaration(r#"gts_id!("x.test.output.entity.v1~")"#),
+    )
+    .unwrap();
+    fs::write(source_dir.join("fragment.rs"), "let x = ;").unwrap();
+
+    let result = generate(temp.path(), &source_dir, None).unwrap();
+    assert!(result.status.success(), "{result:?}");
+    assert!(
+        temp.path()
+            .join(format!(
+                "schemas/{GTS_ID_PREFIX}x.test.output.entity.v1~.schema.json"
+            ))
+            .exists()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn walk_errors_in_excluded_directories_are_ignored() {
+    let temp = TempDir::new().unwrap();
+    let vendor = temp.path().join("vendor");
+    fs::create_dir(&vendor).unwrap();
+    std::os::unix::fs::symlink(temp.path().join("missing"), vendor.join("dangling.rs")).unwrap();
+    fs::write(
+        temp.path().join("valid.rs"),
+        declaration(r#"gts_id!("x.test.output.entity.v1~")"#),
+    )
+    .unwrap();
+
+    let result = Command::new(env!("CARGO_BIN_EXE_gts"))
+        .current_dir(temp.path())
+        .args([
+            "generate-from-rust",
+            "--source",
+            ".",
+            "--exclude",
+            "vendor/**",
+        ])
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "{result:?}");
 }
 
 #[cfg(unix)]

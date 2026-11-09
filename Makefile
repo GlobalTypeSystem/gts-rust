@@ -24,7 +24,7 @@ dev-clippy:
 
 # Generate schemas
 generate-schemas: build
-	./target/release/gts generate-from-rust --source . --exclude "**/tests/**" --exclude "**/fixtures/**" --exclude "**/examples/**" --exclude "target/**"
+	./target/release/gts generate-from-rust --source . --exclude "**/tests/**" --exclude "**/fixtures/**" --exclude "**/examples/**" --exclude "target/**" --output target/schemas
 
 # Run all checks and build
 all: check deny build generate-schemas

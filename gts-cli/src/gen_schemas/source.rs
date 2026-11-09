@@ -5,7 +5,7 @@ use anyhow::{Context, Result, bail};
 use gts::{GTS_ID_PREFIX, GtsTypeId};
 use quote::ToTokens;
 use std::{collections::HashMap, path::Path};
-use syn::{Expr, Lit, Meta, Token, parse::Parser, punctuated::Punctuated, visit::Visit};
+use syn::{Expr, Lit, Meta, Token, punctuated::Punctuated, visit::Visit};
 
 fn string_value(expr: &Expr) -> Result<String> {
     if let Expr::Lit(expr) = expr
@@ -34,8 +34,15 @@ fn type_id_value(expr: &Expr) -> Result<String> {
     Ok(id)
 }
 
+type MacroArgs = Punctuated<Meta, Token![,]>;
+
+#[cfg(test)]
 pub(super) fn parse_macro_attrs(attr_body: &str) -> Result<MacroAttrs> {
-    let attributes = Punctuated::<Meta, Token![,]>::parse_terminated.parse_str(attr_body)?;
+    use syn::parse::Parser;
+    macro_attrs(MacroArgs::parse_terminated.parse_str(attr_body)?)
+}
+
+fn macro_attrs(attributes: MacroArgs) -> Result<MacroAttrs> {
     let mut type_id = None;
     let mut description = None;
     let mut properties = None;
@@ -89,7 +96,11 @@ impl<'ast> Visit<'ast> for Structs<'ast> {
     }
 }
 
+/// Only files mentioning the macro are parsed; parse errors in those are fatal.
 pub(super) fn extract_schemas(content: &str, source_file: &Path) -> Result<Vec<SchemaDeclaration>> {
+    if !content.contains("struct_to_gts_schema") {
+        return Ok(Vec::new());
+    }
     let syntax = syn::parse_file(content)
         .with_context(|| format!("Failed to parse Rust source {}", source_file.display()))?;
     let mut structs = Structs::default();
@@ -106,7 +117,10 @@ pub(super) fn extract_schemas(content: &str, source_file: &Path) -> Result<Vec<S
             {
                 continue;
             }
-            let attrs = parse_macro_attrs(&attribute.meta.require_list()?.tokens.to_string())
+            let attrs = attribute
+                .parse_args_with(MacroArgs::parse_terminated)
+                .map_err(anyhow::Error::from)
+                .and_then(macro_attrs)
                 .with_context(|| {
                     format!(
                         "Invalid schema declaration {}:{}",

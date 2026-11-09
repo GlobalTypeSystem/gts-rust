@@ -132,7 +132,21 @@ pub fn generate_schemas_from_rust(
                     && !is_in_auto_ignored_dir(entry.path()))
         })
     {
-        let entry = entry.with_context(|| format!("Failed to scan {}", source_path.display()))?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            // Pruning misses the excluded dir itself for `dir/**`; skip errors under it.
+            Err(error)
+                if error.path().is_some_and(|path| {
+                    should_exclude_path(path, exclude_patterns) || is_in_auto_ignored_dir(path)
+                }) =>
+            {
+                continue;
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Failed to scan {}", source_path.display()));
+            }
+        };
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) != Some("rs") {
             continue;
