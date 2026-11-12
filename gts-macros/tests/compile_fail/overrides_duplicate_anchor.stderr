@@ -1,0 +1,5 @@
+error: struct_to_gts_schema: duplicate `overrides` entry for ancestor `SubjectV1`
+  --> tests/compile_fail/overrides_duplicate_anchor.rs:43:36
+   |
+43 |     overrides(SubjectV1 = IdRules, SubjectV1 = IdRules),
+   |                                    ^^^^^^^^^

@@ -1,0 +1,5 @@
+error: struct_to_gts_schema: `overrides` must name a strict ancestor, not the type itself; constrain its own fields with schemars attributes directly
+  --> tests/compile_fail/overrides_self_anchor.rs:43:15
+   |
+43 |     overrides(LeafV1 = IdRules),
+   |               ^^^^^^

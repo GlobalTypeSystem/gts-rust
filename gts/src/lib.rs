@@ -12,6 +12,7 @@ mod schema_dialect;
 pub mod schema_evolution;
 pub mod schema_modifiers;
 pub mod schema_narrow;
+pub mod schema_overrides;
 pub mod schema_refs;
 mod schema_regex;
 pub mod schema_resolver;

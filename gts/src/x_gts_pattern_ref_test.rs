@@ -414,13 +414,15 @@ fn evolution_compares_operands_by_coverage() {
     assert_eq!(verdicts(&not_narrow, &not_wide), (Incompatible, Compatible));
     assert_eq!(verdicts(&not_wide, &not_narrow), (Compatible, Incompatible));
 
+    // Branch by branch, the narrow union is included in the wide one; the
+    // reverse has no branch-wise proof.
     let any_of = |operand: &str| json!({"anyOf": [{"type": "string", "x-gts-pattern-ref": operand}, {"type": "integer"}]});
     assert_eq!(
         verdicts(
             &any_of(&format!("{RESOURCE}.v1~")),
             &any_of(&format!("{RESOURCE}.*"))
         ),
-        (Unknown, Unknown)
+        (Compatible, Unknown)
     );
 
     // `allOf` intersects; the narrower operand decides.

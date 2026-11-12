@@ -1,0 +1,11 @@
+error[E0080]: evaluation panicked: struct_to_gts_schema: `overrides(OtherV1 = ...)`: `OtherV1` is not a strict ancestor of 'gts.x.app.ovr.subject.v1~x.app.ovr.regional.v1~x.app.ovr.leaf.v1~'
+  --> tests/compile_fail/overrides_non_ancestor.rs:50:1
+   |
+50 | / #[struct_to_gts_schema(
+51 | |     dir_path = "schemas",
+52 | |     base = RegionalSubjectV1,
+53 | |     type_id = "gts.x.app.ovr.subject.v1~x.app.ovr.regional.v1~x.app.ovr.leaf.v1~",
+...  |
+56 | |     overrides(OtherV1 = IdRules),
+57 | | )]
+   | |__^ evaluation of `_` failed here

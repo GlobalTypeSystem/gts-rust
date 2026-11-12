@@ -683,44 +683,44 @@ fn check_min_max_constraint(
         path, old_schema, new_schema, max_key,
     ));
 
-    // Check minimum constraint
-    let old_min = old_schema.get(min_key).and_then(Value::as_f64);
-    let new_min = new_schema.get(min_key).and_then(Value::as_f64);
-
-    if let (Some(old_m), Some(new_m)) = (old_min, new_min) {
-        if check_tightening && new_m > old_m {
-            errors.push(bound(format!(
-                "{min_key} increased from {old_m} -> {new_m}"
-            )));
-        } else if !check_tightening && new_m < old_m {
-            errors.push(bound(format!(
-                "{min_key} decreased from {old_m} -> {new_m}"
-            )));
+    // Counts stay JSON numbers and compare exactly, as numeric bounds do.
+    for (key, is_lower) in [(min_key, true), (max_key, false)] {
+        let old_bound = old_schema.get(key).and_then(Value::as_number);
+        let new_bound = new_schema.get(key).and_then(Value::as_number);
+        match (old_bound, new_bound) {
+            (Some(old_m), Some(new_m)) => {
+                let Some(ordering) = json_numbers_cmp(new_m, old_m) else {
+                    errors.push(CompatibilityDiagnostic::new(
+                        path,
+                        CompatibilityFinding::NotProvable,
+                        format!("cannot order '{key}' values {old_m} and {new_m} exactly"),
+                    ));
+                    continue;
+                };
+                // Tightening raises a lower bound and lowers an upper one.
+                let tightened = if is_lower {
+                    ordering.is_gt()
+                } else {
+                    ordering.is_lt()
+                };
+                let loosened = !ordering.is_eq() && !tightened;
+                let verb = if ordering.is_gt() {
+                    "increased"
+                } else {
+                    "decreased"
+                };
+                if (check_tightening && tightened) || (!check_tightening && loosened) {
+                    errors.push(bound(format!("{key} {verb} from {old_m} -> {new_m}")));
+                }
+            }
+            (None, Some(new_m)) if check_tightening => {
+                errors.push(bound(format!("adds {key} constraint: {new_m}")));
+            }
+            (Some(_), None) if !check_tightening => {
+                errors.push(bound(format!("removes {key} constraint")));
+            }
+            _ => {}
         }
-    } else if let (true, None, Some(new_m)) = (check_tightening, old_min, new_min) {
-        errors.push(bound(format!("adds {min_key} constraint: {new_m}")));
-    } else if !check_tightening && old_min.is_some() && new_min.is_none() {
-        errors.push(bound(format!("removes {min_key} constraint")));
-    }
-
-    // Check maximum constraint
-    let old_max = old_schema.get(max_key).and_then(Value::as_f64);
-    let new_max = new_schema.get(max_key).and_then(Value::as_f64);
-
-    if let (Some(old_m), Some(new_m)) = (old_max, new_max) {
-        if check_tightening && new_m < old_m {
-            errors.push(bound(format!(
-                "{max_key} decreased from {old_m} -> {new_m}"
-            )));
-        } else if !check_tightening && new_m > old_m {
-            errors.push(bound(format!(
-                "{max_key} increased from {old_m} -> {new_m}"
-            )));
-        }
-    } else if let (true, None, Some(new_m)) = (check_tightening, old_max, new_max) {
-        errors.push(bound(format!("adds {max_key} constraint: {new_m}")));
-    } else if !check_tightening && old_max.is_some() && new_max.is_none() {
-        errors.push(bound(format!("removes {max_key} constraint")));
     }
 
     errors
@@ -738,20 +738,18 @@ fn effective_numeric_bound(
     inclusive_key: &str,
     exclusive_key: &str,
     is_lower: bool,
-) -> Result<Option<(f64, bool)>, ()> {
-    // `total_cmp` orders `-0.0` below `0.0`, but the two denote the same JSON
-    // number and must compare equal, so the sign of zero is dropped as the
-    // bound is read.
-    let bound_value = |value: &Value| -> Result<f64, ()> {
-        let value = value.as_f64().ok_or(())?;
-        Ok(if value == 0.0 { 0.0 } else { value })
-    };
+) -> Result<Option<(serde_json::Number, bool)>, ()> {
+    // Bounds stay JSON numbers and are ordered exactly: through `f64`,
+    // `2^53 + 1` and `2^53` would compare equal.
+    let bound_value = |value: &Value| value.as_number().cloned().ok_or(());
     let inclusive = match schema.get(inclusive_key) {
         Some(value) => Some((bound_value(value)?, false)),
         None => None,
     };
     let exclusive = match schema.get(exclusive_key) {
-        Some(Value::Bool(is_exclusive)) => inclusive.map(|(value, _)| (value, *is_exclusive)),
+        Some(Value::Bool(is_exclusive)) => {
+            inclusive.clone().map(|(value, _)| (value, *is_exclusive))
+        }
         Some(value) => Some((bound_value(value)?, true)),
         None => None,
     };
@@ -759,7 +757,7 @@ fn effective_numeric_bound(
     Ok(match (inclusive, exclusive) {
         (None, bound) | (bound, None) => bound,
         (Some(inclusive), Some(exclusive)) => {
-            let ordering = exclusive.0.total_cmp(&inclusive.0);
+            let ordering = json_numbers_cmp(&exclusive.0, &inclusive.0).ok_or(())?;
             let exclusive_is_stricter = if is_lower {
                 ordering.is_gt()
             } else {
@@ -832,12 +830,21 @@ fn check_numeric_bounds(
         let included = match (source, target) {
             (_, None) => true,
             (None, Some(_)) => false,
-            (Some(source), Some(target)) if is_lower => {
-                let ordering = source.0.total_cmp(&target.0);
-                ordering.is_gt() || (ordering.is_eq() && (!target.1 || source.1))
-            }
             (Some(source), Some(target)) => {
-                let ordering = source.0.total_cmp(&target.0);
+                let Some(ordering) = json_numbers_cmp(&source.0, &target.0) else {
+                    diagnostics.push(CompatibilityDiagnostic::new(
+                        path,
+                        CompatibilityFinding::NotProvable,
+                        format!("cannot order '{inclusive_key}'/'{exclusive_key}' bounds exactly"),
+                    ));
+                    continue;
+                };
+                // A lower bound is included when it is higher.
+                let ordering = if is_lower {
+                    ordering.reverse()
+                } else {
+                    ordering
+                };
                 ordering.is_lt() || (ordering.is_eq() && (!target.1 || source.1))
             }
         };
@@ -894,15 +901,40 @@ fn check_constraint_compatibility(
     diagnostics
 }
 
+/// Whether `multiple` is an integer multiple of `divisor`, for two positive
+/// integer-valued JSON numbers; `None` for any other pair, which has no exact
+/// answer here (a float ratio would need an epsilon).
+fn integer_multiple(multiple: &Value, divisor: &Value) -> Option<bool> {
+    /// Largest integer below which every integer is an exact `f64`.
+    const EXACT: f64 = 9_007_199_254_740_992.0; // 2^53
+    let integer = |value: &Value| {
+        value.as_u64().or_else(|| {
+            let float = value.as_f64()?;
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "an integral float in (0, 2^53) converts exactly"
+            )]
+            (float > 0.0 && float < EXACT && float.fract() == 0.0).then_some(float as u64)
+        })
+    };
+    let (multiple, divisor) = (integer(multiple)?, integer(divisor)?);
+    (multiple > 0 && divisor > 0).then(|| multiple % divisor == 0)
+}
+
 /// Handles keywords that only ever narrow `Valid(S)` when present.
 ///
-/// Whether two different values of such a keyword include one another is
-/// undecidable in general - no implementation can compare two regexes - but
-/// presence alone is decidable: adding the constraint narrows the accepted
-/// set, removing it widens it. That is exactly the shape of the "Relaxing /
+/// Presence is decidable: adding the constraint narrows the accepted set,
+/// removing it widens it. That is exactly the shape of the "Relaxing /
 /// Tightening constraints" rows of gts-spec sec 4.5, so reporting both
 /// directions as incompatible (as plain equality does) contradicts the table
 /// for the common case of adding or dropping one of these keywords.
+///
+/// Two different values are compared only where an exact proof is cheap:
+/// integer `multipleOf` values by divisibility. Inclusion between two
+/// different `pattern`s is decidable for the regular GTS pattern profile, but
+/// this checker does not implement it, so a changed `pattern` - like a changed
+/// `format`, or a non-integer `multipleOf` - is reported as not provable.
 fn check_narrowing_constraints(
     path: &str,
     old_schema: &Map<String, Value>,
@@ -935,7 +967,35 @@ fn check_narrowing_constraints(
                     CompatibilityFinding::NarrowingConstraintChanged,
                     format!("removes '{keyword}' constraint"),
                 )),
-                // Changed: inclusion between the two values is undecidable.
+                // Changed: `Valid(multipleOf a) ⊆ Valid(multipleOf b)` exactly
+                // when `a` is an integer multiple of `b`.
+                (Some(old_value), Some(new_value)) if *keyword == "multipleOf" => {
+                    let (subset, superset) = if check_backward {
+                        (old_value, new_value)
+                    } else {
+                        (new_value, old_value)
+                    };
+                    match integer_multiple(subset, superset) {
+                        Some(true) => None,
+                        Some(false) => Some(CompatibilityDiagnostic::new(
+                            path,
+                            CompatibilityFinding::NarrowingConstraintChanged,
+                            format!(
+                                "changes 'multipleOf' from {old_value} to {new_value}; {subset} \
+                                 is not a multiple of {superset}"
+                            ),
+                        )),
+                        None => Some(CompatibilityDiagnostic::new(
+                            path,
+                            CompatibilityFinding::NotProvable,
+                            format!(
+                                "changes 'multipleOf' from {old_value} to {new_value}; only \
+                                 integer values are compared exactly"
+                            ),
+                        )),
+                    }
+                }
+                // Changed: no exact inclusion proof between the two values.
                 (Some(old_value), Some(new_value)) => Some(CompatibilityDiagnostic::new(
                     path,
                     CompatibilityFinding::NotProvable,
@@ -1180,9 +1240,11 @@ fn masks_string_witness(schema: &Map<String, Value>) -> bool {
 ///
 /// `Valid(rest ∧ (B1 ∨ … ∨ Bn))` is the union of each `rest ∧ Bi`, so a target
 /// union includes the source when one conjoined branch does, and a source
-/// union is included when every conjoined branch is. Only a positive answer is
-/// conclusive: anything else falls back to the keyword comparison, which
-/// leaves a changed `anyOf` unproven.
+/// union is included when every conjoined branch is (a multi-type source is
+/// split by type for this), and a source union is
+/// included in a target union when each of its branches is included in some
+/// target branch. Only a positive answer is conclusive: anything else falls
+/// back to the keyword comparison, which leaves a changed `anyOf` unproven.
 fn union_inclusion_holds(
     old_map: &Map<String, Value>,
     new_map: &Map<String, Value>,
@@ -1229,11 +1291,15 @@ fn union_inclusion_holds(
         target.get("anyOf").and_then(Value::as_array),
     ) {
         (None, Some(branches)) if !source.contains_key("anyOf") => {
-            let source = Value::Object(source.clone());
-            branches
+            let targets: Vec<Value> = branches
                 .iter()
                 .filter_map(|branch| conjoin(target, branch))
-                .any(|branch| included(&source, &branch))
+                .collect();
+            let fits = |part: &Value| targets.iter().any(|target| included(part, target));
+            // `Valid(S)` is the union of `S ∧ type: t` over S's types, so a
+            // multi-type source (`["object", "null"]`) may fit branch by type.
+            fits(&Value::Object(source.clone()))
+                || split_by_type(source).is_some_and(|parts| parts.iter().all(fits))
         }
         (Some(branches), None) if !target.contains_key("anyOf") && !branches.is_empty() => {
             let target = Value::Object(target.clone());
@@ -1241,8 +1307,39 @@ fn union_inclusion_holds(
                 conjoin(source, branch).is_some_and(|branch| included(&branch, &target))
             })
         }
+        (Some(source_branches), Some(target_branches)) if !source_branches.is_empty() => {
+            // Leaving out a target branch whose intersection is not exact
+            // only shrinks the union, so the proof stays sound.
+            let targets: Vec<Value> = target_branches
+                .iter()
+                .filter_map(|branch| conjoin(target, branch))
+                .collect();
+            source_branches.iter().all(|branch| {
+                conjoin(source, branch)
+                    .is_some_and(|branch| targets.iter().any(|target| included(&branch, target)))
+            })
+        }
         _ => false,
     }
+}
+
+/// `schema` once per entry of a multi-type `type` array, each with that single
+/// type.
+fn split_by_type(schema: &Map<String, Value>) -> Option<Vec<Value>> {
+    let types = schema.get("type")?.as_array()?;
+    if types.len() < 2 || !types.iter().all(Value::is_string) {
+        return None;
+    }
+    Some(
+        types
+            .iter()
+            .map(|single| {
+                let mut part = schema.clone();
+                part.insert("type".to_owned(), single.clone());
+                Value::Object(part)
+            })
+            .collect(),
+    )
 }
 
 /// Compares `x-gts-type-ref` and `x-gts-instance-ref` by the identifiers of

@@ -1,0 +1,11 @@
+error[E0080]: evaluation panicked: struct_to_gts_schema: `overrides` entries `SubjectV1` and `self :: SubjectV1` name the same ancestor
+  --> tests/compile_fail/overrides_duplicate_alias.rs:37:1
+   |
+37 | / #[struct_to_gts_schema(
+38 | |     dir_path = "schemas",
+39 | |     base = RegionalSubjectV1,
+40 | |     type_id = "gts.x.app.ovr.subject.v1~x.app.ovr.regional.v1~x.app.ovr.leaf.v1~",
+...  |
+43 | |     overrides(SubjectV1 = IdRules, self::SubjectV1 = IdRules),
+44 | | )]
+   | |__^ evaluation of `_` failed here

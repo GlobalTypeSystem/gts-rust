@@ -1,0 +1,60 @@
+error[E0277]: the trait bound `NotSchema: JsonSchema` is not satisfied
+  --> tests/compile_fail/overrides_helper_not_json_schema.rs:47:27
+   |
+47 |     overrides(SubjectV1 = NotSchema),
+   |                           ^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `JsonSchema` is not implemented for `NotSchema`
+  --> tests/compile_fail/overrides_helper_not_json_schema.rs:37:1
+   |
+37 | pub struct NotSchema {
+   | ^^^^^^^^^^^^^^^^^^^^
+   = help: the following other types implement trait `JsonSchema`:
+             &'a T
+             &'a mut T
+             ()
+             (T0, T1)
+             (T0, T1, T2)
+             (T0, T1, T2, T3)
+             (T0, T1, T2, T3, T4)
+             (T0, T1, T2, T3, T4, T5)
+           and $N others
+note: required by a bound in `_assert_override_helper`
+  --> tests/compile_fail/overrides_helper_not_json_schema.rs:41:1
+   |
+41 | / #[struct_to_gts_schema(
+42 | |     dir_path = "schemas",
+43 | |     base = RegionalSubjectV1,
+44 | |     type_id = "gts.x.app.ovr.subject.v1~x.app.ovr.regional.v1~x.app.ovr.leaf.v1~",
+...  |
+47 | |     overrides(SubjectV1 = NotSchema),
+48 | | )]
+   | |__^ required by this bound in `_assert_override_helper`
+   = note: this error originates in the attribute macro `struct_to_gts_schema` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `NotSchema: JsonSchema` is not satisfied
+  --> tests/compile_fail/overrides_helper_not_json_schema.rs:47:27
+   |
+47 |     overrides(SubjectV1 = NotSchema),
+   |                           ^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `JsonSchema` is not implemented for `NotSchema`
+  --> tests/compile_fail/overrides_helper_not_json_schema.rs:37:1
+   |
+37 | pub struct NotSchema {
+   | ^^^^^^^^^^^^^^^^^^^^
+   = help: the following other types implement trait `JsonSchema`:
+             &'a T
+             &'a mut T
+             ()
+             (T0, T1)
+             (T0, T1, T2)
+             (T0, T1, T2, T3)
+             (T0, T1, T2, T3, T4)
+             (T0, T1, T2, T3, T4, T5)
+           and $N others
+note: required by a bound in `AncestorOverride::of`
+  --> $WORKSPACE/gts/src/schema_overrides.rs
+   |
+   |     pub fn of<A: GtsSchema, H: schemars::JsonSchema>() -> Self {
+   |                                ^^^^^^^^^^^^^^^^^^^^ required by this bound in `AncestorOverride::of`

@@ -1,0 +1,5 @@
+error: struct_to_gts_schema: `overrides` entries must be concrete types; `E` is this struct's generic parameter
+  --> tests/compile_fail/overrides_generic_helper.rs:48:27
+   |
+48 |     overrides(SubjectV1 = Rules<E>),
+   |                           ^^^^^^^^
