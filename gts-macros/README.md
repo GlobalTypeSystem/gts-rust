@@ -852,7 +852,7 @@ instead:
 pub struct SubjectV1<P> {
     #[serde(rename = "type")]
     pub subject_type: GtsTypeId,
-    #[schemars(length(min = 1, max = 1024), regex(pattern = r"^[\x20-\x7E]+$"))]
+    #[schemars(length(min = 1, max = 1024))]
     pub id: String,
     pub payload: P,
 }
@@ -861,20 +861,16 @@ pub struct SubjectV1<P> {
     type_id = "gts.x.core.iam.subject.v1~x.core.iam.regional.v1~",
     description = "Regional subject", properties = "region,details")]
 pub struct RegionalSubjectV1<D> {
-    #[schemars(length(max = 32), regex(pattern = r"^[a-z]+-[a-z]+$"))]
+    #[schemars(length(max = 32))]
     pub region: String,
     pub details: D,
 }
 
 /// Helpers are plain `JsonSchema` structs naming a subset of the ancestor's own fields.
-/// Each field is the complete new declaration, so the inherited `pattern` is restated.
+/// Each field is the complete new declaration and must preserve or tighten inherited bounds.
 #[derive(JsonSchema)]
 pub struct SubjectIdOverride {
-    #[schemars(
-        length(min = 36, max = 36),
-        regex(pattern = r"^[\x20-\x7E]+$"),
-        extend("format" = "uuid")
-    )]
+    #[schemars(length(min = 36, max = 36), extend("format" = "uuid"))]
     pub id: String,
 }
 
@@ -886,7 +882,7 @@ pub enum EuRegion {
     EuCentral,
 }
 
-/// A finite enum proves itself within the inherited `maxLength` and `pattern`.
+/// A finite enum proves itself within the inherited `maxLength`.
 #[derive(JsonSchema)]
 pub struct RegionOverride {
     pub region: EuRegion,
@@ -900,7 +896,7 @@ pub struct EuTenantSubjectV1;
 ```
 
 The overlay of `EuTenantSubjectV1` then declares `/id` as
-`{"type": "string", "minLength": 36, "maxLength": 36, "pattern": "^[\\x20-\\x7E]+$", "format": "uuid"}`
+`{"type": "string", "minLength": 36, "maxLength": 36, "format": "uuid"}`
 and `/payload/region` as `{"type": "string", "enum": ["eu-west", "eu-central"]}`: exactly the
 helpers' field schemas.
 
@@ -935,9 +931,12 @@ The chain must then pass the registry's derivation admission (OP#12, the check
 `GtsStore::validate_schema` runs for each base/derived pair), on the composed documents up to
 the type. It adds the admission rules inclusion does not express; in particular a closed nested
 object must restate every property the ancestor declares there, optional ones included. Only
-this derivation stage runs: trait (OP#13), meta-schema and external reference checks are
-left to registration. A descendant without its own `overrides(...)` re-runs it with its own
-level included when called explicitly. In particular:
+this derivation stage runs, and only on the instance schemas: each level's `x-gts-traits-schema`
+and `x-gts-traits` are dropped first, so a `traits_schema = T` reference needs no registered
+`T`. Trait-schema compatibility and trait values (OP#13), meta-schema and entity-reference
+checks are left to full registration. Any other `gts://` reference must resolve within the
+chain. A descendant without its own `overrides(...)` re-runs it with its own level included
+when called explicitly. In particular:
 
 | Replacement | Outcome |
 |-------------|---------|
@@ -980,8 +979,8 @@ panic. Call `Type::validate_overrides()` to check the declaration explicitly: it
 chain as well, then the chain's derivation admission. A descendant without overrides of its own
 delegates to its parent and, when the chain declares any, re-runs derivation admission with its
 own level; it gets no generated test. Every type with overrides gets the generated test; there
-is no opt-out parameter. The registry's full schema validation (traits, references) remains
-separate.
+is no opt-out parameter. The registry's full schema validation (trait-schema compatibility,
+trait values, references) remains separate.
 
 **Limitations.**
 - Field names and inclusion are checked by `validate_overrides()` and the generated test,

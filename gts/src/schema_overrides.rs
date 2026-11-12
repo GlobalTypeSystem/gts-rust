@@ -366,13 +366,16 @@ fn validate_one(
 
 /// Runs the registry's derivation admission (OP#12) over `chain`, the
 /// root-to-leaf type schemas of `type_id`: final bases and every adjacent
-/// pair, exactly as [`crate::GtsStore::validate_schema`] does, without its
-/// trait, reference or meta-schema checks.
+/// pair of the instance schema, as [`crate::GtsStore::validate_schema`] does.
 ///
 /// [`validate_ancestor_overrides`] checks each replacement against the
 /// declarations it replaces; this runs the registry's derivation admission
 /// stage on the composed documents. It does not stand for the whole of
-/// registration: trait, meta-schema and external reference checks are not run.
+/// registration. Root `x-gts-traits-schema` and `x-gts-traits` are dropped
+/// first: trait-schema compatibility and trait values are OP#13, left to full
+/// registration, and a referenced trait type is not part of `chain`. Any
+/// other `gts://` reference must resolve within `chain`; meta-schema and
+/// entity-reference checks are not run.
 ///
 /// # Errors
 ///
@@ -385,9 +388,14 @@ pub fn validate_derivation_chain(type_id: &str, chain: &[Value]) -> Result<(), O
     };
     let mut store = crate::GtsStore::new();
     for schema in chain {
-        let id = crate::GtsStore::declared_type_id(schema).map_err(&fail)?;
+        let mut schema = schema.clone();
+        if let Some(root) = schema.as_object_mut() {
+            root.remove(crate::schema_traits::X_GTS_TRAITS_SCHEMA);
+            root.remove(crate::schema_traits::X_GTS_TRAITS);
+        }
+        let id = crate::GtsStore::declared_type_id(&schema).map_err(&fail)?;
         store
-            .register_schema(&id, schema)
+            .register_schema(&id, &schema)
             .map_err(|e| fail(e.to_string()))?;
     }
     store

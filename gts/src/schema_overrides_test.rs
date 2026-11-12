@@ -967,6 +967,93 @@ fn chain_admission_runs_no_trait_or_reference_validation() {
     assert!(store.validate_schema(CHILD_ID).is_err());
 }
 
+const TRAIT_ID: &str = "gts.x.t.ovr.retention.v1~";
+
+/// A store holding `extra` and `chain`, as full registration sees them.
+fn registry(chain: &[Value], extra: &[Value]) -> crate::GtsStore {
+    let mut store = crate::GtsStore::new();
+    for schema in extra.iter().chain(chain) {
+        let id = crate::GtsStore::declared_type_id(schema).unwrap();
+        store.register_schema(&id, schema).unwrap();
+    }
+    store
+}
+
+/// The base's trait schema `$ref`s a separately registered trait type, as
+/// `traits_schema = T` emits; the child supplies its value.
+fn trait_ref_chain(child_overlay: Value) -> [Value; 2] {
+    let mut base = nested_parent();
+    base["x-gts-traits-schema"] = json!({
+        "type": "object",
+        "allOf": [{ "$ref": format!("gts://{TRAIT_ID}") }]
+    });
+    let mut child = derived_doc(CHILD_ID, child_overlay);
+    child["x-gts-traits"] = json!({ "retention": "P1D" });
+    [base, child]
+}
+
+fn retention_trait() -> Value {
+    json!({
+        "$id": format!("gts://{TRAIT_ID}"),
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": { "retention": { "type": "string" } },
+        "required": ["retention"]
+    })
+}
+
+#[test]
+fn chain_admission_ignores_trait_types_outside_the_chain() {
+    let mut chain = trait_ref_chain(json!({ "properties": { "payload": { "type": "object" } } }));
+    chain[0]["x-gts-abstract"] = json!(true);
+    validate_derivation_chain(CHILD_ID, &chain).unwrap();
+    registry(&chain, &[retention_trait()])
+        .validate_schema(CHILD_ID)
+        .unwrap();
+}
+
+#[test]
+fn chain_admission_with_trait_metadata_still_rejects_payload_and_final() {
+    let chain = trait_ref_chain(json!({ "properties": { "f": closed_f_override() } }));
+    let error = validate_derivation_chain(CHILD_ID, &chain).unwrap_err();
+    assert!(error.message.contains("f.b"), "{error}");
+
+    let [mut base, child] =
+        trait_ref_chain(json!({ "properties": { "payload": { "type": "object" } } }));
+    base["x-gts-final"] = json!(true);
+    let error = validate_derivation_chain(CHILD_ID, &[base, child]).unwrap_err();
+    assert!(error.message.contains("is final"), "{error}");
+}
+
+/// Trait-schema compatibility is OP#13: full registration rejects what chain
+/// admission leaves unchecked.
+#[test]
+fn chain_admission_leaves_trait_schema_compatibility_to_registration() {
+    let mut base = nested_parent();
+    base["x-gts-traits-schema"] = json!({
+        "type": "object",
+        "properties": { "retention": { "type": "string" } }
+    });
+    let mut child = derived_doc(
+        CHILD_ID,
+        json!({ "properties": { "payload": { "type": "object" } } }),
+    );
+    child["x-gts-traits-schema"] = json!({
+        "type": "object",
+        "properties": { "retention": { "type": ["string", "integer"] } }
+    });
+    let chain = [base, child];
+    validate_derivation_chain(CHILD_ID, &chain).unwrap();
+    let error = registry(&chain, &[])
+        .validate_schema(CHILD_ID)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("incompatible with ancestor trait schema"),
+        "{error}"
+    );
+}
+
 // --- const helpers -------------------------------------------------------------
 
 #[test]
