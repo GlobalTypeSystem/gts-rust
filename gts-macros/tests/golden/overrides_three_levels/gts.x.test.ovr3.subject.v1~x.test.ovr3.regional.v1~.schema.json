@@ -7,6 +7,11 @@
     },
     {
       "properties": {
+        "id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
         "payload": {
           "additionalProperties": false,
           "properties": {
@@ -25,6 +30,9 @@
           "type": "object"
         }
       },
+      "required": [
+        "id"
+      ],
       "type": "object"
     }
   ],

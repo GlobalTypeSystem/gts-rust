@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn examples() {
-        dylint_testing::ui_test_examples(env!("CARGO_PKG_NAME"));
+        dylint_testing::ui_test_examples(env!("CARGO_CRATE_NAME"));
     }
 
     #[test]

@@ -54,8 +54,9 @@ test-gts-id-prefix:
 
 # Run dylint lints (requires nightly toolchain + cargo-dylint)
 # Detects hard-coded "gts." / "gts://" string literals in production code
+# Keep the tool version in sync with CI and gts-dylint/Cargo.lock.
 dylint:
-	@command -v cargo-dylint >/dev/null || (echo "Installing cargo-dylint..." && cargo install cargo-dylint)
+	cargo +nightly-2026-04-16 install --locked --version 6.3.0 cargo-dylint dylint-link
 	cargo +nightly-2026-04-16 dylint --all
 
 # Run dylint UI/example tests (requires nightly toolchain)
