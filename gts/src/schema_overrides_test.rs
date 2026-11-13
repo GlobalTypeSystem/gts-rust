@@ -191,6 +191,29 @@ fn resolve_leaves_refs_with_assertion_siblings_and_recursion_in_place() {
 }
 
 #[test]
+fn resolve_leaves_a_root_self_reference_in_place() {
+    // Schemars emits `Vec<Self>` items as `{"$ref": "#"}`.
+    let own =
+        json!({ "properties": { "children": { "type": "array", "items": { "$ref": "#" } } } });
+    let resolved = resolve_type_schema(&own, None);
+    assert_eq!(
+        resolved["properties"]["children"]["items"],
+        json!({ "$ref": "#" })
+    );
+}
+
+#[test]
+fn overriding_a_self_recursive_field_is_rejected() {
+    let parent = parent_with(json!({ "type": "array", "items": { "$ref": "#" } }));
+    let parent = resolve_type_schema(&parent, None);
+    let error = rejected(
+        &parent,
+        json!({ "f": { "type": "array", "items": { "type": "number" } } }),
+    );
+    assert!(error.contains("recursive or unresolved `$ref`"), "{error}");
+}
+
+#[test]
 fn overriding_a_field_that_reaches_a_leftover_ref_is_rejected() {
     let parent = parent_with(
         json!({ "type": "object", "properties": { "next": { "$ref": "#/definitions/Node" } } }),

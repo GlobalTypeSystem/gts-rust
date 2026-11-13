@@ -160,8 +160,9 @@ pub trait GtsSchema {
     /// Each override must be proven included in every inherited declaration
     /// of its field; and when the chain declares any override, the chain must
     /// pass the registry's derivation admission (OP#12) up to this type.
-    /// Schema generation does not perform this check. Macro-generated tests
-    /// call it automatically; applications can call it explicitly as well.
+    /// Schema generation does not perform this check. A macro-generated test
+    /// calls it for each type that declares `overrides(...)`; a descendant
+    /// without its own `overrides(...)` is checked only when called explicitly.
     ///
     /// # Errors
     ///

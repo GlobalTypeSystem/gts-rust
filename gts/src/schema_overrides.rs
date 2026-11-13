@@ -159,8 +159,10 @@ fn inline_local_refs(schema: &mut Value, root: &Value, stack: &mut Vec<String>) 
     if !bare || stack.contains(&reference) {
         return;
     }
+    // Only `#/definitions/...`: `#` would resolve to the synthetic root.
     let Some(mut target) = reference
         .strip_prefix('#')
+        .filter(|pointer| pointer.starts_with("/definitions/"))
         .and_then(|pointer| root.pointer(pointer))
         .cloned()
     else {

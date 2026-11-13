@@ -1120,9 +1120,16 @@ fn overrides_tokens(
     if let Some(param) = generic_param {
         for pair in &args.overrides {
             let (ancestor, helper) = (&pair.ancestor, &pair.helper);
-            if mentions_ident(quote!(#ancestor #helper), param) {
+            let offending = if mentions_ident(quote!(#ancestor), param) {
+                Some(quote!(#ancestor))
+            } else if mentions_ident(quote!(#helper), param) {
+                Some(quote!(#helper))
+            } else {
+                None
+            };
+            if let Some(offending) = offending {
                 return Err(syn::Error::new_spanned(
-                    helper,
+                    offending,
                     format!(
                         "struct_to_gts_schema: `overrides` entries must be concrete types; \
                          `{param}` is this struct's generic parameter"
