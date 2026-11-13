@@ -1,0 +1,65 @@
+{
+  "$id": "gts://gts.x.test.ovr4.subject.v1~x.test.ovr4.regional.v1~x.test.ovr4.eu_tenant.v1~x.test.ovr4.eu_west_premium.v1~",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "allOf": [
+    {
+      "$ref": "gts://gts.x.test.ovr4.subject.v1~x.test.ovr4.regional.v1~x.test.ovr4.eu_tenant.v1~"
+    },
+    {
+      "properties": {
+        "level": {
+          "format": "uint32",
+          "maximum": 100,
+          "minimum": 50,
+          "type": "integer"
+        },
+        "payload": {
+          "properties": {
+            "details": {
+              "properties": {
+                "plan": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "seats": {
+                      "format": "uint32",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "seats"
+                  ],
+                  "type": "object"
+                },
+                "tenant": {
+                  "maxLength": 16,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "tenant"
+              ],
+              "type": "object"
+            },
+            "region": {
+              "enum": [
+                "eu-west"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "region"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "level"
+      ],
+      "type": "object"
+    }
+  ],
+  "description": "Premium EU-west tenant subject",
+  "type": "object"
+}

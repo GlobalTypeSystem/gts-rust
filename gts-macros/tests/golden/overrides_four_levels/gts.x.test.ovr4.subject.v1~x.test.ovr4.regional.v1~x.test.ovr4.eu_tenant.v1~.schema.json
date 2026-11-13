@@ -1,0 +1,57 @@
+{
+  "$id": "gts://gts.x.test.ovr4.subject.v1~x.test.ovr4.regional.v1~x.test.ovr4.eu_tenant.v1~",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "allOf": [
+    {
+      "$ref": "gts://gts.x.test.ovr4.subject.v1~x.test.ovr4.regional.v1~"
+    },
+    {
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "maxLength": 36,
+          "minLength": 36,
+          "type": "string"
+        },
+        "payload": {
+          "properties": {
+            "details": {
+              "additionalProperties": false,
+              "properties": {
+                "plan": {
+                  "type": "object"
+                },
+                "tenant": {
+                  "maxLength": 64,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "tenant",
+                "plan"
+              ],
+              "type": "object"
+            },
+            "region": {
+              "enum": [
+                "eu-west",
+                "eu-central"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "region"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    }
+  ],
+  "description": "EU tenant subject",
+  "type": "object"
+}

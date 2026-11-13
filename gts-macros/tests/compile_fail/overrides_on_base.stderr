@@ -1,0 +1,13 @@
+error: struct_to_gts_schema: `overrides(...)` requires `base = ParentStruct`; a base type has no ancestors to override
+  --> tests/compile_fail/overrides_on_base.rs:17:15
+   |
+17 |     overrides(SubjectV1 = IdRules),
+   |               ^^^^^^^^^
+
+warning: unused import: `gts::gts::GtsTypeId`
+ --> tests/compile_fail/overrides_on_base.rs:3:5
+  |
+3 | use gts::gts::GtsTypeId;
+  |     ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

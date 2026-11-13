@@ -1,0 +1,5 @@
+error: struct_to_gts_schema: `overrides(...)` needs at least one `Ancestor = Helper` pair
+  --> tests/compile_fail/overrides_empty.rs:43:5
+   |
+43 |     overrides(),
+   |     ^^^^^^^^^

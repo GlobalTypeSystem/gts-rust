@@ -151,6 +151,9 @@ golden_cases!(
     traits_schema_narrowing,
     traits_referenced_chain,
     traits_struct_literal,
+    overrides_two_levels,
+    overrides_three_levels,
+    overrides_four_levels,
 );
 
 /// Compare each generated `(type_id, schema)` against

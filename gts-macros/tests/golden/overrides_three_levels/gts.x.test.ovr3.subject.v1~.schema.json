@@ -1,0 +1,28 @@
+{
+  "$id": "gts://gts.x.test.ovr3.subject.v1~",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "Subject",
+  "properties": {
+    "id": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "payload": {
+      "type": "object"
+    },
+    "type": {
+      "description": "GTS type identifier",
+      "title": "GTS Type ID",
+      "type": "string",
+      "x-gts-type-ref": "gts.*"
+    }
+  },
+  "required": [
+    "type",
+    "id",
+    "payload"
+  ],
+  "type": "object"
+}

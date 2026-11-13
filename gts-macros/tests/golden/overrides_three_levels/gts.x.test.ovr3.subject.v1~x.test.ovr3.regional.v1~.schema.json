@@ -1,0 +1,41 @@
+{
+  "$id": "gts://gts.x.test.ovr3.subject.v1~x.test.ovr3.regional.v1~",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "allOf": [
+    {
+      "$ref": "gts://gts.x.test.ovr3.subject.v1~"
+    },
+    {
+      "properties": {
+        "id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "details": {
+              "type": "object"
+            },
+            "region": {
+              "maxLength": 32,
+              "type": "string"
+            }
+          },
+          "required": [
+            "region",
+            "details"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    }
+  ],
+  "description": "Subject bound to a region",
+  "type": "object"
+}

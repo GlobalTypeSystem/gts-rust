@@ -811,6 +811,9 @@ Five parameters are **required**:
 `schema_id = "..."` is still accepted in place of `type_id`, but it triggers a compile-time
 deprecation warning (`` `schema_id` macro attribute is deprecated; rename it to `type_id` ``).
 
+The optional `overrides(Ancestor = Helper, ...)` replaces fields declared by ancestors with
+narrower ones, checked by a generated `cargo test` test; see [Overriding Ancestor Fields](#overriding-ancestor-fields-overrides).
+
 Four parameters are **optional** — they emit the corresponding GTS schema keywords:
 
 | Parameter | Emits | Values |
@@ -835,6 +838,172 @@ The `base` attribute explicitly declares the struct's position in the inheritanc
 **Compile-time validation**: The macro validates that:
 - `base = true` requires a single-segment `type_id`
 - `base = ParentStruct` requires a multi-segment `type_id` where the parent segment matches `ParentStruct`'s `TYPE_ID`
+
+### Overriding Ancestor Fields (`overrides`)
+
+A derived type fills its parent's generic slot; its own fields cannot restate a field an
+ancestor declares. `overrides(Ancestor = Helper, ...)` replaces such fields with narrower ones
+instead:
+
+```rust
+#[struct_to_gts_schema(dir_path = "schemas", base = true,
+    type_id = "gts.x.core.iam.subject.v1~", description = "Subject",
+    properties = "subject_type,id,payload")]
+pub struct SubjectV1<P> {
+    #[serde(rename = "type")]
+    pub subject_type: GtsTypeId,
+    #[schemars(length(min = 1, max = 1024))]
+    pub id: String,
+    pub payload: P,
+}
+
+#[struct_to_gts_schema(dir_path = "schemas", base = SubjectV1,
+    type_id = "gts.x.core.iam.subject.v1~x.core.iam.regional.v1~",
+    description = "Regional subject", properties = "region,details")]
+pub struct RegionalSubjectV1<D> {
+    #[schemars(length(max = 32))]
+    pub region: String,
+    pub details: D,
+}
+
+/// Helpers are plain `JsonSchema` structs naming a subset of the ancestor's own fields.
+/// Each field is the complete new declaration and must preserve or tighten inherited bounds.
+#[derive(JsonSchema)]
+pub struct SubjectIdOverride {
+    #[schemars(length(min = 36, max = 36), extend("format" = "uuid"))]
+    pub id: String,
+}
+
+#[derive(JsonSchema)]
+pub enum EuRegion {
+    #[serde(rename = "eu-west")]
+    EuWest,
+    #[serde(rename = "eu-central")]
+    EuCentral,
+}
+
+/// A finite enum proves itself within the inherited `maxLength`.
+#[derive(JsonSchema)]
+pub struct RegionOverride {
+    pub region: EuRegion,
+}
+
+#[struct_to_gts_schema(dir_path = "schemas", base = RegionalSubjectV1,
+    type_id = "gts.x.core.iam.subject.v1~x.core.iam.regional.v1~x.core.iam.eu_tenant.v1~",
+    description = "EU tenant subject", properties = "",
+    overrides(SubjectV1 = SubjectIdOverride, RegionalSubjectV1 = RegionOverride))]
+pub struct EuTenantSubjectV1;
+```
+
+The overlay of `EuTenantSubjectV1` then declares `/id` as
+`{"type": "string", "minLength": 36, "maxLength": 36, "format": "uuid"}`
+and `/payload/region` as `{"type": "string", "enum": ["eu-west", "eu-central"]}`: exactly the
+helpers' field schemas.
+
+**Addressing.** The left side names a strict ancestor; the helper's fields are that ancestor's
+*own* fields (by wire name, so `#[serde(rename)]` applies) and land at the ancestor's
+generic-slot path (`outer_generic_path()`). The ancestor's generic slot itself cannot be
+overridden. Helpers are not wire fields and never appear in instances.
+
+**Replacement.** A helper field's schema replaces the field's schema whole, including nested
+`properties`, `required` and `additionalProperties` of a struct-typed field. Nothing inherited
+is merged in: a keyword the helper omits is not kept, and the replacement must prove inclusion
+on its own. An omission therefore usually widens it and is rejected, unless the remaining
+keywords still prove inclusion (a finite `enum`). A closed nested object that leaves out an
+optional inherited field passes inclusion but not admission (below): every inherited nested
+field must be restated. Closedness is part of the replacement too: where the inherited nested object is
+closed (`additionalProperties: false`), the helper's nested struct must be closed as well, with
+`#[serde(deny_unknown_fields)]`. Fields the helper does not name are inherited unchanged.
+Annotations (`description`, `default`, ...) are dropped from the replacement. Instances are
+still validated against the whole `allOf` chain.
+
+**Admission.** Each replacement must accept no value that any inherited declaration of the
+field rejects. It is checked with the same accepted-set inclusion engine that admits ordinary
+derivations (`gts::schema_evolution::check_accepted_set_inclusion`) through
+`GtsSchema::validate_overrides()`, separately against every
+declaration of the field along the parent's resolved `allOf` chain, including earlier overrides
+by intermediate levels and constraints a level's `additionalProperties` places on it. Naming an
+older ancestor therefore cannot undo a narrowing made by an intermediate level. Equal or
+narrower replacements are admitted; a widening, or an inclusion the engine cannot prove, is an
+error.
+
+The chain must then pass the registry's derivation admission (OP#12, the check
+`GtsStore::validate_schema` runs for each base/derived pair), on the composed documents up to
+the type. It adds the admission rules inclusion does not express; in particular a closed nested
+object must restate every property the ancestor declares there, optional ones included. Only
+this derivation stage runs, and only on the instance schemas: each level's `x-gts-traits-schema`
+and `x-gts-traits` are dropped first, so a `traits_schema = T` reference needs no registered
+`T`. Trait-schema compatibility and trait values (OP#13), meta-schema and entity-reference
+checks are left to full registration. Any other `gts://` reference must resolve within the
+chain. A descendant without its own `overrides(...)` re-runs it with its own level included
+when called explicitly. In particular:
+
+| Replacement | Outcome |
+|-------------|---------|
+| same or tighter `min*`/`max*`/`minimum`/`maximum`/`exclusive*` | admitted (numbers and counts compare exactly, also above 2^53) |
+| an inherited bound, `pattern`, `format` or `uniqueItems` omitted | not inherited: rejected as a widening unless the remaining keywords prove inclusion |
+| `type` within the inherited one (`integer` within `number`) | admitted |
+| `multipleOf` an integer multiple of the inherited one (2 → 4) | admitted; 4 → 2 rejected; non-integer changes are not proven |
+| `pattern`/`format` different from the inherited one | rejected: not proven (pattern inclusion is not implemented) |
+| finite `enum`/`const` whose values satisfy every inherited declaration | admitted without restating the other keywords |
+| nested struct | proven as a whole object: omitted nested fields, bounds and `required` entries are not inherited and usually widen; a closed inherited struct needs `#[serde(deny_unknown_fields)]` |
+| closed nested struct omitting an optional inherited field | included, but rejected by derivation admission: the field would become unusable |
+| `false` (an uninhabited type) | rejected: would disable the inherited field |
+
+**Required and `null`.** Requiredness follows the helper (schemars' rule: a non-`Option` field
+without `#[serde(default)]` is required). An optional field may become required; a required one
+cannot become optional, so an `Option<_>` or `#[serde(default)]` helper field over a required
+field is an error. Nullability is separate and is part of the inclusion check: constraining
+`nickname: Option<String>` with `nickname: String` makes it required *and* non-null;
+`#[serde(default)] nickname: String` forbids `null` while keeping it optional;
+`nickname: Option<String>` keeps both. A helper field that admits `null` where the inherited
+field does not is rejected.
+
+**Generated test.** Every type with `overrides(...)` gets a `#[cfg(test)]` `#[test]` named
+`gts_overrides_<Type>` next to it (e.g. `my_mod::gts_overrides_EuTenantSubjectV1`), so a plain
+`cargo test` of the defining crate calls `GtsSchema::validate_overrides()`; a
+generic type is checked as `Type<()>`. This is a `cargo test` check, not a build-time one:
+`cargo build` and `cargo check` succeed with an invalid override, and `cargo test` builds too
+but fails that test with the diagnostic. The test is emitted only when the defining crate is
+compiled for its own tests (`src/` unit tests, `tests/*.rs`), not when it is a dependency.
+libtest cannot run a test declared inside a function body, so a type with `overrides(...)`
+must be declared at module level: inside a function, `cargo test` fails to compile with
+``cannot find type `<Type>` in module `self` ``, or with `mismatched types` when a
+module-level type of the same name exists.
+
+**Generation and validation.** `gts_schema_with_refs()` and
+`gts_schema_with_refs_allof()` emit the declared replacements without checking field ownership
+or compatibility. Even an invalid override can be generated and inspected without a validation
+panic. Call `Type::validate_overrides()` to check the declaration explicitly: it returns
+`Result<(), gts::schema_overrides::OverrideError>` and validates overrides along the parent
+chain as well, then the chain's derivation admission. A descendant without overrides of its own
+delegates to its parent and, when the chain declares any, re-runs derivation admission with its
+own level; it gets no generated test. Every type with overrides gets the generated test; there
+is no opt-out parameter. The registry's full schema validation (trait-schema compatibility,
+trait values, references) remains separate.
+
+**Limitations.**
+- Field names and inclusion are checked by `validate_overrides()` and the generated test,
+  not at compile time. An invalid override returns a diagnostic with the ancestor's type ID
+  and the field's wire path, e.g.
+  `overrides for ancestor '…subject.v1~': field '/id': the override widens the inherited declaration {…}: …`.
+  A derivation admission rejection names the immediate parent and field `/`, with the
+  registry's message (e.g. `property 'pair.b': … does not restate property …`).
+  Compile time checks only that each anchor is a strict, distinct ancestor and the helper
+  implements `JsonSchema`.
+- A replacement with a different `pattern` is rejected even when it is narrower; narrow with
+  bounds or an `enum` instead.
+- Inclusion is not a satisfiability guarantee: a self-contradictory replacement (e.g.
+  `minLength: 5` with `maxLength: 3`) accepts nothing, which is a subset of anything, so it is
+  admitted, as it would be for an ordinary derivation. A required field so overridden makes the
+  type uninhabitable.
+- Unsupported, rejected with a diagnostic: helpers that are not structs with named fields
+  (enums, maps, `#[serde(flatten)]` maps), recursive helpers or inherited fields that reach a
+  recursive `$ref`, and inherited levels on the way to the field that use `anyOf`, `oneOf`,
+  `not`, `if`/`then`/`else`, `$ref`, `patternProperties` or `dependencies` (`allOf` is
+  traversed; `additionalProperties` is followed for names a level does not declare).
+- Helpers must be concrete types; using the struct's own generic parameter is a compile error.
+- Every ancestor must be generic (`Ancestor<P>`), as `base = ...` already requires.
 
 ### GTS ID Format
 
