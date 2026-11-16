@@ -22,9 +22,10 @@ dev-fmt:
 dev-clippy:
 	cargo clippy --fix --workspace
 
-# Generate schemas
+# Generate schemas. gts-macros test fixtures are skipped: their tests check
+# their own schemas, and several reuse one type ID with different shapes.
 generate-schemas: build
-	./target/release/gts generate-from-rust --source .
+	./target/release/gts generate-from-rust --source . --exclude gts-macros/tests
 
 # Run all checks and build
 all: check deny build generate-schemas

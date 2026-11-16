@@ -10,6 +10,7 @@ pub mod schema_cast;
 pub mod schema_derivation;
 mod schema_dialect;
 pub mod schema_evolution;
+pub mod schema_export;
 pub mod schema_modifiers;
 pub mod schema_narrow;
 pub mod schema_overrides;

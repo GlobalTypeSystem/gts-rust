@@ -1,3 +1,4 @@
+// gts:ignore - fixture crate built by overrides_harness_tests.rs, not by this package; holds invalid overrides on purpose.
 //! Fixture crate for `overrides_harness_tests.rs`, built and run there with
 //! `cargo test`: every `overrides(...)` type gets a generated `#[test]`.
 

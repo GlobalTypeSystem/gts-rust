@@ -1321,6 +1321,73 @@ fn overrides_tokens(
     Ok((quote! { #(#guards)* }, apply, validate))
 }
 
+/// `__gts_schema_export_<Type>::gts_schema_export`: a test `gts generate-from-rust`
+/// runs to collect the compiled schema; a no-op under a plain `cargo test`. The test
+/// sits in a module and reaches the type through an `Exporter` impl, so a
+/// function-local type compiles without lints (libtest never runs its test; the CLI
+/// reports it). Types with own generic bounds, lifetimes or const parameters are
+/// skipped: `Type<()>` may not be constructible.
+fn schema_export_test(input: &DeriveInput, dir_path: &str) -> proc_macro2::TokenStream {
+    let generics = &input.generics;
+    let bounded = generics.where_clause.is_some()
+        || generics.params.iter().any(|param| match param {
+            syn::GenericParam::Type(param) => !param.bounds.is_empty(),
+            _ => true,
+        });
+    if bounded {
+        return quote! {};
+    }
+    // Literals (including `file!()` output) take the struct name's span: with a
+    // call-site span they would cover the whole attribute, whose text
+    // snippet-based lints such as `clippy::non_ascii_literal` read.
+    let struct_name = &input.ident;
+    let literal_span = struct_name.span();
+    let span = proc_macro2::Span::mixed_site();
+    let name = LitStr::new(&struct_name.to_string(), literal_span);
+    let dir_path = LitStr::new(dir_path, literal_span);
+    let module_path = quote::quote_spanned!(literal_span=> ::core::module_path!());
+    let file = quote::quote_spanned!(literal_span=> ::core::file!());
+    let manifest_dir = quote::quote_spanned!(literal_span=> ::core::env!("CARGO_MANIFEST_DIR"));
+    let module = quote::format_ident!("__gts_schema_export_{}", struct_name);
+    let concrete = if generics.params.is_empty() {
+        quote!(#struct_name)
+    } else {
+        quote!(#struct_name<()>)
+    };
+    quote::quote_spanned! {span=>
+        #[cfg(test)]
+        #[doc(hidden)]
+        #[allow(non_snake_case, dead_code, unnameable_test_items)]
+        mod #module {
+            pub(super) struct Marker;
+
+            #[test]
+            fn gts_schema_export() {
+                if let ::core::result::Result::Err(error) =
+                    <Marker as ::gts::schema_export::Exporter>::export()
+                {
+                    ::core::panic!("{error}");
+                }
+            }
+        }
+
+        #[cfg(test)]
+        impl ::gts::schema_export::Exporter for #module::Marker {
+            fn export() -> ::core::result::Result<(), ::std::string::String> {
+                ::gts::schema_export::export_if_requested::<#concrete>(
+                    ::gts::schema_export::ExportSource {
+                        struct_name: #name,
+                        module_path: #module_path,
+                        file: #file,
+                        manifest_dir: #manifest_dir,
+                        dir_path: #dir_path,
+                    },
+                )
+            }
+        }
+    }
+}
+
 /// Annotate a Rust struct for GTS schema generation.
 ///
 /// This macro serves three purposes:
@@ -1390,6 +1457,8 @@ fn overrides_tokens(
 ///   generic parameter. Concrete generic helpers such as `SubjectRules<OrderId>` are
 ///   allowed; `SubjectRules<E>` on `Child<E>` is not.
 ///   Schema generation emits the replacements without checking compatibility.
+///   With overrides in a scan, `gts generate-from-rust` exports every scanned type from
+///   compiled code; see the crate README, "Schema Generation".
 ///   `GtsSchema::validate_overrides()` returns errors for widening, unproven inclusion,
 ///   undeclared fields and unsupported shapes, then runs the registry's derivation admission
 ///   (OP#12) on the chain. An always-generated `#[cfg(test)]` `#[test]`
@@ -3161,6 +3230,8 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         }
     };
 
+    let schema_export_test = schema_export_test(&input, dir_path);
+
     let expanded = quote! {
         // Compile-time deprecation warning when `schema_id` alias was used
         #deprecation_warning
@@ -3170,6 +3241,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         // Compile-time assertion for base struct matching (if specified)
         #base_assertion
         #overrides_guards
+        #schema_export_test
 
         // Compile-time bound check for `traits_schema = inline(T)` / bare `T`
         #traits_schema_assert

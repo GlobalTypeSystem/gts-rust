@@ -1,3 +1,4 @@
+// gts:ignore - fixture crate built by overrides_harness_tests.rs, not by this package; holds invalid overrides on purpose.
 #![allow(clippy::unwrap_used, dead_code)]
 
 use gts::GtsSchema;

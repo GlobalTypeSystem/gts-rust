@@ -1,3 +1,4 @@
+// gts:ignore - fixture crate built by overrides_harness_tests.rs, not by this package; holds invalid overrides on purpose.
 #![allow(clippy::unwrap_used, clippy::expect_used, dead_code)]
 
 //! `overrides(Ancestor = Helper)`: a derived type replaces fields its

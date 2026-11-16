@@ -377,6 +377,24 @@ pub struct BaseEventV1<P> {
 
 Generate JSON Schema files using the GTS CLI tool.
 
+**Compiled export.** If any scanned declaration uses
+[`overrides(...)`](#overriding-ancestor-fields-overrides), the CLI exports every scanned
+declaration from compiled code, in each Cargo package that contains one, so schemas equal
+`Type::gts_schema_with_refs()` and ancestors in other files or packages keep their constraints.
+The macro
+emits a hidden `#[cfg(test)]` exporter per type (a no-op under a plain `cargo test`); the CLI
+runs `cargo test` in the package directory on its lib, bin and integration-test targets that
+use the libtest harness, with default features, then checks `Type::validate_overrides()` and
+writes each schema to its `dir_path`. This compiles the package's tests and runs its build
+scripts. Nothing is written if the build or validation fails, or if a declaration was not
+exported: function-local types, types with their own generic bounds, lifetimes or const
+parameters, files no such target compiles, files outside a Cargo package,
+`#[cfg]`/feature-gated declarations, or two declarations exporting different schemas for one
+type ID. Skip such files with `--exclude` or `// gts:ignore`.
+
+Without overrides anywhere in the scan, files are scanned as text, which does not apply
+`#[schemars]` or `#[serde]` attributes.
+
 ### Generate Schemas
 
 ```bash
@@ -922,6 +940,8 @@ Call `Type::validate_overrides()` explicitly for
 inherited declaration, then checks the composed chain's derivation admission (OP#12).
 Descendants without their own overrides also validate the chain when called, but get no
 generated test. Schema generation emits replacements without validating them.
+`gts generate-from-rust` exports these types from compiled code; see
+[Schema Generation](#purpose-2-schema-generation).
 Trait-schema, trait-value, meta-schema and entity-reference checks remain part of full
 registration; other `gts://` references must resolve within the chain.
 

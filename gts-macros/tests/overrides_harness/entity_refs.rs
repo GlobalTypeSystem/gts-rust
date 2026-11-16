@@ -1,3 +1,4 @@
+// gts:ignore - fixture crate built by overrides_harness_tests.rs, not by this package; holds invalid overrides on purpose.
 //! Reference overrides use the same scope inclusion rules as derivation.
 //! Invalid fixtures must fail their generated tests in the outer harness.
 

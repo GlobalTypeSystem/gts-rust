@@ -60,7 +60,8 @@ jsonschema = {{ version = "0.58.6", default-features = false }}
     })
 }
 
-/// `cargo test --lib <cargo_args> -- <test_args>` on the fixture.
+/// `cargo test --lib <cargo_args> -- <test_args>` on the fixture, without the
+/// schema exporters every annotated type gets (no-ops outside the CLI).
 fn cargo_test(cargo_args: &[&str], test_args: &[&str]) -> (Output, String) {
     let manifest = manifest();
     let output = Command::new(env!("CARGO"))
@@ -69,7 +70,7 @@ fn cargo_test(cargo_args: &[&str], test_args: &[&str]) -> (Output, String) {
         .arg("--target-dir")
         .arg(manifest.parent().unwrap().join("target"))
         .args(cargo_args)
-        .arg("--")
+        .args(["--", "--skip", "__gts_schema_export_"])
         .args(test_args)
         .output()
         .unwrap();
