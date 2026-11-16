@@ -1,60 +1,47 @@
-// Golden case: three levels. L2 narrows the root `id` (declared by L1)
-// from 1..=1024 to 1..=64 chars. L3 narrows it again to a 36-char UUID and,
-// at the nested generic path `/payload`, replaces L2's `region` with an
-// enum of EU regions. Each replacement is checked against every inherited
-// declaration, including L2's override of L1's field.
+// L3 narrows `/subject_id` to a UUID and `/payload/region` to EU regions.
+// Validation must also respect L2's earlier narrowing of L1's subject ID.
 
-use gts::GtsSchema;
-use gts::gts::GtsTypeId;
+use gts::{GtsInstanceId, GtsSchema, GtsTypeId};
 use gts_macros::struct_to_gts_schema;
+
 use schemars::JsonSchema;
+
+const ORDER_TYPE: &str = gts_macros::gts_id!("x.core.orders.order.v1~");
 
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = gts_id!("x.test.ovr3.subject.v1~"),
-    description = "Subject",
-    properties = "subject_type,id,payload"
+    type_id = gts_id!("x.test.ovr3.event.v1~"),
+    description = "Event envelope",
+    properties = "id,subject_id,subject_type,payload"
 )]
 #[derive(Debug)]
-pub struct SubjectV1<P> {
-    #[serde(rename = "type")]
-    pub subject_type: GtsTypeId,
+pub struct EventV1<P> {
+    pub id: GtsInstanceId,
     #[schemars(length(min = 1, max = 1024))]
-    pub id: String,
+    pub subject_id: String,
+    pub subject_type: GtsTypeId,
     pub payload: P,
-}
-
-/// `/id` is at most 64 chars, narrowing the root's 1024-char limit.
-#[derive(JsonSchema)]
-#[allow(dead_code)] // schema-only helper, never constructed
-pub struct RegionalIdOverride {
-    #[schemars(length(min = 1, max = 64))]
-    pub id: String,
 }
 
 #[struct_to_gts_schema(
     dir_path = "schemas",
-    base = SubjectV1,
-    type_id = gts_id!("x.test.ovr3.subject.v1~x.test.ovr3.regional.v1~"),
-    description = "Subject bound to a region",
+    base = EventV1,
+    type_id = gts_id!("x.test.ovr3.event.v1~x.test.ovr3.order.v1~"),
+    description = "Order event with a fulfillment region",
     properties = "region,details",
-    overrides(SubjectV1 = RegionalIdOverride)
+    overrides(EventV1 = {
+        #[schemars(length(min = 1, max = 64))]
+        subject_id: String,
+        #[schemars(extend("x-gts-type-ref" = ORDER_TYPE))]
+        subject_type: GtsTypeId,
+    })
 )]
 #[derive(Debug)]
-pub struct RegionalSubjectV1<D> {
+pub struct OrderEventV1<D> {
     #[schemars(length(max = 32))]
     pub region: String,
     pub details: D,
-}
-
-/// `/id` is a canonical UUID. The inclusion checker compares length bounds
-/// explicitly; it does not infer the UUID's 36-char length from `format`.
-#[derive(JsonSchema)]
-#[allow(dead_code)] // schema-only helper, never constructed
-pub struct TenantIdOverride {
-    #[schemars(length(min = 36, max = 36), extend("format" = "uuid"))]
-    pub id: String,
 }
 
 #[derive(JsonSchema)]
@@ -66,69 +53,91 @@ pub enum EuRegion {
     EuCentral,
 }
 
-/// `/payload/region` is an EU region. The finite enum proves inclusion
-/// in the inherited `maxLength` without restating it.
+/// Shared by order lifecycle events whose subject is an order with a UUID ID.
 #[derive(JsonSchema)]
 #[allow(dead_code)] // schema-only helper, never constructed
-pub struct EuRegionOverride {
-    pub region: EuRegion,
+pub struct UuidOrderSubject {
+    #[schemars(length(min = 36, max = 36), extend("format" = "uuid"))]
+    pub subject_id: String,
+    #[schemars(extend("x-gts-type-ref" = ORDER_TYPE))]
+    pub subject_type: GtsTypeId,
 }
 
 #[struct_to_gts_schema(
     dir_path = "schemas",
-    base = RegionalSubjectV1,
-    type_id = gts_id!("x.test.ovr3.subject.v1~x.test.ovr3.regional.v1~x.test.ovr3.eu_tenant.v1~"),
-    description = "EU tenant subject",
-    properties = "tenant",
-    overrides(SubjectV1 = TenantIdOverride, RegionalSubjectV1 = EuRegionOverride)
+    base = OrderEventV1,
+    type_id = gts_id!("x.test.ovr3.event.v1~x.test.ovr3.order.v1~x.test.ovr3.placed.v1~"),
+    description = "Order placed in the EU",
+    properties = "order_id",
+    overrides(
+        EventV1 = UuidOrderSubject,
+        OrderEventV1 = { region: EuRegion },
+    )
 )]
 #[derive(Debug)]
-pub struct EuTenantSubjectV1 {
-    pub tenant: String,
+pub struct OrderPlacedV1 {
+    pub order_id: String,
+}
+
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = OrderEventV1,
+    type_id = gts_id!("x.test.ovr3.event.v1~x.test.ovr3.order.v1~x.test.ovr3.cancelled.v1~"),
+    description = "Order cancelled",
+    properties = "reason",
+    overrides(EventV1 = UuidOrderSubject)
+)]
+#[derive(Debug)]
+pub struct OrderCancelledV1 {
+    pub reason: String,
 }
 
 #[test]
-fn leaf_override_cannot_widen_intermediate_id() {
+fn leaf_override_cannot_widen_intermediate_subject_id() {
     use gts::schema_overrides::{AncestorOverride, validate_ancestor_overrides};
 
     #[derive(JsonSchema)]
     #[allow(dead_code)]
-    struct WideIdOverride {
+    struct WideSubjectIdOverride {
         #[schemars(length(min = 1, max = 128))]
-        id: String,
+        subject_id: String,
     }
 
-    let overrides = [AncestorOverride::of::<SubjectV1<()>, WideIdOverride>()];
+    let overrides = [AncestorOverride::of::<EventV1<()>, WideSubjectIdOverride>()];
     validate_ancestor_overrides(
-        &SubjectV1::<()>::gts_resolved_schema(),
-        EuTenantSubjectV1::TYPE_ID,
+        &EventV1::<()>::gts_resolved_schema(),
+        OrderPlacedV1::TYPE_ID,
         &overrides,
     )
     .expect("128 chars are within the root's limit of 1024");
 
     let error = validate_ancestor_overrides(
-        &RegionalSubjectV1::<()>::gts_resolved_schema(),
-        EuTenantSubjectV1::TYPE_ID,
+        &OrderEventV1::<()>::gts_resolved_schema(),
+        OrderPlacedV1::TYPE_ID,
         &overrides,
     )
     .expect_err("a root-anchored override must respect the intermediate limit of 64");
-    assert_eq!(error.path, "/id");
+    assert_eq!(error.path, "/subject_id");
     assert!(error.message.contains("widens the inherited declaration"));
 }
 
 pub fn schemas() -> Vec<(String, serde_json::Value)> {
     vec![
         (
-            SubjectV1::<()>::TYPE_ID.to_owned(),
-            SubjectV1::<()>::gts_schema_with_refs(),
+            EventV1::<()>::TYPE_ID.to_owned(),
+            EventV1::<()>::gts_schema_with_refs(),
         ),
         (
-            RegionalSubjectV1::<()>::TYPE_ID.to_owned(),
-            RegionalSubjectV1::<()>::gts_schema_with_refs(),
+            OrderEventV1::<()>::TYPE_ID.to_owned(),
+            OrderEventV1::<()>::gts_schema_with_refs(),
         ),
         (
-            EuTenantSubjectV1::TYPE_ID.to_owned(),
-            EuTenantSubjectV1::gts_schema_with_refs(),
+            OrderPlacedV1::TYPE_ID.to_owned(),
+            OrderPlacedV1::gts_schema_with_refs(),
+        ),
+        (
+            OrderCancelledV1::TYPE_ID.to_owned(),
+            OrderCancelledV1::gts_schema_with_refs(),
         ),
     ]
 }

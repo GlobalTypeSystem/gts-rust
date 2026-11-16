@@ -1,8 +1,8 @@
 error[E0277]: the trait bound `NotSchema: JsonSchema` is not satisfied
-  --> tests/compile_fail/overrides_helper_not_json_schema.rs:47:27
+  --> tests/compile_fail/overrides_helper_not_json_schema.rs:47:25
    |
-47 |     overrides(SubjectV1 = NotSchema),
-   |                           ^^^^^^^^^ unsatisfied trait bound
+47 |     overrides(EventV1 = NotSchema),
+   |                         ^^^^^^^^^ unsatisfied trait bound
    |
 help: the trait `JsonSchema` is not implemented for `NotSchema`
   --> tests/compile_fail/overrides_helper_not_json_schema.rs:37:1
@@ -24,19 +24,19 @@ note: required by a bound in `_assert_override_helper`
    |
 41 | / #[struct_to_gts_schema(
 42 | |     dir_path = "schemas",
-43 | |     base = RegionalSubjectV1,
-44 | |     type_id = "gts.x.app.ovr.subject.v1~x.app.ovr.regional.v1~x.app.ovr.leaf.v1~",
+43 | |     base = OrderEventV1,
+44 | |     type_id = "gts.x.app.ovr.event.v1~x.app.ovr.order.v1~x.app.ovr.placed.v1~",
 ...  |
-47 | |     overrides(SubjectV1 = NotSchema),
+47 | |     overrides(EventV1 = NotSchema),
 48 | | )]
    | |__^ required by this bound in `_assert_override_helper`
    = note: this error originates in the attribute macro `struct_to_gts_schema` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `NotSchema: JsonSchema` is not satisfied
-  --> tests/compile_fail/overrides_helper_not_json_schema.rs:47:27
+  --> tests/compile_fail/overrides_helper_not_json_schema.rs:47:25
    |
-47 |     overrides(SubjectV1 = NotSchema),
-   |                           ^^^^^^^^^ unsatisfied trait bound
+47 |     overrides(EventV1 = NotSchema),
+   |                         ^^^^^^^^^ unsatisfied trait bound
    |
 help: the trait `JsonSchema` is not implemented for `NotSchema`
   --> tests/compile_fail/overrides_helper_not_json_schema.rs:37:1

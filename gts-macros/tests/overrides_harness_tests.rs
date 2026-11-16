@@ -184,6 +184,7 @@ fn override_fixtures_reject_every_invalid_declaration() {
         "chain::gts_overrides_DroppedBoundsV1",
         "chain::gts_overrides_EmptyRangeV1",
         "chain::gts_overrides_EnumHelperV1",
+        "chain::gts_overrides_InlineWideIdV1",
         "chain::gts_overrides_FlattenV1",
         "chain::gts_overrides_LevelDefaultV1",
         "chain::gts_overrides_NestedUnknownV1",

@@ -1,0 +1,47 @@
+{
+  "$id": "gts://gts.x.test.ovr3.event.v1~x.test.ovr3.order.v1~x.test.ovr3.cancelled.v1~",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "allOf": [
+    {
+      "$ref": "gts://gts.x.test.ovr3.event.v1~x.test.ovr3.order.v1~"
+    },
+    {
+      "properties": {
+        "payload": {
+          "properties": {
+            "details": {
+              "additionalProperties": false,
+              "properties": {
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reason"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "subject_id": {
+          "format": "uuid",
+          "maxLength": 36,
+          "minLength": 36,
+          "type": "string"
+        },
+        "subject_type": {
+          "type": "string",
+          "x-gts-type-ref": "gts.x.core.orders.order.v1~"
+        }
+      },
+      "required": [
+        "subject_id",
+        "subject_type"
+      ],
+      "type": "object"
+    }
+  ],
+  "description": "Order cancelled",
+  "type": "object"
+}

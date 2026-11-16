@@ -1,18 +1,24 @@
 {
-  "$id": "gts://gts.x.test.ovr2.subject.v1~",
+  "$id": "gts://gts.x.test.ovr3.event.v1~",
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
-  "description": "Subject with a bounded id",
+  "description": "Event envelope",
   "properties": {
     "id": {
-      "maxLength": 1024,
-      "minLength": 1,
-      "type": "string"
+      "description": "GTS instance identifier",
+      "title": "GTS Instance ID",
+      "type": "string",
+      "x-gts-instance-ref": "gts.*"
     },
     "payload": {
       "type": "object"
     },
-    "type": {
+    "subject_id": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "subject_type": {
       "description": "GTS type identifier",
       "title": "GTS Type ID",
       "type": "string",
@@ -20,8 +26,9 @@
     }
   },
   "required": [
-    "type",
     "id",
+    "subject_id",
+    "subject_type",
     "payload"
   ],
   "type": "object"

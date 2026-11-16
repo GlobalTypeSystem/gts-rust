@@ -1,29 +1,28 @@
 {
-  "$id": "gts://gts.x.test.ovr3.subject.v1~x.test.ovr3.regional.v1~x.test.ovr3.eu_tenant.v1~",
+  "$id": "gts://gts.x.test.ovr4.event.v1~x.test.ovr4.order.v1~x.test.ovr4.placed.v1~",
   "$schema": "http://json-schema.org/draft-07/schema#",
   "allOf": [
     {
-      "$ref": "gts://gts.x.test.ovr3.subject.v1~x.test.ovr3.regional.v1~"
+      "$ref": "gts://gts.x.test.ovr4.event.v1~x.test.ovr4.order.v1~"
     },
     {
       "properties": {
-        "id": {
-          "format": "uuid",
-          "maxLength": 36,
-          "minLength": 36,
-          "type": "string"
-        },
         "payload": {
           "properties": {
             "details": {
               "additionalProperties": false,
               "properties": {
-                "tenant": {
+                "delivery": {
+                  "type": "object"
+                },
+                "order_id": {
+                  "maxLength": 64,
                   "type": "string"
                 }
               },
               "required": [
-                "tenant"
+                "order_id",
+                "delivery"
               ],
               "type": "object"
             },
@@ -39,14 +38,25 @@
             "region"
           ],
           "type": "object"
+        },
+        "subject_id": {
+          "format": "uuid",
+          "maxLength": 36,
+          "minLength": 36,
+          "type": "string"
+        },
+        "subject_type": {
+          "type": "string",
+          "x-gts-type-ref": "gts.x.core.orders.order.v1~"
         }
       },
       "required": [
-        "id"
+        "subject_id",
+        "subject_type"
       ],
       "type": "object"
     }
   ],
-  "description": "EU tenant subject",
+  "description": "Order placed in the EU",
   "type": "object"
 }

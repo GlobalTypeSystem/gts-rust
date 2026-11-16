@@ -811,6 +811,20 @@ rejected_type!(
     "gts.x.test.ovr.subject.v1~x.test.ovr.regional.v1~x.test.ovr.wide_id.v1~",
     SubjectV1 = WideId
 );
+/// Inline fields get the same check as the named `WideId`.
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = RegionalSubjectV1,
+    type_id = "gts.x.test.ovr.subject.v1~x.test.ovr.regional.v1~x.test.ovr.inline_wide_id.v1~",
+    description = "t",
+    properties = "",
+    overrides(SubjectV1 = {
+        #[schemars(length(min = 1, max = 2048), regex(pattern = r"^[\x20-\x7E]+$"))]
+        id: String,
+    })
+)]
+pub struct InlineWideIdV1;
+
 rejected_type!(
     EmptyRangeV1,
     "gts.x.test.ovr.subject.v1~x.test.ovr.regional.v1~x.test.ovr.empty_range.v1~",
@@ -948,6 +962,8 @@ fn generation_emits_overrides_without_validating_them() {
 fn widening_is_rejected_with_field_path() {
     assert_rejected::<WideIdV1>("/id", "the override widens the inherited declaration");
     assert_rejected::<WideIdV1>("/id", "maxLength");
+    assert_rejected::<InlineWideIdV1>("/id", "the override widens the inherited declaration");
+    assert_rejected::<InlineWideIdV1>("/id", "maxLength");
     assert_rejected::<WideLevelV1>("/level", "maximum");
 }
 

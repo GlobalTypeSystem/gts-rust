@@ -799,17 +799,39 @@ struct GtsSchemaArgs {
     overrides: Vec<OverrideArg>,
 }
 
-/// One `Ancestor = Helper` pair of `overrides(...)`.
+/// One `Ancestor = Helper` or `Ancestor = { fields }` pair of `overrides(...)`.
 struct OverrideArg {
     ancestor: syn::Path,
-    helper: syn::Type,
+    helper: OverrideHelper,
+}
+
+/// The right side of an `overrides` pair.
+enum OverrideHelper {
+    /// A named `JsonSchema` helper type.
+    Type(syn::Type),
+    /// Helper fields declared in place; lowered to a hidden helper struct.
+    Inline(syn::punctuated::Punctuated<syn::Field, Token![,]>),
 }
 
 impl Parse for OverrideArg {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let ancestor: syn::Path = input.parse()?;
         input.parse::<Token![=]>()?;
-        let helper: syn::Type = input.parse()?;
+        let helper = if input.peek(syn::token::Brace) {
+            let content;
+            let brace = syn::braced!(content in input);
+            let fields = content.parse_terminated(syn::Field::parse_named, Token![,])?;
+            if fields.is_empty() {
+                return Err(syn::Error::new(
+                    brace.span.join(),
+                    "struct_to_gts_schema: inline `overrides` fields `{ ... }` must declare at \
+                     least one field",
+                ));
+            }
+            OverrideHelper::Inline(fields)
+        } else {
+            OverrideHelper::Type(input.parse()?)
+        };
         Ok(OverrideArg { ancestor, helper })
     }
 }
@@ -1037,13 +1059,37 @@ fn classify_traits_schema_expr(expr: syn::Expr) -> syn::Result<TraitsSchemaSpec>
     }
 }
 
-/// Whether `tokens` mention `ident` anywhere.
-fn mentions_ident(tokens: proc_macro2::TokenStream, ident: &syn::Ident) -> bool {
-    tokens.into_iter().any(|token| match token {
-        proc_macro2::TokenTree::Ident(found) => found == *ident,
-        proc_macro2::TokenTree::Group(group) => mentions_ident(group.stream(), ident),
-        _ => false,
-    })
+/// Whether a type refers to the annotated struct's generic parameter.
+/// Qualified names such as `model::E` do not refer to `E`, but their generic
+/// arguments can; associated types such as `E::Id` and `<E as Trait>::Id` do.
+fn uses_type_param(ty: &syn::Type, param: &syn::Ident) -> bool {
+    use syn::visit::Visit;
+
+    struct TypeParamUse<'a> {
+        param: &'a syn::Ident,
+        found: bool,
+    }
+
+    impl<'ast> Visit<'ast> for TypeParamUse<'_> {
+        fn visit_path(&mut self, path: &'ast syn::Path) {
+            if path.leading_colon.is_none()
+                && path
+                    .segments
+                    .first()
+                    .is_some_and(|s| s.ident == *self.param)
+            {
+                self.found = true;
+            }
+            syn::visit::visit_path(self, path);
+        }
+    }
+
+    let mut visitor = TypeParamUse {
+        param,
+        found: false,
+    };
+    visitor.visit_type(ty);
+    visitor.found
 }
 
 /// `Ancestor` as the `Ancestor<()>` type the macro reads GTS consts from.
@@ -1099,9 +1145,7 @@ fn overrides_tokens(
         ));
     };
     for pair in &args.overrides {
-        // Only an unqualified name resolves to the struct being defined.
-        // A qualified path may name a distinct ancestor with the same name;
-        // its identity is checked by the TYPE_ID const guard below.
+        // Qualified paths may name a different type; the TYPE_ID guard checks them.
         if pair.ancestor.segments.len() == 1
             && pair
                 .ancestor
@@ -1117,15 +1161,21 @@ fn overrides_tokens(
         }
     }
 
+    // Checked on the source types, before inline fields are lowered.
     if let Some(param) = generic_param {
         for pair in &args.overrides {
-            let (ancestor, helper) = (&pair.ancestor, &pair.helper);
-            let offending = if mentions_ident(quote!(#ancestor), param) {
+            let ancestor = &pair.ancestor;
+            let helper_types: Vec<&syn::Type> = match &pair.helper {
+                OverrideHelper::Type(helper) => vec![helper],
+                OverrideHelper::Inline(fields) => fields.iter().map(|field| &field.ty).collect(),
+            };
+            let offending = if uses_type_param(&ancestor_type(ancestor), param) {
                 Some(quote!(#ancestor))
-            } else if mentions_ident(quote!(#helper), param) {
-                Some(quote!(#helper))
             } else {
-                None
+                helper_types
+                    .into_iter()
+                    .find(|ty| uses_type_param(ty, param))
+                    .map(|ty| quote!(#ty))
             };
             if let Some(offending) = offending {
                 return Err(syn::Error::new_spanned(
@@ -1145,9 +1195,42 @@ fn overrides_tokens(
         .iter()
         .map(|pair| ancestor_type(&pair.ancestor))
         .collect();
-    let helpers: Vec<&syn::Type> = args.overrides.iter().map(|pair| &pair.helper).collect();
 
     let mut guards = Vec::new();
+    // Emit inline helpers in the same scope to preserve type and attribute paths.
+    let mut helpers: Vec<syn::Type> = Vec::new();
+    for (index, pair) in args.overrides.iter().enumerate() {
+        match &pair.helper {
+            OverrideHelper::Type(helper) => {
+                guards.push(quote! {
+                    const _: fn() = || {
+                        fn _assert_override_helper<__H: ::schemars::JsonSchema>() {}
+                        _assert_override_helper::<#helper>();
+                    };
+                });
+                helpers.push(helper.clone());
+            }
+            OverrideHelper::Inline(fields) => {
+                // Idents (not strings) so `format_ident!` strips any `r#`.
+                let helper = match pair.ancestor.segments.last() {
+                    Some(anchor) => quote::format_ident!(
+                        "__GtsOverride_{}_{}_{}",
+                        struct_name,
+                        index,
+                        anchor.ident
+                    ),
+                    None => quote::format_ident!("__GtsOverride_{}_{}", struct_name, index),
+                };
+                guards.push(quote! {
+                    #[doc(hidden)]
+                    #[derive(schemars::JsonSchema)]
+                    #[allow(dead_code, non_camel_case_types)]
+                    struct #helper { #fields }
+                });
+                helpers.push(syn::parse_quote!(#helper));
+            }
+        }
+    }
     for (pair, ancestor) in args.overrides.iter().zip(&ancestors) {
         let path = &pair.ancestor;
         let name = quote!(#path).to_string();
@@ -1186,20 +1269,9 @@ fn overrides_tokens(
             });
         }
     }
-    for helper in &helpers {
-        guards.push(quote! {
-            const _: fn() = || {
-                fn _assert_override_helper<__H: ::schemars::JsonSchema>() {}
-                _assert_override_helper::<#helper>();
-            };
-        });
-    }
-    // `cargo test` runs the inclusion check below for every overriding type.
-    // Emitted next to the struct, so it sees private items; named after it,
-    // so same-named structs in other modules do not collide. libtest cannot
-    // reach a test inside a fn body: requiring the type to be `self::<Type>`
-    // (the module's, even if a module item shares its name) fails the test
-    // build for such a type instead of skipping the check.
+    // Emit a sibling test to access private types. The `self::` equality guard
+    // rejects function-local types, including those shadowing a module item:
+    // libtest would silently skip their tests.
     {
         let test_name = quote::format_ident!("gts_overrides_{}", struct_name);
         let concrete = if generic_param.is_some() {
@@ -1311,6 +1383,12 @@ fn overrides_tokens(
 ///   ancestor declares. `Helper` is a `#[derive(JsonSchema)]` struct with a subset of
 ///   `Ancestor`'s own fields; each field's schema replaces the inherited one at `Ancestor`'s
 ///   generic path and must be proven included in every inherited declaration of the field.
+///   `Ancestor = { field: Type, ... }` declares the helper's fields in place (field
+///   attributes such as `#[schemars(...)]`/`#[serde(...)]` apply; container attributes need
+///   a named helper); it means exactly the same as a named helper with those fields.
+///   Ancestor paths and helper field types must not depend on the annotated struct's
+///   generic parameter. Concrete generic helpers such as `SubjectRules<OrderId>` are
+///   allowed; `SubjectRules<E>` on `Child<E>` is not.
 ///   Schema generation emits the replacements without checking compatibility.
 ///   `GtsSchema::validate_overrides()` returns errors for widening, unproven inclusion,
 ///   undeclared fields and unsupported shapes, then runs the registry's derivation admission

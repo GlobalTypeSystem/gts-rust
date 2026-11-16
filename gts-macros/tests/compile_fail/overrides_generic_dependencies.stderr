@@ -1,0 +1,17 @@
+error: struct_to_gts_schema: `overrides` entries must be concrete types; `E` is this struct's generic parameter
+  --> tests/compile_fail/overrides_generic_dependencies.rs:36:25
+   |
+36 |     overrides(EventV1 = helpers::Rules<Option<E>>),
+   |                         ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: struct_to_gts_schema: `overrides` entries must be concrete types; `E` is this struct's generic parameter
+  --> tests/compile_fail/overrides_generic_dependencies.rs:48:25
+   |
+48 |     overrides(EventV1 = helpers::Rules<E::Id>),
+   |                         ^^^^^^^^^^^^^^^^^^^^^
+
+error: struct_to_gts_schema: `overrides` entries must be concrete types; `E` is this struct's generic parameter
+  --> tests/compile_fail/overrides_generic_dependencies.rs:60:39
+   |
+60 |     overrides(EventV1 = { subject_id: <E as Subject>::Id }),
+   |                                       ^^^^^^^^^^^^^^^^^^

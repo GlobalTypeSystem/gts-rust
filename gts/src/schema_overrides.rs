@@ -1,26 +1,18 @@
 //! Ancestor field overrides for derived type schemas.
 //!
-//! A derived type may replace fields its ancestors declare (e.g. narrow a
-//! root `id: string` to a UUID) through the `overrides(Ancestor = Helper)`
-//! argument of `#[struct_to_gts_schema]`. The helper is a plain
-//! `#[derive(JsonSchema)]` struct holding a subset of the ancestor's own
-//! fields. Each helper field's schema is the field's complete new
-//! declaration: it is emitted unchanged (annotations aside) into the derived
-//! overlay at the ancestor's generic path, and no inherited keyword - nested
-//! `properties` and `required` included - is merged into it.
+//! `#[struct_to_gts_schema]` accepts `overrides(Ancestor = Helper)`, where
+//! `Helper` derives `JsonSchema` and declares a subset of the ancestor's fields.
+//! Each field replaces its inherited schema at the ancestor's generic path,
+//! with annotations removed and no inherited keywords merged in.
 //!
-//! A replacement must accept no value the inherited field rejects. That is
-//! decided by [`crate::schema_evolution::check_accepted_set_inclusion`], the
-//! engine ordinary derivation admission uses, against *each* declaration of
-//! the field along the parent's `allOf` chain: inclusion in every conjunct is
-//! inclusion in their conjunction, and no conjunct is lost to a reduction. An
-//! undecided comparison is a rejection. Requiredness follows the helper: an
-//! optional field may become required, a required one cannot become optional.
-//! The composed chain must then pass the registry's derivation admission
-//! ([`validate_derivation_chain`]), whose rules inclusion alone does not
-//! express (e.g. a closed nested object must restate every inherited field).
-//! Emission and validation are separate: schema generation only applies the
-//! declarations; generated tests and explicit validation check their validity.
+//! [`crate::schema_evolution::check_accepted_set_inclusion`] must prove each
+//! replacement is included in every inherited declaration along the `allOf`
+//! chain; undecided comparisons are rejected. Optional fields may become
+//! required, but required fields cannot become optional. The composed chain
+//! must also pass [`validate_derivation_chain`], which enforces rules beyond
+//! inclusion, such as restating inherited fields in closed nested objects.
+//! Schema generation only emits overrides; generated tests and explicit
+//! validation check them.
 
 use std::fmt;
 
@@ -91,14 +83,11 @@ impl std::error::Error for OverrideError {}
 
 /// Resolves a type's own schema document against its parent's resolved one.
 ///
-/// The `allOf` branch `{"$ref": "gts://<parent>"}` is replaced by `parent`,
-/// and local `#/definitions/...` references (JSON pointers, `~0`/`~1`
-/// escaping included) are inlined. Every `allOf` branch is kept. A reference
-/// that cannot be inlined (recursive, missing target, or with assertion
-/// siblings) keeps its `$ref` while `definitions` is dropped, so the result is
-/// self-contained only when every local reference was inlined;
-/// [`validate_ancestor_overrides`] rejects overriding a field that reaches a
-/// leftover `$ref`.
+/// Replaces the parent's `$ref` branch with `parent` and inlines local
+/// `#/definitions/...` JSON pointers, preserving every `allOf` branch.
+/// Recursive, missing, or assertion-sibling references remain; `definitions`
+/// is dropped, so these may dangle. [`validate_ancestor_overrides`] rejects
+/// overriding any field that reaches a remaining `$ref`.
 #[must_use]
 pub fn resolve_type_schema(own: &Value, parent: Option<Value>) -> Value {
     let mut schema = own.clone();
@@ -137,12 +126,9 @@ fn parent_uri(id: &str) -> Option<String> {
     Some(format!("{}~", &trimmed[..cut]))
 }
 
-/// Inlines local `$ref`s found in schema positions; literal data (`const`,
-/// `enum`, `default`, `examples`, ...) is never interpreted as a schema.
-///
-/// Only a bare reference (`$ref` plus annotations) is replaced, by its target
-/// as is (a boolean target stays boolean). A reference with assertion
-/// siblings, a recursive one, or one whose target is missing keeps its `$ref`.
+/// Inlines bare local `$ref`s (annotations allowed) in schema positions only,
+/// preserving boolean targets and literal data. Recursive, missing, or
+/// assertion-sibling references remain unchanged.
 fn inline_local_refs(schema: &mut Value, root: &Value, stack: &mut Vec<String>) {
     for_each_subschema_mut(schema, &mut |subschema| {
         inline_local_refs(subschema, root, stack);
@@ -366,18 +352,14 @@ fn validate_one(
     Ok(())
 }
 
-/// Runs the registry's derivation admission (OP#12) over `chain`, the
-/// root-to-leaf type schemas of `type_id`: final bases and every adjacent
-/// pair of the instance schema, as [`crate::GtsStore::validate_schema`] does.
+/// Runs the registry's derivation admission (OP#12) on `type_id`'s root-to-leaf
+/// `chain`, checking final bases and every adjacent instance-schema pair.
 ///
-/// [`validate_ancestor_overrides`] checks each replacement against the
-/// declarations it replaces; this runs the registry's derivation admission
-/// stage on the composed documents. It does not stand for the whole of
-/// registration. Root `x-gts-traits-schema` and `x-gts-traits` are dropped
-/// first: trait-schema compatibility and trait values are OP#13, left to full
-/// registration, and a referenced trait type is not part of `chain`. Any
-/// other `gts://` reference must resolve within `chain`; meta-schema and
-/// entity-reference checks are not run.
+/// Checks composed documents after [`validate_ancestor_overrides`]. Root
+/// `x-gts-traits-schema` and `x-gts-traits` are dropped: OP#13 belongs to full
+/// registration, and referenced trait types may be outside `chain`. Other
+/// `gts://` references must resolve within `chain`. Meta-schema and entity-reference
+/// checks are left to full registration.
 ///
 /// # Errors
 ///
@@ -407,10 +389,8 @@ pub fn validate_derivation_chain(type_id: &str, chain: &[Value]) -> Result<(), O
 
 /// Emits helper fields at their ancestor paths without checking compatibility.
 ///
-/// Only the helper's declared `properties` and `required` fields are emitted;
-/// helper shape, field ownership and accepted-set inclusion are checked separately
-/// by [`validate_ancestor_overrides`]. Invalid declarations can therefore be
-/// inspected as schemas without a validation panic.
+/// Emits only `properties` and `required`; [`validate_ancestor_overrides`]
+/// checks helper shape, field ownership and inclusion separately.
 pub fn apply_ancestor_overrides(overlay: &mut Value, overrides: &[AncestorOverride]) {
     for entry in overrides {
         let mut target = &mut *overlay;

@@ -1,0 +1,5 @@
+error: struct_to_gts_schema: `overrides` entries must be concrete types; `E` is this struct's generic parameter
+  --> tests/compile_fail/overrides_inline_generic.rs:39:68
+   |
+39 |     overrides(EventV1 = { #[schemars(length(max = 8))] subject_id: Option<E> }),
+   |                                                                    ^^^^^^^^^

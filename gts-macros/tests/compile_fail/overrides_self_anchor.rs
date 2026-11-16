@@ -1,47 +1,47 @@
 //! Constraints on the type itself are rejected at expansion.
 
-use gts::gts::GtsTypeId;
+use gts::{GtsInstanceId, GtsTypeId};
 use gts_macros::struct_to_gts_schema;
 
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = true,
-    type_id = "gts.x.app.ovr.subject.v1~",
-    description = "Base",
-    properties = "subject_type,id,payload",
+    type_id = "gts.x.app.ovr.event.v1~",
+    description = "Event envelope",
+    properties = "id,subject_id,subject_type,payload",
 )]
-pub struct SubjectV1<P> {
-    #[serde(rename = "type")]
+pub struct EventV1<P> {
+    pub id: GtsInstanceId,
+    pub subject_id: String,
     pub subject_type: GtsTypeId,
-    pub id: String,
     pub payload: P,
 }
 
 #[struct_to_gts_schema(
     dir_path = "schemas",
-    base = SubjectV1,
-    type_id = "gts.x.app.ovr.subject.v1~x.app.ovr.regional.v1~",
-    description = "Middle",
+    base = EventV1,
+    type_id = "gts.x.app.ovr.event.v1~x.app.ovr.order.v1~",
+    description = "Order event",
     properties = "region,details",
 )]
-pub struct RegionalSubjectV1<D> {
+pub struct OrderEventV1<D> {
     pub region: String,
     pub details: D,
 }
 
 #[derive(schemars::JsonSchema)]
-pub struct IdRules {
-    pub id: String,
+pub struct SubjectIdRules {
+    pub subject_id: String,
 }
 
 #[struct_to_gts_schema(
     dir_path = "schemas",
-    base = RegionalSubjectV1,
-    type_id = "gts.x.app.ovr.subject.v1~x.app.ovr.regional.v1~x.app.ovr.leaf.v1~",
-    description = "Derived",
+    base = OrderEventV1,
+    type_id = "gts.x.app.ovr.event.v1~x.app.ovr.order.v1~x.app.ovr.placed.v1~",
+    description = "Order placed",
     properties = "",
-    overrides(LeafV1 = IdRules),
+    overrides(OrderPlacedV1 = SubjectIdRules),
 )]
-pub struct LeafV1;
+pub struct OrderPlacedV1;
 
 fn main() {}

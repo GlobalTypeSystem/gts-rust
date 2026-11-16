@@ -924,17 +924,10 @@ fn integer_multiple(multiple: &Value, divisor: &Value) -> Option<bool> {
 
 /// Handles keywords that only ever narrow `Valid(S)` when present.
 ///
-/// Presence is decidable: adding the constraint narrows the accepted set,
-/// removing it widens it. That is exactly the shape of the "Relaxing /
-/// Tightening constraints" rows of gts-spec sec 4.5, so reporting both
-/// directions as incompatible (as plain equality does) contradicts the table
-/// for the common case of adding or dropping one of these keywords.
-///
-/// Two different values are compared only where an exact proof is cheap:
-/// integer `multipleOf` values by divisibility. Inclusion between two
-/// different `pattern`s is decidable for the regular GTS pattern profile, but
-/// this checker does not implement it, so a changed `pattern` - like a changed
-/// `format`, or a non-integer `multipleOf` - is reported as not provable.
+/// Adding a constraint narrows the accepted set; removing it widens it
+/// (gts-spec sec 4.5). Changed integer `multipleOf` values use divisibility.
+/// Inclusion for changed `pattern`, `format`, or non-integer `multipleOf`
+/// values is not proven by this checker.
 fn check_narrowing_constraints(
     path: &str,
     old_schema: &Map<String, Value>,
