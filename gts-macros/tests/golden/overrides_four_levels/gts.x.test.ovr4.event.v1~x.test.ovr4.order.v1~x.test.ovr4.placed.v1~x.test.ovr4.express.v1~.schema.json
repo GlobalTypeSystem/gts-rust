@@ -1,0 +1,65 @@
+{
+  "$id": "gts://gts.x.test.ovr4.event.v1~x.test.ovr4.order.v1~x.test.ovr4.placed.v1~x.test.ovr4.express.v1~",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "allOf": [
+    {
+      "$ref": "gts://gts.x.test.ovr4.event.v1~x.test.ovr4.order.v1~x.test.ovr4.placed.v1~"
+    },
+    {
+      "properties": {
+        "payload": {
+          "properties": {
+            "details": {
+              "properties": {
+                "delivery": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "estimated_days": {
+                      "format": "uint32",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "estimated_days"
+                  ],
+                  "type": "object"
+                },
+                "order_id": {
+                  "maxLength": 16,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "order_id"
+              ],
+              "type": "object"
+            },
+            "region": {
+              "enum": [
+                "eu-west"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "region"
+          ],
+          "type": "object"
+        },
+        "priority": {
+          "format": "uint32",
+          "maximum": 100,
+          "minimum": 50,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "priority"
+      ],
+      "type": "object"
+    }
+  ],
+  "description": "Express order placed in EU-west",
+  "type": "object"
+}

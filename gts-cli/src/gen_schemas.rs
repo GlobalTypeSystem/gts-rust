@@ -1,10 +1,13 @@
 use anyhow::{Result, bail};
 use gts::{GTS_ID_URI_PREFIX, GtsInstanceId, GtsTypeId};
 use regex::Regex;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
+
+mod compiled;
+mod inventory;
 
 /// Directories that are automatically ignored (e.g., trybuild `compile_fail` tests)
 const AUTO_IGNORE_DIRS: &[&str] = &["compile_fail"];
@@ -48,6 +51,11 @@ enum BaseAttr {
 
 /// Generate GTS schemas from Rust source code with `#[struct_to_gts_schema]` annotations
 ///
+/// If a selected declaration uses `overrides(...)`, every selected declaration is
+/// exported from compiled code: `cargo test` runs the exporters the macro emits in
+/// each Cargo package, so schemas equal `gts_schema_with_refs()`. Otherwise files
+/// are scanned as text.
+///
 /// # Arguments
 /// * `source` - Source directory or file to scan
 /// * `output` - Optional output directory override
@@ -60,6 +68,8 @@ enum BaseAttr {
 /// - The source path does not exist
 /// - The output path is outside the source repository
 /// - File I/O operations fail
+/// - A compiled export fails: build errors, invalid overrides, or declarations
+///   no exporter reported
 pub fn generate_schemas_from_rust(
     source: &str,
     output: Option<&str>,
@@ -73,12 +83,13 @@ pub fn generate_schemas_from_rust(
         bail!("Source path does not exist: {source}");
     }
 
-    // Canonicalize source path to detect path traversal attempts
-    let source_canonical = source_path.canonicalize()?;
+    // Outputs must stay within this root (path traversal check).
+    let source_root = security_root(source_path)?;
 
     let mut schemas_generated = 0;
     let mut files_scanned = 0;
     let mut files_skipped = 0;
+    let mut selected: Vec<(PathBuf, String)> = Vec::new();
 
     // Walk through all .rs files
     for entry in WalkDir::new(source_path)
@@ -131,9 +142,84 @@ pub fn generate_schemas_from_rust(
                 }
                 continue;
             }
+            selected.push((path.to_path_buf(), content));
+        }
+    }
 
-            // Parse the file and extract schema information
-            let results = extract_and_generate_schemas(&content, output, &source_canonical, path)?;
+    // Whole-scan mode: if any selected declaration uses `overrides(...)`, every
+    // selected declaration is exported from compiled code, so that ancestors in
+    // other files or packages keep their `#[schemars]`/`#[serde]` constraints and
+    // exact and approximate schemas never mix. Otherwise the source scanner runs.
+    let mut packages: BTreeMap<PathBuf, Vec<compiled::SourceFile>> = BTreeMap::new();
+    let mut outside_packages = Vec::new();
+    let mut unparsable = Vec::new();
+    let mut any_overrides = false;
+    let mut manifests = HashMap::new();
+    for (path, content) in &selected {
+        if !content.contains("struct_to_gts_schema") {
+            continue;
+        }
+        let inventory = match inventory::scan(content) {
+            Ok(inventory) => inventory,
+            Err(e) => {
+                unparsable.push((
+                    format!("  {}: {e}", path.display()),
+                    content.contains("overrides"),
+                ));
+                continue;
+            }
+        };
+        if inventory.decls.is_empty() && inventory.locals.is_empty() {
+            continue;
+        }
+        any_overrides |= inventory.has_overrides();
+        let canonical = path.canonicalize()?;
+        match package_manifest(&canonical, &mut manifests) {
+            Some(manifest) => packages
+                .entry(manifest)
+                .or_default()
+                .push(compiled::SourceFile {
+                    path: canonical,
+                    inventory,
+                }),
+            None => outside_packages.push(format!("  {}", path.display())),
+        }
+    }
+    let compiled_mode = any_overrides || unparsable.iter().any(|(_, overrides)| *overrides);
+    if compiled_mode && !unparsable.is_empty() {
+        let files: Vec<&str> = unparsable.iter().map(|(file, _)| file.as_str()).collect();
+        bail!(
+            "cannot parse these files to find `#[struct_to_gts_schema]` declarations for \
+             compiled export (`overrides(...)` may be in use):\n{}",
+            files.join("\n")
+        );
+    }
+    if compiled_mode && !outside_packages.is_empty() {
+        bail!(
+            "`overrides(...)` is in use, so schemas are exported from compiled code, but these \
+             files are not inside a Cargo package:\n{}",
+            outside_packages.join("\n")
+        );
+    }
+
+    if compiled_mode {
+        // A failure leaves nothing written.
+        let mut exports = Vec::new();
+        for (manifest, files) in packages {
+            exports.extend(compiled::export_package(&manifest, &files)?);
+        }
+        for (schema, path) in planned_outputs(exports, output, &source_root)? {
+            fs::write(&path, serde_json::to_string_pretty(&schema.schema)?)?;
+            schemas_generated += 1;
+            println!(
+                "  Generated schema: {} @ {}",
+                schema.type_id,
+                path.display()
+            );
+        }
+    } else {
+        for (path, content) in &selected {
+            let results = extract_and_generate_schemas(content, output, &source_root, path)?;
             schemas_generated += results.len();
             for (schema_id, file_path) in results {
                 println!("  Generated schema: {schema_id} @ {file_path}");
@@ -155,6 +241,82 @@ pub fn generate_schemas_from_rust(
     Ok(())
 }
 
+/// Output path per export; a path is written once. Declarations sharing a type ID
+/// must export the same schema, each to its own `dir_path`; otherwise nothing is
+/// written.
+fn planned_outputs(
+    exports: Vec<compiled::Exported>,
+    output: Option<&str>,
+    source_root: &Path,
+) -> Result<Vec<(compiled::Exported, PathBuf)>> {
+    let mut planned: Vec<(compiled::Exported, PathBuf)> = Vec::new();
+    for export in exports {
+        let path = schema_output_path(
+            output,
+            source_root,
+            &export.file,
+            &export.struct_name,
+            &export.dir_path,
+            &export.type_id,
+        )?;
+        // One type ID has one schema; one path is written once.
+        let clash = planned.iter().find(|(other, other_path)| {
+            (other.type_id == export.type_id && other.schema != export.schema)
+                || (*other_path == path && other.type_id != export.type_id)
+        });
+        if let Some((other, other_path)) = clash {
+            bail!(
+                "conflicting schemas: `{}` ({}:{}) exports {} to {} and `{}` ({}:{}) exports {} \
+                 to {}",
+                other.struct_name,
+                other.file.display(),
+                other.line,
+                other.type_id,
+                other_path.display(),
+                export.struct_name,
+                export.file.display(),
+                export.line,
+                export.type_id,
+                path.display()
+            );
+        }
+        if !planned.iter().any(|(_, other_path)| *other_path == path) {
+            planned.push((export, path));
+        }
+    }
+    Ok(planned)
+}
+
+/// Root that generated schemas must stay within: the source directory, or for a
+/// single file its package directory (falling back to the file's directory).
+fn security_root(source_path: &Path) -> Result<PathBuf> {
+    let canonical = source_path.canonicalize()?;
+    if canonical.is_dir() {
+        return Ok(canonical);
+    }
+    let parent = canonical.parent().unwrap_or(&canonical);
+    Ok(parent
+        .ancestors()
+        .find(|dir| dir.join("Cargo.toml").is_file())
+        .unwrap_or(parent)
+        .to_path_buf())
+}
+
+/// Manifest of the Cargo package containing `file` (canonical): the nearest
+/// ancestor `Cargo.toml` with a `[package]` table.
+fn package_manifest(file: &Path, cache: &mut HashMap<PathBuf, bool>) -> Option<PathBuf> {
+    file.ancestors().skip(1).find_map(|dir| {
+        let manifest = dir.join("Cargo.toml");
+        let is_package = *cache.entry(manifest.clone()).or_insert_with(|| {
+            fs::read_to_string(&manifest)
+                .ok()
+                .and_then(|text| text.parse::<toml::Table>().ok())
+                .is_some_and(|table| table.contains_key("package"))
+        });
+        is_package.then_some(manifest)
+    })
+}
+
 /// Check if a path matches any of the exclude patterns
 fn should_exclude_path(path: &Path, patterns: &[String]) -> bool {
     let path_str = path.to_string_lossy();
@@ -171,6 +333,10 @@ fn should_exclude_path(path: &Path, patterns: &[String]) -> bool {
 /// Simple glob pattern matching
 /// Supports: * (any characters), ** (any path segments)
 fn matches_glob_pattern(path: &str, pattern: &str) -> bool {
+    // Match native Windows paths and either pattern separator with the same glob rules.
+    let path = path.replace('\\', "/");
+    let pattern = pattern.replace('\\', "/");
+
     // Convert glob pattern to regex
     let regex_pattern = pattern
         .replace('.', r"\.")
@@ -179,10 +345,10 @@ fn matches_glob_pattern(path: &str, pattern: &str) -> bool {
         .replace("<<DOUBLESTAR>>", ".*");
 
     if let Ok(re) = Regex::new(&format!("(^|/){regex_pattern}($|/)")) {
-        re.is_match(path)
+        re.is_match(&path)
     } else {
         // Fallback to simple contains check
-        path.contains(pattern)
+        path.contains(&pattern)
     }
 }
 
@@ -265,6 +431,53 @@ fn parse_macro_attrs(attr_body: &str) -> Option<MacroAttrs> {
     })
 }
 
+/// Where a schema is written: `--output`, or `dir_path` next to the source file.
+/// Creates the parent directory; refuses paths resolving outside `source_root`.
+fn schema_output_path(
+    output_override: Option<&str>,
+    source_root: &Path,
+    source_file: &Path,
+    struct_name: &str,
+    dir_path: &str,
+    type_id: &str,
+) -> Result<PathBuf> {
+    let schema_file_rel = format!("{dir_path}/{type_id}.schema.json");
+    let output_path = if let Some(output_dir) = output_override {
+        Path::new(output_dir).join(&schema_file_rel)
+    } else {
+        source_file
+            .parent()
+            .unwrap_or(source_root)
+            .join(&schema_file_rel)
+    };
+
+    // Security check: ensure output path doesn't escape source repository
+    let output_canonical = if output_path.exists() {
+        output_path.canonicalize()?
+    } else {
+        // For non-existent files, canonicalize the parent directory
+        let parent = output_path.parent().unwrap_or(Path::new("."));
+        fs::create_dir_all(parent)?;
+        let parent_canonical = parent.canonicalize()?;
+        let file_name = output_path
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("Invalid output path: no file name"))?;
+        parent_canonical.join(file_name)
+    };
+    if !output_canonical.starts_with(source_root) {
+        bail!(
+            "Security error in {}:{} - dir_path '{}' attempts to write outside source repository. \
+            Resolved to: {}, but must be within: {}",
+            source_file.display(),
+            struct_name,
+            dir_path,
+            output_canonical.display(),
+            source_root.display()
+        );
+    }
+    Ok(output_path)
+}
+
 /// Extract schema metadata from Rust source and generate JSON files
 /// Returns a vector of (`schema_id`, `file_path`) tuples for each generated schema
 fn extract_and_generate_schemas(
@@ -295,46 +508,14 @@ fn extract_and_generate_schemas(
             continue;
         };
 
-        // Convert schema_id to filename-safe format
-        // e.g., "gts.x.core.events.type.v1~" -> "gts.x.core.events.type.v1~"
-        let schema_file_rel = format!("{}/{}.schema.json", attrs.dir_path, attrs.type_id);
-
-        // Determine output path
-        let output_path = if let Some(output_dir) = output_override {
-            // Use CLI-provided output directory
-            Path::new(output_dir).join(&schema_file_rel)
-        } else {
-            // Use path from macro (relative to source file's directory)
-            let source_dir = source_file.parent().unwrap_or(source_root);
-            source_dir.join(&schema_file_rel)
-        };
-
-        // Security check: ensure output path doesn't escape source repository
-        let output_canonical = if output_path.exists() {
-            output_path.canonicalize()?
-        } else {
-            // For non-existent files, canonicalize the parent directory
-            let parent = output_path.parent().unwrap_or(Path::new("."));
-            fs::create_dir_all(parent)?;
-            let parent_canonical = parent.canonicalize()?;
-            let file_name = output_path
-                .file_name()
-                .ok_or_else(|| anyhow::anyhow!("Invalid output path: no file name"))?;
-            parent_canonical.join(file_name)
-        };
-
-        // Check if output path is within source repository
-        if !output_canonical.starts_with(source_root) {
-            bail!(
-                "Security error in {}:{} - dir_path '{}' attempts to write outside source repository. \
-                Resolved to: {}, but must be within: {}",
-                source_file.display(),
-                struct_name,
-                attrs.dir_path,
-                output_canonical.display(),
-                source_root.display()
-            );
-        }
+        let output_path = schema_output_path(
+            output_override,
+            source_root,
+            source_file,
+            struct_name,
+            &attrs.dir_path,
+            &attrs.type_id,
+        )?;
 
         // Parse struct fields
         let mut field_types = HashMap::new();
@@ -355,12 +536,6 @@ fn extract_and_generate_schemas(
             &field_types,
         );
 
-        // Create parent directories
-        if let Some(parent) = output_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        // Write schema file
         fs::write(&output_path, serde_json::to_string_pretty(&schema)?)?;
 
         // Add to results (schema_id, file_path)
@@ -561,6 +736,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn planned_outputs_keep_every_dir_and_reject_conflicts() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let export = |name: &str, dir_path: &str, max: u64| compiled::Exported {
+            file: root.join("src/lib.rs"),
+            line: 1,
+            struct_name: name.to_owned(),
+            type_id: "gts.x.test.plan.v1~".to_owned(),
+            dir_path: dir_path.to_owned(),
+            schema: serde_json::json!({ "maxLength": max }),
+        };
+        let paths = |planned: Vec<(compiled::Exported, PathBuf)>| -> Vec<PathBuf> {
+            planned
+                .into_iter()
+                .map(|(_, p)| p.strip_prefix(&root).unwrap().to_path_buf())
+                .collect()
+        };
+
+        // Same schema in two requested directories: both written; same path once.
+        let planned = planned_outputs(
+            vec![
+                export("A", "a", 1),
+                export("B", "b", 1),
+                export("C", "a", 1),
+            ],
+            None,
+            &root,
+        )
+        .unwrap();
+        assert_eq!(
+            paths(planned),
+            [
+                PathBuf::from("src/a/gts.x.test.plan.v1~.schema.json"),
+                PathBuf::from("src/b/gts.x.test.plan.v1~.schema.json"),
+            ]
+        );
+
+        // Same type ID, different schema: rejected even in different directories.
+        let error = planned_outputs(vec![export("A", "a", 1), export("B", "b", 2)], None, &root)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("conflicting schemas"), "{error}");
+    }
+
+    #[test]
     fn test_matches_glob_pattern() {
         // Test simple patterns
         assert!(matches_glob_pattern(
@@ -578,6 +798,45 @@ mod tests {
 
         // Test double-star patterns
         assert!(matches_glob_pattern("a/b/c/d/test.rs", "**/test.rs"));
+    }
+
+    #[test]
+    fn test_matches_glob_pattern_windows_separators() {
+        let cases = [
+            (r"C:\project\src\widening.rs", "widening.rs", true),
+            (
+                r"\\?\C:\project\src\unexportable.rs",
+                "unexportable.rs",
+                true,
+            ),
+            (r"\\server\share\src\widening.rs", "widening.rs", true),
+            (
+                r"C:\project\gts-macros\tests\schema_export_tests.rs",
+                "gts-macros/tests",
+                true,
+            ),
+            (r"C:\project\tests\integration.rs", "tests/*.rs", true),
+            (
+                r"C:\project\tests\nested\integration.rs",
+                "tests/*.rs",
+                false,
+            ),
+            (
+                r"C:\project\tests\nested\integration.rs",
+                r"tests\**\*.rs",
+                true,
+            ),
+            ("/project/tests/integration.rs", r"tests\*.rs", true),
+            (r"C:\project\src\not_widening.rs", "widening.rs", false),
+            (r"C:\project\tests_backup\integration.rs", "tests", false),
+        ];
+        for (path, pattern, expected) in cases {
+            assert_eq!(
+                matches_glob_pattern(path, pattern),
+                expected,
+                "path: {path}, pattern: {pattern}"
+            );
+        }
     }
 
     #[test]

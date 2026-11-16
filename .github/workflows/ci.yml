@@ -257,7 +257,9 @@ jobs:
           shared-key: dylint
 
       - name: Install cargo-dylint and dylint-link from source
-        run: cargo install --locked cargo-dylint dylint-link
+        # 6.3.0 handles rust-clippy's master-to-main rename and supports this nightly.
+        # Keep in sync with Makefile and gts-dylint/Cargo.lock for the pinned nightly.
+        run: cargo install --locked --version 6.3.0 cargo-dylint dylint-link
 
       - name: Run dylint
         run: cargo +${{ env.RUSTUP_TOOLCHAIN }} dylint --all

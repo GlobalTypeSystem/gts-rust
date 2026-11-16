@@ -1,0 +1,11 @@
+error[E0080]: evaluation panicked: struct_to_gts_schema: `overrides` entries `EventV1` and `self :: EventV1` name the same ancestor
+  --> tests/compile_fail/overrides_duplicate_alias.rs:37:1
+   |
+37 | / #[struct_to_gts_schema(
+38 | |     dir_path = "schemas",
+39 | |     base = OrderEventV1,
+40 | |     type_id = "gts.x.app.ovr.event.v1~x.app.ovr.order.v1~x.app.ovr.placed.v1~",
+...  |
+43 | |     overrides(EventV1 = SubjectIdRules, self::EventV1 = SubjectIdRules),
+44 | | )]
+   | |__^ evaluation of `_` failed here

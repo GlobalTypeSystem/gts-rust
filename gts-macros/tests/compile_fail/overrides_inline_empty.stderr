@@ -1,0 +1,5 @@
+error: struct_to_gts_schema: inline `overrides` fields `{ ... }` must declare at least one field
+  --> tests/compile_fail/overrides_inline_empty.rs:38:25
+   |
+38 |     overrides(EventV1 = {}),
+   |                         ^^

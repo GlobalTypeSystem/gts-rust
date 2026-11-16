@@ -377,6 +377,24 @@ pub struct BaseEventV1<P> {
 
 Generate JSON Schema files using the GTS CLI tool.
 
+**Compiled export.** If any scanned declaration uses
+[`overrides(...)`](#overriding-ancestor-fields-overrides), the CLI exports every scanned
+declaration from compiled code, in each Cargo package that contains one, so schemas equal
+`Type::gts_schema_with_refs()` and ancestors in other files or packages keep their constraints.
+The macro
+emits a hidden `#[cfg(test)]` exporter per type (a no-op under a plain `cargo test`); the CLI
+runs `cargo test` in the package directory on its lib, bin and integration-test targets that
+use the libtest harness, with default features, then checks `Type::validate_overrides()` and
+writes each schema to its `dir_path`. This compiles the package's tests and runs its build
+scripts. Nothing is written if the build or validation fails, or if a declaration was not
+exported: function-local types, types with their own generic bounds, lifetimes or const
+parameters, files no such target compiles, files outside a Cargo package,
+`#[cfg]`/feature-gated declarations, or two declarations exporting different schemas for one
+type ID. Skip such files with `--exclude` or `// gts:ignore`.
+
+Without overrides anywhere in the scan, files are scanned as text, which does not apply
+`#[schemars]` or `#[serde]` attributes.
+
 ### Generate Schemas
 
 ```bash
@@ -811,6 +829,8 @@ Five parameters are **required**:
 `schema_id = "..."` is still accepted in place of `type_id`, but it triggers a compile-time
 deprecation warning (`` `schema_id` macro attribute is deprecated; rename it to `type_id` ``).
 
+Use optional [`overrides(...)`](#overriding-ancestor-fields-overrides) to narrow ancestor fields.
+
 Four parameters are **optional** — they emit the corresponding GTS schema keywords:
 
 | Parameter | Emits | Values |
@@ -835,6 +855,105 @@ The `base` attribute explicitly declares the struct's position in the inheritanc
 **Compile-time validation**: The macro validates that:
 - `base = true` requires a single-segment `type_id`
 - `base = ParentStruct` requires a multi-segment `type_id` where the parent segment matches `ParentStruct`'s `TYPE_ID`
+
+### Overriding Ancestor Fields (`overrides`)
+
+Use `overrides(Ancestor = { fields }, ...)` to narrow fields declared by ancestors,
+separately from the derived type's own payload fields:
+
+```rust
+use gts::{GtsInstanceId, GtsTypeId};
+use gts_macros::struct_to_gts_schema;
+
+const ORDER_TYPE: &str = gts_macros::gts_id!("x.core.orders.order.v1~");
+
+#[struct_to_gts_schema(dir_path = "schemas", base = true,
+    type_id = gts_id!("x.core.events.event.v1~"), description = "Event envelope",
+    properties = "id,subject_id,subject_type,payload")]
+pub struct EventV1<P> {
+    pub id: GtsInstanceId,
+    #[schemars(length(min = 1, max = 1024))]
+    pub subject_id: String,
+    pub subject_type: GtsTypeId,
+    pub payload: P,
+}
+
+#[struct_to_gts_schema(dir_path = "schemas", base = EventV1,
+    type_id = gts_id!("x.core.events.event.v1~x.core.orders.placed.v1~"),
+    description = "Order placed with a UUID subject ID", properties = "order_id",
+    overrides(EventV1 = {
+        #[schemars(length(min = 36, max = 36), extend("format" = "uuid"))]
+        subject_id: String,
+        #[schemars(extend("x-gts-type-ref" = ORDER_TYPE))]
+        subject_type: GtsTypeId,
+    }))]
+pub struct OrderPlacedV1 {
+    pub order_id: String,
+}
+```
+
+For reuse or container attributes, use `overrides(EventV1 = UuidOrderSubject)` with a
+named helper instead:
+
+```rust
+#[derive(schemars::JsonSchema)]
+pub struct UuidOrderSubject {
+    #[schemars(length(min = 36, max = 36), extend("format" = "uuid"))]
+    pub subject_id: String,
+    #[schemars(extend("x-gts-type-ref" = ORDER_TYPE))]
+    pub subject_type: GtsTypeId,
+}
+```
+
+**Rules.** Each entry names a distinct, strict ancestor and a subset of its own fields by
+wire name (`#[serde(rename)]` applies). The generic slot cannot be overridden; helpers do
+not appear in instances. Each field schema is a complete replacement: omitted constraints
+are not inherited, while fields absent from the helper remain unchanged. Replacements must
+preserve or tighten every declaration along the ancestor chain, including earlier overrides.
+For closed nested objects, restate every inherited property (even optional ones) and use
+`#[serde(deny_unknown_fields)]` to preserve closedness.
+
+Requiredness follows the helper: optional fields may become required, but required fields
+cannot become optional. Nullability is checked separately: `String` rejects `null`, while
+`Option<String>` admits it; `#[serde(default)]` keeps a non-null field optional.
+
+Inline fields support field attributes and resolve paths in the type's module. They do not
+inherit container attributes such as `#[serde(rename_all)]` from the annotated type.
+Helpers must be named-field structs; inline fields must be nonempty. Ancestor paths,
+helper types and inline field types must not depend on the annotated struct's generic
+parameter. Concrete specializations of generic helpers, such as `SubjectRules<OrderId>`,
+are allowed. On `Child<E>`, `SubjectRules<E>` is rejected, while
+`SubjectRules<model::E>` is allowed if `model::E` is a concrete type. This keeps the
+schema for a given `TYPE_ID` independent of the extension-slot argument and lets the
+generated `Child<()>` test validate the same overrides for every specialization.
+Every ancestor must be generic, as `base = Parent` already requires; `Ancestor` is
+shorthand for `Ancestor<()>`.
+
+**Validation.** Declare overriding types at module level. Each gets a generated
+`gts_overrides_<Type>` test that calls `GtsSchema::validate_overrides()` (using `Type<()>`
+for generic types). Run `cargo test` in the defining crate: `cargo build` and `cargo check`
+do not check field ownership or compatibility, and dependency tests do not run automatically.
+Compile-time checks enforce distinct strict ancestors and `JsonSchema` helpers.
+
+Call `Type::validate_overrides()` explicitly for
+`Result<(), gts::schema_overrides::OverrideError>`. It checks replacements against every
+inherited declaration, then checks the composed chain's derivation admission (OP#12).
+Descendants without their own overrides also validate the chain when called, but get no
+generated test. Schema generation emits replacements without validating them.
+`gts generate-from-rust` exports these types from compiled code; see
+[Schema Generation](#purpose-2-schema-generation).
+Trait-schema, trait-value, meta-schema and entity-reference checks remain part of full
+registration; other `gts://` references must resolve within the chain.
+
+**Limitations.** Widenings and comparisons the inclusion engine cannot prove are rejected,
+including changed `pattern`/`format` constraints. Tighter bounds and finite `enum`/`const`
+values satisfying inherited constraints are supported. Contradictory bounds may still pass
+inclusion; it does not guarantee that instances exist. Recursive fields/helpers, map helpers
+(including flattened maps), and inherited paths using `anyOf`, `oneOf`, `not`, conditionals,
+`$ref`, `patternProperties` or `dependencies` are unsupported.
+
+See [inline examples](tests/overrides_inline_tests.rs) and
+[chain validation cases](tests/overrides_harness/chain.rs) for more detail.
 
 ### GTS ID Format
 

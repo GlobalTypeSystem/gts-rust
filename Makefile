@@ -22,9 +22,10 @@ dev-fmt:
 dev-clippy:
 	cargo clippy --fix --workspace
 
-# Generate schemas
+# Generate schemas. gts-macros test fixtures are skipped: their tests check
+# their own schemas, and several reuse one type ID with different shapes.
 generate-schemas: build
-	./target/release/gts generate-from-rust --source .
+	./target/release/gts generate-from-rust --source . --exclude gts-macros/tests
 
 # Run all checks and build
 all: check deny build generate-schemas
@@ -54,8 +55,9 @@ test-gts-id-prefix:
 
 # Run dylint lints (requires nightly toolchain + cargo-dylint)
 # Detects hard-coded "gts." / "gts://" string literals in production code
+# Keep the tool version in sync with CI and gts-dylint/Cargo.lock.
 dylint:
-	@command -v cargo-dylint >/dev/null || (echo "Installing cargo-dylint..." && cargo install cargo-dylint)
+	cargo +nightly-2026-04-16 install --locked --version 6.3.0 cargo-dylint dylint-link
 	cargo +nightly-2026-04-16 dylint --all
 
 # Run dylint UI/example tests (requires nightly toolchain)

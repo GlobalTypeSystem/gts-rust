@@ -648,6 +648,108 @@ fn test_value_sets_use_json_schema_equality() {
     assert!(respelled_multiple_of.full_compatibility.is_compatible());
 }
 
+/// A union is included in another when each of its branches is included in
+/// some branch of the other, as with a nullable object narrowed in place.
+#[test]
+fn test_union_included_in_union_branch_by_branch() {
+    let nullable = |max: u64| {
+        json!({"anyOf": [
+            {"type": "object", "properties": {"a": {"type": "string", "maxLength": max}}},
+            {"type": "null"}
+        ]})
+    };
+    let narrowed = property_change(nullable(3), nullable(2));
+    assert!(narrowed.forward_compatibility.is_compatible());
+    assert!(!narrowed.backward_compatibility.is_compatible());
+
+    // A branch with no counterpart is not proven.
+    let added_branch = property_change(
+        json!({"anyOf": [{"type": "string"}, {"type": "null"}]}),
+        json!({"anyOf": [{"type": "string"}, {"type": "integer"}]}),
+    );
+    assert!(!added_branch.forward_compatibility.is_compatible());
+    // A type array splits by type: the object part fits one branch, the null
+    // part the other.
+    let object = |max: u64| json!({"type": "object", "properties": {"a": {"type": "string", "maxLength": max}}});
+    let mut type_array = object(2);
+    type_array["type"] = json!(["object", "null"]);
+    let split = property_change(nullable(3), type_array.clone());
+    assert!(split.forward_compatibility.is_compatible());
+    let mut wide_array = object(4);
+    wide_array["type"] = json!(["object", "null"]);
+    let wide = property_change(nullable(3), wide_array);
+    assert!(!wide.forward_compatibility.is_compatible());
+    let mut with_string = type_array;
+    with_string["type"] = json!(["object", "null", "string"]);
+    let extra_type = property_change(nullable(3), with_string);
+    assert!(!extra_type.forward_compatibility.is_compatible());
+
+    let reordered = property_change(
+        json!({"anyOf": [{"type": "string"}, {"type": "null"}]}),
+        json!({"anyOf": [{"type": "null"}, {"type": "string", "maxLength": 1}]}),
+    );
+    assert!(reordered.forward_compatibility.is_compatible());
+}
+
+/// Multiples of 4 are multiples of 2, not the reverse; a non-integer pair has
+/// no exact proof and stays undecided rather than being guessed by epsilon.
+#[test]
+fn test_multiple_of_is_compared_by_integer_divisibility() {
+    let narrowed = property_change(json!({"multipleOf": 2}), json!({"multipleOf": 4}));
+    assert!(narrowed.backward_compatibility.is_incompatible());
+    assert!(narrowed.forward_compatibility.is_compatible());
+
+    let unrelated = property_change(json!({"multipleOf": 4}), json!({"multipleOf": 6}));
+    assert!(unrelated.backward_compatibility.is_incompatible());
+    assert!(unrelated.forward_compatibility.is_incompatible());
+
+    // Integer-valued float spellings are integers.
+    for (old, new) in [(json!(2.0), json!(4)), (json!(2), json!(4.0))] {
+        let respelled = property_change(json!({"multipleOf": old}), json!({"multipleOf": new}));
+        assert!(
+            respelled.forward_compatibility.is_compatible(),
+            "{old} -> {new}"
+        );
+        assert!(
+            respelled.backward_compatibility.is_incompatible(),
+            "{old} -> {new}"
+        );
+    }
+
+    // Large u64 values are compared as integers, never rounded through f64:
+    // 2^53 + 1 is not a multiple of 2^53 + 2 nor of 2, though as f64 it is.
+    let big = 9_007_199_254_740_993_u64;
+    let large = property_change(json!({"multipleOf": big}), json!({"multipleOf": big * 3}));
+    assert!(large.forward_compatibility.is_compatible());
+    assert!(large.backward_compatibility.is_incompatible());
+    let off_by_one = property_change(json!({"multipleOf": 2}), json!({"multipleOf": big}));
+    assert!(off_by_one.forward_compatibility.is_incompatible());
+
+    // Fractional pairs have no exact proof here: undecided in both directions.
+    for (old, new) in [(0.1, 0.3), (0.5, 1.5), (2.0, 2.5)] {
+        let fractional = property_change(json!({"multipleOf": old}), json!({"multipleOf": new}));
+        assert!(
+            fractional.forward_compatibility.is_unknown(),
+            "{old} -> {new}"
+        );
+        assert!(
+            fractional.backward_compatibility.is_unknown(),
+            "{old} -> {new}"
+        );
+    }
+
+    let (verdict, _) = check_accepted_set_inclusion(
+        &json!({"type": "integer", "multipleOf": 4}),
+        &json!({"type": "integer", "multipleOf": 2}),
+    );
+    assert!(verdict.is_compatible());
+    let (verdict, _) = check_accepted_set_inclusion(
+        &json!({"type": "integer", "multipleOf": 2}),
+        &json!({"type": "integer", "multipleOf": 4}),
+    );
+    assert!(verdict.is_incompatible());
+}
+
 /// Comparing a mixed integer/float pair has to be exact: rounding both sides
 /// to `f64` would erase the difference between `2^53 + 1` and `2^53`.
 #[test]

@@ -1,0 +1,11 @@
+error[E0080]: evaluation panicked: struct_to_gts_schema: `overrides(OtherEventV1 = ...)`: `OtherEventV1` is not a strict ancestor of 'gts.x.app.ovr.event.v1~x.app.ovr.order.v1~x.app.ovr.placed.v1~'
+  --> tests/compile_fail/overrides_non_ancestor.rs:51:1
+   |
+51 | / #[struct_to_gts_schema(
+52 | |     dir_path = "schemas",
+53 | |     base = OrderEventV1,
+54 | |     type_id = "gts.x.app.ovr.event.v1~x.app.ovr.order.v1~x.app.ovr.placed.v1~",
+...  |
+57 | |     overrides(OtherEventV1 = SubjectIdRules),
+58 | | )]
+   | |__^ evaluation of `_` failed here

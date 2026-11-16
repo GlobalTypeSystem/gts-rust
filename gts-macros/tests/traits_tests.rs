@@ -512,3 +512,82 @@ fn modifier_consts_reflect_macro_args() {
     assert!(!<() as gts::GtsSchema>::GTS_FINAL);
     assert!(!<() as gts::GtsSchema>::GTS_ABSTRACT);
 }
+
+// --- Referenced trait type under ancestor-field overrides --------------------
+
+/// Trait type pulled in by reference (`traits_schema = T`), not inlined.
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = true,
+    type_id = gts_id!("x.test.behav.retention.v1~"),
+    description = "Retention trait type",
+    properties = "id,retention"
+)]
+#[derive(Debug)]
+pub struct RetentionTraitV1 {
+    pub id: GtsInstanceId,
+    pub retention: String,
+}
+
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = true,
+    type_id = gts_id!("x.test.behav.retained.v1~"),
+    description = "Host referencing a trait type",
+    properties = "subject_type,id,payload",
+    traits_schema = RetentionTraitV1,
+    gts_abstract = true,
+)]
+#[derive(Debug)]
+pub struct RetainedV1<P> {
+    #[serde(rename = "type")]
+    pub subject_type: gts::gts::GtsTypeId,
+    #[schemars(length(max = 64))]
+    pub id: String,
+    pub payload: P,
+}
+
+#[derive(JsonSchema)]
+pub struct ShortRetainedId {
+    #[schemars(length(max = 8))]
+    pub id: String,
+}
+
+/// Its generated `gts_overrides_ShortRetainedV1` test runs in this target too.
+/// Abstract: OP#13 completeness of the referenced trait is not the point here.
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = RetainedV1,
+    type_id = gts_id!("x.test.behav.retained.v1~x.test.behav.short.v1~"),
+    description = "Override under a host referencing a trait type",
+    properties = "",
+    overrides(RetainedV1 = ShortRetainedId),
+    gts_abstract = true,
+)]
+#[derive(Debug)]
+pub struct ShortRetainedV1;
+
+/// Chain admission needs no trait type; full registration has it and agrees.
+#[test]
+fn overrides_admit_a_chain_referencing_a_trait_type() {
+    ShortRetainedV1::validate_overrides().unwrap();
+
+    let mut store = gts::GtsStore::new();
+    for (id, schema) in [
+        (
+            RetentionTraitV1::TYPE_ID,
+            RetentionTraitV1::gts_schema_with_refs(),
+        ),
+        (
+            RetainedV1::<()>::TYPE_ID,
+            RetainedV1::<()>::gts_schema_with_refs(),
+        ),
+        (
+            ShortRetainedV1::TYPE_ID,
+            ShortRetainedV1::gts_schema_with_refs(),
+        ),
+    ] {
+        store.register_schema(id, &schema).unwrap();
+    }
+    store.validate_schema(ShortRetainedV1::TYPE_ID).unwrap();
+}
