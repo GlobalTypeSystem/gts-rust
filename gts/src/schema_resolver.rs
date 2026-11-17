@@ -567,20 +567,23 @@ fn is_type_root_keyword(key: &str) -> bool {
     )
 }
 
+pub(crate) fn reference_keywords(draft: Draft) -> &'static [&'static str] {
+    match draft {
+        Draft::Draft201909 => &["$ref", "$recursiveRef"],
+        Draft::Draft202012 | Draft::Unknown => &["$ref", "$dynamicRef"],
+        _ => &["$ref"],
+    }
+}
+
 /// References left in schema positions of `schema`.
-fn remaining_refs(schema: &Value, dialect: Draft) -> Vec<String> {
+pub(crate) fn remaining_refs(schema: &Value, dialect: Draft) -> Vec<String> {
     let mut refs = Vec::new();
     crate::schema_modifiers::for_each_schema_node_in_dialect(
         schema,
         dialect,
         &mut |node, _, scope| {
-            let keywords: &[&str] = match scope.dialect {
-                Draft::Draft201909 => &["$ref", "$recursiveRef"],
-                Draft::Draft202012 | Draft::Unknown => &["$ref", "$dynamicRef"],
-                _ => &["$ref"],
-            };
             refs.extend(
-                keywords
+                reference_keywords(scope.dialect)
                     .iter()
                     .filter_map(|keyword| node.get(*keyword).and_then(Value::as_str))
                     .map(str::to_owned),

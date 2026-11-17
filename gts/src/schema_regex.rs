@@ -8,6 +8,7 @@
 //! validator compilation.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use jsonschema::{Draft, Registry};
 use serde_json::{Map, Value};
@@ -27,7 +28,8 @@ pub fn check(registry: &Registry<'_>, documents: &[(&str, &Value)]) -> Result<()
 }
 
 /// A check applied to one schema node, given its location.
-pub type NodeCheck<'v> = dyn FnMut(&Map<String, Value>, &str) -> Result<(), String> + 'v;
+pub type NodeCheck<'v> = dyn FnMut(&Map<String, Value>, &str, Option<&referencing::Resolver<'_>>) -> Result<(), String>
+    + 'v;
 
 /// Applies `check` to every schema position of `documents` this module
 /// visits: active and inactive positions, root `x-gts-traits-schema`, and
@@ -51,8 +53,9 @@ pub fn check_dialect(
     registry: &Registry<'_>,
     documents: &[(&str, &Value)],
     dialect: Draft,
+    check_node: Option<&mut NodeCheck<'_>>,
 ) -> Result<(), String> {
-    walk(registry, documents, Some(dialect), false, None)
+    walk(registry, documents, Some(dialect), false, check_node)
 }
 
 fn walk(
@@ -90,6 +93,7 @@ fn walk(
 }
 
 type NodeKey = *const Map<String, Value>;
+type ScopedNode = (NodeKey, Draft, Option<Arc<referencing::Uri<String>>>);
 
 /// How a keyword holds subschemas.
 enum Holds {
@@ -133,8 +137,8 @@ fn holds(draft: Draft, keyword: &str) -> Option<Holds> {
 struct Walk<'c, 'v> {
     /// Document roots: only there is `x-gts-traits-schema` a schema position.
     roots: HashSet<NodeKey>,
-    /// Nodes visited, with the dialect they were read under.
-    visited: HashSet<(NodeKey, Draft)>,
+    /// The same schema can be reached under different reference bases.
+    visited: HashSet<ScopedNode>,
     /// Expressions already found supported.
     checked: HashSet<String>,
     dialect: Option<Draft>,
@@ -185,11 +189,14 @@ impl Walk<'_, '_> {
             ));
         }
         let node = std::ptr::from_ref(map);
-        if !self.visited.insert((node, draft)) {
+        if !self
+            .visited
+            .insert((node, draft, resolver.map(referencing::Resolver::base_uri)))
+        {
             return Ok(());
         }
         if let Some(check) = self.check_node.as_mut() {
-            check(map, location)?;
+            check(map, location, resolver)?;
         }
 
         if self.roots.contains(&std::ptr::from_ref(map))

@@ -11,6 +11,7 @@
 //! here as [`check_accepted_set_inclusion`] under a name that belongs to
 //! neither relation.
 
+use crate::schema_dialect::ComparisonRegistry;
 use crate::schema_semantics::boolean_schema_value;
 use jsonschema::{Draft, JsonType, JsonTypeSet};
 use num_cmp::NumCmp;
@@ -336,8 +337,8 @@ fn merge_schema_map(
         && (hides_assertions_at_ref(target, candidate, None)
             || hides_assertions_at_ref(candidate, target, None)))
         || changes_keyword_scope(target, candidate)
-        || gains_evaluated_locations(target, candidate, None)
-        || gains_evaluated_locations(candidate, target, None)
+        || gains_evaluated_locations(target, candidate, None, draft)
+        || gains_evaluated_locations(candidate, target, None, draft)
     {
         unproven.insert(path.to_owned());
     }
@@ -388,7 +389,11 @@ fn gains_evaluated_locations(
     scoped: &Map<String, Value>,
     other: &Map<String, Value>,
     skip: Option<&str>,
+    draft: Draft,
 ) -> bool {
+    if !draft_supports_unevaluated(draft) {
+        return false;
+    }
     let properties = scoped.contains_key("unevaluatedProperties");
     let items = scoped.contains_key("unevaluatedItems");
     (properties || items)
@@ -477,7 +482,10 @@ fn merge_keyword(
         "maxContains",
     ];
 
-    if ANNOTATIONS.contains(&keyword) {
+    if ANNOTATIONS.contains(&keyword)
+        || (matches!(keyword, "unevaluatedItems" | "unevaluatedProperties")
+            && !draft_supports_unevaluated(draft))
+    {
         target.insert(keyword.to_owned(), candidate_value.clone());
         return;
     }
@@ -500,19 +508,25 @@ fn merge_keyword(
             {
                 for (name, candidate_schema) in candidate_map {
                     if let Some(current_schema) = current_map.get_mut(name) {
-                        let property_path = if named {
-                            format!("{path}.{name}")
+                        if named {
+                            merge_schema_intersection(
+                                current_schema,
+                                candidate_schema,
+                                &format!("{path}.{name}"),
+                                unproven,
+                                depth + 1,
+                                draft,
+                            );
                         } else {
-                            path.to_owned()
-                        };
-                        merge_schema_intersection(
-                            current_schema,
-                            candidate_schema,
-                            &property_path,
-                            unproven,
-                            depth + 1,
-                            draft,
-                        );
+                            merge_node_constraint(
+                                current_schema,
+                                candidate_schema,
+                                path,
+                                unproven,
+                                depth + 1,
+                                draft,
+                            );
+                        }
                     } else {
                         current_map.insert(name.clone(), candidate_schema.clone());
                     }
@@ -549,7 +563,7 @@ fn merge_keyword(
             );
         }
         "additionalProperties" | "unevaluatedProperties" | "propertyNames" => {
-            merge_schema_intersection(current, candidate_value, path, unproven, depth + 1, draft);
+            merge_node_constraint(current, candidate_value, path, unproven, depth + 1, draft);
         }
         "enum" => {
             if let (Some(current_values), Some(candidate_values)) =
@@ -693,6 +707,23 @@ fn merge_numeric_bound(
     }
 }
 
+/// The comparison treats this keyword as a whole. An uncertain descendant
+/// therefore belongs to the owning node, even when it is a named property.
+fn merge_node_constraint(
+    target: &mut Value,
+    candidate: &Value,
+    path: &str,
+    unproven: &mut UnprovenPaths,
+    depth: usize,
+    draft: Draft,
+) {
+    let mut nested = UnprovenPaths::new();
+    merge_schema_intersection(target, candidate, "", &mut nested, depth, draft);
+    if !nested.is_empty() {
+        unproven.insert(path.to_owned());
+    }
+}
+
 fn merge_schema_intersection(
     target: &mut Value,
     candidate: &Value,
@@ -782,7 +813,7 @@ fn merge_parent_keywords(
 ) {
     if (ignores_ref_siblings(draft) && hides_assertions_at_ref(branch, parent, Some(applicator)))
         || changes_keyword_scope(branch, parent)
-        || gains_evaluated_locations(branch, parent, Some(applicator))
+        || gains_evaluated_locations(branch, parent, Some(applicator), draft)
     {
         unproven.insert(String::new());
     }
@@ -1387,6 +1418,38 @@ fn masks_string_witness(schema: &Map<String, Value>) -> bool {
     MASKING.iter().any(|keyword| schema.contains_key(*keyword))
 }
 
+/// Every retained passing branch still evaluates the same locations. Extra
+/// passing branches can only reduce the work left to the same `unevaluated*`
+/// constraint. Compare the original schemas so flattening cannot hide edits.
+fn widens_annotating_union(source: &Value, target: &Value, draft: Draft) -> bool {
+    if source.get("unevaluatedProperties").is_none() && source.get("unevaluatedItems").is_none() {
+        return false;
+    }
+    let valid_schema = match draft {
+        Draft::Draft201909 => jsonschema::draft201909::meta::is_valid,
+        Draft::Draft202012 => jsonschema::draft202012::meta::is_valid,
+        _ => return false,
+    };
+    let (Some(source_map), Some(target_map)) = (source.as_object(), target.as_object()) else {
+        return false;
+    };
+    let (Some(old), Some(new)) = (
+        source_map.get("anyOf").and_then(Value::as_array),
+        target_map.get("anyOf").and_then(Value::as_array),
+    ) else {
+        return false;
+    };
+    !old.is_empty()
+        && new.len() > old.len()
+        && source_map.len() == target_map.len()
+        && source_map.iter().all(|(key, value)| key == "anyOf" || target_map.get(key) == Some(value))
+        && old.iter().all(|branch| new.contains(branch))
+        // Identical reference text can name different resources across revisions.
+        && crate::schema_resolver::remaining_refs(target, draft).is_empty()
+        // The target contains every retained branch and every shared constraint.
+        && valid_schema(target)
+}
+
 /// Proves inclusion through an `anyOf` that only one side changes.
 ///
 /// `Valid(rest ∧ (B1 ∨ … ∨ Bn))` is the union of each `rest ∧ Bi`, so a target
@@ -1422,7 +1485,7 @@ fn union_inclusion_holds(
         && branches
             .iter()
             .filter_map(Value::as_object)
-            .filter(|branch| gains_evaluated_locations(source, branch, None))
+            .filter(|branch| gains_evaluated_locations(source, branch, None, source_draft))
             .nth(1)
             .is_some()
     {
@@ -2053,6 +2116,7 @@ fn check_exact_constraints(
     path: &str,
     old_schema: &Map<String, Value>,
     new_schema: &Map<String, Value>,
+    dialects: DialectSupport,
 ) -> Vec<CompatibilityDiagnostic> {
     // Keywords whose two values cannot be ordered by inclusion, so equality
     // is the only thing that can be proven. Numeric bounds live in
@@ -2091,7 +2155,12 @@ fn check_exact_constraints(
     EXACT_CONSTRAINTS
         .iter()
         .filter(|keyword| !(negations_compared && **keyword == "not"))
-        .filter(|keyword| old_schema.get(**keyword) != new_schema.get(**keyword))
+        .filter(|keyword| {
+            let active =
+                |draft| **keyword != "unevaluatedItems" || draft_supports_unevaluated(draft);
+            old_schema.get(**keyword).filter(|_| active(dialects.old))
+                != new_schema.get(**keyword).filter(|_| active(dialects.new))
+        })
         .map(|keyword| {
             CompatibilityDiagnostic::new(
                 path,
@@ -2114,7 +2183,8 @@ fn check_exact_constraints(
 /// never resolved and nothing can be proven about its target - unless both
 /// definitions name the same reference.
 ///
-/// Equal relative refs need the same resolution context.
+/// A direct relative reference is conservative when the documents differ.
+/// The final inclusion check also covers references inside unchanged applicators.
 fn check_unresolved_ref(
     path: &str,
     old_ref: Option<&str>,
@@ -2180,6 +2250,17 @@ fn check_schema_node_compatibility(
     // Locations an ancestor could not prove stay unprovable here; add
     // whatever this node's own `allOf` composition leaves undecided.
     let inherited_exact = inherited_unproven.is_empty();
+    let (subset, superset, target_dialect) = if check_backward {
+        (old_schema, new_schema, walk.dialects.new)
+    } else {
+        (new_schema, old_schema, walk.dialects.old)
+    };
+    if inherited_exact
+        && walk.dialects.old == walk.dialects.new
+        && widens_annotating_union(subset, superset, target_dialect)
+    {
+        return;
+    }
     let mut unproven = inherited_unproven;
     let old_effective = if old_schema.get("allOf").is_some() {
         let (effective, paths) = flatten_effective(old_schema, walk.depth, walk.dialects.old);
@@ -2281,7 +2362,12 @@ fn check_schema_node_compatibility(
         new_map,
         check_backward,
     ));
-    node_errors.extend(check_exact_constraints(path, old_map, new_map));
+    node_errors.extend(check_exact_constraints(
+        path,
+        old_map,
+        new_map,
+        walk.dialects,
+    ));
     node_errors.extend(check_unresolved_ref(
         path,
         old_ref,
@@ -2359,12 +2445,7 @@ fn check_schema_node_compatibility(
     let source_map = if check_backward { old_map } else { new_map };
     // A local allOf may have been approximated. Validate against the target
     // as received, provided no ancestor already approximated this subtree.
-    let (target_node, target_dialect) = if check_backward {
-        (new_schema, walk.dialects.new)
-    } else {
-        (old_schema, walk.dialects.old)
-    };
-    if inherited_exact && enumerated_source_is_included(source_map, target_node, target_dialect) {
+    if inherited_exact && enumerated_source_is_included(source_map, superset, target_dialect) {
         return;
     }
     errors.append(&mut node_errors);
@@ -2479,7 +2560,7 @@ fn check_object_compatibility(
                 counterpart,
                 &property_path,
                 walk.deeper(),
-                UnprovenPaths::new(),
+                unproven_below(unproven, &format!(".{name}")),
                 errors,
             );
         } else {
@@ -2509,7 +2590,7 @@ fn check_object_compatibility(
                 new_property,
                 &property_path,
                 walk.deeper(),
-                UnprovenPaths::new(),
+                unproven_below(unproven, &format!(".{name}")),
                 errors,
             );
             continue;
@@ -2721,6 +2802,66 @@ pub fn check_accepted_set_inclusion(
     check_inclusion(subset, superset, true)
 }
 
+/// An external placeholder has no schema. A fragment missing from an actual
+/// document resource has an unknown binding and cannot establish equality.
+fn reference_target<'r>(
+    registry: Option<&'r jsonschema::Registry<'_>>,
+    resource: &referencing::Uri<String>,
+    fragment: &str,
+) -> Result<Option<&'r Value>, ()> {
+    let resolver = registry.ok_or(())?.resolver(resource.clone());
+    if let Ok(target) = resolver.lookup(fragment)
+        && !target.contents().is_null()
+    {
+        return Ok(Some(target.contents()));
+    }
+    if resolver
+        .lookup("")
+        .is_ok_and(|root| root.contents().is_null())
+    {
+        Ok(None)
+    } else {
+        Err(())
+    }
+}
+
+/// Trait schemas are type metadata. Only references in JSON Schema positions
+/// can affect which instances the referenced target accepts.
+fn has_validation_reference(schema: &Value, draft: Draft) -> bool {
+    crate::schema_resolver::reference_keywords(draft)
+        .iter()
+        .any(|key| schema.get(*key).is_some())
+        || draft
+            .subresources_of(schema)
+            .any(|child| has_validation_reference(child, draft))
+}
+
+/// An identical assertion (including an entire applicator) can conceal a
+/// changed reference target. Inspect these bindings before accepting
+/// a structural proof. An equal target with further refs still needs its
+/// original resolution context.
+fn uncertain_reference(registries: &[ComparisonRegistry<'_>; 2], dialect: Draft) -> Option<String> {
+    let [old, new] = registries;
+    old.references.iter().find_map(|(reference, old_resource)| {
+        let new_resource = new.references.get(reference)?;
+        let fragment = reference.find('#').map_or("", |index| &reference[index..]);
+        let stable = match (old_resource, new_resource) {
+            (Some(a), Some(b)) if a == b => match (
+                reference_target(old.resources.as_ref(), a, fragment),
+                reference_target(new.resources.as_ref(), b, fragment),
+            ) {
+                (Ok(None), Ok(None)) => true,
+                (Ok(Some(old)), Ok(Some(new))) => {
+                    old == new && !has_validation_reference(old, dialect)
+                }
+                _ => false,
+            },
+            _ => false,
+        };
+        (!stable).then(|| reference.clone())
+    })
+}
+
 /// Reports inclusion between `old_schema` and `new_schema` in the direction
 /// `check_backward` selects.
 fn check_inclusion(
@@ -2766,37 +2907,51 @@ fn check_inclusion(
     // GTS requires one dialect per document (spec sec 11.0). Enforce that
     // before any finite-value proof or equality shortcut can accept an invalid
     // schema; registry callers already apply the same rule during validation.
-    for (name, schema, dialect) in [
+    let mut registries: [ComparisonRegistry; 2] = Default::default();
+    for (slot, (name, schema, dialect)) in registries.iter_mut().zip([
         ("old", old_schema, effective_old),
         ("new", new_schema, effective_new),
-    ] {
-        let valid_dialect = crate::schema_dialect::check_subschemas(schema, dialect)
-            .and_then(|()| crate::schema_dialect::check_local_references(schema, dialect));
-        if let Err(reason) = valid_dialect {
-            errors.push(CompatibilityDiagnostic::new(
-                "$",
-                CompatibilityFinding::NotProvable,
-                format!("cannot compare {name} schema: {reason}"),
-            ));
-            return (CompatibilityVerdict::Unknown, errors);
+    ]) {
+        match crate::schema_dialect::comparison_registry(schema, dialect) {
+            Ok(registry) => *slot = registry,
+            Err(reason) => {
+                errors.push(CompatibilityDiagnostic::new(
+                    "$",
+                    CompatibilityFinding::NotProvable,
+                    format!("cannot compare {name} schema: {reason}"),
+                ));
+                return (CompatibilityVerdict::Unknown, errors);
+            }
         }
     }
+    let dialects = DialectSupport {
+        old: effective_old,
+        new: effective_new,
+    };
+    let roots_identical = json_values_equal(old_schema, new_schema);
     check_schema_node_compatibility(
         old_schema,
         new_schema,
         "$",
         Walk {
             check_backward,
-            dialects: DialectSupport {
-                old: effective_old,
-                new: effective_new,
-            },
-            roots_identical: json_values_equal(old_schema, new_schema),
+            dialects,
+            roots_identical,
             depth: 0,
         },
         UnprovenPaths::new(),
         &mut errors,
     );
+    if errors.is_empty()
+        && !roots_identical
+        && let Some(reference) = uncertain_reference(&registries, effective_old)
+    {
+        errors.push(CompatibilityDiagnostic::new(
+            "$",
+            CompatibilityFinding::NotProvable,
+            format!("cannot establish that the reference '{reference}' has the same target in both documents"),
+        ));
+    }
     (CompatibilityVerdict::from_diagnostics(&errors), errors)
 }
 

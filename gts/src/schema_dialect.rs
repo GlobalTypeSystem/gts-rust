@@ -8,6 +8,8 @@
 
 use jsonschema::Draft;
 use serde_json::Value;
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use crate::gts::GTS_ID_URI_PREFIX;
 use crate::schema_modifiers::SchemaScope;
@@ -83,11 +85,44 @@ pub fn check_references(schema: &Value, provider: &dyn SchemaProvider) -> Result
     check_references_in_dialect(schema, Draft::default(), provider)
 }
 
-/// Checks local and self references in a standalone document or inherited fragment.
+#[derive(Default)]
+pub struct ComparisonRegistry<'a> {
+    pub resources: Option<jsonschema::Registry<'a>>,
+    /// Resource containing the target, keyed by the spelling used in the schema.
+    /// None when the spelling can select different resources or a dynamic target.
+    pub references: BTreeMap<String, Option<Arc<referencing::Uri<String>>>>,
+}
+
+/// Resolve the resource part as the JSON Schema resolver does. The fragment is
+/// kept in the reference spelling for the eventual anchor or JSON Pointer lookup.
+fn reference_resource(
+    keyword: &str,
+    reference: &str,
+    resolver: &referencing::Resolver<'_>,
+) -> Option<Arc<referencing::Uri<String>>> {
+    let (resource, fragment) = reference.split_once('#').unwrap_or((reference, ""));
+    if keyword == "$recursiveRef"
+        || (keyword == "$dynamicRef" && !fragment.is_empty() && !fragment.starts_with('/'))
+    {
+        return None;
+    }
+    let base = resolver.base_uri();
+    if reference.starts_with('#') {
+        Some(base)
+    } else {
+        resolver.resolve_uri(&base.borrow(), resource).ok()
+    }
+}
+
+/// Checks the dialect of a comparison document and its local reference graph.
+/// The prepared registry retains the resource scopes used in this revision.
 ///
 /// # Errors
 /// The first reference whose target declares another dialect.
-pub fn check_local_references(schema: &Value, dialect: Draft) -> Result<(), String> {
+pub fn comparison_registry(
+    schema: &Value,
+    dialect: Draft,
+) -> Result<ComparisonRegistry<'_>, String> {
     struct LocalOnly<'a>(&'a Value);
     impl SchemaProvider for LocalOnly<'_> {
         fn schema_content(&self, type_id: &str) -> Option<&Value> {
@@ -108,13 +143,23 @@ pub fn check_local_references(schema: &Value, dialect: Draft) -> Result<(), Stri
             &self,
             _uri: &jsonschema::Uri<String>,
         ) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
-            Ok(Value::Bool(true))
+            // Null cannot be a JSON Schema. A later binding check can distinguish
+            // this external placeholder even from a document-local boolean schema.
+            Ok(Value::Null)
         }
     }
+    check_subschemas(schema, dialect)?;
     check_references_in_dialect(schema, dialect, &LocalOnly(schema))?;
     let dialect = dialect.detect(schema);
     if dialect == Draft::Unknown {
-        return Ok(());
+        let references = crate::schema_resolver::remaining_refs(schema, dialect)
+            .into_iter()
+            .map(|reference| (reference, None))
+            .collect();
+        return Ok(ComparisonRegistry {
+            resources: None,
+            references,
+        });
     }
     let root = schema
         .get("$id")
@@ -132,7 +177,32 @@ pub fn check_local_references(schema: &Value, dialect: Draft) -> Result<(), Stri
         .add(root, schema)
         .and_then(jsonschema::RegistryBuilder::prepare)
         .map_err(|error| error.to_string())?;
-    crate::schema_regex::check_dialect(&registry, &[(root, schema)], dialect)
+    let mut references = BTreeMap::new();
+    crate::schema_regex::check_dialect(
+        &registry,
+        &[(root, schema)],
+        dialect,
+        Some(&mut |node, _, resolver| {
+            for &keyword in crate::schema_resolver::reference_keywords(dialect) {
+                if let Some(reference) = node.get(keyword).and_then(Value::as_str) {
+                    let resource = resolver.and_then(|r| reference_resource(keyword, reference, r));
+                    references
+                        .entry(reference.to_owned())
+                        .and_modify(|known| {
+                            if *known != resource {
+                                *known = None;
+                            }
+                        })
+                        .or_insert(resource);
+                }
+            }
+            Ok(())
+        }),
+    )?;
+    Ok(ComparisonRegistry {
+        resources: Some(registry),
+        references,
+    })
 }
 
 fn check_references_in_dialect(
