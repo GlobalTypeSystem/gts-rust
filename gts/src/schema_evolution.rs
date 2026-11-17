@@ -12,7 +12,7 @@
 //! neither relation.
 
 use crate::schema_semantics::boolean_schema_value;
-use jsonschema::Draft;
+use jsonschema::{Draft, JsonType, JsonTypeSet};
 use num_cmp::NumCmp;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -515,17 +515,58 @@ fn merge_keyword(
             }
         }
         "type" => {
-            if current.as_str() == Some("number") && candidate_value.as_str() == Some("integer") {
-                *current = candidate_value.clone();
-            } else if !(current.as_str() == Some("integer")
-                && candidate_value.as_str() == Some("number"))
+            if let Some(intersection) =
+                intersect_types(current, candidate_value).and_then(type_keyword)
             {
+                *current = intersection;
+            } else {
                 unproven.insert(path.to_owned());
             }
         }
         _ => {
             unproven.insert(path.to_owned());
         }
+    }
+}
+
+/// An empty set proves disjointness; `None` indicates a malformed operand.
+fn intersect_types(left: &Value, right: &Value) -> Option<JsonTypeSet> {
+    fn type_set(value: &Value) -> Option<JsonTypeSet> {
+        let names = match value {
+            Value::Array(names) => names.as_slice(),
+            _ => std::slice::from_ref(value),
+        };
+        let mut types = JsonTypeSet::empty();
+        for name in names {
+            let ty = name.as_str()?.parse().ok()?;
+            if types.contains(ty) {
+                return None;
+            }
+            types = types.insert(ty);
+        }
+        // Integers satisfy both type names. Include them in each numeric
+        // operand before intersecting the sets.
+        if types.contains(JsonType::Number) {
+            types = types.insert(JsonType::Integer);
+        }
+        (!types.is_empty()).then_some(types)
+    }
+
+    let mut common = type_set(left)?.intersect(type_set(right)?);
+    if common.contains(JsonType::Number) {
+        common = common.remove(JsonType::Integer);
+    }
+    Some(common)
+}
+
+/// Only nonempty sets can be represented by the JSON Schema `type` keyword.
+fn type_keyword(common: JsonTypeSet) -> Option<Value> {
+    // Emit shared types in the same order whichever operand came first.
+    let mut names = common.iter().map(|ty| Value::from(ty.as_str()));
+    match common.len() {
+        0 => None,
+        1 => names.next(),
+        _ => Some(Value::Array(names.collect())),
     }
 }
 
@@ -1258,9 +1299,21 @@ fn union_inclusion_holds(
         let mut rest = schema.clone();
         rest.remove("anyOf");
         let (branch, mut lost) = flatten_effective(branch, walk.depth + 1);
+        if !lost.is_empty() {
+            return None;
+        }
         let mut conjoined = Value::Object(rest);
         merge_schema_intersection(&mut conjoined, &branch, "", &mut lost, walk.depth + 1);
-        lost.is_empty().then_some(conjoined)
+        if lost.is_empty() {
+            return Some(conjoined);
+        }
+        // Disjoint types make this branch exactly false. An unresolved $ref
+        // can override adjacent keywords in earlier drafts.
+        if schema.contains_key("$ref") || branch.get("$ref").is_some() {
+            return None;
+        }
+        let common = intersect_types(schema.get("type")?, branch.get("type")?)?;
+        common.is_empty().then_some(Value::Bool(false))
     };
     let included = |subset: &Value, superset: &Value| {
         let (old, new) = if walk.check_backward {
@@ -1308,8 +1361,10 @@ fn union_inclusion_holds(
                 .filter_map(|branch| conjoin(target, branch))
                 .collect();
             source_branches.iter().all(|branch| {
-                conjoin(source, branch)
-                    .is_some_and(|branch| targets.iter().any(|target| included(&branch, target)))
+                conjoin(source, branch).is_some_and(|branch| {
+                    branch == Value::Bool(false)
+                        || targets.iter().any(|target| included(&branch, target))
+                })
             })
         }
         _ => false,

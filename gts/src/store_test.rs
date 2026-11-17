@@ -6303,6 +6303,92 @@ fn test_compare_documents_resolves_and_reports_levels() {
     );
 }
 
+#[test]
+fn test_compare_documents_widens_nullable_any_of() {
+    let old = json!({
+        "$schema": DRAFT7,
+        "type": ["string", "null"],
+        "anyOf": [{"type": "null"}, {"type": "string", "const": "A"}]
+    });
+    let mut new = old.clone();
+    new["anyOf"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"type": "string", "const": "B"}));
+
+    let comparison = GtsStore::new().compare_documents(&old, &new).unwrap();
+    assert!(
+        comparison.backward_compatibility().is_compatible(),
+        "{:?}",
+        comparison.backward_diagnostics
+    );
+    assert!(!comparison.forward_compatibility().is_compatible());
+}
+
+#[test]
+fn test_compare_documents_widens_any_of_under_non_nullable_type() {
+    let old = json!({
+        "$schema": DRAFT7,
+        "allOf": [
+            {"type": "string"},
+            {"anyOf": [{"type": "null"}, {"type": "string", "const": "A"}]}
+        ]
+    });
+    let mut new = old.clone();
+    new["allOf"][1]["anyOf"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"type": "string", "const": "B"}));
+
+    let comparison = GtsStore::new().compare_documents(&old, &new).unwrap();
+    assert!(
+        comparison.backward_compatibility().is_compatible(),
+        "{:?}",
+        comparison.backward_diagnostics
+    );
+    assert!(!comparison.forward_compatibility().is_compatible());
+}
+
+#[test]
+fn test_compare_documents_widens_inherited_nullable_any_of() {
+    let mut store = GtsStore::new();
+    let base_id = "gts.x.core.rg.type.v1~";
+    let department = format!("{base_id}acme.core.org.department.v1~");
+    store.register_schema(base_id, &json!({
+        "$schema": DRAFT7,
+        "$id": format!("gts://{base_id}"),
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["parent_type"],
+        "properties": {"parent_type": {"type": ["string", "null"], "x-gts-type-ref": base_id}}
+    })).unwrap();
+
+    let old = json!({
+        "$schema": DRAFT7,
+        "$id": format!("gts://{department}"),
+        "allOf": [
+            {"$ref": format!("gts://{base_id}")},
+            {"type": "object", "properties": {"parent_type": {"anyOf": [
+                {"type": "null"},
+                {"type": "string", "x-gts-type-ref": format!("{base_id}x.core._.tenant.v1~")}
+            ]}}}
+        ]
+    });
+    let mut new = old.clone();
+    new["allOf"][1]["properties"]["parent_type"]["anyOf"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"type": "string", "x-gts-type-ref": department}));
+
+    let comparison = store.compare_documents(&old, &new).unwrap();
+    assert!(
+        comparison.backward_compatibility().is_compatible(),
+        "{:?}",
+        comparison.backward_diagnostics
+    );
+    assert!(!comparison.forward_compatibility().is_compatible());
+}
+
 /// An open level is admitted normally but reported as not evolvable, and the
 /// diagnostic names that level rather than the document root.
 #[test]

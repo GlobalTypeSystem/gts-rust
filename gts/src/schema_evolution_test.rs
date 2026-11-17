@@ -691,6 +691,38 @@ fn test_union_included_in_union_branch_by_branch() {
     assert!(reordered.forward_compatibility.is_compatible());
 }
 
+#[test]
+fn test_only_proven_empty_any_of_branches_can_be_skipped() {
+    let union = |branch: Value| {
+        json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "string",
+            "anyOf": [branch]
+        })
+    };
+    let disjoint = union(json!({"type": "null"}));
+    let live = union(json!({"type": "string", "const": "A"}));
+    for malformed in [json!([]), json!(["null", 7]), json!("typo")] {
+        let unknown = union(json!({"type": malformed}));
+        let from_empty = check_schema_compatibility(&disjoint, &unknown);
+        assert!(from_empty.backward_compatibility.is_compatible());
+        assert!(from_empty.forward_compatibility.is_unknown());
+        assert!(
+            check_schema_compatibility(&unknown, &live)
+                .backward_compatibility
+                .is_unknown()
+        );
+    }
+
+    // Draft 7 can ignore a type alongside an unresolved reference.
+    let unresolved = union(json!({"$ref": "#/definitions/other", "type": "null"}));
+    assert!(
+        check_schema_compatibility(&unresolved, &live)
+            .backward_compatibility
+            .is_unknown()
+    );
+}
+
 /// Multiples of 4 are multiples of 2, not the reverse; a non-integer pair has
 /// no exact proof and stays undecided rather than being guessed by epsilon.
 #[test]
@@ -1054,6 +1086,51 @@ fn test_all_of_intersects_duplicate_property_schemas() {
         flattened.pointer("/properties/value/maxLength"),
         Some(&json!(10))
     );
+}
+
+#[test]
+fn test_all_of_intersects_type_sets_in_either_order() {
+    let flatten_types = |a: &Value, b: &Value| {
+        let schema = json!({"allOf": [{"type": a}, {"type": b}]});
+        let (flat, unproven) = flatten_effective(&schema, 0);
+        assert!(unproven.is_empty(), "{schema}");
+        flat["type"].clone()
+    };
+    for (left, right, expected) in [
+        (json!(["string", "null"]), json!("string"), json!("string")),
+        (
+            json!(["number", "null"]),
+            json!(["string", "integer", "null"]),
+            json!(["integer", "null"]),
+        ),
+        (
+            json!(["integer", "number"]),
+            json!("number"),
+            json!("number"),
+        ),
+    ] {
+        let mut actual = flatten_types(&left, &right);
+        assert_eq!(actual, flatten_types(&right, &left), "{left} ∩ {right}");
+        if let Some(names) = actual.as_array_mut() {
+            names.sort_unstable_by(|a, b| a.as_str().cmp(&b.as_str()));
+        }
+        assert_eq!(actual, expected, "{left} ∩ {right}");
+    }
+}
+
+#[test]
+fn test_all_of_keeps_disjoint_and_malformed_types_unproven() {
+    for other in [
+        json!("boolean"),
+        json!([]),
+        json!(["null", 7]),
+        json!(["null", "typo"]),
+        json!(["null", "null"]),
+    ] {
+        let schema = json!({"allOf": [{"type": ["string", "null"]}, {"type": other}]});
+        let (_, unproven) = flatten_effective(&schema, 0);
+        assert!(unproven.contains(""), "{schema}");
+    }
 }
 
 /// An instance must satisfy every `allOf` branch, so the flattened level
