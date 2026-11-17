@@ -1092,7 +1092,7 @@ fn test_all_of_intersects_duplicate_property_schemas() {
 fn test_all_of_intersects_type_sets_in_either_order() {
     let flatten_types = |a: &Value, b: &Value| {
         let schema = json!({"allOf": [{"type": a}, {"type": b}]});
-        let (flat, unproven) = flatten_effective(&schema, 0);
+        let (flat, unproven) = flatten_effective(&schema, 0, Draft::default());
         assert!(unproven.is_empty(), "{schema}");
         flat["type"].clone()
     };
@@ -1128,7 +1128,7 @@ fn test_all_of_keeps_disjoint_and_malformed_types_unproven() {
         json!(["null", "null"]),
     ] {
         let schema = json!({"allOf": [{"type": ["string", "null"]}, {"type": other}]});
-        let (_, unproven) = flatten_effective(&schema, 0);
+        let (_, unproven) = flatten_effective(&schema, 0, Draft::default());
         assert!(unproven.contains(""), "{schema}");
     }
 }
@@ -1298,6 +1298,101 @@ fn test_differing_unresolved_ref_is_reported_as_unresolved() {
             .iter()
             .any(|error| error.contains("$.target") && error.contains("unresolved '$ref'")),
         "{backward_errors:?}"
+    );
+}
+
+#[test]
+fn test_unresolved_ref_siblings_follow_the_comparison_dialect() {
+    let reference = "https://example.test/nullable";
+    let nullable = json!(["string", "null"]);
+    for (draft, ignores_siblings) in [
+        ("http://json-schema.org/draft-04/schema#", true),
+        ("http://json-schema.org/draft-06/schema#", true),
+        ("http://json-schema.org/draft-07/schema#", true),
+        ("https://json-schema.org/draft/2019-09/schema", false),
+        ("https://json-schema.org/draft/2020-12/schema", false),
+    ] {
+        let wide = json!({"$schema": draft, "$ref": reference, "type": nullable});
+        let narrow = json!({"$schema": draft, "$ref": reference, "type": "string"});
+        let result = check_schema_compatibility(&wide, &narrow);
+        assert_eq!(
+            result.full_compatibility.is_compatible(),
+            ignores_siblings,
+            "{draft}"
+        );
+    }
+}
+
+#[test]
+fn test_draft7_ref_does_not_absorb_an_outer_type_constraint() {
+    let nullable = json!(["string", "null"]);
+    for applicator in ["anyOf", "allOf"] {
+        let schema = |outer: Value, inner: Value| {
+            json!({
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": outer,
+                (applicator): [{"$ref": "https://example.test/nullable", "type": inner}]
+            })
+        };
+        let old = schema(nullable.clone(), json!("string"));
+        let new = schema(json!("string"), nullable.clone());
+        assert!(
+            !check_schema_compatibility(&old, &new)
+                .backward_compatibility
+                .is_compatible(),
+            "{applicator}"
+        );
+    }
+}
+
+#[test]
+fn test_flattening_annotations_around_an_opaque_ref_preserves_compatibility() {
+    let metadata = json!({"definitions": {"unused": {"type": "string"}}, "title": "Example"});
+    let reference = json!({"$ref": "https://example.test/R"});
+    for branches in [
+        json!([reference]),
+        json!([reference, metadata]),
+        json!([metadata, reference]),
+    ] {
+        let mut schema = metadata.clone();
+        schema["$schema"] = json!("http://json-schema.org/draft-07/schema#");
+        schema["allOf"] = branches;
+        assert!(
+            check_schema_compatibility(&schema, &schema)
+                .full_compatibility
+                .is_compatible()
+        );
+    }
+}
+
+#[test]
+fn test_finite_values_can_satisfy_an_unflattened_target() {
+    let old = json!({"enum": ["a"]});
+    let new = json!({"type": "string", "allOf": [
+        {"properties": {"q": {"type": "integer"}}},
+        {"properties": {"q": {"type": "string"}}}
+    ]});
+    assert!(
+        check_schema_compatibility(&old, &new)
+            .backward_compatibility
+            .is_compatible()
+    );
+}
+
+#[test]
+fn test_equal_relative_ref_text_can_resolve_against_different_base_uris() {
+    let schema = |base: &str, sibling: &str| {
+        json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "$id": base, "properties": {"value": {"$ref": "target", "type": sibling}}
+        })
+    };
+    let old = schema("https://example.test/old/root", "number");
+    let new = schema("https://example.test/new/root", "string");
+    assert!(
+        check_schema_compatibility(&old, &new)
+            .backward_compatibility
+            .is_unknown()
     );
 }
 

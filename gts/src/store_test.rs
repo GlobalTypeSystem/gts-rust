@@ -6349,6 +6349,191 @@ fn test_compare_documents_widens_any_of_under_non_nullable_type() {
     assert!(!comparison.forward_compatibility().is_compatible());
 }
 
+fn assert_breaks_backward_compatibility(old: &Value, new: &Value, witness: &Value) {
+    assert!(
+        jsonschema::validator_for(old).unwrap().is_valid(witness),
+        "{old}"
+    );
+    assert!(
+        !jsonschema::validator_for(new).unwrap().is_valid(witness),
+        "{new}"
+    );
+    let comparison = GtsStore::new().compare_documents(old, new).unwrap();
+    assert!(
+        !comparison.backward_compatibility().is_compatible(),
+        "{old} -> {new}"
+    );
+}
+
+#[test]
+fn test_compare_documents_preserves_draft7_ref_scope_in_intersections() {
+    let nullable = json!(["string", "null"]);
+    let branch = json!({"$ref": "#nullable", "type": "string", "const": "A"});
+    let new = json!({"$schema": DRAFT7, "type": "string"});
+    for body in [
+        json!({"type": nullable, "anyOf": [branch]}),
+        json!({"type": nullable, "allOf": [branch]}),
+        json!({"allOf": [{"type": nullable}, branch]}),
+        json!({"allOf": [branch, {"type": nullable}]}),
+        json!({"$ref": "#nullable", "allOf": [false], "const": "A"}),
+    ] {
+        let mut old = body;
+        old["$schema"] = json!(DRAFT7);
+        old["definitions"] = json!({"r": {"$id": "#nullable", "type": nullable}});
+        assert_breaks_backward_compatibility(&old, &new, &Value::Null);
+    }
+}
+
+#[test]
+fn test_compare_documents_checks_finite_values_against_scoped_property_refs() {
+    let witness = json!({"p": null});
+    let old = json!({"$schema": DRAFT7, "const": witness});
+    let new = json!({
+        "$schema": DRAFT7,
+        "definitions": {"r": {"$id": "#nullable", "type": ["string", "null"]}},
+        "allOf": [
+            {"properties": {"p": {"$ref": "#nullable"}}},
+            {"properties": {"p": {"type": "string"}}}
+        ]
+    });
+    assert_breaks_backward_compatibility(&old, &new, &witness);
+}
+
+#[test]
+fn test_compare_documents_keeps_conditionals_in_their_schema_object() {
+    let witness = json!("A");
+    for applicator in ["anyOf", "allOf"] {
+        let old = json!({
+            "$schema": DRAFT7,
+            "type": ["string", "null"],
+            "then": false,
+            (applicator): [{"type": "string", "if": {"const": "A"}}]
+        });
+        let mut new = old.clone();
+        new[applicator][0]["then"] = json!(false);
+
+        assert_breaks_backward_compatibility(&old, &new, &witness);
+    }
+}
+
+#[test]
+fn test_compare_documents_preserves_annotations_from_all_passing_any_of_branches() {
+    let old = json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": ["object", "null"],
+        "unevaluatedProperties": false,
+        "anyOf": [
+            {"type": "object", "properties": {"a": true}},
+            {"type": "object", "properties": {"b": true}}
+        ]
+    });
+    let mut new = old.clone();
+    for branch in new["anyOf"].as_array_mut().unwrap() {
+        branch["unevaluatedProperties"] = json!(false);
+    }
+
+    assert_breaks_backward_compatibility(&old, &new, &json!({"a": 1, "b": 2}));
+}
+
+#[test]
+fn test_compare_documents_preserves_sibling_keyword_scope() {
+    let modern = "https://json-schema.org/draft/2020-12/schema";
+    for (old, new, witness) in [
+        (
+            json!({"$schema": modern, "type": ["object", "null"], "properties": {"a": true}, "unevaluatedProperties": false}),
+            json!({"$schema": modern, "type": ["object", "null"], "allOf": [
+                {"type": "object", "unevaluatedProperties": false}, {"properties": {"a": true}}
+            ]}),
+            json!({"a": 1}),
+        ),
+        (
+            json!({"$schema": modern, "type": ["array", "null"], "allOf": [
+                {"type": "array", "contains": {"type": "integer"}}, {"contains": {"minimum": 5}}
+            ]}),
+            json!({"$schema": modern, "type": "array", "contains": {"type": "integer", "minimum": 5}}),
+            json!([1, 5.5]),
+        ),
+        (
+            json!({"$schema": modern, "type": "array", "prefixItems": [true], "items": false}),
+            json!({"$schema": modern, "type": ["array", "null"], "allOf": [
+                {"type": "array", "prefixItems": [true]}, {"items": false}
+            ]}),
+            json!([1]),
+        ),
+        (
+            json!({"$schema": DRAFT7, "type": ["array", "null"], "additionalItems": false,
+                "anyOf": [{"type": "array", "items": [true]}]}),
+            json!({"$schema": DRAFT7, "type": "array", "items": [true], "additionalItems": false}),
+            json!([1, 2]),
+        ),
+        (
+            json!({"$schema": "http://json-schema.org/draft-04/schema#",
+                "type": ["number", "null"], "minimum": 0, "exclusiveMinimum": true,
+                "anyOf": [{"type": "number", "minimum": 1}]}),
+            json!({"$schema": "http://json-schema.org/draft-04/schema#",
+                "type": ["number", "null"], "minimum": 0, "exclusiveMinimum": true,
+                "anyOf": [{"type": "number", "minimum": 1, "exclusiveMinimum": true}]}),
+            json!(1),
+        ),
+        (
+            json!({"$schema": modern, "type": ["array", "null"], "unevaluatedItems": false,
+                "anyOf": [{"type":"array", "prefixItems":[true]}, {"type":"array", "contains":{"const":2}}]}),
+            json!({"$schema": modern, "type": ["array", "null"], "unevaluatedItems": false,
+                "anyOf": [{"type":"array", "prefixItems":[true], "unevaluatedItems":false},
+                          {"type":"array", "contains":{"const":2}, "unevaluatedItems":false}]}),
+            json!([1, 2]),
+        ),
+    ] {
+        assert_breaks_backward_compatibility(&old, &new, &witness);
+    }
+}
+
+#[test]
+fn test_compare_documents_keeps_proofs_with_a_single_annotating_branch() {
+    let old = json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": ["object", "null"],
+        "unevaluatedProperties": false,
+        "allOf": [{"properties": {"a": true}}],
+        "anyOf": [{"type": "object", "properties": {"b": true}}]
+    });
+    let mut new = old.clone();
+    new["anyOf"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"type": "null"}));
+    let comparison = GtsStore::new().compare_documents(&old, &new).unwrap();
+    assert!(comparison.backward_compatibility().is_compatible());
+    assert!(!comparison.forward_compatibility().is_compatible());
+}
+
+#[test]
+fn test_compare_documents_proves_inclusion_in_one_closed_target_branch() {
+    let target = json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": ["object", "null"],
+        "unevaluatedProperties": false,
+        "anyOf": [
+            {"type": "null"},
+            {"type": "object", "properties": {"a": true}},
+            {"type": "object", "properties": {"b": true}}
+        ]
+    });
+    let mut smaller_union = target.clone();
+    smaller_union["anyOf"].as_array_mut().unwrap().pop();
+    let closed_object = json!({
+        "$schema": target["$schema"], "type": "object",
+        "unevaluatedProperties": false, "properties": {"a": true}
+    });
+    for source in [smaller_union, closed_object] {
+        let comparison = GtsStore::new().compare_documents(&source, &target).unwrap();
+        assert!(
+            comparison.backward_compatibility().is_compatible(),
+            "{source}"
+        );
+    }
+}
+
 #[test]
 fn test_compare_documents_widens_inherited_nullable_any_of() {
     let mut store = GtsStore::new();

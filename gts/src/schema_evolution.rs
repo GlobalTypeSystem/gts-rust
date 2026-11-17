@@ -289,19 +289,125 @@ fn unproven_below(unproven: &UnprovenPaths, child: &str) -> UnprovenPaths {
         .collect()
 }
 
+const ANNOTATIONS: &[&str] = &[
+    "$id",
+    "$schema",
+    "title",
+    "description",
+    "default",
+    "examples",
+    "readOnly",
+    "writeOnly",
+    "deprecated",
+    "definitions",
+    "$defs",
+    "x-gts-abstract",
+    "x-gts-final",
+    "x-gts-traits",
+    "x-gts-traits-schema",
+];
+
+/// In these drafts a reference object ignores adjacent validation keywords.
+fn ignores_ref_siblings(draft: Draft) -> bool {
+    matches!(draft, Draft::Draft4 | Draft::Draft6 | Draft::Draft7)
+}
+
+/// Would merging put another assertion beside a reference that ignores siblings?
+fn hides_assertions_at_ref(
+    scoped: &Map<String, Value>,
+    other: &Map<String, Value>,
+    folded_applicator: Option<&str>,
+) -> bool {
+    scoped.contains_key("$ref")
+        && other.keys().any(|key| {
+            Some(key.as_str()) != folded_applicator && !ANNOTATIONS.contains(&key.as_str())
+        })
+}
+
 fn merge_schema_map(
     target: &mut Map<String, Value>,
     candidate: &Map<String, Value>,
     path: &str,
     unproven: &mut UnprovenPaths,
     depth: usize,
+    draft: Draft,
 ) {
-    if moves_additional_properties_scope(target, candidate) {
+    if (ignores_ref_siblings(draft)
+        && (hides_assertions_at_ref(target, candidate, None)
+            || hides_assertions_at_ref(candidate, target, None)))
+        || changes_keyword_scope(target, candidate)
+        || gains_evaluated_locations(target, candidate, None)
+        || gains_evaluated_locations(candidate, target, None)
+    {
         unproven.insert(path.to_owned());
     }
     for (keyword, candidate_value) in candidate {
-        merge_keyword(target, keyword, candidate_value, path, unproven, depth);
+        merge_keyword(
+            target,
+            keyword,
+            candidate_value,
+            path,
+            unproven,
+            depth,
+            draft,
+        );
     }
+}
+
+/// Keywords in a schema object can depend on their siblings. Combining two
+/// different conditionals, for example, can activate an otherwise ignored
+/// `then`. Tuple tails likewise depend on the tuple declared at their level.
+fn changes_keyword_scope(a: &Map<String, Value>, b: &Map<String, Value>) -> bool {
+    let mixes = |group: &[&str]| {
+        group.iter().any(|key| a.contains_key(*key))
+            && group.iter().any(|key| b.contains_key(*key))
+            && group.iter().any(|key| a.get(*key) != b.get(*key))
+    };
+    // In Draft 4 a boolean exclusive bound modifies its sibling bound.
+    // Numeric exclusive bounds in later drafts stand on their own.
+    let mixes_bound = |bound, exclusive| {
+        (a.get(exclusive).is_some_and(Value::is_boolean)
+            || b.get(exclusive).is_some_and(Value::is_boolean))
+            && mixes(&[bound, exclusive])
+    };
+    moves_additional_properties_scope(a, b)
+        || mixes(&["if", "then", "else"])
+        || mixes(&["contains", "minContains", "maxContains"])
+        || mixes_bound("minimum", "exclusiveMinimum")
+        || mixes_bound("maximum", "exclusiveMaximum")
+        || ((a.contains_key("prefixItems") || b.contains_key("prefixItems"))
+            && mixes(&["prefixItems", "items"]))
+        || ((a.contains_key("additionalItems") || b.contains_key("additionalItems"))
+            && mixes(&["additionalItems", "items"]))
+}
+
+/// Could an `unevaluated*` keyword start seeing annotations from a schema
+/// outside its original scope? A parent's applicator is skipped when its
+/// branches have already been folded into the result.
+fn gains_evaluated_locations(
+    scoped: &Map<String, Value>,
+    other: &Map<String, Value>,
+    skip: Option<&str>,
+) -> bool {
+    let properties = scoped.contains_key("unevaluatedProperties");
+    let items = scoped.contains_key("unevaluatedItems");
+    (properties || items)
+        && other.keys().any(|key| {
+            Some(key.as_str()) != skip
+                && match key.as_str() {
+                    "properties"
+                    | "patternProperties"
+                    | "additionalProperties"
+                    | "dependentSchemas"
+                    | "dependencies"
+                    | "unevaluatedProperties" => properties,
+                    "items" | "prefixItems" | "additionalItems" | "contains"
+                    | "unevaluatedItems" => items,
+                    "$ref" | "$dynamicRef" | "$recursiveRef" | "allOf" | "anyOf" | "oneOf"
+                    | "if" | "then" | "else" => true,
+                    _ => false,
+                }
+        })
 }
 
 /// Whether merging two levels would take a name out of an
@@ -352,24 +458,8 @@ fn merge_keyword(
     path: &str,
     unproven: &mut UnprovenPaths,
     depth: usize,
+    draft: Draft,
 ) {
-    const ANNOTATIONS: &[&str] = &[
-        "$id",
-        "$schema",
-        "title",
-        "description",
-        "default",
-        "examples",
-        "readOnly",
-        "writeOnly",
-        "deprecated",
-        "definitions",
-        "$defs",
-        "x-gts-abstract",
-        "x-gts-final",
-        "x-gts-traits",
-        "x-gts-traits-schema",
-    ];
     const MINIMUMS: &[&str] = &[
         "minimum",
         "exclusiveMinimum",
@@ -421,6 +511,7 @@ fn merge_keyword(
                             &property_path,
                             unproven,
                             depth + 1,
+                            draft,
                         );
                     } else {
                         current_map.insert(name.clone(), candidate_schema.clone());
@@ -454,10 +545,11 @@ fn merge_keyword(
                 &format!("{path}[]"),
                 unproven,
                 depth + 1,
+                draft,
             );
         }
-        "additionalProperties" | "unevaluatedProperties" | "propertyNames" | "contains" => {
-            merge_schema_intersection(current, candidate_value, path, unproven, depth + 1);
+        "additionalProperties" | "unevaluatedProperties" | "propertyNames" => {
+            merge_schema_intersection(current, candidate_value, path, unproven, depth + 1, draft);
         }
         "enum" => {
             if let (Some(current_values), Some(candidate_values)) =
@@ -607,6 +699,7 @@ fn merge_schema_intersection(
     path: &str,
     unproven: &mut UnprovenPaths,
     depth: usize,
+    draft: Draft,
 ) {
     if depth >= MAX_RECURSION_DEPTH {
         // Stop rather than merge deeper: the accumulated node keeps whatever it
@@ -620,7 +713,7 @@ fn merge_schema_intersection(
         (Value::Bool(true), value) => *target = value.clone(),
         (_, Value::Bool(false)) => *target = Value::Bool(false),
         (Value::Object(target_map), Value::Object(candidate_map)) => {
-            merge_schema_map(target_map, candidate_map, path, unproven, depth);
+            merge_schema_map(target_map, candidate_map, path, unproven, depth, draft);
         }
         _ => {
             // Two branches that are not both object schemas have no
@@ -633,7 +726,7 @@ fn merge_schema_intersection(
 }
 #[must_use]
 pub fn flatten_schema(schema: &Value) -> Value {
-    flatten_effective(schema, 0).0
+    flatten_effective(schema, 0, Draft::default().detect(schema)).0
 }
 
 /// Flattens `allOf` and reports where the intersection could not be proven.
@@ -641,7 +734,7 @@ pub fn flatten_schema(schema: &Value) -> Value {
 /// The flattened schema is always a usable approximation; the returned
 /// [`UnprovenPaths`] tell a compatibility checker which locations it must
 /// not draw conclusions about.
-fn flatten_effective(schema: &Value, depth: usize) -> (Value, UnprovenPaths) {
+fn flatten_effective(schema: &Value, depth: usize, draft: Draft) -> (Value, UnprovenPaths) {
     let mut unproven = UnprovenPaths::new();
     let Some(schema_map) = schema.as_object() else {
         return (schema.clone(), unproven);
@@ -650,30 +743,54 @@ fn flatten_effective(schema: &Value, depth: usize) -> (Value, UnprovenPaths) {
         unproven.insert(String::new());
         return (schema.clone(), unproven);
     }
+    // A legacy reference object ignores even a sibling allOf containing false.
+    if ignores_ref_siblings(draft) && schema_map.contains_key("$ref") {
+        return (schema.clone(), unproven);
+    }
     // An empty object is the same schema as `true` and starting from it saves
     // copying this level's own keywords through the boolean arm below.
     let mut result = Value::Object(Map::new());
     if let Some(all_of) = schema_map.get("allOf").and_then(Value::as_array) {
         for branch in all_of {
-            let (flattened_branch, branch_unproven) = flatten_effective(branch, depth + 1);
+            let (flattened_branch, branch_unproven) = flatten_effective(branch, depth + 1, draft);
             unproven.extend(branch_unproven);
-            merge_schema_intersection(&mut result, &flattened_branch, "", &mut unproven, depth);
+            merge_schema_intersection(
+                &mut result,
+                &flattened_branch,
+                "",
+                &mut unproven,
+                depth,
+                draft,
+            );
         }
     }
     if let Value::Object(result_map) = &mut result {
-        if moves_additional_properties_scope(result_map, schema_map) {
-            unproven.insert(String::new());
-        }
-        for (keyword, value) in schema_map {
-            // Already folded above; the remaining keywords are this level's own
-            // declaration.
-            if keyword == "allOf" {
-                continue;
-            }
-            merge_keyword(result_map, keyword, value, "", &mut unproven, depth);
-        }
+        merge_parent_keywords(result_map, schema_map, "allOf", &mut unproven, depth, draft);
     }
     (result, unproven)
+}
+
+/// Unlike independent branches, the parent's own `unevaluated*` already
+/// observes the annotations from its children. Only the reverse move is new.
+fn merge_parent_keywords(
+    branch: &mut Map<String, Value>,
+    parent: &Map<String, Value>,
+    applicator: &str,
+    unproven: &mut UnprovenPaths,
+    depth: usize,
+    draft: Draft,
+) {
+    if (ignores_ref_siblings(draft) && hides_assertions_at_ref(branch, parent, Some(applicator)))
+        || changes_keyword_scope(branch, parent)
+        || gains_evaluated_locations(branch, parent, Some(applicator))
+    {
+        unproven.insert(String::new());
+    }
+    for (keyword, value) in parent {
+        if keyword != applicator {
+            merge_keyword(branch, keyword, value, "", unproven, depth, draft);
+        }
+    }
 }
 
 /// Reports a bound keyword whose value is present but not a number.
@@ -1286,34 +1403,57 @@ fn union_inclusion_holds(
     walk: Walk,
     unproven: &UnprovenPaths,
 ) -> bool {
-    let (source, target) = if walk.check_backward {
-        (old_map, new_map)
+    let ((source, source_draft), (target, target_draft)) = if walk.check_backward {
+        ((old_map, walk.dialects.old), (new_map, walk.dialects.new))
     } else {
-        (new_map, old_map)
+        ((new_map, walk.dialects.new), (old_map, walk.dialects.old))
     };
-    if source.get("anyOf") == target.get("anyOf") || walk.deeper().exhausted() {
+    if source.get("anyOf") == target.get("anyOf")
+        || walk.deeper().exhausted()
+        || source.contains_key("$ref")
+        || target.contains_key("$ref")
+    {
+        return false;
+    }
+    // Passing branches can jointly evaluate properties or items. Checking
+    // each branch alone can shrink the source, invalidating the proof. On
+    // the target side, inclusion in even one such branch is sufficient.
+    if let Some(branches) = source.get("anyOf").and_then(Value::as_array)
+        && branches
+            .iter()
+            .filter_map(Value::as_object)
+            .filter(|branch| gains_evaluated_locations(source, branch, None))
+            .nth(1)
+            .is_some()
+    {
         return false;
     }
     // `rest ∧ branch`, when the intersection is exact.
-    let conjoin = |schema: &Map<String, Value>, branch: &Value| {
-        let mut rest = schema.clone();
-        rest.remove("anyOf");
-        let (branch, mut lost) = flatten_effective(branch, walk.depth + 1);
-        if !lost.is_empty() {
+    let conjoin = |schema: &Map<String, Value>, branch: &Value, draft: Draft| {
+        let (branch, mut lost) = flatten_effective(branch, walk.depth + 1, draft);
+        if !lost.is_empty() || branch.get("$ref").is_some() {
             return None;
         }
-        let mut conjoined = Value::Object(rest);
-        merge_schema_intersection(&mut conjoined, &branch, "", &mut lost, walk.depth + 1);
-        if lost.is_empty() {
-            return Some(conjoined);
+        let mut conjoined = match branch {
+            Value::Bool(false) => return Some(Value::Bool(false)),
+            Value::Bool(true) => Map::new(),
+            Value::Object(map) => map,
+            _ => return None,
+        };
+        if let (Some(parent_type), Some(branch_type)) = (schema.get("type"), conjoined.get("type"))
+            && intersect_types(parent_type, branch_type).is_some_and(JsonTypeSet::is_empty)
+        {
+            return Some(Value::Bool(false));
         }
-        // Disjoint types make this branch exactly false. An unresolved $ref
-        // can override adjacent keywords in earlier drafts.
-        if schema.contains_key("$ref") || branch.get("$ref").is_some() {
-            return None;
-        }
-        let common = intersect_types(schema.get("type")?, branch.get("type")?)?;
-        common.is_empty().then_some(Value::Bool(false))
+        merge_parent_keywords(
+            &mut conjoined,
+            schema,
+            "anyOf",
+            &mut lost,
+            walk.depth + 1,
+            draft,
+        );
+        lost.is_empty().then_some(Value::Object(conjoined))
     };
     let included = |subset: &Value, superset: &Value| {
         let (old, new) = if walk.check_backward {
@@ -1339,7 +1479,7 @@ fn union_inclusion_holds(
         (None, Some(branches)) if !source.contains_key("anyOf") => {
             let targets: Vec<Value> = branches
                 .iter()
-                .filter_map(|branch| conjoin(target, branch))
+                .filter_map(|branch| conjoin(target, branch, target_draft))
                 .collect();
             let fits = |part: &Value| targets.iter().any(|target| included(part, target));
             // `Valid(S)` is the union of `S ∧ type: t` over S's types, so a
@@ -1350,7 +1490,8 @@ fn union_inclusion_holds(
         (Some(branches), None) if !target.contains_key("anyOf") && !branches.is_empty() => {
             let target = Value::Object(target.clone());
             branches.iter().all(|branch| {
-                conjoin(source, branch).is_some_and(|branch| included(&branch, &target))
+                conjoin(source, branch, source_draft)
+                    .is_some_and(|branch| included(&branch, &target))
             })
         }
         (Some(source_branches), Some(target_branches)) if !source_branches.is_empty() => {
@@ -1358,10 +1499,10 @@ fn union_inclusion_holds(
             // only shrinks the union, so the proof stays sound.
             let targets: Vec<Value> = target_branches
                 .iter()
-                .filter_map(|branch| conjoin(target, branch))
+                .filter_map(|branch| conjoin(target, branch, target_draft))
                 .collect();
             source_branches.iter().all(|branch| {
-                conjoin(source, branch).is_some_and(|branch| {
+                conjoin(source, branch, source_draft).is_some_and(|branch| {
                     branch == Value::Bool(false)
                         || targets.iter().any(|target| included(&branch, target))
                 })
@@ -1924,6 +2065,7 @@ fn check_exact_constraints(
     // `unevaluatedProperties` is handled by the content-model comparison.
     const EXACT_CONSTRAINTS: &[&str] = &[
         "additionalItems",
+        "unevaluatedItems",
         "prefixItems",
         "patternProperties",
         "contains",
@@ -1972,17 +2114,17 @@ fn check_exact_constraints(
 /// never resolved and nothing can be proven about its target - unless both
 /// definitions name the same reference.
 ///
-/// Equal local refs are equivalent only when their root documents match.
+/// Equal relative refs need the same resolution context.
 fn check_unresolved_ref(
     path: &str,
-    old_schema: &Map<String, Value>,
-    new_schema: &Map<String, Value>,
+    old_ref: Option<&str>,
+    new_ref: Option<&str>,
     roots_identical: bool,
 ) -> Vec<CompatibilityDiagnostic> {
-    let old_ref = old_schema.get("$ref").and_then(Value::as_str);
-    let new_ref = new_schema.get("$ref").and_then(Value::as_str);
     if old_ref == new_ref {
-        let Some(reference) = old_ref.filter(|reference| reference.starts_with('#')) else {
+        let Some(reference) =
+            old_ref.filter(|reference| referencing::Uri::parse(*reference).is_err())
+        else {
             return Vec::new();
         };
         if roots_identical {
@@ -1992,7 +2134,7 @@ fn check_unresolved_ref(
             path,
             CompatibilityFinding::NotProvable,
             format!(
-                "keeps an unresolved local '$ref' ({reference}) while the documents differ; \
+                "keeps an unresolved relative '$ref' ({reference}) while the documents differ; \
                  the subschema it names is compared on neither side, so nothing here can be \
                  proven about the values each definition accepts"
             ),
@@ -2037,16 +2179,17 @@ fn check_schema_node_compatibility(
 
     // Locations an ancestor could not prove stay unprovable here; add
     // whatever this node's own `allOf` composition leaves undecided.
+    let inherited_exact = inherited_unproven.is_empty();
     let mut unproven = inherited_unproven;
     let old_effective = if old_schema.get("allOf").is_some() {
-        let (effective, paths) = flatten_effective(old_schema, walk.depth);
+        let (effective, paths) = flatten_effective(old_schema, walk.depth, walk.dialects.old);
         unproven.extend(paths);
         Cow::Owned(effective)
     } else {
         Cow::Borrowed(old_schema)
     };
     let new_effective = if new_schema.get("allOf").is_some() {
-        let (effective, paths) = flatten_effective(new_schema, walk.depth);
+        let (effective, paths) = flatten_effective(new_schema, walk.depth, walk.dialects.new);
         unproven.extend(paths);
         Cow::Owned(effective)
     } else {
@@ -2058,14 +2201,40 @@ fn check_schema_node_compatibility(
     } else {
         (&new_effective, &old_effective)
     };
-    // A provably empty source is included in anything, `false` too. The
-    // emptiness is read off the flattened node only where flattening was exact.
-    if !unproven.contains("") && source.as_object().is_some_and(accepts_nothing) {
-        return;
-    }
     let source_boolean = boolean_schema_value(source);
     let target_boolean = boolean_schema_value(target);
     if source_boolean == Some(false) || target_boolean == Some(true) {
+        return;
+    }
+    if unproven.contains("") {
+        errors.push(CompatibilityDiagnostic::new(
+            path,
+            CompatibilityFinding::NotProvable,
+            "contains an allOf intersection that the compatibility checker cannot prove".to_owned(),
+        ));
+        return;
+    }
+    let old_ref = old_effective.get("$ref").and_then(Value::as_str);
+    let new_ref = new_effective.get("$ref").and_then(Value::as_str);
+    let old_opaque = old_ref.is_some() && ignores_ref_siblings(walk.dialects.old);
+    let new_opaque = new_ref.is_some() && ignores_ref_siblings(walk.dialects.new);
+    let source_opaque = if check_backward {
+        old_opaque
+    } else {
+        new_opaque
+    };
+    if !source_opaque && source.as_object().is_some_and(accepts_nothing) {
+        return;
+    }
+    // An unresolved legacy reference is the entire assertion at its node.
+    // Its siblings cannot prove emptiness, enumerate values, or narrow a type.
+    if old_opaque || new_opaque {
+        errors.extend(check_unresolved_ref(
+            path,
+            old_ref,
+            new_ref,
+            walk.roots_identical,
+        ));
         return;
     }
     if source_boolean == Some(true) || target_boolean == Some(false) {
@@ -2088,14 +2257,6 @@ fn check_schema_node_compatibility(
         }
         return;
     };
-    if unproven.contains("") {
-        errors.push(CompatibilityDiagnostic::new(
-            path,
-            CompatibilityFinding::NotProvable,
-            "contains an allOf intersection that the compatibility checker cannot prove".to_owned(),
-        ));
-        return;
-    }
     if union_inclusion_holds(old_map, new_map, path, walk, &unproven) {
         return;
     }
@@ -2123,8 +2284,8 @@ fn check_schema_node_compatibility(
     node_errors.extend(check_exact_constraints(path, old_map, new_map));
     node_errors.extend(check_unresolved_ref(
         path,
-        old_map,
-        new_map,
+        old_ref,
+        new_ref,
         walk.roots_identical,
     ));
     node_errors.extend(check_narrowing_constraints(
@@ -2196,12 +2357,14 @@ fn check_schema_node_compatibility(
     // it discharges the nested findings too - which is why the whole walk is
     // collected before this point rather than after it.
     let source_map = if check_backward { old_map } else { new_map };
-    let target_dialect = if check_backward {
-        walk.dialects.new
+    // A local allOf may have been approximated. Validate against the target
+    // as received, provided no ancestor already approximated this subtree.
+    let (target_node, target_dialect) = if check_backward {
+        (new_schema, walk.dialects.new)
     } else {
-        walk.dialects.old
+        (old_schema, walk.dialects.old)
     };
-    if enumerated_source_is_included(source_map, target, target_dialect) {
+    if inherited_exact && enumerated_source_is_included(source_map, target_node, target_dialect) {
         return;
     }
     errors.append(&mut node_errors);
