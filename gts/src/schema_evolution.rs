@@ -1460,24 +1460,34 @@ fn widens_annotating_union(source: &Value, target: &Value, draft: Draft) -> bool
 /// target branch. Only a positive answer is conclusive: anything else falls
 /// back to the keyword comparison, which leaves a changed `anyOf` unproven.
 fn union_inclusion_holds(
-    old_map: &Map<String, Value>,
-    new_map: &Map<String, Value>,
+    old_schema: &Value,
+    new_schema: &Value,
     path: &str,
     walk: Walk,
     unproven: &UnprovenPaths,
 ) -> bool {
     let ((source, source_draft), (target, target_draft)) = if walk.check_backward {
-        ((old_map, walk.dialects.old), (new_map, walk.dialects.new))
+        (
+            (old_schema, walk.dialects.old),
+            (new_schema, walk.dialects.new),
+        )
     } else {
-        ((new_map, walk.dialects.new), (old_map, walk.dialects.old))
+        (
+            (new_schema, walk.dialects.new),
+            (old_schema, walk.dialects.old),
+        )
     };
     if source.get("anyOf") == target.get("anyOf")
         || walk.deeper().exhausted()
-        || source.contains_key("$ref")
-        || target.contains_key("$ref")
+        // Synthetic branches do not preserve the original resources or dynamic scope.
+        || has_validation_reference(source, source_draft)
+        || has_validation_reference(target, target_draft)
     {
         return false;
     }
+    let (Some(source), Some(target)) = (source.as_object(), target.as_object()) else {
+        return false;
+    };
     // Passing branches can jointly evaluate properties or items. Checking
     // each branch alone can shrink the source, invalidating the proof. On
     // the target side, inclusion in even one such branch is sufficient.
@@ -1494,7 +1504,7 @@ fn union_inclusion_holds(
     // `rest ∧ branch`, when the intersection is exact.
     let conjoin = |schema: &Map<String, Value>, branch: &Value, draft: Draft| {
         let (branch, mut lost) = flatten_effective(branch, walk.depth + 1, draft);
-        if !lost.is_empty() || branch.get("$ref").is_some() {
+        if !lost.is_empty() {
             return None;
         }
         let mut conjoined = match branch {
@@ -2338,7 +2348,7 @@ fn check_schema_node_compatibility(
         }
         return;
     };
-    if union_inclusion_holds(old_map, new_map, path, walk, &unproven) {
+    if union_inclusion_holds(&old_effective, &new_effective, path, walk, &unproven) {
         return;
     }
 

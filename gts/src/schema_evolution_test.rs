@@ -692,6 +692,59 @@ fn test_union_included_in_union_branch_by_branch() {
 }
 
 #[test]
+fn test_any_of_reference_scope_in_nested_resource() {
+    let old = json!({"const": 4});
+    let new = json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://example.test/root",
+        "$defs": {"x": {"type": "string"}},
+        "anyOf": [{
+            "$id": "https://example.test/branch",
+            "$defs": {"x": {"type": "number"}},
+            "not": {"$ref": "#/$defs/x"}
+        }]
+    });
+    assert!(jsonschema::validator_for(&old).unwrap().is_valid(&json!(4)));
+    assert!(!jsonschema::validator_for(&new).unwrap().is_valid(&json!(4)));
+    assert!(check_backward_diagnostics(&old, &new).0.is_unknown());
+    assert!(check_forward_diagnostics(&new, &old).0.is_unknown());
+}
+
+#[test]
+fn test_any_of_reference_scope_with_dynamic_ref() {
+    let old = json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$defs": {"n": {"$dynamicAnchor": "n", "type": "number"}},
+        "type": ["string", "null"],
+        "anyOf": [{"type": "string"}]
+    });
+    let mut new = old.clone();
+    new["anyOf"][0]["$dynamicRef"] = json!("#n");
+    let witness = json!("X");
+    assert!(jsonschema::validator_for(&old).unwrap().is_valid(&witness));
+    assert!(!jsonschema::validator_for(&new).unwrap().is_valid(&witness));
+    assert!(check_backward_diagnostics(&old, &new).0.is_unknown());
+    assert!(check_forward_diagnostics(&new, &old).0.is_unknown());
+}
+
+#[test]
+fn test_any_of_reference_scope_with_recursive_ref() {
+    let old = json!({
+        "$schema": "https://json-schema.org/draft/2019-09/schema",
+        "$recursiveAnchor": true,
+        "type": "object",
+        "properties": {"p": {"type": ["string", "null"], "anyOf": [{"type": "string"}]}}
+    });
+    let mut new = old.clone();
+    new["properties"]["p"]["anyOf"][0]["$recursiveRef"] = json!("#");
+    let witness = json!({"p": "X"});
+    assert!(jsonschema::validator_for(&old).unwrap().is_valid(&witness));
+    assert!(!jsonschema::validator_for(&new).unwrap().is_valid(&witness));
+    assert!(check_backward_diagnostics(&old, &new).0.is_unknown());
+    assert!(check_forward_diagnostics(&new, &old).0.is_unknown());
+}
+
+#[test]
 fn test_only_proven_empty_any_of_branches_can_be_skipped() {
     let union = |branch: Value| {
         json!({
