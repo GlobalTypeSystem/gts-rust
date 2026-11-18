@@ -180,8 +180,6 @@ tower-http = { version = "0.6", features = ["trace", "cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-chrono = "0.4"
-
 # JSON Schema validation
 jsonschema = { version = "0.58.6", default-features = false }
 # The pattern translation `jsonschema` applies, for tests of the regex profile.

@@ -1,6 +1,17 @@
 use axum::{body::Body, extract::Request, http::StatusCode, middleware::Next, response::Response};
-use chrono::Local;
-use std::time::Instant;
+use std::{fmt, time::Instant};
+use tracing_subscriber::fmt::{
+    format::Writer,
+    time::{FormatTime, SystemTime},
+};
+
+struct LogTimestamp;
+
+impl fmt::Display for LogTimestamp {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        SystemTime.format_time(&mut Writer::new(formatter))
+    }
+}
 
 // ANSI color codes
 struct Colors {
@@ -100,18 +111,17 @@ impl LoggingMiddleware {
             if let Some(ref bytes) = body_bytes
                 && !bytes.is_empty()
             {
-                let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S,%3f");
                 if let Ok(json) = serde_json::from_slice::<serde_json::Value>(bytes) {
                     let body_str = serde_json::to_string_pretty(&json).unwrap_or_default();
                     eprintln!(
-                        "{} - DEBUG - {}Request body:{}\n{}{}{}",
-                        timestamp, colors.dim, colors.reset, colors.gray, body_str, colors.reset
+                        "{LogTimestamp} - DEBUG - {}Request body:{}\n{}{}{}",
+                        colors.dim, colors.reset, colors.gray, body_str, colors.reset
                     );
                 } else {
                     let body_str = String::from_utf8_lossy(bytes);
                     eprintln!(
-                        "{} - DEBUG - {}Request body (raw):{}\n{}{}{}",
-                        timestamp, colors.dim, colors.reset, colors.gray, body_str, colors.reset
+                        "{LogTimestamp} - DEBUG - {}Request body (raw):{}\n{}{}{}",
+                        colors.dim, colors.reset, colors.gray, body_str, colors.reset
                     );
                 }
             }
@@ -128,10 +138,8 @@ impl LoggingMiddleware {
 
         // Log response at INFO level (verbose >= 1)
         // Use eprintln! directly to avoid tracing's escaping of ANSI codes
-        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S,%3f");
         eprintln!(
-            "{} - INFO - {}{}{} {}{}{} -> {}{}{} in {}{:.1}ms{}",
-            timestamp,
+            "{LogTimestamp} - INFO - {}{}{} {}{}{} -> {}{}{} in {}{:.1}ms{}",
             colors.cyan,
             method,
             colors.reset,
@@ -152,28 +160,17 @@ impl LoggingMiddleware {
             let (parts, body) = response.into_parts();
             if let Ok(bytes) = axum::body::to_bytes(body, usize::MAX).await {
                 if !bytes.is_empty() {
-                    let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S,%3f");
                     if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
                         let body_str = serde_json::to_string_pretty(&json).unwrap_or_default();
                         eprintln!(
-                            "{} - DEBUG - {}Response body:{}\n{}{}{}",
-                            timestamp,
-                            colors.dim,
-                            colors.reset,
-                            colors.gray,
-                            body_str,
-                            colors.reset
+                            "{LogTimestamp} - DEBUG - {}Response body:{}\n{}{}{}",
+                            colors.dim, colors.reset, colors.gray, body_str, colors.reset
                         );
                     } else {
                         let body_str = String::from_utf8_lossy(&bytes);
                         eprintln!(
-                            "{} - DEBUG - {}Response body (raw):{}\n{}{}{}",
-                            timestamp,
-                            colors.dim,
-                            colors.reset,
-                            colors.gray,
-                            body_str,
-                            colors.reset
+                            "{LogTimestamp} - DEBUG - {}Response body (raw):{}\n{}{}{}",
+                            colors.dim, colors.reset, colors.gray, body_str, colors.reset
                         );
                     }
                 }
