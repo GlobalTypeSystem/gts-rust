@@ -13,7 +13,6 @@ pub struct Decl {
     /// Inline `mod` names from the file's module down to the declaration.
     pub mods: Vec<String>,
     pub line: usize,
-    pub overrides: bool,
     /// Own generic bounds, a where-clause, lifetimes or const parameters: the
     /// macro emits no exporter.
     pub bounded: bool,
@@ -30,12 +29,7 @@ pub struct LocalDecl {
 pub struct Inventory {
     pub decls: Vec<Decl>,
     pub locals: Vec<LocalDecl>,
-}
-
-impl Inventory {
-    pub fn has_overrides(&self) -> bool {
-        self.decls.iter().any(|d| d.overrides)
-    }
+    pub requires_compiled_export: bool,
 }
 
 /// # Errors
@@ -70,6 +64,7 @@ impl<'ast> Visit<'ast> for Visitor {
 
     fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
         if let Some(attr) = item.attrs.iter().find(|a| is_schema_attr(a)) {
+            self.inventory.requires_compiled_export |= requires_compiled_export(attr);
             let name = item.ident.to_string();
             let line = attr.span().start().line;
             if self.block_depth > 0 {
@@ -80,7 +75,6 @@ impl<'ast> Visit<'ast> for Visitor {
                     name,
                     mods: self.mods.clone(),
                     line,
-                    overrides: has_overrides_arg(attr),
                     bounded: generics.where_clause.is_some()
                         || generics.params.iter().any(|param| match param {
                             syn::GenericParam::Type(p) => !p.bounds.is_empty(),
@@ -100,19 +94,27 @@ fn is_schema_attr(attr: &syn::Attribute) -> bool {
         .is_some_and(|s| s.ident == "struct_to_gts_schema")
 }
 
-/// A top-level `overrides(...)` argument of the attribute.
-fn has_overrides_arg(attr: &syn::Attribute) -> bool {
+/// Look only at top-level macro arguments. Commas inside an override, a
+/// literal or a macro invocation do not delimit arguments here.
+fn requires_compiled_export(attr: &syn::Attribute) -> bool {
     let syn::Meta::List(list) = &attr.meta else {
         return false;
     };
     let args: Vec<TokenTree> = list.tokens.clone().into_iter().collect();
-    args.windows(2).enumerate().any(|(i, pair)| {
-        let at_arg_start =
-            i == 0 || matches!(&args[i - 1], TokenTree::Punct(p) if p.as_char() == ',');
-        at_arg_start
-            && matches!(&pair[0], TokenTree::Ident(id) if id == "overrides")
-            && matches!(&pair[1], TokenTree::Group(g) if g.delimiter() == Delimiter::Parenthesis)
-    })
+    args.split(|t| matches!(t, TokenTree::Punct(p) if p.as_char() == ','))
+        .any(|arg| match arg {
+            [TokenTree::Ident(key), TokenTree::Group(body)] => {
+                key == "overrides" && body.delimiter() == Delimiter::Parenthesis
+            }
+            [
+                TokenTree::Ident(key),
+                TokenTree::Punct(eq),
+                TokenTree::Ident(_),
+                TokenTree::Punct(open),
+                ..,
+            ] => key == "base" && eq.as_char() == '=' && open.as_char() == '<',
+            _ => false,
+        })
 }
 
 #[cfg(test)]
@@ -165,21 +167,21 @@ fn local() {
         let summary: Vec<_> = inventory
             .decls
             .iter()
-            .map(|d| (d.name.as_str(), d.mods.join("::"), d.overrides, d.bounded))
+            .map(|d| (d.name.as_str(), d.mods.join("::"), d.bounded))
             .collect();
         assert_eq!(
             summary,
             [
-                ("BaseV1", String::new(), false, false),
-                ("PlainV1", String::new(), false, false),
-                ("PlacedV1", "orders".to_owned(), true, false),
-                ("BoundedV1", "orders".to_owned(), false, true),
-                ("DefaultedV1", "orders".to_owned(), false, false),
+                ("BaseV1", String::new(), false),
+                ("PlainV1", String::new(), false),
+                ("PlacedV1", "orders".to_owned(), false),
+                ("BoundedV1", "orders".to_owned(), true),
+                ("DefaultedV1", "orders".to_owned(), false),
             ]
         );
         let line_of = |needle: &str| SOURCE.lines().position(|l| l.contains(needle)).unwrap() + 1;
         assert_eq!(inventory.decls[2].line, line_of("#[gts_macros::"));
-        assert!(inventory.has_overrides());
+        assert!(inventory.requires_compiled_export);
         assert_eq!(
             inventory.locals,
             [LocalDecl {
@@ -187,6 +189,25 @@ fn local() {
                 line: line_of("type_id = \"l~\"")
             }]
         );
+    }
+
+    #[test]
+    fn compiled_export_depends_on_macro_arguments() {
+        for (args, compiled) in [
+            (
+                "base = Parent, description = \"base = Parent<()>, overrides(X = Y)\"",
+                false,
+            ),
+            ("base = Parent /* slot */ < ( ) >", true),
+            ("base = Parent, overrides(Parent = Rules)", true),
+        ] {
+            let source = format!("#[struct_to_gts_schema({args})] struct Child;");
+            assert_eq!(
+                scan(&source).unwrap().requires_compiled_export,
+                compiled,
+                "{args}"
+            );
+        }
     }
 
     #[test]

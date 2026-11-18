@@ -122,6 +122,63 @@ fn read_json(path: &Path) -> Value {
 }
 
 #[test]
+fn explicit_parent_exports_fields_in_the_generic_slot_without_overrides() {
+    let child_rs = r#"
+use crate::base::EventV1;
+use gts_macros::struct_to_gts_schema;
+
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = EventV1<()>,
+    type_id = "gts.x.test.ovr_cli.event.v1~x.test.ovr_cli.detail.v1~",
+    description = "Event with details",
+    properties = "x"
+)]
+pub struct DetailV1 {
+    pub x: String,
+}
+"#;
+    let dir = fixture(
+        "fixture-explicit-parent",
+        "",
+        &[
+            ("src/lib.rs", "pub mod base; pub mod detail;"),
+            ("src/base.rs", BASE_RS),
+            ("src/detail.rs", child_rs),
+        ],
+    );
+    let (output, text) = generate(dir.path(), &[]);
+    assert!(output.status.success(), "{text}");
+
+    let schemas = dir.path().join("src/schemas");
+    let base = read_json(&schemas.join("gts.x.test.ovr_cli.event.v1~.schema.json"));
+    let child = read_json(
+        &schemas.join("gts.x.test.ovr_cli.event.v1~x.test.ovr_cli.detail.v1~.schema.json"),
+    );
+    assert_eq!(child["allOf"][0]["$ref"], base["$id"]);
+    let slot = &child["allOf"][1]["properties"]["payload"];
+    assert_eq!(slot["properties"]["x"]["type"], "string");
+    assert_eq!(slot["required"], serde_json::json!(["x"]));
+
+    let mut ops = gts::GtsOps::new(None, None, 0);
+    let registered = ops.add_schemas_with(&[base, child], true, gts::GtsRefValidation::default());
+    assert!(registered.ok, "{:?}", registered.results);
+    let mut instance = serde_json::json!({
+        "id": "gts.x.test.ovr_cli.event.v1~x.test.ovr_cli.detail.v1~x.test.ovr_cli.nested.v1",
+        "subject_type": "gts.x.test.ovr_cli.event.v1~",
+        "subject_id": "abc",
+        "payload": {"x": "ok"}
+    });
+    let accepted = ops.add_entity(&instance, true);
+    assert!(accepted.ok, "{}", accepted.error);
+    instance["id"] =
+        "gts.x.test.ovr_cli.event.v1~x.test.ovr_cli.detail.v1~x.test.ovr_cli.flat.v1".into();
+    instance["payload"] = serde_json::json!({});
+    instance["x"] = "ok".into();
+    assert!(!ops.add_entity(&instance, true).ok);
+}
+
+#[test]
 fn golden_override_chains_match_compiled_schemas() {
     let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("../gts-macros/tests/golden");
     let cases = [

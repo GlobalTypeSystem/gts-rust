@@ -1480,7 +1480,7 @@ fn schema_export_test(input: &DeriveInput, dir_path: &str) -> proc_macro2::Token
 ///   generic parameter. Concrete generic helpers such as `SubjectRules<OrderId>` are
 ///   allowed; `SubjectRules<E>` on `Child<E>` is not.
 ///   Schema generation emits the replacements without checking compatibility.
-///   With overrides in a scan, `gts generate-from-rust` exports every scanned type from
+///   With overrides or an explicit `base = Parent<()>` in a scan, `gts generate-from-rust` exports every scanned type from
 ///   compiled code; see the crate README, "Schema Generation".
 ///   `GtsSchema::validate_overrides()` returns errors for widening, unproven inclusion,
 ///   undeclared fields and unsupported shapes, then runs the registry's derivation admission

@@ -381,7 +381,7 @@ pub struct BaseEventV1<P> {
 Generate JSON Schema files using the GTS CLI tool.
 
 **Compiled export.** If any scanned declaration uses
-[`overrides(...)`](#overriding-ancestor-fields-overrides), the CLI exports every scanned
+[`overrides(...)`](#overriding-ancestor-fields-overrides) or an explicit `base = Parent<()>`, the CLI exports every scanned
 declaration from compiled code, in each Cargo package that contains one, so schemas equal
 `Type::gts_schema_with_refs()` and ancestors in other files or packages keep their constraints.
 The macro
@@ -395,7 +395,7 @@ parameters, files no such target compiles, files outside a Cargo package,
 `#[cfg]`/feature-gated declarations, or two declarations exporting different schemas for one
 type ID. Skip such files with `--exclude` or `// gts:ignore`.
 
-Without overrides anywhere in the scan, files are scanned as text, which does not apply
+Other scans use the text exporter, which does not apply
 `#[schemars]` or `#[serde]` attributes.
 
 ### Generate Schemas
