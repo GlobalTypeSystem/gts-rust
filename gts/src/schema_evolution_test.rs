@@ -691,6 +691,108 @@ fn test_union_included_in_union_branch_by_branch() {
     assert!(reordered.forward_compatibility.is_compatible());
 }
 
+#[test]
+fn test_any_of_reference_scope_in_nested_resource() {
+    let old = json!({"const": 4});
+    let new = json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://example.test/root",
+        "$defs": {"x": {"type": "string"}},
+        "anyOf": [{
+            "$id": "https://example.test/branch",
+            "$defs": {"x": {"type": "number"}},
+            "not": {"$ref": "#/$defs/x"}
+        }]
+    });
+    assert!(jsonschema::validator_for(&old).unwrap().is_valid(&json!(4)));
+    assert!(!jsonschema::validator_for(&new).unwrap().is_valid(&json!(4)));
+    assert!(check_backward_diagnostics(&old, &new).0.is_unknown());
+    assert!(check_forward_diagnostics(&new, &old).0.is_unknown());
+}
+
+#[test]
+fn test_any_of_reference_scope_with_dynamic_ref() {
+    let old = json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$defs": {"n": {"$dynamicAnchor": "n", "type": "number"}},
+        "type": ["string", "null"],
+        "anyOf": [{"type": "string"}]
+    });
+    let mut new = old.clone();
+    new["anyOf"][0]["$dynamicRef"] = json!("#n");
+    let witness = json!("X");
+    assert!(jsonschema::validator_for(&old).unwrap().is_valid(&witness));
+    assert!(!jsonschema::validator_for(&new).unwrap().is_valid(&witness));
+    assert!(check_backward_diagnostics(&old, &new).0.is_unknown());
+    assert!(check_forward_diagnostics(&new, &old).0.is_unknown());
+}
+
+#[test]
+fn test_any_of_reference_scope_with_recursive_ref() {
+    let old = json!({
+        "$schema": "https://json-schema.org/draft/2019-09/schema",
+        "$recursiveAnchor": true,
+        "type": "object",
+        "properties": {"p": {"type": ["string", "null"], "anyOf": [{"type": "string"}]}}
+    });
+    let mut new = old.clone();
+    new["properties"]["p"]["anyOf"][0]["$recursiveRef"] = json!("#");
+    let witness = json!({"p": "X"});
+    assert!(jsonschema::validator_for(&old).unwrap().is_valid(&witness));
+    assert!(!jsonschema::validator_for(&new).unwrap().is_valid(&witness));
+    assert!(check_backward_diagnostics(&old, &new).0.is_unknown());
+    assert!(check_forward_diagnostics(&new, &old).0.is_unknown());
+}
+
+#[test]
+fn test_only_proven_empty_any_of_branches_can_be_skipped() {
+    let union = |branch: Value| {
+        json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "string",
+            "anyOf": [branch]
+        })
+    };
+    let disjoint = union(json!({"type": "null"}));
+    let live = union(json!({"type": "string", "const": "A"}));
+    for malformed in [json!([]), json!(["null", 7]), json!("typo")] {
+        let unknown = union(json!({"type": malformed}));
+        let from_empty = check_schema_compatibility(&disjoint, &unknown);
+        assert!(from_empty.backward_compatibility.is_compatible());
+        assert!(from_empty.forward_compatibility.is_unknown());
+        assert!(
+            check_schema_compatibility(&unknown, &live)
+                .backward_compatibility
+                .is_unknown()
+        );
+    }
+
+    // Draft 7 can ignore a type alongside an unresolved reference.
+    let unresolved = union(json!({"$ref": "#/definitions/other", "type": "null"}));
+    assert!(
+        check_schema_compatibility(&unresolved, &live)
+            .backward_compatibility
+            .is_unknown()
+    );
+}
+
+#[test]
+fn test_widening_an_annotating_union_keeps_malformed_branches_unproven() {
+    let old = json!({"type": "object", "unevaluatedProperties": false, "anyOf": [
+        {"properties": {"a": true}, "type": ["object", "typo"]}, {"properties": {"b": true}}
+    ]});
+    let mut new = old.clone();
+    new["anyOf"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"properties": {"c": true}}));
+    assert!(
+        check_schema_compatibility(&old, &new)
+            .backward_compatibility
+            .is_unknown()
+    );
+}
+
 /// Multiples of 4 are multiples of 2, not the reverse; a non-integer pair has
 /// no exact proof and stays undecided rather than being guessed by epsilon.
 #[test]
@@ -1056,6 +1158,51 @@ fn test_all_of_intersects_duplicate_property_schemas() {
     );
 }
 
+#[test]
+fn test_all_of_intersects_type_sets_in_either_order() {
+    let flatten_types = |a: &Value, b: &Value| {
+        let schema = json!({"allOf": [{"type": a}, {"type": b}]});
+        let (flat, unproven) = flatten_effective(&schema, 0, Draft::default());
+        assert!(unproven.is_empty(), "{schema}");
+        flat["type"].clone()
+    };
+    for (left, right, expected) in [
+        (json!(["string", "null"]), json!("string"), json!("string")),
+        (
+            json!(["number", "null"]),
+            json!(["string", "integer", "null"]),
+            json!(["integer", "null"]),
+        ),
+        (
+            json!(["integer", "number"]),
+            json!("number"),
+            json!("number"),
+        ),
+    ] {
+        let mut actual = flatten_types(&left, &right);
+        assert_eq!(actual, flatten_types(&right, &left), "{left} ∩ {right}");
+        if let Some(names) = actual.as_array_mut() {
+            names.sort_unstable_by(|a, b| a.as_str().cmp(&b.as_str()));
+        }
+        assert_eq!(actual, expected, "{left} ∩ {right}");
+    }
+}
+
+#[test]
+fn test_all_of_keeps_disjoint_and_malformed_types_unproven() {
+    for other in [
+        json!("boolean"),
+        json!([]),
+        json!(["null", 7]),
+        json!(["null", "typo"]),
+        json!(["null", "null"]),
+    ] {
+        let schema = json!({"allOf": [{"type": ["string", "null"]}, {"type": other}]});
+        let (_, unproven) = flatten_effective(&schema, 0, Draft::default());
+        assert!(unproven.contains(""), "{schema}");
+    }
+}
+
 /// An instance must satisfy every `allOf` branch, so the flattened level
 /// requires every name any branch requires - not the names of one branch.
 #[test]
@@ -1222,6 +1369,319 @@ fn test_differing_unresolved_ref_is_reported_as_unresolved() {
             .any(|error| error.contains("$.target") && error.contains("unresolved '$ref'")),
         "{backward_errors:?}"
     );
+}
+
+#[test]
+fn test_unresolved_ref_siblings_follow_the_comparison_dialect() {
+    let reference = "https://example.test/nullable";
+    let nullable = json!(["string", "null"]);
+    for (draft, ignores_siblings) in [
+        ("http://json-schema.org/draft-04/schema#", true),
+        ("http://json-schema.org/draft-06/schema#", true),
+        ("http://json-schema.org/draft-07/schema#", true),
+        ("https://json-schema.org/draft/2019-09/schema", false),
+        ("https://json-schema.org/draft/2020-12/schema", false),
+    ] {
+        let wide = json!({"$schema": draft, "$ref": reference, "type": nullable});
+        let narrow = json!({"$schema": draft, "$ref": reference, "type": "string"});
+        let result = check_schema_compatibility(&wide, &narrow);
+        assert_eq!(
+            result.full_compatibility.is_compatible(),
+            ignores_siblings,
+            "{draft}"
+        );
+    }
+}
+
+#[test]
+fn test_draft7_ref_does_not_absorb_an_outer_type_constraint() {
+    let nullable = json!(["string", "null"]);
+    for applicator in ["anyOf", "allOf"] {
+        let schema = |outer: Value, inner: Value| {
+            json!({
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": outer,
+                (applicator): [{"$ref": "https://example.test/nullable", "type": inner}]
+            })
+        };
+        let old = schema(nullable.clone(), json!("string"));
+        let new = schema(json!("string"), nullable.clone());
+        assert!(
+            !check_schema_compatibility(&old, &new)
+                .backward_compatibility
+                .is_compatible(),
+            "{applicator}"
+        );
+    }
+}
+
+#[test]
+fn test_flattening_annotations_around_an_opaque_ref_preserves_compatibility() {
+    let metadata = json!({"definitions": {"unused": {"type": "string"}}, "title": "Example"});
+    let reference = json!({"$ref": "https://example.test/R"});
+    for branches in [
+        json!([reference]),
+        json!([reference, metadata]),
+        json!([metadata, reference]),
+    ] {
+        let mut schema = metadata.clone();
+        schema["$schema"] = json!("http://json-schema.org/draft-07/schema#");
+        schema["allOf"] = branches;
+        assert!(
+            check_schema_compatibility(&schema, &schema)
+                .full_compatibility
+                .is_compatible()
+        );
+    }
+}
+
+#[test]
+fn test_finite_values_can_satisfy_an_unflattened_target() {
+    let old = json!({"enum": ["a"]});
+    let new = json!({"type": "string", "allOf": [
+        {"properties": {"q": {"type": "integer"}}},
+        {"properties": {"q": {"type": "string"}}}
+    ]});
+    assert!(
+        check_schema_compatibility(&old, &new)
+            .backward_compatibility
+            .is_compatible()
+    );
+}
+
+#[test]
+fn test_equal_relative_ref_text_can_resolve_against_different_base_uris() {
+    let schema = |base: &str, sibling: &str| {
+        json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "$id": base, "properties": {"value": {"$ref": "target", "type": sibling}}
+        })
+    };
+    let old = schema("https://example.test/old/root", "number");
+    let new = schema("https://example.test/new/root", "string");
+    assert!(
+        check_schema_compatibility(&old, &new)
+            .backward_compatibility
+            .is_unknown()
+    );
+}
+
+#[test]
+fn test_relative_ref_in_an_applicator_uses_its_enclosing_resource() {
+    let document = |scope: &str| {
+        json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "https://example.test/root",
+            "$defs": {
+                "old": {"$id": "old/value", "type": "string"},
+                "new": {"$id": "new/value", "type": "integer"}
+            },
+            "properties": {"p": {"$id": scope, "not": {"$ref": "value"}}}
+        })
+    };
+    let old = document("old/field");
+    let new = document("new/field");
+    let witness = json!({"p": 1});
+    assert!(jsonschema::validator_for(&old).unwrap().is_valid(&witness));
+    assert!(!jsonschema::validator_for(&new).unwrap().is_valid(&witness));
+    assert!(!check_backward_diagnostics(&old, &new).0.is_compatible());
+    let mut unchanged_target = old.clone();
+    unchanged_target["title"] = json!("Edited title");
+    assert!(
+        check_schema_compatibility(&old, &unchanged_target)
+            .full_compatibility
+            .is_compatible()
+    );
+}
+
+#[test]
+fn test_same_relative_pointer_in_two_resources_cannot_hide_swapped_bindings() {
+    let document = |root_id: &str, root_type: &str, embedded_id: &str, embedded_type: &str| {
+        json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": root_id,
+            "$defs": {"x": {"type": root_type}, "embedded": {
+                "$id": embedded_id, "$defs": {"x": {"type": embedded_type}},
+                "not": {"$ref": "#/$defs/x"}
+            }},
+            "not": {"$ref": "#/$defs/x"}
+        })
+    };
+    let a = "https://example.test/A";
+    let b = "https://example.test/B";
+    let old = document(a, "string", b, "integer");
+    let new = document(b, "integer", a, "string");
+    let witness = json!(1);
+    assert!(jsonschema::validator_for(&old).unwrap().is_valid(&witness));
+    assert!(!jsonschema::validator_for(&new).unwrap().is_valid(&witness));
+    assert!(!check_backward_diagnostics(&old, &new).0.is_compatible());
+}
+
+#[test]
+fn test_hidden_dynamic_relative_references_depend_on_their_scope() {
+    let document = |ty: &str| {
+        json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$defs": {"x": {"$dynamicAnchor": "value", "type": ty}},
+            "not": {"$dynamicRef": "#value"}
+        })
+    };
+    let old = document("string");
+    let new = document("integer");
+    assert!(jsonschema::validator_for(&old).unwrap().is_valid(&json!(1)));
+    assert!(!jsonschema::validator_for(&new).unwrap().is_valid(&json!(1)));
+    assert!(!check_backward_diagnostics(&old, &new).0.is_compatible());
+
+    let recursive = json!({"$schema": "https://json-schema.org/draft/2019-09/schema",
+        "$recursiveAnchor": true, "properties": {"next": {"oneOf": [{"$recursiveRef": "#"}]}}});
+    let mut changed = recursive.clone();
+    changed["title"] = json!("Another revision");
+    assert!(
+        check_backward_diagnostics(&recursive, &changed)
+            .0
+            .is_unknown()
+    );
+}
+
+#[test]
+fn test_absolute_ref_to_changed_embedded_resource_is_not_a_compatibility_proof() {
+    let uri = "https://example.test/R";
+    for wrapped in [false, true] {
+        let document = |types: Value| {
+            let reference = json!({"$ref": uri, "type": types});
+            let property = if wrapped {
+                json!({"anyOf": [{"$ref": uri}]})
+            } else {
+                reference
+            };
+            json!({
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "definitions": {"r": {"$id": uri, "type": types}},
+                "properties": {"p": property}
+            })
+        };
+        let old = document(json!(["string", "null"]));
+        let new = document(json!("string"));
+        let witness = json!({"p": null});
+        assert!(jsonschema::validator_for(&old).unwrap().is_valid(&witness));
+        assert!(!jsonschema::validator_for(&new).unwrap().is_valid(&witness));
+        assert!(!check_backward_diagnostics(&old, &new).0.is_compatible());
+        assert!(!check_forward_diagnostics(&new, &old).0.is_compatible());
+        assert!(
+            check_schema_compatibility(&old, &old)
+                .full_compatibility
+                .is_compatible()
+        );
+    }
+}
+
+#[test]
+fn test_absolute_ref_to_relative_resource_and_fragment_uses_the_document_binding() {
+    let document = |types: Value| {
+        json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "https://example.test/root",
+            "$defs": {"scope": {"$id": "sub/", "$defs": {"r": {"$id": "R",
+                "$defs": {"t": {"$anchor": "value", "type": types}}
+            }}}},
+            "properties": {"p": {"$ref": "https://example.test/sub/R#value"}}
+        })
+    };
+    let old = document(json!(["string", "null"]));
+    let new = document(json!("string"));
+    let witness = json!({"p": null});
+    assert!(jsonschema::validator_for(&old).unwrap().is_valid(&witness));
+    assert!(!jsonschema::validator_for(&new).unwrap().is_valid(&witness));
+    assert!(!check_backward_diagnostics(&old, &new).0.is_compatible());
+    let mut annotated = old.clone();
+    annotated["title"] = json!("Revised description");
+    assert!(
+        check_schema_compatibility(&old, &annotated)
+            .full_compatibility
+            .is_compatible()
+    );
+}
+
+#[test]
+fn test_absolute_dynamic_ref_in_an_unchanged_negation() {
+    let document = |ty: &str| {
+        json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$defs": {"r": {"$id": "https://example.test/R", "$dynamicAnchor": "value", "type": ty}},
+            "not": {"$dynamicRef": "https://example.test/R#value"}
+        })
+    };
+    let old = document("string");
+    let new = document("integer");
+    let witness = json!(1);
+    assert!(jsonschema::validator_for(&old).unwrap().is_valid(&witness));
+    assert!(!jsonschema::validator_for(&new).unwrap().is_valid(&witness));
+    assert!(!check_backward_diagnostics(&old, &new).0.is_compatible());
+}
+
+#[test]
+fn test_absolute_ref_in_a_pointer_target_outside_schema_keywords() {
+    let document = |types: Value| {
+        json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$defs": {"r": {"$id": "https://example.test/R", "type": types}},
+            "x-schemas": {"alias": {"$ref": "https://example.test/R"}},
+            "anyOf": [{"$ref": "#/x-schemas/alias"}]
+        })
+    };
+    let old = document(json!(["string", "null"]));
+    let new = document(json!("string"));
+    assert!(
+        jsonschema::validator_for(&old)
+            .unwrap()
+            .is_valid(&Value::Null)
+    );
+    assert!(
+        !jsonschema::validator_for(&new)
+            .unwrap()
+            .is_valid(&Value::Null)
+    );
+    assert!(!check_backward_diagnostics(&old, &new).0.is_compatible());
+}
+
+#[test]
+fn test_absolute_ref_can_switch_between_external_and_document_local() {
+    let root = json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {"p": {"$ref": "https://example.test/R#/$defs/leaf"}}
+    });
+    let mut with_resource = root.clone();
+    with_resource["$defs"] =
+        json!({"r": {"$id": "https://example.test/R", "$defs": {"leaf": true}}});
+    let comparison = check_schema_compatibility(&root, &with_resource);
+    assert!(comparison.backward_compatibility.is_unknown());
+    assert!(comparison.forward_compatibility.is_unknown());
+    let mut external = root.clone();
+    external["title"] = json!("External in both revisions");
+    assert!(
+        check_schema_compatibility(&root, &external)
+            .full_compatibility
+            .is_compatible()
+    );
+}
+
+#[test]
+fn test_absolute_ref_to_unchanged_alias_with_changed_dependency() {
+    let document = |types: Value| {
+        json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "definitions": {
+                "alias": {"$id": "https://example.test/alias", "allOf": [{"$ref": "target"}]},
+                "t": {"$id": "https://example.test/target", "type": types}
+            },
+            "properties": {"p": {"$ref": "https://example.test/alias"}}
+        })
+    };
+    let old = document(json!(["string", "null"]));
+    let new = document(json!("string"));
+    let witness = json!({"p": null});
+    assert!(jsonschema::validator_for(&old).unwrap().is_valid(&witness));
+    assert!(!jsonschema::validator_for(&new).unwrap().is_valid(&witness));
+    assert!(!check_backward_diagnostics(&old, &new).0.is_compatible());
 }
 
 #[test]

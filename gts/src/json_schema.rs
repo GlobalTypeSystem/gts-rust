@@ -158,13 +158,14 @@ fn check_schema_positions(
             &registry,
             &documents,
             jsonschema::Draft::default().detect(schema),
+            None,
         )
         .map_err(jsonschema::ValidationError::schema)?;
     }
     crate::schema_regex::check(&registry, &documents)
         .map_err(jsonschema::ValidationError::schema)?;
     if let Some(GtsVocabulary { selected }) = gts {
-        crate::schema_regex::check_nodes(&registry, &documents, &mut |node, location| {
+        crate::schema_regex::check_nodes(&registry, &documents, &mut |node, location, _| {
             check_gts_node(node, selected).map_err(|reason| format!("at '{location}': {reason}"))
         })
         .map_err(jsonschema::ValidationError::schema)?;
