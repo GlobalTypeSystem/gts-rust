@@ -489,7 +489,7 @@ fn extract_and_generate_schemas(
     // Match #[struct_to_gts_schema(...)] followed by struct definition
     // Captures: (1) attribute body, (2) struct name, (3) optional generics, (4) struct body or semicolon for unit structs
     let re = Regex::new(
-        r"(?s)#\[struct_to_gts_schema\(([^)]+)\)\]\s*(?:#\[[^\]]+\]\s*)*(?:pub\s+)?struct\s+(\w+)(?:<([^>]+)>)?\s*(?:\{([^}]*)\}|;)",
+        r"(?s)#\[struct_to_gts_schema\(((?:[^)]|\(\s*\))+)\)\]\s*(?:#\[[^\]]+\]\s*)*(?:pub\s+)?struct\s+(\w+)(?:<([^>]+)>)?\s*(?:\{([^}]*)\}|;)",
     )?;
 
     // Pre-compile field regex outside the loop
@@ -1134,14 +1134,15 @@ use gts::GtsInstanceId;
     schema_id = "gts.x.test.base.v1~",
     description = "Base event"
 )]
-pub struct BaseEvent {
+pub struct BaseEvent<P> {
     pub id: GtsInstanceId,
     pub timestamp: String,
+    pub payload: P,
 }
 
 #[struct_to_gts_schema(
     dir_path = "schemas",
-    base = BaseEvent,
+    base = BaseEvent<()>,
     schema_id = "gts.x.test.base.v1~x.test.child.v1~",
     description = "Child event"
 )]

@@ -222,6 +222,7 @@ mod admission {
     /// Hand-written parent: its chain declares overrides and its generic
     /// slot is closed, so a child that adds a field there is not admitted.
     /// The macro never emits such a slot; this isolates the child's own pair.
+    /// Being hand-written and generic, it is always named `ClosedSlotV1<()>`.
     pub struct ClosedSlotV1<P>(std::marker::PhantomData<P>);
 
     impl<P> gts::GtsSchema for ClosedSlotV1<P> {
@@ -235,6 +236,7 @@ mod admission {
                 "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "properties": {
+                    "name": { "type": "string" },
                     "payload": { "type": "object", "additionalProperties": false }
                 },
                 "required": ["payload"]
@@ -244,7 +246,17 @@ mod admission {
 
     #[struct_to_gts_schema(
         dir_path = "schemas",
-        base = ClosedSlotV1,
+        base = ClosedSlotV1<()>,
+        type_id = "gts.x.test.ovr_harness.closed_slot.v1~x.test.ovr_harness.short_name.v1~",
+        description = "Narrow a field on a hand-written schema",
+        properties = "",
+        overrides(ClosedSlotV1<()> = { #[schemars(length(max = 8))] name: String })
+    )]
+    struct ShortNameV1;
+
+    #[struct_to_gts_schema(
+        dir_path = "schemas",
+        base = ClosedSlotV1<()>,
         type_id = "gts.x.test.ovr_harness.closed_slot.v1~x.test.ovr_harness.slot_child.v1~",
         description = "Adds a field to a closed slot",
         properties = "x"
@@ -357,3 +369,6 @@ mod nullable;
 
 #[cfg(test)]
 mod entity_refs;
+
+#[cfg(test)]
+mod fixed_parent;

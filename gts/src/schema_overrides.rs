@@ -37,12 +37,7 @@ impl AncestorOverride {
     /// Builds the override `A = H`.
     #[must_use]
     pub fn of<A: GtsSchema, H: schemars::JsonSchema>() -> Self {
-        Self {
-            ancestor_type_id: A::TYPE_ID,
-            path: A::outer_generic_path(),
-            generic_field: A::GENERIC_FIELD,
-            helper: helper_schema::<H>(),
-        }
+        crate::schema::SchemaDeclaration::of::<A>().with_override::<H>()
     }
 }
 

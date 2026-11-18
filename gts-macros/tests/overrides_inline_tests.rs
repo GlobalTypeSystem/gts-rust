@@ -236,3 +236,54 @@ fn inline_fields_mean_the_same_as_a_named_helper() {
         assert_eq!(inline["allOf"][1], named["allOf"][1]);
     }
 }
+
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = true,
+    type_id = gts_id!("x.test.ovr_inline.membership.v1~"),
+    description = "Membership link",
+    properties = "id,resource_type"
+)]
+pub struct MembershipV1 {
+    pub id: GtsInstanceId,
+    #[schemars(extend("x-gts-type-ref" = "gts.*"))]
+    pub resource_type: String,
+}
+
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = MembershipV1,
+    type_id = gts_id!("x.test.ovr_inline.membership.v1~x.test.ovr_inline.order_membership.v1~"),
+    description = "Membership link for orders",
+    properties = "",
+    overrides(MembershipV1 = {
+        #[schemars(extend("x-gts-type-ref" = ORDER_TYPE))]
+        resource_type: String,
+    })
+)]
+pub struct OrderMembershipV1;
+
+#[test]
+fn override_only_child_narrows_a_fixed_membership_schema() {
+    OrderMembershipV1::validate_overrides().expect("membership reference can narrow to orders");
+    let base = MembershipV1::gts_schema_with_refs();
+    let resolved = OrderMembershipV1::gts_resolved_schema();
+    let validator = jsonschema::validator_for(&resolved).expect("resolved membership schema");
+    let mut link = serde_json::json!({
+        "id": format!("{}x.test.orders.first.v1", OrderMembershipV1::TYPE_ID),
+        "resource_type": ORDER_TYPE,
+    });
+    assert!(validator.is_valid(&link));
+    link["extra"] = serde_json::json!(true);
+    assert!(!validator.is_valid(&link));
+    for schema in [
+        OrderMembershipV1::gts_schema_with_refs(),
+        OrderMembershipV1::gts_schema_with_refs_allof(),
+    ] {
+        assert_eq!(schema["allOf"][0]["$ref"], base["$id"]);
+        assert_eq!(
+            schema["allOf"][1]["properties"],
+            serde_json::json!({"resource_type": {"type": "string", "x-gts-type-ref": ORDER_TYPE}})
+        );
+    }
+}

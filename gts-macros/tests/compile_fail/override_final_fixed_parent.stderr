@@ -1,0 +1,11 @@
+error[E0080]: evaluation panicked: struct_to_gts_schema: cannot derive from final type 'FinalFixedV1' (it declares `gts_final = true` / `x-gts-final: true`; final types are not inheritable)
+  --> tests/compile_fail/override_final_fixed_parent.rs:17:1
+   |
+17 | / #[struct_to_gts_schema(
+18 | |     dir_path = "schemas",
+19 | |     base = FinalFixedV1,
+20 | |     type_id = "gts.x.app.entities.fixed.v1~x.app.entities.short.v1~",
+...  |
+23 | |     overrides(FinalFixedV1 = { #[schemars(length(max = 8))] name: String })
+24 | | )]
+   | |__^ evaluation of `_` failed here

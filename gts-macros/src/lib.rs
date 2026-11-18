@@ -745,8 +745,7 @@ enum BaseAttr {
     /// This struct is a base type (no parent)
     IsBase,
     /// This struct inherits from the specified parent struct (e.g., `ParentStruct`)
-    /// The macro automatically uses `ParentStruct<()>` in generated code
-    Parent(syn::Ident),
+    Parent(syn::PathSegment),
 }
 
 /// How a host declares its `x-gts-traits-schema`. `inline(T)` embeds `T`'s
@@ -955,9 +954,17 @@ impl Parse for GtsSchemaArgs {
                             ));
                         }
                     } else if input.peek(syn::Ident) {
-                        // Parse parent struct name - the macro automatically adds <()>
-                        let ident: syn::Ident = input.parse()?;
-                        base = Some(BaseAttr::Parent(ident));
+                        let parent: syn::PathSegment = input.parse()?;
+                        if !matches!(parent.arguments, syn::PathArguments::None)
+                            && parent.arguments
+                                != syn::PathArguments::AngleBracketed(syn::parse_quote!(<()>))
+                        {
+                            return Err(syn::Error::new_spanned(
+                                parent,
+                                "base expects a parent name or its unit specialization `Parent<()>`",
+                            ));
+                        }
+                        base = Some(BaseAttr::Parent(parent));
                     } else {
                         return Err(syn::Error::new_spanned(
                             key,
@@ -1092,15 +1099,29 @@ fn uses_type_param(ty: &syn::Type, param: &syn::Ident) -> bool {
     visitor.found
 }
 
-/// `Ancestor` as the `Ancestor<()>` type the macro reads GTS consts from.
-fn ancestor_type(path: &syn::Path) -> syn::Type {
-    let mut path = path.clone();
-    if let Some(last) = path.segments.last_mut()
-        && matches!(last.arguments, syn::PathArguments::None)
+/// A parent's or ancestor's `SchemaDeclaration`. The macro cannot see a bare
+/// name's arity, so it reads the inherent constant the declaring macro emits
+/// (for a generic type, on its unit specialization); a hand-written fixed type
+/// falls back to the blanket trait. A hand-written generic type must be written
+/// as `Name<()>`.
+fn schema_declaration(path: &syn::Path) -> proc_macro2::TokenStream {
+    if path
+        .segments
+        .last()
+        .is_some_and(|s| !matches!(s.arguments, syn::PathArguments::None))
     {
-        last.arguments = syn::PathArguments::AngleBracketed(syn::parse_quote!(<()>));
+        return quote!(::gts::schema::SchemaDeclaration::of::<#path>());
     }
-    syn::Type::Path(syn::TypePath { qself: None, path })
+    // The parent's span makes an unresolvable name (a hand-written generic
+    // type) report the missing type parameter at the user's `Name`.
+    let constant =
+        quote::quote_spanned!(syn::spanned::Spanned::span(path)=> #path::__GTS_SCHEMA_DECLARATION);
+    // No `allow(unused_imports)`: rustc does not report this import from an
+    // external macro, and the attribute breaks `forbid(unused_imports)` crates.
+    quote!(({
+        use ::gts::schema::SchemaDeclarationFallback as _;
+        #constant
+    }))
 }
 
 /// Compile-time guards, schema emission and explicit validation for overrides.
@@ -1108,6 +1129,7 @@ fn overrides_tokens(
     args: &GtsSchemaArgs,
     struct_name: &syn::Ident,
     generic_param: Option<&syn::Ident>,
+    parent: &proc_macro2::TokenStream,
     type_id: &str,
 ) -> syn::Result<(
     proc_macro2::TokenStream,
@@ -1118,12 +1140,11 @@ fn overrides_tokens(
         // A descendant of an overriding type re-checks admission with its
         // own level included; a chain without overrides stays unchecked.
         let validate = match &args.base {
-            BaseAttr::Parent(parent) => quote! {
-                const GTS_CHAIN_OVERRIDES: bool =
-                    <#parent<()> as ::gts::GtsSchema>::GTS_CHAIN_OVERRIDES;
+            BaseAttr::Parent(_) => quote! {
+                const GTS_CHAIN_OVERRIDES: bool = #parent.chain_overrides;
 
                 fn validate_overrides() -> Result<(), ::gts::schema_overrides::OverrideError> {
-                    <#parent<()> as ::gts::GtsSchema>::validate_overrides()?;
+                    (#parent.validate_overrides)()?;
                     if <Self as ::gts::GtsSchema>::GTS_CHAIN_OVERRIDES {
                         ::gts::schema_overrides::validate_derivation_chain(
                             <Self as ::gts::GtsSchema>::TYPE_ID,
@@ -1137,7 +1158,7 @@ fn overrides_tokens(
         };
         return Ok((quote! {}, quote! {}, validate));
     }
-    let BaseAttr::Parent(parent_ident) = &args.base else {
+    let BaseAttr::Parent(_) = &args.base else {
         return Err(syn::Error::new_spanned(
             &args.overrides[0].ancestor,
             "struct_to_gts_schema: `overrides(...)` requires `base = ParentStruct`; a base \
@@ -1169,7 +1190,7 @@ fn overrides_tokens(
                 OverrideHelper::Type(helper) => vec![helper],
                 OverrideHelper::Inline(fields) => fields.iter().map(|field| &field.ty).collect(),
             };
-            let offending = if uses_type_param(&ancestor_type(ancestor), param) {
+            let offending = if uses_type_param(&syn::parse_quote!(#ancestor), param) {
                 Some(quote!(#ancestor))
             } else {
                 helper_types
@@ -1190,10 +1211,10 @@ fn overrides_tokens(
     }
 
     let own_id = LitStr::new(type_id, proc_macro2::Span::mixed_site());
-    let ancestors: Vec<syn::Type> = args
+    let ancestors: Vec<_> = args
         .overrides
         .iter()
-        .map(|pair| ancestor_type(&pair.ancestor))
+        .map(|pair| schema_declaration(&pair.ancestor))
         .collect();
 
     let mut guards = Vec::new();
@@ -1241,7 +1262,7 @@ fn overrides_tokens(
         guards.push(quote! {
             const _: () = {
                 if !::gts::schema_overrides::is_strict_ancestor_type_id(
-                    <#ancestor as ::gts::GtsSchema>::TYPE_ID,
+                    #ancestor.type_id,
                     #own_id,
                 ) {
                     panic!(#msg);
@@ -1260,8 +1281,8 @@ fn overrides_tokens(
             guards.push(quote! {
                 const _: () = {
                     if ::gts::schema_overrides::const_str_eq(
-                        <#left as ::gts::GtsSchema>::TYPE_ID,
-                        <#right as ::gts::GtsSchema>::TYPE_ID,
+                        #left.type_id,
+                        #right.type_id,
                     ) {
                         panic!(#msg);
                     }
@@ -1294,7 +1315,7 @@ fn overrides_tokens(
     }
 
     let entries = quote! {
-        &[#( ::gts::schema_overrides::AncestorOverride::of::<#ancestors, #helpers>() ),*]
+        &[#( #ancestors.with_override::<#helpers>() ),*]
     };
     let apply = quote! {
         ::gts::schema_overrides::apply_ancestor_overrides(&mut overlay, #entries);
@@ -1305,8 +1326,8 @@ fn overrides_tokens(
         const GTS_CHAIN_OVERRIDES: bool = true;
 
         fn validate_overrides() -> Result<(), ::gts::schema_overrides::OverrideError> {
-            <#parent_ident<()> as ::gts::GtsSchema>::validate_overrides()?;
-            let parent = <#parent_ident<()> as ::gts::GtsSchema>::gts_resolved_schema();
+            (#parent.validate_overrides)()?;
+            let parent = (#parent.resolved_schema)();
             ::gts::schema_overrides::validate_ancestor_overrides(
                 &parent,
                 <Self as ::gts::GtsSchema>::TYPE_ID,
@@ -1445,7 +1466,9 @@ fn schema_export_test(input: &DeriveInput, dir_path: &str) -> proc_macro2::Token
 /// * `properties` - Comma-separated list of struct fields to include in the schema
 /// * `base` - Explicit base/parent struct declaration (required):
 ///   - `base = true`: Marks this struct as a base type (must have single-segment `type_id`)
-///   - `base = ParentStruct`: Parent struct name (macro automatically uses `ParentStruct<()>`)
+///   - `base = ParentStruct`: the parent; a bare generic name means `ParentStruct<()>`
+///     (hand-written generic `GtsSchema` types must be written so). Only a fieldless
+///     child with `overrides(...)` may derive from a parent without an extension slot.
 /// * `overrides(Ancestor = Helper, ...)` - optional, derived types only: replace fields an
 ///   ancestor declares. `Helper` is a `#[derive(JsonSchema)]` struct with a subset of
 ///   `Ancestor`'s own fields; each field's schema replaces the inherited one at `Ancestor`'s
@@ -1529,11 +1552,6 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         .to_compile_error()
         .into();
     }
-
-    // base = true can have 0 or 1 generic field:
-    // - 0 generics: This is a leaf/terminal type, no derived structs can extend it
-    // - 1 generic: Derived structs can extend via the generic field
-    // (validation that base = ParentStruct requires parent to have 1 generic is done later via compile-time assertion)
 
     // Parse properties list
     let property_names: Vec<String> = args
@@ -1763,9 +1781,17 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         quote! { None::<&'static str> }
     };
 
+    let override_only = !args.overrides.is_empty()
+        && struct_fields.is_none_or(syn::punctuated::Punctuated::is_empty);
+    let parent = match &args.base {
+        BaseAttr::Parent(segment) => schema_declaration(&syn::parse_quote!(#segment)),
+        BaseAttr::IsBase => quote! {},
+    };
+
     // Generate compile-time assertion when base = ParentStruct
     let base_assertion = match &args.base {
-        BaseAttr::Parent(parent_ident) => {
+        BaseAttr::Parent(segment) => {
+            let parent_ident = &segment.ident;
             let parent_id = expected_parent_type_id
                 .as_ref()
                 .expect("parent_id must exist when base is specified");
@@ -1773,8 +1799,8 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 "struct_to_gts_schema: Base struct '{parent_ident}' TYPE_ID must match parent segment '{parent_id}' from this struct's type_id"
             );
             let generic_field_assertion_msg = format!(
-                "struct_to_gts_schema: Base struct '{parent_ident}' must have exactly 1 generic field. \
-                 Parent types must define a generic field (e.g., `pub payload: P`) that child types extend."
+                "struct_to_gts_schema: Base struct '{parent_ident}' has no generic extension field. \
+                 Only a fieldless child with `overrides(...)` can derive from this parent."
             );
             let final_assertion_msg = format!(
                 "struct_to_gts_schema: cannot derive from final type '{parent_ident}' \
@@ -1783,10 +1809,9 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
             );
             quote! {
                 // Compile-time assertion: verify parent struct's TYPE_ID matches expected parent segment
-                // We use <ParentStruct<()> as GtsSchema> since all GTS structs must be generic
                 const _: () = {
                     // Use a const assertion to verify at compile time
-                    const PARENT_ID: &'static str = <#parent_ident<()> as ::gts::GtsSchema>::TYPE_ID;
+                    const PARENT_ID: &'static str = #parent.type_id;
                     const EXPECTED_ID: &'static str = #parent_id_lit;
                     // Use a manual string comparison for const context
                     const _: () = {
@@ -1806,8 +1831,8 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
 
                 // Compile-time assertion: verify parent struct has exactly 1 generic field
                 const _: () = {
-                    const PARENT_GENERIC_FIELD: Option<&'static str> = <#parent_ident<()> as ::gts::GtsSchema>::GENERIC_FIELD;
-                    if PARENT_GENERIC_FIELD.is_none() {
+                    const PARENT_GENERIC_FIELD: Option<&'static str> = #parent.generic_field;
+                    if !#override_only && PARENT_GENERIC_FIELD.is_none() {
                         panic!(#generic_field_assertion_msg);
                     }
                 };
@@ -1815,7 +1840,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 // Compile-time guard: a final type is not inheritable, so deriving
                 // from it (`base = <final type>`) must fail to compile.
                 const _: () = {
-                    if <#parent_ident<()> as ::gts::GtsSchema>::GTS_FINAL {
+                    if #parent.is_final {
                         panic!(#final_assertion_msg);
                     }
                 };
@@ -1843,25 +1868,22 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     // wrapped at the right depth (full path from the document root, not just
     // one parent level). Base types use the default empty path.
     let outer_generic_path_method = match &args.base {
-        BaseAttr::Parent(parent_ident) => quote! {
+        BaseAttr::Parent(_) => quote! {
             fn gts_resolved_schema() -> serde_json::Value {
-                let parent = <#parent_ident<()> as ::gts::GtsSchema>::gts_resolved_schema();
+                let parent = (#parent.resolved_schema)();
                 let own = Self::gts_schema_with_refs_allof();
                 ::gts::schema_overrides::resolve_type_schema(&own, Some(parent))
             }
 
             fn gts_schema_chain() -> Vec<serde_json::Value> {
-                let mut chain = <#parent_ident<()> as ::gts::GtsSchema>::gts_schema_chain();
+                let mut chain = (#parent.schema_chain)();
                 chain.push(Self::gts_schema_with_refs_allof());
                 chain
             }
 
             fn outer_generic_path() -> Vec<&'static str> {
-                let mut path =
-                    <#parent_ident<()> as ::gts::GtsSchema>::outer_generic_path();
-                if let Some(field) =
-                    <#parent_ident<()> as ::gts::GtsSchema>::GENERIC_FIELD
-                {
+                let mut path = (#parent.outer_generic_path)();
+                if let Some(field) = #parent.generic_field {
                     path.push(field);
                 }
                 path
@@ -1879,8 +1901,8 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     // slot is already required by the parent itself.
     let declares_payload = !property_names.is_empty();
     let require_parent_slot = match &args.base {
-        BaseAttr::Parent(parent_ident) => quote! {
-            if <#parent_ident<()> as ::gts::GtsSchema>::GENERIC_FIELD_OPTIONAL
+        BaseAttr::Parent(_) => quote! {
+            if #parent.generic_field_optional
                 && let Some((slot, outer)) = path_refs.split_last()
             {
                 let mut level = &mut overlay;
@@ -1907,6 +1929,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
             .type_params()
             .next()
             .map(|param| &param.ident),
+        &parent,
         type_id,
     ) {
         Ok(tokens) => tokens,
@@ -2012,8 +2035,8 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     // The ancestor-side state: `Absent` for a base, else the parent's const.
     let parent_trait_state = match &args.base {
         BaseAttr::IsBase => quote! { ::gts::TraitSchemaState::Absent },
-        BaseAttr::Parent(parent_ident) => {
-            quote! { <#parent_ident<()> as ::gts::GtsSchema>::TRAIT_SCHEMA }
+        BaseAttr::Parent(_) => {
+            quote! { #parent.trait_schema }
         }
     };
     // Compile-time guard: `traits` values need a usable trait shape in the chain.
@@ -2461,6 +2484,15 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         }
     };
 
+    // A slotless intermediate parent can itself be nested inside a generic
+    // ancestor. Wrapping empty properties at that path would close its object
+    // and reject its inherited fields.
+    let own_payload_path = if override_only {
+        quote! { if #parent.generic_field.is_none() { Vec::new() } else { Self::outer_generic_path() } }
+    } else {
+        quote! { Self::outer_generic_path() }
+    };
+
     let gts_schema_impl = if has_generic {
         let generic_param = input.generics.type_params().next().unwrap();
         let generic_ident = &generic_param.ident;
@@ -2772,7 +2804,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 // field). For chains deeper than 2 levels this puts the
                 // fields at the correct schema depth and keeps every parent
                 // chain's `additionalProperties: false` honoured.
-                let owned_path = Self::outer_generic_path();
+                let owned_path = #own_payload_path;
                 let path_refs: Vec<&str> = owned_path.iter().copied().collect();
                 let mut nested_properties = Self::wrap_in_nesting_path(&path_refs, properties, required, None);
                 #apply_declared_additional_properties_to_derived_level
@@ -3230,6 +3262,17 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         }
     };
 
+    // Read by children through a bare name. On a generic type the unit-slot
+    // bound lets `Name::__GTS_SCHEMA_DECLARATION` infer `Name<()>`; types whose
+    // own bounds exclude `()` still compile and just cannot be parents.
+    let declaration_where = {
+        let existing = where_clause.into_iter().flat_map(|w| w.predicates.iter());
+        let slot = generics.type_params().next().map(|param| {
+            let ident = &param.ident;
+            quote!((): ::gts::schema::UnitSlot<Slot = #ident>, Self: ::gts::GtsSchema,)
+        });
+        quote!(where #(#existing,)* #slot)
+    };
     let schema_export_test = schema_export_test(&input, dir_path);
 
     let expanded = quote! {
@@ -3357,6 +3400,12 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         }
 
         // Public API methods for schema serialization
+        impl #impl_generics #struct_name #ty_generics #declaration_where {
+            #[doc(hidden)]
+            pub const __GTS_SCHEMA_DECLARATION: ::gts::schema::SchemaDeclaration =
+                ::gts::schema::SchemaDeclaration::of::<Self>();
+        }
+
         impl #impl_generics #struct_name #ty_generics #gts_schema_where_clause {
             /// Get the JSON Schema with `allOf` + `$ref` for inheritance as a JSON string.
             #[allow(dead_code)]

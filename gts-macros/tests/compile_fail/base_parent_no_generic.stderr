@@ -1,18 +1,11 @@
-error[E0107]: struct takes 0 generic arguments but 1 generic argument was supplied
-  --> tests/compile_fail/base_parent_no_generic.rs:23:12
+error[E0080]: evaluation panicked: struct_to_gts_schema: Base struct 'LeafTypeV1' has no generic extension field. Only a fieldless child with `overrides(...)` can derive from this parent.
+  --> tests/compile_fail/base_parent_no_generic.rs:21:1
    |
-23 |       base = LeafTypeV1,
-   |  ____________^^^^^^^^^^-
-   | |            |
-   | |            expected 0 generic arguments
+21 | / #[struct_to_gts_schema(
+22 | |     dir_path = "schemas",
+23 | |     base = LeafTypeV1,
 24 | |     type_id = "gts.x.app.entities.leaf.v1~x.app.entities.child.v1~",
-25 | |     description = "Child trying to extend leaf type (invalid)",
-26 | |     properties = "extra_field"
-27 | | )]
-   | |__- help: remove the unnecessary generics
-   |
-note: struct defined here, with 0 generic parameters
-  --> tests/compile_fail/base_parent_no_generic.rs:15:12
-   |
-15 | pub struct LeafTypeV1 {
-   |            ^^^^^^^^^^
+...  |
+27 | |     overrides(LeafTypeV1 = { #[schemars(length(max = 8))] name: String })
+28 | | )]
+   | |__^ evaluation of `_` failed here

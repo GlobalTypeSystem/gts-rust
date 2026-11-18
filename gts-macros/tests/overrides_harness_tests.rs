@@ -119,6 +119,8 @@ fn generated_tests_run_under_cargo_test() {
             "nullable::",
             "--skip",
             "entity_refs::",
+            "--skip",
+            "fixed_parent::",
         ],
     );
     assert!(!output.status.success(), "{text}");
@@ -153,7 +155,11 @@ fn generated_tests_run_under_cargo_test() {
         text.contains("test admission::descendants_validate_their_whole_chain ... ok"),
         "{text}"
     );
-    assert!(text.contains("6 passed; 3 failed"), "{text}");
+    assert!(
+        text.contains("test admission::gts_overrides_ShortNameV1 ... ok"),
+        "{text}"
+    );
+    assert!(text.contains("7 passed; 3 failed"), "{text}");
 }
 
 #[test]
@@ -206,12 +212,15 @@ fn override_fixtures_reject_every_invalid_declaration() {
         "entity_refs::gts_overrides_BackToBaseV1",
         "entity_refs::gts_overrides_UnconstrainedV1",
         "entity_refs::gts_overrides_WideV1",
+        "fixed_parent::gts_overrides_ExtraV1",
+        "fixed_parent::gts_overrides_NumericV1",
+        "fixed_parent::gts_overrides_WideV1",
         "nullable::gts_overrides_WideCityV1",
     ]
     .into_iter()
     .collect();
     let mut failed = BTreeSet::new();
-    for module in ["chain::", "nullable::", "entity_refs::"] {
+    for module in ["chain::", "nullable::", "entity_refs::", "fixed_parent::"] {
         let (output, text) = cargo_test(&[], &[module]);
         assert_eq!(output.status.code(), Some(101), "{text}");
         assert!(text.contains("test result: FAILED."), "{text}");
