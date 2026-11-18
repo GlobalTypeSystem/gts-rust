@@ -136,8 +136,8 @@ pub enum Commands {
     },
     /// Generate GTS schemas from Rust source code with `#[struct_to_gts_schema]` annotations
     ///
-    /// If a scanned declaration uses `overrides(...)`, all scanned declarations are exported
-    /// from compiled code: `cargo test` runs the exporters the macro emits in each Cargo
+    /// If a scanned declaration uses `overrides(...)` or `base = Parent<()>`, all scanned declarations
+    /// are exported from compiled code: `cargo test` runs the exporters the macro emits in each Cargo
     /// package, and the schemas equal `Type::gts_schema_with_refs()`. Otherwise files are
     /// scanned as text, without applying `#[schemars]`/`#[serde]` attributes.
     GenerateFromRust {

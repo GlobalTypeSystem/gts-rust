@@ -40,8 +40,8 @@ struct NarrowRules {
     properties = "details",
     overrides(HolderV1 = NarrowRules)
 )]
-pub struct NarrowV1<D> {
-    pub details: D,
+pub struct NarrowV1 {
+    pub details: String,
 }
 
 #[derive(JsonSchema)]
@@ -96,12 +96,12 @@ fn narrower_type_reference_is_emitted_and_admitted() {
     let base = HolderV1::<()>::gts_schema_with_refs_allof();
     assert_eq!(base["properties"]["target"]["x-gts-type-ref"], ROOT);
 
-    let narrow = NarrowV1::<()>::gts_schema_with_refs_allof();
+    let narrow = NarrowV1::gts_schema_with_refs_allof();
     assert_eq!(
         narrow["allOf"][1]["properties"]["target"]["x-gts-type-ref"],
         CHILD
     );
-    NarrowV1::<()>::validate_overrides().unwrap();
+    NarrowV1::validate_overrides().unwrap();
 }
 
 #[test]
@@ -119,6 +119,10 @@ fn broader_or_missing_type_reference_is_rejected() {
 
 #[test]
 fn an_older_anchor_cannot_undo_an_intermediate_reference_narrowing() {
+    // The fixed parent already defines payload.details. An override-only child
+    // must not close that payload a second time with an empty object schema.
+    let schema = BackToBaseV1::gts_schema_with_refs_allof();
+    assert!(schema["allOf"][1]["properties"].get("payload").is_none());
     let error = BackToBaseV1::validate_overrides().unwrap_err();
     assert_eq!(error.path, "/target");
     assert_eq!(error.ancestor, HolderV1::<()>::TYPE_ID);

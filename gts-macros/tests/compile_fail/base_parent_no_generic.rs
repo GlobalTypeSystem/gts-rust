@@ -1,5 +1,5 @@
-//! Test: base = ParentStruct requires parent to have exactly 1 generic field
-//! A derived struct cannot extend a parent that has no generic field.
+//! Adding a field still requires a parent extension slot, even with overrides
+//! and an empty properties list.
 
 use gts::GtsInstanceId;
 use gts_macros::struct_to_gts_schema;
@@ -23,7 +23,8 @@ pub struct LeafTypeV1 {
     base = LeafTypeV1,
     type_id = "gts.x.app.entities.leaf.v1~x.app.entities.child.v1~",
     description = "Child trying to extend leaf type (invalid)",
-    properties = "extra_field"
+    properties = "",
+    overrides(LeafTypeV1 = { #[schemars(length(max = 8))] name: String })
 )]
 pub struct ChildOfLeafV1 {
     pub extra_field: String,

@@ -51,10 +51,9 @@ enum BaseAttr {
 
 /// Generate GTS schemas from Rust source code with `#[struct_to_gts_schema]` annotations
 ///
-/// If a selected declaration uses `overrides(...)`, every selected declaration is
-/// exported from compiled code: `cargo test` runs the exporters the macro emits in
-/// each Cargo package, so schemas equal `gts_schema_with_refs()`. Otherwise files
-/// are scanned as text.
+/// If a selected declaration uses `overrides(...)` or `base = Parent<()>`,
+/// `cargo test` runs the exporters for all selected declarations in their Cargo
+/// packages, so schemas equal `gts_schema_with_refs()`. Otherwise files are scanned as text.
 ///
 /// # Arguments
 /// * `source` - Source directory or file to scan
@@ -146,15 +145,13 @@ pub fn generate_schemas_from_rust(
         }
     }
 
-    // Whole-scan mode: if any selected declaration uses `overrides(...)`, every
-    // selected declaration is exported from compiled code, so that ancestors in
-    // other files or packages keep their `#[schemars]`/`#[serde]` constraints and
-    // exact and approximate schemas never mix. Otherwise the source scanner runs.
+    // Export ancestors from the same backend as their children, even across packages.
     let mut packages: BTreeMap<PathBuf, Vec<compiled::SourceFile>> = BTreeMap::new();
     let mut outside_packages = Vec::new();
     let mut unparsable = Vec::new();
-    let mut any_overrides = false;
+    let mut compiled_mode = false;
     let mut manifests = HashMap::new();
+    let explicit_parent = Regex::new(r"\bbase\s*=\s*(?:r#)?\w+\s*<")?;
     for (path, content) in &selected {
         if !content.contains("struct_to_gts_schema") {
             continue;
@@ -162,17 +159,17 @@ pub fn generate_schemas_from_rust(
         let inventory = match inventory::scan(content) {
             Ok(inventory) => inventory,
             Err(e) => {
-                unparsable.push((
-                    format!("  {}: {e}", path.display()),
-                    content.contains("overrides"),
-                ));
+                // A malformed file can still contain a declaration that the
+                // text exporter cannot represent. Report it before writing.
+                compiled_mode |= content.contains("overrides") || explicit_parent.is_match(content);
+                unparsable.push(format!("  {}: {e}", path.display()));
                 continue;
             }
         };
         if inventory.decls.is_empty() && inventory.locals.is_empty() {
             continue;
         }
-        any_overrides |= inventory.has_overrides();
+        compiled_mode |= inventory.requires_compiled_export;
         let canonical = path.canonicalize()?;
         match package_manifest(&canonical, &mut manifests) {
             Some(manifest) => packages
@@ -185,18 +182,16 @@ pub fn generate_schemas_from_rust(
             None => outside_packages.push(format!("  {}", path.display())),
         }
     }
-    let compiled_mode = any_overrides || unparsable.iter().any(|(_, overrides)| *overrides);
     if compiled_mode && !unparsable.is_empty() {
-        let files: Vec<&str> = unparsable.iter().map(|(file, _)| file.as_str()).collect();
         bail!(
             "cannot parse these files to find `#[struct_to_gts_schema]` declarations for \
-             compiled export (`overrides(...)` may be in use):\n{}",
-            files.join("\n")
+             compiled export:\n{}",
+            unparsable.join("\n")
         );
     }
     if compiled_mode && !outside_packages.is_empty() {
         bail!(
-            "`overrides(...)` is in use, so schemas are exported from compiled code, but these \
+            "compiled schema export requires a Cargo package, but these \
              files are not inside a Cargo package:\n{}",
             outside_packages.join("\n")
         );

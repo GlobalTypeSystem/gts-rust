@@ -16,9 +16,12 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
+gts = { path = "path/to/gts-rust/gts" }
 gts-macros = { path = "path/to/gts-rust/gts-macros" }
 serde = { version = "1.0", features = ["derive"] }
 ```
+
+Generated code calls into `gts`, so keep `gts` and `gts-macros` on the same version.
 
 ## Quick Start
 
@@ -378,7 +381,7 @@ pub struct BaseEventV1<P> {
 Generate JSON Schema files using the GTS CLI tool.
 
 **Compiled export.** If any scanned declaration uses
-[`overrides(...)`](#overriding-ancestor-fields-overrides), the CLI exports every scanned
+[`overrides(...)`](#overriding-ancestor-fields-overrides) or an explicit `base = Parent<()>`, the CLI exports every scanned
 declaration from compiled code, in each Cargo package that contains one, so schemas equal
 `Type::gts_schema_with_refs()` and ancestors in other files or packages keep their constraints.
 The macro
@@ -392,7 +395,7 @@ parameters, files no such target compiles, files outside a Cargo package,
 `#[cfg]`/feature-gated declarations, or two declarations exporting different schemas for one
 type ID. Skip such files with `--exclude` or `// gts:ignore`.
 
-Without overrides anywhere in the scan, files are scanned as text, which does not apply
+Other scans use the text exporter, which does not apply
 `#[schemars]` or `#[serde]` attributes.
 
 ### Generate Schemas
@@ -856,6 +859,12 @@ The `base` attribute explicitly declares the struct's position in the inheritanc
 - `base = true` requires a single-segment `type_id`
 - `base = ParentStruct` requires a multi-segment `type_id` where the parent segment matches `ParentStruct`'s `TYPE_ID`
 
+**Naming parents and ancestors.** In `base = Name` and `overrides(Name = ...)`, a bare
+name denotes the type itself when it is non-generic and `Name<()>` when it is a generic
+`#[struct_to_gts_schema]` type. A type with a hand-written generic `GtsSchema`
+implementation must be written as `Name<()>`; its bare name fails to compile with
+"cannot infer type for type parameter". Hand-written non-generic types work bare.
+
 ### Overriding Ancestor Fields (`overrides`)
 
 Use `overrides(Ancestor = { fields }, ...)` to narrow fields declared by ancestors,
@@ -926,8 +935,9 @@ are allowed. On `Child<E>`, `SubjectRules<E>` is rejected, while
 `SubjectRules<model::E>` is allowed if `model::E` is a concrete type. This keeps the
 schema for a given `TYPE_ID` independent of the extension-slot argument and lets the
 generated `Child<()>` test validate the same overrides for every specialization.
-Every ancestor must be generic, as `base = Parent` already requires; `Ancestor` is
-shorthand for `Ancestor<()>`.
+A fieldless child with `overrides(...)` can derive from a non-generic parent and
+narrow inherited fields in place; `overrides` cannot add fields. A child that adds
+fields needs a parent with a generic extension slot.
 
 **Validation.** Declare overriding types at module level. Each gets a generated
 `gts_overrides_<Type>` test that calls `GtsSchema::validate_overrides()` (using `Type<()>`

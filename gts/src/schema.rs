@@ -44,6 +44,77 @@ impl TraitSchemaState {
     }
 }
 
+/// What the macro reads from a parent or overridden ancestor, so a bare name
+/// works whether the type is fixed or generic with its slot set to unit.
+#[doc(hidden)]
+#[allow(clippy::struct_excessive_bools)] // mirrors `GtsSchema`'s flags
+pub struct SchemaDeclaration {
+    pub type_id: &'static str,
+    pub chain_overrides: bool,
+    pub generic_field: Option<&'static str>,
+    pub generic_field_optional: bool,
+    pub is_final: bool,
+    pub trait_schema: TraitSchemaState,
+    pub outer_generic_path: fn() -> Vec<&'static str>,
+    pub resolved_schema: fn() -> Value,
+    pub schema_chain: fn() -> Vec<Value>,
+    pub validate_overrides: fn() -> Result<(), crate::schema_overrides::OverrideError>,
+}
+
+impl SchemaDeclaration {
+    #[must_use]
+    pub const fn of<T: GtsSchema>() -> Self {
+        Self {
+            type_id: T::TYPE_ID,
+            chain_overrides: T::GTS_CHAIN_OVERRIDES,
+            generic_field: T::GENERIC_FIELD,
+            generic_field_optional: T::GENERIC_FIELD_OPTIONAL,
+            is_final: T::GTS_FINAL,
+            trait_schema: T::TRAIT_SCHEMA,
+            outer_generic_path: T::outer_generic_path,
+            resolved_schema: T::gts_resolved_schema,
+            schema_chain: T::gts_schema_chain,
+            validate_overrides: T::validate_overrides,
+        }
+    }
+
+    #[must_use]
+    pub fn with_override<H: schemars::JsonSchema>(
+        &self,
+    ) -> crate::schema_overrides::AncestorOverride {
+        crate::schema_overrides::AncestorOverride {
+            ancestor_type_id: self.type_id,
+            path: (self.outer_generic_path)(),
+            generic_field: self.generic_field,
+            helper: crate::schema_overrides::helper_schema::<H>(),
+        }
+    }
+}
+
+/// Resolves `Name::__GTS_SCHEMA_DECLARATION` for a type without the inherent
+/// constant the macro emits, i.e. a hand-written fixed `GtsSchema`. A
+/// hand-written generic type has no way to pick its slot and must be written
+/// as `Name<()>`.
+#[doc(hidden)]
+pub trait SchemaDeclarationFallback {
+    const __GTS_SCHEMA_DECLARATION: SchemaDeclaration;
+}
+
+impl<T: GtsSchema> SchemaDeclarationFallback for T {
+    const __GTS_SCHEMA_DECLARATION: SchemaDeclaration = SchemaDeclaration::of::<T>();
+}
+
+/// Infers a bare generic name's slot as unit: `(): UnitSlot<Slot = P>` holds
+/// only for `P = ()`.
+#[doc(hidden)]
+pub trait UnitSlot {
+    type Slot;
+}
+
+impl UnitSlot for () {
+    type Slot = ();
+}
+
 /// Trait for types that have a GTS schema.
 ///
 /// This trait enables runtime schema composition for nested generic types.
