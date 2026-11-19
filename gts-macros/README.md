@@ -93,19 +93,36 @@ The macro automatically adds these derives to your struct:
 **Do NOT add Serialize/Deserialize manually for nested structs** - direct serialization is prohibited.  
 You can add other derives like `Debug`, `Clone`, etc.
 
-Nested structs are read and written through their base, by generated code that applies only
-these field-level serde rules:
+For a derived struct (`base = Parent`), the generated reader and writer use the
+field names selected by Serde's `rename` and the container's `rename_all`. Both
+support separate `serialize` and `deserialize` spellings. The reader also
+accepts explicit `#[serde(alias = "...")]` names.
 
-- an absent field typed `Option<T>` (written out as `Option`, not through a type alias) is `None`;
-- an absent field with `#[serde(default)]` or `#[serde(default = "path")]` takes that default;
-- `#[serde(rename = "...")]` names the member.
+When upgrading from 0.17.2, a derived field such as `item_count` under
+`#[serde(rename_all = "camelCase")]` starts writing `itemCount`. A field-level
+directional `rename` can also change the spelling written by a derived struct.
+The new reader accepts the old snake_case spelling when it is free. A declared
+input name, explicit alias, or another field's output name takes precedence.
 
-For compatibility with earlier releases, a member is also read under serde's snake_case form of
-the unraw Rust field name when that differs from its name and no other field is written under it
-(`r#type` also reads `type`, `fooBar` also reads `foo_bar`). A `Self::` path in `default = "..."`
-names the struct, as with serde derive. Any other absent field is a missing-field error. Other serde attributes, such as
-`skip_serializing_if`, `skip`, `rename(serialize = ..., deserialize = ...)` or the container
-attribute `rename_all`, are not applied to nested structs.
+In mixed-version deployments, upgrade readers before writers when the old
+spelling is still accepted. If it now identifies another field, use distinct
+names or version the type before rollout. For intentionally different read
+and write names, an explicit alias for the write spelling allows round-tripping.
+For existing base schemas with directional renames, the generated GTS properties
+now use the write spelling. Check published schemas and regenerate or version
+them according to your compatibility requirements.
+
+An absent field with an explicit `#[serde(default)]` or `#[serde(default = "path")]`
+uses that default. `Self::` in a default function path names the derived struct.
+An ordinary `Option<T>` with no explicit default reads an absent member as
+`None`. Write out `Option` for this behavior. A required generic payload slot
+and other required fields produce a missing-field error.
+
+The custom derived reader/writer implements the rules above and special handling
+for generic payload slots. Field-level `skip`, `skip_serializing_if`,
+`serialize_with`, `deserialize_with`, `flatten` and container-level `default`
+follow ordinary Serde derive behavior on base structs. On derived structs they
+are outside the supported reader/writer contract.
 
 ```rust
 // ✅ Correct - only add Debug, Clone, etc.
@@ -122,6 +139,33 @@ pub struct MyStructV1 { ... }
 ### Ordinary Nested Data Structs and Content Models
 
 The macro emits Draft-07 schemas and preserves `definitions` for ordinary nested Rust structs.
+
+For ordinary structs, Schemars supplies the input schema by default. Fields such as
+`phone: Option<String>` may be absent. If a nested type reads `name` but writes
+`displayName`, its input schema requires `name`. Choose the intended GTS property
+name explicitly with `#[schemars(rename = "displayName")]` on the ordinary field.
+To keep that type's standalone input schema as well, select a separate schema view
+on the containing field:
+
+```rust
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct ContactWire {
+    #[serde(rename = "displayName")]
+    name: String,
+    phone: Option<String>,
+}
+
+// Inside the GTS declaration:
+struct ContactRecordV1 {
+    #[schemars(with = "ContactWire")]
+    contact: Contact,
+}
+```
+
+The GTS schema then accepts `{"contact":{"displayName":"Anna"}}` with or without
+`phone`. Serde still reads and writes the original `Contact` type.
+When the input may accept both names, `#[serde(rename = "displayName", alias = "name")]`
+on the ordinary field also gives Schemars the canonical name directly.
 
 Under GTS 0.13, adding an optional field to an **open** object is not backward compatible: the
 old schema already accepted arbitrary values under that property name, so declaring it narrows
@@ -186,7 +230,7 @@ should reject unknown fields at deserialization time as well, not just during sc
 | **Property existence** | Every property in the list must exist as a field in the struct |
 | **Struct type** | Named-field structs, plus unit structs when `properties = ""`; tuple structs and enums are rejected |
 | **Generic type constraints** | Generic type parameters must implement `GtsSchema` (only `()` or other GTS structs allowed) |
-| **Base struct field validation** | Base structs (`base = true`) must have either ID fields OR GTS Type fields, but not both (see below) |
+| **Base struct field validation** | Base structs can omit identity fields or use one of the two patterns below. |
 
 ### Compile Error Examples
 
@@ -324,10 +368,7 @@ pub struct BaseEventV1<P> {
 }
 ```
 ```
-error: struct_to_gts_schema: Base structs must have either an ID field
-       (one of: $id, id, gts_id, or gtsId) of type GtsInstanceId OR a GTS Type
-       field (one of: type, gts_type, gtsType, or schema) of type GtsTypeId,
-       but not both. Found both valid ID and GTS Type fields.
+error: struct_to_gts_schema: Base structs cannot declare both a GtsInstanceId identity field and a GtsTypeId identity field.
 ```
 
 **Invalid base struct - wrong GTS Type field type:**
@@ -347,23 +388,39 @@ pub struct BaseEventV1<P> {
 }
 ```
 ```
-error: struct_to_gts_schema: Base structs must have either an ID field
-       (one of: $id, id, gts_id, or gtsId) of type GtsInstanceId OR a GTS Type
-       field (one of: type, gts_type, gtsType, or schema) of type GtsTypeId
+error: struct_to_gts_schema: Expected a base identity field of type GtsInstanceId (for an ID field) or GtsTypeId (for a GTS Type field). Base structs may also omit identity fields.
 ```
 
 ### Base Struct Field Validation Rules
 
-Base structs (`base = true`) must follow **exactly one** of these patterns:
+Base structs (`base = true`) can omit both identity fields when the caller already knows the type.
+The type ID is available through `Self::gts_type_id()`. Serde can read and write the declared
+fields without a placeholder ID. To validate an instance with no identity field, supply
+its type separately. The JSON alone cannot identify its enclosing GTS schema.
+A field such as `pub resource_type: gts::GtsTypeId` can
+reference another type under its own property name.
+
+Identity fields are matched by their serialized JSON names, the ones `GtsConfig::default()`
+reads. A domain field can accompany a GTS instance ID when default ID lookup selects the GTS
+field first, for example a numeric `id` alongside a `GtsInstanceId` serialized as `$id`.
+Lookup reads the first nonempty string. Standard numbers, booleans, arrays, tuples and
+collections such as `Vec` and `HashMap` can precede the GTS ID when they use their normal
+Serde representation. A higher-priority `gts_id: Option<String>` alongside `id: GtsInstanceId`
+can take precedence at runtime and is now rejected at compile time. Validation sees the
+fields after conditional compilation and after other attribute macros have run.
+Existing bases with a skipped, defaulted `gts_type: GtsTypeId` beside domain fields also
+remain valid.
+
+To identify an instance or its type in the JSON itself, use one of the following patterns.
 
 #### Option 1: ID Fields
-- **Supported field names**: `$id`, `id`, `gts_id`, `gtsId`
+- **Supported JSON names**: `$id`, `gtsId`, `gtsIid`, `gtsOid`, `gtsI`, `gts_id`, `gts_oid`, `gts_iid`, `id`
 - **Required type**: `GtsInstanceId` (or `gts::GtsInstanceId`)
 - **Use case**: Instance-based identification (well-known instances)
 
 #### Option 2: GTS Type Fields
-- **Supported field names**: `type`, `r#type`, `gts_type`, `gtsType`, `schema`
-- **Supported serde renames**: Fields with `#[serde(rename = "type")]`, `#[serde(rename = "gts_type")]`, `#[serde(rename = "gtsType")]`, or `#[serde(rename = "schema")]`
+- **Supported JSON names**: `gtsTid`, `gtsType`, `gtsT`, `gts_t`, `gts_tid`, `gts_type`, `type`, `schema`
+- **Field names and serde renames**: `r#type` and `#[serde(rename = "type")]` both serialize as `type`
 - **Required type**: `GtsTypeId` (or `gts::GtsTypeId`)
 - **Use case**: Type-based identification (anonymous instances)
 
@@ -385,8 +442,6 @@ pub struct BaseEventV1<P> {
     pub payload: P,
 }
 ```
-
-**Important**: Base structs cannot have both ID fields AND GTS Type fields. They must choose one approach.
 
 ---
 
@@ -929,8 +984,15 @@ pub struct UuidOrderSubject {
 ```
 
 **Rules.** Each entry names a distinct, strict ancestor and a subset of its own fields by
-wire name (`#[serde(rename)]` applies). The generic slot cannot be overridden; helpers do
-not appear in instances. Each field schema is a complete replacement: omitted constraints
+wire name (`#[serde(rename)]` applies). For example, when a field reads as `subject_in`
+and writes as `subjectOut`, an override with the same rename constrains `subjectOut`.
+An existing helper can also use the ancestor's unambiguous input spelling. Inline
+helpers carry their field rename declarations. A named `JsonSchema` helper exposes
+only its schemas. When swapped fields have indistinguishable schemas, use explicit
+`#[schemars(rename = "wireName")]` on the named helper to bind each constraint and
+its requiredness to its intended wire field.
+
+The generic slot cannot be overridden. Helpers do not appear in instances. Each field schema is a complete replacement: omitted constraints
 are not inherited, while fields absent from the helper remain unchanged. Replacements must
 preserve or tighten every declaration along the ancestor chain, including earlier overrides.
 For closed nested objects, restate every inherited property (even optional ones) and use

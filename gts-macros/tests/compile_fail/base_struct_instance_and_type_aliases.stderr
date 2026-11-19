@@ -1,0 +1,11 @@
+error: struct_to_gts_schema: Base structs cannot declare both a GtsInstanceId identity field and a GtsTypeId identity field.
+  --> tests/compile_fail/base_struct_instance_and_type_aliases.rs:12:12
+   |
+12 | pub struct IidAndTypeV1 {
+   |            ^^^^^^^^^^^^
+
+error: struct_to_gts_schema: Base structs cannot declare both a GtsInstanceId identity field and a GtsTypeId identity field.
+  --> tests/compile_fail/base_struct_instance_and_type_aliases.rs:25:12
+   |
+25 | pub struct IdAndTidV1 {
+   |            ^^^^^^^^^^

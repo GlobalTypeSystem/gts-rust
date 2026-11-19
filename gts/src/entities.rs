@@ -67,27 +67,14 @@ pub struct GtsConfig {
 impl Default for GtsConfig {
     fn default() -> Self {
         GtsConfig {
-            entity_id_fields: vec![
-                "$id".to_owned(),
-                "gtsId".to_owned(),
-                "gtsIid".to_owned(),
-                "gtsOid".to_owned(),
-                "gtsI".to_owned(),
-                "gts_id".to_owned(),
-                "gts_oid".to_owned(),
-                "gts_iid".to_owned(),
-                "id".to_owned(),
-            ],
-            type_id_fields: vec![
-                "gtsTid".to_owned(),
-                "gtsType".to_owned(),
-                "gtsT".to_owned(),
-                "gts_t".to_owned(),
-                "gts_tid".to_owned(),
-                "gts_type".to_owned(),
-                "type".to_owned(),
-                "schema".to_owned(),
-            ],
+            entity_id_fields: gts_id::DEFAULT_ENTITY_ID_FIELDS
+                .iter()
+                .map(|&name| name.to_owned())
+                .collect(),
+            type_id_fields: gts_id::DEFAULT_TYPE_ID_FIELDS
+                .iter()
+                .map(|&name| name.to_owned())
+                .collect(),
         }
     }
 }

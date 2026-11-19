@@ -498,6 +498,7 @@ name = "gts"
 version = "0.17.3"
 dependencies = [
  "gts-id",
+ "gts-macros",
  "jsonschema",
  "jsonschema-regex",
  "num-cmp",
@@ -558,6 +559,7 @@ dependencies = [
  "quote",
  "schemars",
  "serde",
+ "serde_derive_internals",
  "serde_json",
  "syn",
  "trybuild",

@@ -1,0 +1,6 @@
+error: struct_to_gts_schema: JSON field `gtsId` can shadow GTS instance ID `id`. Rename one of the fields.
+  --> tests/compile_fail/base_struct_string_serialized_collection.rs:14:5
+   |
+14 | /     #[serde(rename = "gtsId", serialize_with = "serialize_tags")]
+15 | |     pub tags: Vec<String>,
+   | |_________________________^

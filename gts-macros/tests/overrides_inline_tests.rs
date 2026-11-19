@@ -287,3 +287,119 @@ fn override_only_child_narrows_a_fixed_membership_schema() {
         );
     }
 }
+
+mod directional_names {
+    use super::*;
+
+    #[struct_to_gts_schema(dir_path = "schemas", base = true,
+        type_id = gts_id!("x.test.ovr_names.parent.v1~"), description = "Parent",
+        properties = "subject,payload")]
+    pub struct ParentV1<P> {
+        #[serde(rename(serialize = "subjectOut", deserialize = "subject_in"), default)]
+        pub subject: String,
+        pub payload: P,
+    }
+
+    #[struct_to_gts_schema(dir_path = "schemas", base = ParentV1,
+        type_id = gts_id!("x.test.ovr_names.parent.v1~x.test.ovr_names.inline.v1~"),
+        description = "Inline", properties = "value",
+        overrides(ParentV1 = {
+            #[serde(rename(serialize = "subjectOut", deserialize = "subject_in"), default)]
+            #[schemars(length(min = 2))]
+            subject: String,
+        }))]
+    pub struct InlineV1 {
+        pub value: u32,
+    }
+
+    #[derive(JsonSchema)]
+    #[allow(dead_code)]
+    struct Rules {
+        #[serde(rename(serialize = "subjectOut", deserialize = "subject_in"), default)]
+        #[schemars(length(min = 2))]
+        subject: String,
+    }
+
+    #[struct_to_gts_schema(dir_path = "schemas", base = ParentV1,
+        type_id = gts_id!("x.test.ovr_names.parent.v1~x.test.ovr_names.named.v1~"),
+        description = "Named", properties = "value", overrides(ParentV1 = Rules))]
+    pub struct NamedV1 {
+        pub value: u32,
+    }
+
+    #[struct_to_gts_schema(dir_path = "schemas", base = ParentV1,
+        type_id = gts_id!("x.test.ovr_names.parent.v1~x.test.ovr_names.legacy.v1~"),
+        description = "Existing override in the ancestor's input namespace", properties = "value",
+        overrides(ParentV1 = {
+            #[serde(default)]
+            #[schemars(length(min = 2))]
+            subject_in: String,
+        }))]
+    pub struct LegacyV1 {
+        pub value: u32,
+    }
+
+    #[test]
+    fn overrides_use_the_wire_name_and_preserve_input_optionality() {
+        InlineV1::validate_overrides().expect("inline override");
+        NamedV1::validate_overrides().expect("named override");
+        let inline = InlineV1::gts_schema_with_refs();
+        let named = NamedV1::gts_schema_with_refs();
+        assert_eq!(inline["allOf"][1], named["allOf"][1]);
+        LegacyV1::validate_overrides().expect("unambiguous input spelling");
+        assert_eq!(
+            inline["allOf"][1],
+            LegacyV1::gts_schema_with_refs()["allOf"][1]
+        );
+        let schema = NamedV1::gts_resolved_schema();
+        let validator = jsonschema::validator_for(&schema).expect("resolved schema");
+        for (subject, expected) in [(None, true), (Some("ok"), true), (Some("x"), false)] {
+            let mut instance = serde_json::json!({"payload":{"value":1}});
+            if let Some(subject) = subject {
+                instance["subjectOut"] = subject.into();
+            }
+            assert_eq!(validator.is_valid(&instance), expected, "{instance}");
+        }
+    }
+}
+
+mod overlapping_names {
+    use super::*;
+
+    #[struct_to_gts_schema(dir_path = "schemas", base = true,
+        type_id = gts_id!("x.test.ovr_names.swap.v1~"), description = "Swapped parent",
+        properties = "a,b,payload")]
+    pub struct SwapV1<P> {
+        #[serde(rename(serialize = "b", deserialize = "a"))]
+        pub a: String,
+        #[serde(rename(serialize = "a", deserialize = "b"), default)]
+        pub b: u32,
+        pub payload: P,
+    }
+
+    #[derive(JsonSchema)]
+    #[allow(dead_code)]
+    struct Swapped {
+        #[serde(rename(serialize = "b", deserialize = "a"))]
+        #[schemars(length(min = 2))]
+        a: String,
+        #[serde(rename(serialize = "a", deserialize = "b"), default)]
+        #[schemars(range(max = 9))]
+        b: u32,
+    }
+
+    #[struct_to_gts_schema(dir_path = "schemas", base = SwapV1,
+        type_id = gts_id!("x.test.ovr_names.swap.v1~x.test.ovr_names.swap_child.v1~"),
+        description = "Swap child", properties = "", overrides(SwapV1 = Swapped))]
+    pub struct SwapChildV1;
+
+    #[test]
+    fn swapped_helper_names_move_their_constraints_and_optionality_together() {
+        SwapChildV1::validate_overrides().expect("override under swapped wire names");
+        let s = SwapChildV1::gts_resolved_schema();
+        let v = jsonschema::validator_for(&s).expect("schema");
+        assert!(v.is_valid(&serde_json::json!({"b":"ok","payload":{}})));
+        assert!(!v.is_valid(&serde_json::json!({"b":"x","payload":{}})));
+        assert!(!v.is_valid(&serde_json::json!({"a":10,"b":"ok","payload":{}})));
+    }
+}

@@ -1,4 +1,4 @@
-error: struct_to_gts_schema: Base structs must have either an ID field (one of: $id, id, gts_id, or gtsId) of type GtsInstanceId OR a GTS Type field (one of: type, gts_type, gtsType, or schema) of type GtsTypeId, but not both. Found both valid ID and GTS Type fields.
+error: struct_to_gts_schema: Base structs cannot declare both a GtsInstanceId identity field and a GtsTypeId identity field.
   --> tests/compile_fail/base_struct_both_id_and_type.rs:13:12
    |
 13 | pub struct TopicV1BothIdAndTypeV1<P> {

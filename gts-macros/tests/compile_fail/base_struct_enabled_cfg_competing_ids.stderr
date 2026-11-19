@@ -1,0 +1,12 @@
+error: struct_to_gts_schema: Both `gts_id` and `id` identify the instance. Declare a single GTS instance ID.
+  --> tests/compile_fail/base_struct_enabled_cfg_competing_ids.rs:15:5
+   |
+15 |     pub id: gts::GtsInstanceId,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: struct_to_gts_schema: Both `id` and `gtsId` identify the instance. Declare a single GTS instance ID.
+  --> tests/compile_fail/base_struct_enabled_cfg_competing_ids.rs:27:5
+   |
+27 | /     #[cfg_attr(all(), serde(rename = "gtsId"))]
+28 | |     pub other: gts::GtsInstanceId,
+   | |_________________________________^

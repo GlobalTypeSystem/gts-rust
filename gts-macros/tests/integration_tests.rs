@@ -11,6 +11,77 @@ mod inheritance_tests;
 
 use gts::{GtsConfig, GtsEntity, GtsId, GtsInstanceId, GtsSchema, GtsTypeId};
 use gts_macros::{gts_id, struct_to_gts_schema};
+
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    type_id = gts_id!("example.core.groups.membership.v1~"),
+    description = "Resource types accepted for group membership",
+    properties = "resource_type",
+    base = true,
+    gts_abstract = true
+)]
+pub struct MembershipV1 {
+    pub resource_type: gts::GtsTypeId,
+}
+
+#[test]
+fn abstract_base_with_only_a_resource_type_reference() {
+    let schema = MembershipV1::gts_schema_with_refs();
+    assert_eq!(schema["x-gts-abstract"], true);
+    assert_eq!(schema["required"], serde_json::json!(["resource_type"]));
+    assert_eq!(
+        schema["properties"],
+        serde_json::json!({ "resource_type": GtsTypeId::json_schema_value() })
+    );
+}
+
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    type_id = gts_id!("example.core.errors.quota_failure.v1~"),
+    description = "Quota failure details",
+    properties = "violations",
+    base = true
+)]
+pub struct QuotaFailureV1 {
+    pub violations: Vec<String>,
+}
+
+#[test]
+fn concrete_base_round_trips_without_an_identity_field() {
+    let json = serde_json::json!({ "violations": ["storage quota exceeded"] });
+    let details: QuotaFailureV1 = serde_json::from_value(json.clone()).unwrap();
+    assert_eq!(serde_json::to_value(details).unwrap(), json);
+
+    let schema = QuotaFailureV1::gts_schema_with_refs();
+    assert_eq!(schema["required"], serde_json::json!(["violations"]));
+    assert_eq!(schema["properties"].as_object().unwrap().len(), 1);
+}
+
+#[test]
+fn base_with_skipped_type_and_domain_id_round_trips() {
+    #[struct_to_gts_schema(
+        dir_path = "schemas",
+        type_id = gts_id!("example.core.errors.local.v1~"),
+        description = "Error with a local numeric ID",
+        properties = "id",
+        base = true
+    )]
+    struct LocalErrorV1 {
+        #[serde(skip_serializing, default = "default_type")]
+        gts_type: GtsTypeId,
+        id: u32,
+    }
+
+    fn default_type() -> GtsTypeId {
+        LocalErrorV1::gts_type_id().clone()
+    }
+
+    let json = serde_json::json!({"id": 7});
+    let value: LocalErrorV1 = serde_json::from_value(json.clone()).unwrap();
+    assert_eq!(&value.gts_type, LocalErrorV1::gts_type_id());
+    assert_eq!(value.gts_instance_json(), json);
+}
+
 /// Event Topic (Stream) definition for testing GTS schema generation.
 /// Inspired by examples/examples/events/schemas/gts.x.core.events.topic.v1~.schema.json
 #[derive(Debug, Clone)]

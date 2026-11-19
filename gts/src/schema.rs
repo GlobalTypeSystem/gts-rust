@@ -12,6 +12,47 @@ use crate::GTS_ID_URI_PREFIX;
 /// generators (the `struct_to_gts_schema` macro, the CLI generator).
 pub const JSON_SCHEMA_DRAFT_07: &str = "http://json-schema.org/draft-07/schema#";
 
+/// Builds the macro's draft-07 schema using GTS property names and Serde input optionality.
+#[doc(hidden)]
+#[must_use]
+pub fn gts_root_schema<T: schemars::JsonSchema>(renames: &[(&str, &str)]) -> Value {
+    let schema = schemars::generate::SchemaSettings::draft07()
+        .into_generator()
+        .into_root_schema_for::<T>();
+    let mut schema = Value::from(schema);
+    rename_root_properties(&mut schema, renames);
+    schema
+}
+
+pub(crate) fn rename_root_properties(schema: &mut Value, renames: &[(&str, &str)]) {
+    if renames.is_empty() {
+        return;
+    }
+
+    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        // Remove all input names before inserting output names so swaps work.
+        let output_properties: Vec<_> = renames
+            .iter()
+            .filter_map(|&(input, output)| {
+                properties
+                    .remove(input)
+                    .map(|value| (output.to_owned(), value))
+            })
+            .collect();
+        properties.extend(output_properties);
+    }
+    if let Some(required) = schema.get_mut("required").and_then(Value::as_array_mut) {
+        for name in required {
+            if let Some(&(_, output)) = renames
+                .iter()
+                .find(|&&(input, _)| name.as_str() == Some(input))
+            {
+                *name = Value::from(output);
+            }
+        }
+    }
+}
+
 /// Chain-aggregated state of a type's `x-gts-traits-schema`, under JSON Schema
 /// `allOf` composition over the `$id` chain. Drives the macro's compile-time
 /// "traits values need a usable schema" guard.
@@ -52,6 +93,7 @@ pub struct SchemaDeclaration {
     pub type_id: &'static str,
     pub chain_overrides: bool,
     pub generic_field: Option<&'static str>,
+    property_renames: &'static [(&'static str, &'static str)],
     pub generic_field_optional: bool,
     pub is_final: bool,
     pub trait_schema: TraitSchemaState,
@@ -68,6 +110,7 @@ impl SchemaDeclaration {
             type_id: T::TYPE_ID,
             chain_overrides: T::GTS_CHAIN_OVERRIDES,
             generic_field: T::GENERIC_FIELD,
+            property_renames: T::GTS_PROPERTY_RENAMES,
             generic_field_optional: T::GENERIC_FIELD_OPTIONAL,
             is_final: T::GTS_FINAL,
             trait_schema: T::TRAIT_SCHEMA,
@@ -82,11 +125,28 @@ impl SchemaDeclaration {
     pub fn with_override<H: schemars::JsonSchema>(
         &self,
     ) -> crate::schema_overrides::AncestorOverride {
+        self.override_with_schema(crate::schema_overrides::helper_schema_for_ancestor::<H>(
+            self.property_renames,
+        ))
+    }
+
+    #[must_use]
+    pub fn with_inline_override<H: schemars::JsonSchema>(
+        &self,
+        helper_renames: &[(&str, &str)],
+    ) -> crate::schema_overrides::AncestorOverride {
+        let mut schema = crate::schema_overrides::helper_schema::<H>();
+        rename_root_properties(&mut schema, helper_renames);
+        crate::schema_overrides::resolve_legacy_override_names(&mut schema, self.property_renames);
+        self.override_with_schema(schema)
+    }
+
+    fn override_with_schema(&self, helper: Value) -> crate::schema_overrides::AncestorOverride {
         crate::schema_overrides::AncestorOverride {
             ancestor_type_id: self.type_id,
             path: (self.outer_generic_path)(),
             generic_field: self.generic_field,
-            helper: crate::schema_overrides::helper_schema::<H>(),
+            helper,
         }
     }
 }
@@ -146,6 +206,10 @@ pub trait GtsSchema {
     /// The name of the field that contains the generic type parameter, if any.
     /// For example, `BaseEventV1<P>` has `payload` as the generic field.
     const GENERIC_FIELD: Option<&'static str> = None;
+
+    /// Input-to-wire property names shared by this declaration and its overrides.
+    #[doc(hidden)]
+    const GTS_PROPERTY_RENAMES: &'static [(&'static str, &'static str)] = &[];
 
     /// `true` if [`Self::GENERIC_FIELD`] is declared `Option<P>`: instances of
     /// this type may omit it, while a derived type that fills it requires it.
