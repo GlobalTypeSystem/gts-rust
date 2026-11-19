@@ -93,6 +93,13 @@ The macro automatically adds these derives to your struct:
 **Do NOT add Serialize/Deserialize manually for nested structs** - direct serialization is prohibited.  
 You can add other derives like `Debug`, `Clone`, etc.
 
+Nested structs are read through their base. Their fields follow these field-level serde rules,
+as a base struct's fields do: an absent `Option<T>` field is `None`, an absent field with
+`#[serde(default)]` or `#[serde(default = "path")]` takes that default, and
+`#[serde(rename = "...")]` names the member (the Rust field name is still accepted when
+reading). Other serde field attributes, such as `skip_serializing_if` or `skip`, and container
+attributes such as `rename_all`, are not applied to nested structs.
+
 ```rust
 // ✅ Correct - only add Debug, Clone, etc.
 #[derive(Debug, Clone)]

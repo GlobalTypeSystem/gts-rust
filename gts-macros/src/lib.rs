@@ -207,6 +207,14 @@ fn generic_slot(ty: &syn::Type, generic_param: &str) -> Option<GenericSlot> {
         return Some(GenericSlot::Required);
     }
 
+    let inner = option_inner(ty)?;
+    let inner_str = quote::quote!(#inner).to_string().replace(' ', "");
+    (inner_str == generic_param).then_some(GenericSlot::Optional)
+}
+
+/// The `T` of a field typed `Option<T>` (also spelled `std::option::Option<T>`
+/// or `core::option::Option<T>`).
+fn option_inner(ty: &syn::Type) -> Option<&syn::Type> {
     let syn::Type::Path(type_path) = ty else {
         return None;
     };
@@ -235,12 +243,43 @@ fn generic_slot(ty: &syn::Type, generic_param: &str) -> Option<GenericSlot> {
         return None;
     };
     match arguments.args.iter().collect::<Vec<_>>().as_slice() {
-        [syn::GenericArgument::Type(inner)] => {
-            let inner_str = quote::quote!(#inner).to_string().replace(' ', "");
-            (inner_str == generic_param).then_some(GenericSlot::Optional)
-        }
+        [syn::GenericArgument::Type(inner)] => Some(inner),
         _ => None,
     }
+}
+
+/// A field-level `#[serde(default)]` or `#[serde(default = "path")]`.
+enum FieldDefault {
+    Trait,
+    Path(syn::ExprPath),
+}
+
+/// The default a field declares through serde, if any.
+fn serde_default(field: &syn::Field) -> Option<FieldDefault> {
+    field
+        .attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("serde"))
+        .filter_map(|attr| {
+            attr.parse_args_with(
+                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+            )
+            .ok()
+        })
+        .flatten()
+        .find_map(|meta| match meta {
+            syn::Meta::Path(path) if path.is_ident("default") => Some(FieldDefault::Trait),
+            syn::Meta::NameValue(name_value) if name_value.path.is_ident("default") => {
+                match &name_value.value {
+                    syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(path),
+                        ..
+                    }) => path.parse().ok().map(FieldDefault::Path),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
 }
 
 /// Extract serde rename value from field attributes
@@ -3033,16 +3072,36 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 }
             })
             .collect();
-        // An absent optional slot is `None`; every other absent field is an error.
-        let field_finish_code: Vec<_> = fields_for_serialize
-            .iter()
-            .map(|(ident, name, slot)| {
-                if *slot == Some(GenericSlot::Optional) {
-                    quote! { let #ident = #ident.unwrap_or(None); }
+        // An absent member reads as serde derive would read it: a field with a
+        // serde default takes that default, an `Option` (the optional generic
+        // slot included) is `None`, and any other field is missing. A required
+        // generic slot is always missing.
+        let field_finish_code: Vec<_> = struct_fields
+            .into_iter()
+            .flatten()
+            .filter(|field| field.ident.is_some())
+            .zip(&fields_for_serialize)
+            .map(|(field, (ident, name, slot))| {
+                let default = if *slot == Some(GenericSlot::Required) {
+                    None
                 } else {
-                    quote! {
-                        let #ident = #ident.ok_or_else(|| serde::de::Error::missing_field(#name))?;
+                    serde_default(field)
+                };
+                match default {
+                    Some(FieldDefault::Trait) => {
+                        quote! { let #ident = #ident.unwrap_or_default(); }
                     }
+                    Some(FieldDefault::Path(path)) => {
+                        quote! { let #ident = #ident.unwrap_or_else(#path); }
+                    }
+                    None if *slot == Some(GenericSlot::Optional)
+                        || option_inner(&field.ty).is_some() =>
+                    {
+                        quote! { let #ident = #ident.unwrap_or(None); }
+                    }
+                    None => quote! {
+                        let #ident = #ident.ok_or_else(|| serde::de::Error::missing_field(#name))?;
+                    },
                 }
             })
             .collect();
