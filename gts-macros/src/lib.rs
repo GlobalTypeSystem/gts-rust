@@ -269,6 +269,25 @@ fn get_serde_rename(field: &syn::Field) -> Option<String> {
     None
 }
 
+/// The key a derived struct's generated deserializer matched for `ident`
+/// before it honored `#[serde(rename)]`: serde's `snake_case` variant rule
+/// applied to the unraw ident.
+fn legacy_field_key(ident: &syn::Ident) -> String {
+    let ident = syn::ext::IdentExt::unraw(ident).to_string();
+    let mut key = String::with_capacity(ident.len() + 4);
+    for (i, ch) in ident.char_indices() {
+        if ch.is_uppercase() {
+            if i > 0 {
+                key.push('_');
+            }
+            key.extend(ch.to_lowercase());
+        } else {
+            key.push(ch);
+        }
+    }
+    key
+}
+
 /// Names of the options already set in `#[serde(...)]` attributes on `field`,
 /// such as `default` or `skip_serializing_if`.
 fn serde_field_options(field: &syn::Field) -> Vec<String> {
@@ -3000,6 +3019,20 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
             .iter()
             .map(|(_, name, _)| name.as_str())
             .collect();
+        // Each key is read under the name the field is written with. The key
+        // derived from the Rust ident stays accepted as an alias: it is what
+        // earlier releases read.
+        let field_variants: Vec<_> = fields_for_serialize
+            .iter()
+            .map(|(ident, name, _)| {
+                let legacy = legacy_field_key(ident);
+                if legacy == *name {
+                    quote! { #[serde(rename = #name)] #ident }
+                } else {
+                    quote! { #[serde(rename = #name, alias = #legacy)] #ident }
+                }
+            })
+            .collect();
         // An absent optional slot is `None`; every other absent field is an error.
         let field_finish_code: Vec<_> = fields_for_serialize
             .iter()
@@ -3121,9 +3154,9 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
 
                     #[allow(non_camel_case_types)]
                     #[derive(serde::Deserialize)]
-                    #[serde(field_identifier, rename_all = "snake_case")]
+                    #[serde(field_identifier)]
                     enum Field {
-                        #(#field_idents,)*
+                        #(#field_variants,)*
                         #[serde(other)]
                         Unknown,
                     }
