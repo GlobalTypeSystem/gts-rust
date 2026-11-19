@@ -49,6 +49,63 @@ pub struct ProfileV1 {
     pub wire_note: Option<String>,
 }
 
+fn default_kind() -> String {
+    "plain".to_owned()
+}
+
+fn retries() -> u32 {
+    5
+}
+
+/// Field names and attributes that interact with the generated visitor: a
+/// rename followed by another option, a field named like its default function,
+/// and a field named like the visitor's map.
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = RecordV1,
+    type_id = gts_id!("x.test.derived_opt.record.v1~x.test.derived_opt.edge.v1~"),
+    description = "Fields that interact with the generated visitor",
+    properties = "kind_name,retries,map"
+)]
+#[derive(Debug, PartialEq)]
+pub struct EdgeV1 {
+    #[serde(rename = "kind", default = "default_kind")]
+    pub kind_name: String,
+    #[serde(default = "retries")]
+    pub retries: u32,
+    pub map: Option<String>,
+}
+
+/// A generic derived struct in the middle of a chain, with its own optional
+/// field next to the generic slot.
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = RecordV1,
+    type_id = gts_id!("x.test.derived_opt.record.v1~x.test.derived_opt.wrapper.v1~"),
+    description = "Generic middle type",
+    properties = "label,inner"
+)]
+#[derive(Debug)]
+pub struct WrapperV1<Q> {
+    pub label: Option<String>,
+    pub inner: Q,
+}
+
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = WrapperV1,
+    type_id = gts_id!(
+        "x.test.derived_opt.record.v1~x.test.derived_opt.wrapper.v1~x.test.derived_opt.leaf.v1~"
+    ),
+    description = "Leaf under the generic middle type",
+    properties = "size,comment"
+)]
+#[derive(Debug)]
+pub struct LeafV1 {
+    pub size: u32,
+    pub comment: Option<String>,
+}
+
 fn record_id() -> GtsInstanceId {
     GtsInstanceId::new(
         ProfileV1::gts_type_id().as_ref(),
@@ -188,4 +245,65 @@ fn schema_and_deserializer_agree_on_optional_fields() {
     let validator = jsonschema::validator_for(&resolved_derived_schema()).unwrap();
     assert!(validator.is_valid(&minimal), "schema rejects {minimal}");
     serde_json::from_value::<RecordV1<ProfileV1>>(minimal).unwrap();
+}
+
+fn read_edge(data: Value) -> Result<EdgeV1, serde_json::Error> {
+    let id = GtsInstanceId::new(EdgeV1::gts_type_id().as_ref(), "x.test.derived_opt.edge.v1");
+    let mut record = json!({ "id": id });
+    record["data"] = data;
+    serde_json::from_value::<RecordV1<EdgeV1>>(record).map(|record| record.data)
+}
+
+#[test]
+fn rename_is_read_when_followed_by_other_options() {
+    let schema = EdgeV1::gts_schema_with_refs();
+    let data = &schema["allOf"][1]["properties"]["data"];
+    assert!(data["properties"]["kind"].is_object(), "{schema:#}");
+
+    let edge = read_edge(json!({ "kind": "strict" })).unwrap();
+    assert_eq!(edge.kind_name, "strict");
+    let edge = read_edge(json!({})).unwrap();
+    assert_eq!(edge.kind_name, "plain");
+
+    let id = GtsInstanceId::new(EdgeV1::gts_type_id().as_ref(), "x.test.derived_opt.edge.v1");
+    let json = serde_json::to_value(RecordV1 { id, data: edge }).unwrap();
+    assert_eq!(json["data"]["kind"], "plain", "{json}");
+}
+
+#[test]
+fn defaults_and_names_do_not_collide_with_the_visitor() {
+    let edge = read_edge(json!({})).unwrap();
+    assert_eq!(
+        edge,
+        EdgeV1 {
+            kind_name: "plain".to_owned(),
+            retries: 5,
+            map: None,
+        }
+    );
+    let edge = read_edge(json!({ "retries": 1, "map": "m" })).unwrap();
+    assert_eq!(edge.retries, 1);
+    assert_eq!(edge.map.as_deref(), Some("m"));
+}
+
+#[test]
+fn wire_name_and_alias_together_are_a_duplicate() {
+    let error = read(json!({ "name": "alice", "wireName": "a", "wire_name": "b" })).unwrap_err();
+    assert!(
+        error.to_string().contains("duplicate field `wireName`"),
+        "{error}"
+    );
+}
+
+#[test]
+fn generic_middle_types_default_absent_fields() {
+    let id = GtsInstanceId::new(LeafV1::gts_type_id().as_ref(), "x.test.derived_opt.leaf.v1");
+    let record: RecordV1<WrapperV1<LeafV1>> = serde_json::from_value(json!({
+        "id": id,
+        "data": { "inner": { "size": 2 } },
+    }))
+    .unwrap();
+    assert_eq!(record.data.label, None);
+    assert_eq!(record.data.inner.size, 2);
+    assert_eq!(record.data.inner.comment, None);
 }

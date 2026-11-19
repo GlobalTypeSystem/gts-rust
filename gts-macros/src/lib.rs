@@ -256,6 +256,39 @@ enum FieldDefault {
 
 /// The default a field declares through serde, if any.
 fn serde_default(field: &syn::Field) -> Option<FieldDefault> {
+    serde_metas(field).into_iter().find_map(|meta| match meta {
+        syn::Meta::Path(path) if path.is_ident("default") => Some(FieldDefault::Trait),
+        syn::Meta::NameValue(name_value) if name_value.path.is_ident("default") => {
+            match &name_value.value {
+                syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(path),
+                    ..
+                }) => path.parse().ok().map(FieldDefault::Path),
+                _ => None,
+            }
+        }
+        _ => None,
+    })
+}
+
+/// The member name a field-level `#[serde(rename = "...")]` sets, if any.
+fn get_serde_rename(field: &syn::Field) -> Option<String> {
+    serde_metas(field).into_iter().find_map(|meta| match meta {
+        syn::Meta::NameValue(name_value) if name_value.path.is_ident("rename") => {
+            match name_value.value {
+                syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(name),
+                    ..
+                }) => Some(name.value()),
+                _ => None,
+            }
+        }
+        _ => None,
+    })
+}
+
+/// The options of every `#[serde(...)]` attribute on `field`, in order.
+fn serde_metas(field: &syn::Field) -> Vec<syn::Meta> {
     field
         .attrs
         .iter()
@@ -267,62 +300,20 @@ fn serde_default(field: &syn::Field) -> Option<FieldDefault> {
             .ok()
         })
         .flatten()
-        .find_map(|meta| match meta {
-            syn::Meta::Path(path) if path.is_ident("default") => Some(FieldDefault::Trait),
-            syn::Meta::NameValue(name_value) if name_value.path.is_ident("default") => {
-                match &name_value.value {
-                    syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(path),
-                        ..
-                    }) => path.parse().ok().map(FieldDefault::Path),
-                    _ => None,
-                }
-            }
-            _ => None,
-        })
-}
-
-/// Extract serde rename value from field attributes
-fn get_serde_rename(field: &syn::Field) -> Option<String> {
-    for attr in &field.attrs {
-        // Parse the serde attribute using a simpler approach
-        if attr.path().is_ident("serde")
-            && let Ok(meta) = attr.meta.require_list()
-        {
-            let tokens = meta.tokens.to_string();
-
-            // Look for rename = "value" pattern in the token string
-            if let Some(rename_start) = tokens.find("rename") {
-                let rename_part = &tokens[rename_start..];
-                if let Some(eq_pos) = rename_part.find('=') {
-                    let value_part = &rename_part[eq_pos + 1..].trim();
-                    // Extract the string value between quotes
-                    if value_part.starts_with('"') && value_part.ends_with('"') {
-                        let rename_value = &value_part[1..value_part.len() - 1];
-                        return Some(rename_value.to_owned());
-                    }
-                }
-            }
-        }
-    }
-    None
+        .collect()
 }
 
 /// The key a derived struct's generated deserializer matched for `ident`
 /// before it honored `#[serde(rename)]`: serde's `snake_case` variant rule
-/// applied to the unraw ident.
+/// applied to the unraw ident, character for character.
 fn legacy_field_key(ident: &syn::Ident) -> String {
     let ident = syn::ext::IdentExt::unraw(ident).to_string();
     let mut key = String::with_capacity(ident.len() + 4);
     for (i, ch) in ident.char_indices() {
-        if ch.is_uppercase() {
-            if i > 0 {
-                key.push('_');
-            }
-            key.extend(ch.to_lowercase());
-        } else {
-            key.push(ch);
+        if i > 0 && ch.is_uppercase() {
+            key.push('_');
         }
+        key.push(ch.to_ascii_lowercase());
     }
     key
 }
@@ -330,17 +321,8 @@ fn legacy_field_key(ident: &syn::Ident) -> String {
 /// Names of the options already set in `#[serde(...)]` attributes on `field`,
 /// such as `default` or `skip_serializing_if`.
 fn serde_field_options(field: &syn::Field) -> Vec<String> {
-    field
-        .attrs
+    serde_metas(field)
         .iter()
-        .filter(|attr| attr.path().is_ident("serde"))
-        .filter_map(|attr| {
-            attr.parse_args_with(
-                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
-            )
-            .ok()
-        })
-        .flatten()
         .filter_map(|meta| meta.path().get_ident().map(ToString::to_string))
         .collect()
 }
@@ -3050,10 +3032,6 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
             })
             .collect();
 
-        let field_idents: Vec<_> = fields_for_serialize
-            .iter()
-            .map(|(ident, _, _)| ident)
-            .collect();
         let field_names: Vec<_> = fields_for_serialize
             .iter()
             .map(|(_, name, _)| name.as_str())
@@ -3072,6 +3050,14 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 }
             })
             .collect();
+        // The visitor keeps each member in a prefixed local, so a field cannot
+        // shadow a default function or the visitor's own `map`.
+        let field_locals: Vec<_> = fields_for_serialize
+            .iter()
+            .map(|(ident, _, _)| {
+                quote::format_ident!("__gts_field_{}", syn::ext::IdentExt::unraw(ident))
+            })
+            .collect();
         // An absent member reads as serde derive would read it: a field with a
         // serde default takes that default, an `Option` (the optional generic
         // slot included) is `None`, and any other field is missing. A required
@@ -3080,8 +3066,8 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
             .into_iter()
             .flatten()
             .filter(|field| field.ident.is_some())
-            .zip(&fields_for_serialize)
-            .map(|(field, (ident, name, slot))| {
+            .zip(fields_for_serialize.iter().zip(&field_locals))
+            .map(|(field, ((ident, name, slot), local))| {
                 let default = if *slot == Some(GenericSlot::Required) {
                     None
                 } else {
@@ -3089,18 +3075,18 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 };
                 match default {
                     Some(FieldDefault::Trait) => {
-                        quote! { let #ident = #ident.unwrap_or_default(); }
+                        quote! { #ident: #local.unwrap_or_default() }
                     }
                     Some(FieldDefault::Path(path)) => {
-                        quote! { let #ident = #ident.unwrap_or_else(#path); }
+                        quote! { #ident: #local.unwrap_or_else(#path) }
                     }
                     None if *slot == Some(GenericSlot::Optional)
                         || option_inner(&field.ty).is_some() =>
                     {
-                        quote! { let #ident = #ident.unwrap_or(None); }
+                        quote! { #ident: #local.unwrap_or(None) }
                     }
                     None => quote! {
-                        let #ident = #ident.ok_or_else(|| serde::de::Error::missing_field(#name))?;
+                        #ident: #local.ok_or_else(|| serde::de::Error::missing_field(#name))?
                     },
                 }
             })
@@ -3159,24 +3145,25 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         // Generate field visit code - for generic fields, use GtsDeserializeWrapper
         let field_visit_code: Vec<_> = fields_for_serialize
             .iter()
-            .map(|(ident, name, slot)| {
+            .zip(&field_locals)
+            .map(|((ident, name, slot), local)| {
                 let read_value = match slot {
                     Some(GenericSlot::Required) => quote! {
                         let wrapper: ::gts::GtsDeserializeWrapper<_> = map.next_value()?;
-                        #ident = Some(wrapper.0);
+                        #local = Some(wrapper.0);
                     },
                     // `null` reads as `None`, like an absent member.
                     Some(GenericSlot::Optional) => quote! {
                         let wrapper: Option<::gts::GtsDeserializeWrapper<_>> = map.next_value()?;
-                        #ident = Some(wrapper.map(|wrapper| wrapper.0));
+                        #local = Some(wrapper.map(|wrapper| wrapper.0));
                     },
                     None => quote! {
-                        #ident = Some(map.next_value()?);
+                        #local = Some(map.next_value()?);
                     },
                 };
                 quote! {
                     Field::#ident => {
-                        if #ident.is_some() {
+                        if #local.is_some() {
                             return Err(serde::de::Error::duplicate_field(#name));
                         }
                         #read_value
@@ -3233,7 +3220,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                         where
                             __M: MapAccess<'de>,
                         {
-                            #(let mut #field_idents: Option<_> = None;)*
+                            #(let mut #field_locals: Option<_> = None;)*
 
                             while let Some(key) = map.next_key::<Field>()? {
                                 match key {
@@ -3244,10 +3231,8 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                                 }
                             }
 
-                            #(#field_finish_code)*
-
                             Ok(#struct_name {
-                                #(#field_idents,)*
+                                #(#field_finish_code,)*
                             })
                         }
                     }
