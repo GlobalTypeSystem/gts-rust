@@ -101,8 +101,9 @@ these field-level serde rules:
 - `#[serde(rename = "...")]` names the member.
 
 For compatibility with earlier releases, a member is also read under serde's snake_case form of
-the unraw Rust field name when that differs from its name (`r#type` also reads `type`, `fooBar`
-also reads `foo_bar`). Any other absent field is a missing-field error. Other serde attributes, such as
+the unraw Rust field name when that differs from its name and no other field is written under it
+(`r#type` also reads `type`, `fooBar` also reads `foo_bar`). A `Self::` path in `default = "..."`
+names the struct, as with serde derive. Any other absent field is a missing-field error. Other serde attributes, such as
 `skip_serializing_if`, `skip`, `rename(serialize = ..., deserialize = ...)` or the container
 attribute `rename_all`, are not applied to nested structs.
 

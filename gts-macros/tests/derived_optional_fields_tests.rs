@@ -76,19 +76,53 @@ pub struct EdgeV1 {
     pub map: Option<String>,
 }
 
+/// Fields whose renames swap names (`second` is written as `c`, `first` as
+/// `second`'s Rust name `b`), declared before the field they take the name
+/// from, and a default path through `Self`.
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = RecordV1,
+    type_id = gts_id!("x.test.derived_opt.record.v1~x.test.derived_opt.swap.v1~"),
+    description = "Swapped renames and a Self default",
+    properties = "b,a,size"
+)]
+#[derive(Debug, PartialEq)]
+pub struct SwapV1 {
+    #[serde(rename = "c")]
+    pub b: String,
+    #[serde(rename = "b")]
+    pub a: String,
+    #[serde(default = "Self::default_size")]
+    pub size: u32,
+}
+
+impl SwapV1 {
+    fn default_size() -> u32 {
+        9
+    }
+}
+
 /// A generic derived struct in the middle of a chain, with its own optional
-/// field next to the generic slot.
+/// field and a `Self` default next to the generic slot.
 #[struct_to_gts_schema(
     dir_path = "schemas",
     base = RecordV1,
     type_id = gts_id!("x.test.derived_opt.record.v1~x.test.derived_opt.wrapper.v1~"),
     description = "Generic middle type",
-    properties = "label,inner"
+    properties = "label,depth,inner"
 )]
 #[derive(Debug)]
 pub struct WrapperV1<Q> {
     pub label: Option<String>,
+    #[serde(default = "Self::default_depth")]
+    pub depth: u32,
     pub inner: Q,
+}
+
+impl<Q: gts::GtsSchema> WrapperV1<Q> {
+    fn default_depth() -> u32 {
+        4
+    }
 }
 
 #[struct_to_gts_schema(
@@ -304,6 +338,39 @@ fn generic_middle_types_default_absent_fields() {
     }))
     .unwrap();
     assert_eq!(record.data.label, None);
+    assert_eq!(record.data.depth, 4);
     assert_eq!(record.data.inner.size, 2);
     assert_eq!(record.data.inner.comment, None);
+}
+
+fn swap_record(data: SwapV1) -> RecordV1<SwapV1> {
+    let id = GtsInstanceId::new(SwapV1::gts_type_id().as_ref(), "x.test.derived_opt.swap.v1");
+    RecordV1 { id, data }
+}
+
+#[test]
+fn swapped_renames_read_back_in_declaration_order() {
+    let record = swap_record(SwapV1 {
+        b: "first".to_owned(),
+        a: "second".to_owned(),
+        size: 1,
+    });
+    let json = serde_json::to_value(&record).unwrap();
+    assert_eq!(json["data"]["c"], "first", "{json}");
+    assert_eq!(json["data"]["b"], "second", "{json}");
+    let back: RecordV1<SwapV1> = serde_json::from_value(json).unwrap();
+    assert_eq!(back.data, record.data);
+}
+
+#[test]
+fn self_default_paths_name_the_struct() {
+    let mut json = serde_json::to_value(swap_record(SwapV1 {
+        b: "first".to_owned(),
+        a: "second".to_owned(),
+        size: 1,
+    }))
+    .unwrap();
+    json["data"].as_object_mut().unwrap().remove("size");
+    let back: RecordV1<SwapV1> = serde_json::from_value(json).unwrap();
+    assert_eq!(back.data.size, 9);
 }

@@ -271,6 +271,55 @@ fn serde_default(field: &syn::Field) -> Option<FieldDefault> {
     })
 }
 
+/// Replaces `Self` in a default path with the struct type, as serde derive
+/// does. The generated visitor calls the path from its own impl, where `Self`
+/// is the visitor.
+struct ReplaceSelf<'a>(&'a syn::Type);
+
+impl ReplaceSelf<'_> {
+    fn qualify(&self, qself: &mut Option<syn::QSelf>, path: &mut syn::Path) {
+        let leading_self = qself.is_none()
+            && path.leading_colon.is_none()
+            && path.segments.len() > 1
+            && path.segments[0].ident == "Self"
+            && path.segments[0].arguments.is_none();
+        if leading_self {
+            *qself = Some(syn::QSelf {
+                lt_token: syn::Token![<](proc_macro2::Span::call_site()),
+                ty: Box::new(self.0.clone()),
+                position: 0,
+                as_token: None,
+                gt_token: syn::Token![>](proc_macro2::Span::call_site()),
+            });
+            path.leading_colon = Some(syn::Token![::](proc_macro2::Span::call_site()));
+            path.segments = path.segments.iter().skip(1).cloned().collect();
+        }
+    }
+}
+
+impl syn::visit_mut::VisitMut for ReplaceSelf<'_> {
+    fn visit_expr_path_mut(&mut self, expr: &mut syn::ExprPath) {
+        self.qualify(&mut expr.qself, &mut expr.path);
+        syn::visit_mut::visit_expr_path_mut(self, expr);
+    }
+
+    fn visit_type_path_mut(&mut self, ty: &mut syn::TypePath) {
+        self.qualify(&mut ty.qself, &mut ty.path);
+        syn::visit_mut::visit_type_path_mut(self, ty);
+    }
+
+    fn visit_type_mut(&mut self, ty: &mut syn::Type) {
+        if let syn::Type::Path(path) = ty
+            && path.qself.is_none()
+            && path.path.is_ident("Self")
+        {
+            *ty = self.0.clone();
+            return;
+        }
+        syn::visit_mut::visit_type_mut(self, ty);
+    }
+}
+
 /// The member name a field-level `#[serde(rename = "...")]` sets, if any.
 fn get_serde_rename(field: &syn::Field) -> Option<String> {
     serde_metas(field).into_iter().find_map(|meta| match meta {
@@ -3037,13 +3086,13 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
             .map(|(_, name, _)| name.as_str())
             .collect();
         // Each key is read under the name the field is written with. The key
-        // derived from the Rust ident stays accepted as an alias: it is what
-        // earlier releases read.
+        // derived from the Rust ident stays accepted as an alias, as earlier
+        // releases read it, unless another field is written under that key.
         let field_variants: Vec<_> = fields_for_serialize
             .iter()
             .map(|(ident, name, _)| {
                 let legacy = legacy_field_key(ident);
-                if legacy == *name {
+                if field_names.contains(&legacy.as_str()) {
                     quote! { #[serde(rename = #name)] #ident }
                 } else {
                     quote! { #[serde(rename = #name, alias = #legacy)] #ident }
@@ -3058,6 +3107,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 quote::format_ident!("__gts_field_{}", syn::ext::IdentExt::unraw(ident))
             })
             .collect();
+        let self_ty: syn::Type = syn::parse_quote!(#struct_name #ty_generics);
         // An absent member reads as serde derive would read it: a field with a
         // serde default takes that default, an `Option` (the optional generic
         // slot included) is `None`, and any other field is missing. A required
@@ -3077,7 +3127,11 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                     Some(FieldDefault::Trait) => {
                         quote! { #ident: #local.unwrap_or_default() }
                     }
-                    Some(FieldDefault::Path(path)) => {
+                    Some(FieldDefault::Path(mut path)) => {
+                        syn::visit_mut::VisitMut::visit_expr_path_mut(
+                            &mut ReplaceSelf(&self_ty),
+                            &mut path,
+                        );
                         quote! { #ident: #local.unwrap_or_else(#path) }
                     }
                     None if *slot == Some(GenericSlot::Optional)
