@@ -1,0 +1,21 @@
+error[E0277]: JSON field of type `std::string::String` can shadow a lower-priority GTS instance ID
+  --> tests/compile_fail/base_struct_competing_id_aliases.rs:14:19
+   |
+14 |     pub external: String,
+   |                   ^^^^^^ the trait `gts::non_string_id_field::NonStringIdField` is not implemented for `std::string::String`
+   |
+   = help: the following other types implement trait `gts::non_string_id_field::NonStringIdField`:
+             &T
+             &mut T
+             ()
+             (A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P)
+             (B, C, D, E, F, G, H, I, J, K, L, M, N, O, P)
+             (C, D, E, F, G, H, I, J, K, L, M, N, O, P)
+             (D, E, F, G, H, I, J, K, L, M, N, O, P)
+             (E, F, G, H, I, J, K, L, M, N, O, P)
+           and $N others
+note: required by a bound in `gts::__private::check`
+  --> $WORKSPACE/gts/src/non_string_id_field.rs
+   |
+   | pub const fn check<T: ?Sized + NonStringIdField>() {}
+   |                                ^^^^^^^^^^^^^^^^ required by this bound in `check`

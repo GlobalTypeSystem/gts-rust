@@ -12,8 +12,9 @@ use syn::{
 
 // Field name constants to avoid duplication
 const ID_FIELD_NAMES: &[&str] = &["$id", "id", "gts_id", "gtsId"];
-const TYPE_FIELD_NAMES: &[&str] = &["type", "r#type", "gts_type", "gtsType", "schema"];
-const SERDE_TYPE_RENAMES: &[&str] = &["type", "gts_type", "gtsType", "schema"];
+// Base identity checks use the JSON members `GtsConfig::default()` reads.
+const JSON_ID_FIELD_NAMES: &[&str] = gts_id::DEFAULT_ENTITY_ID_FIELDS;
+const TYPE_FIELD_NAMES: &[&str] = gts_id::DEFAULT_TYPE_ID_FIELDS;
 
 /// Represents a parsed version (major and optional minor)
 #[derive(Debug, PartialEq)]
@@ -248,27 +249,45 @@ fn option_inner(ty: &syn::Type) -> Option<&syn::Type> {
     }
 }
 
-/// A field-level `#[serde(default)]` or `#[serde(default = "path")]`.
-enum FieldDefault {
-    Trait,
-    Path(syn::ExprPath),
+/// Resolve field names once, including container rename rules and directional renames.
+fn serde_struct_fields(
+    input: &DeriveInput,
+) -> syn::Result<Vec<serde_derive_internals::ast::Field<'_>>> {
+    use serde_derive_internals::{Ctxt, Derive, ast};
+
+    let cx = Ctxt::new();
+    let container = ast::Container::from_ast(&cx, input, Derive::Serialize);
+    cx.check()?;
+    match container.map(|container| container.data) {
+        Some(ast::Data::Struct(_, fields)) => Ok(fields),
+        _ => Err(syn::Error::new_spanned(&input.ident, "expected a struct")),
+    }
 }
 
-/// The default a field declares through serde, if any.
-fn serde_default(field: &syn::Field) -> Option<FieldDefault> {
-    serde_metas(field).into_iter().find_map(|meta| match meta {
-        syn::Meta::Path(path) if path.is_ident("default") => Some(FieldDefault::Trait),
-        syn::Meta::NameValue(name_value) if name_value.path.is_ident("default") => {
-            match &name_value.value {
-                syn::Expr::Lit(syn::ExprLit {
-                    lit: syn::Lit::Str(path),
-                    ..
-                }) => path.parse().ok().map(FieldDefault::Path),
-                _ => None,
-            }
-        }
-        _ => None,
-    })
+/// Preserve explicit Schemars naming directives, including `!rename`.
+fn has_schemars_rename(field: &syn::Field) -> bool {
+    fn parse_option(input: ParseStream) -> syn::Result<syn::Meta> {
+        input.parse::<Option<Token![!]>>()?;
+        input.parse()
+    }
+
+    field
+        .attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("schemars"))
+        .any(|attr| {
+            attr.parse_args_with(|input: ParseStream| {
+                syn::punctuated::Punctuated::<_, Token![,]>::parse_terminated_with(
+                    input,
+                    parse_option,
+                )
+            })
+            .is_ok_and(|options| {
+                options
+                    .iter()
+                    .any(|option| option.path().is_ident("rename"))
+            })
+        })
 }
 
 /// Replaces `Self` in a default path with the struct type, as serde derive
@@ -320,22 +339,6 @@ impl syn::visit_mut::VisitMut for ReplaceSelf<'_> {
     }
 }
 
-/// The member name a field-level `#[serde(rename = "...")]` sets, if any.
-fn get_serde_rename(field: &syn::Field) -> Option<String> {
-    serde_metas(field).into_iter().find_map(|meta| match meta {
-        syn::Meta::NameValue(name_value) if name_value.path.is_ident("rename") => {
-            match name_value.value {
-                syn::Expr::Lit(syn::ExprLit {
-                    lit: syn::Lit::Str(name),
-                    ..
-                }) => Some(name.value()),
-                _ => None,
-            }
-        }
-        _ => None,
-    })
-}
-
 /// The options of every `#[serde(...)]` attribute on `field`, in order.
 fn serde_metas(field: &syn::Field) -> Vec<syn::Meta> {
     field
@@ -352,19 +355,34 @@ fn serde_metas(field: &syn::Field) -> Vec<syn::Meta> {
         .collect()
 }
 
-/// The key a derived struct's generated deserializer matched for `ident`
-/// before it honored `#[serde(rename)]`: serde's `snake_case` variant rule
-/// applied to the unraw ident, character for character.
-fn legacy_field_key(ident: &syn::Ident) -> String {
-    let ident = syn::ext::IdentExt::unraw(ident).to_string();
-    let mut key = String::with_capacity(ident.len() + 4);
-    for (i, ch) in ident.char_indices() {
-        if i > 0 && ch.is_uppercase() {
-            key.push('_');
-        }
-        key.push(ch.to_ascii_lowercase());
-    }
-    key
+fn property_renames(
+    input: &DeriveInput,
+    serde_fields: &[serde_derive_internals::ast::Field<'_>],
+) -> proc_macro2::TokenStream {
+    // Only GTS uses output names with input-side optionality. Keep the user's
+    // JsonSchema derive intact for independent input and output schema consumers.
+    // Names follow Schemars, whose container `rename_all` replaces serde's.
+    // Skipped fields keep the property name Schemars gives them.
+    let schemars_view = schema_names::schemars_rename_all(input);
+    let schemars_fields = schemars_view
+        .as_ref()
+        .and_then(|view| serde_struct_fields(view).ok());
+    let named_fields = schemars_fields.as_deref().unwrap_or(serde_fields);
+    let renames = serde_fields
+        .iter()
+        .zip(named_fields)
+        .filter_map(|(field, named)| {
+            let name = named.attrs.name();
+            let input = name.deserialize_name();
+            let output = name.serialize_name();
+            (input != output
+                && !field.attrs.flatten()
+                && !field.attrs.skip_serializing()
+                && !field.attrs.skip_deserializing()
+                && !has_schemars_rename(field.original))
+            .then(|| quote!((#input, #output)))
+        });
+    quote!(&[#(#renames),*])
 }
 
 /// Names of the options already set in `#[serde(...)]` attributes on `field`,
@@ -376,82 +394,104 @@ fn serde_field_options(field: &syn::Field) -> Vec<String> {
         .collect()
 }
 
-/// Check if a field has a serde rename matching any of the given names
-fn has_matching_serde_rename(field: &syn::Field, names: &[&str]) -> bool {
-    get_serde_rename(field).is_some_and(|rename| names.contains(&rename.as_str()))
-}
-
-/// Check if a field name matches any of the given names
-fn field_name_matches(field: &syn::Field, names: &[&str]) -> bool {
-    field
-        .ident
-        .as_ref()
-        .is_some_and(|name| names.contains(&name.to_string().as_str()))
-}
-
 /// Validate base struct field requirements
 fn validate_base_struct_fields(
     input: &syn::DeriveInput,
-    fields: &syn::punctuated::Punctuated<syn::Field, syn::token::Comma>,
-    args: &GtsSchemaArgs,
-) -> Result<(), syn::Error> {
-    if !matches!(args.base, BaseAttr::IsBase) {
-        return Ok(());
+    fields: &[serde_derive_internals::ast::Field<'_>],
+) -> syn::Result<proc_macro2::TokenStream> {
+    let visible = fields
+        .iter()
+        .filter(|field| !field.attrs.skip_serializing() && !field.attrs.flatten());
+    let mut instance_id = None;
+    let mut has_valid_type_field = false;
+    let mut identity_names = Vec::new();
+    for field in visible.clone() {
+        let name = field.attrs.name().serialize_name();
+        if JSON_ID_FIELD_NAMES.contains(&name) {
+            identity_names.push(name);
+            if is_type_gts_instance_id(field.ty)
+                && let Some(other) = instance_id.replace(name)
+            {
+                return Err(syn::Error::new_spanned(
+                    field.original,
+                    format!(
+                        "struct_to_gts_schema: Both `{other}` and `{name}` identify the instance. Declare a single GTS instance ID."
+                    ),
+                ));
+            }
+        } else if TYPE_FIELD_NAMES.contains(&name) {
+            identity_names.push(name);
+            has_valid_type_field |= is_type_gts_schema_id(field.ty);
+        }
     }
 
-    // Check for presence of ID and GTS Type fields (including serde renames)
-    let has_id_field = fields.iter().any(|f| field_name_matches(f, ID_FIELD_NAMES));
-
-    let has_type_field = fields.iter().any(|f| {
-        field_name_matches(f, TYPE_FIELD_NAMES) || has_matching_serde_rename(f, SERDE_TYPE_RENAMES)
-    });
-
-    if !has_id_field && !has_type_field {
-        return Err(syn::Error::new_spanned(
-            &input.ident,
-            format!(
-                "struct_to_gts_schema: Base structs must have either an ID field (one of: {}) OR a GTS Type field (one of: {}), but not both.",
-                ID_FIELD_NAMES.join(", "),
-                TYPE_FIELD_NAMES.join(", ")
-            ),
-        ));
+    let mut type_checks = proc_macro2::TokenStream::new();
+    if let Some(id_name) = instance_id {
+        let higher_priority = JSON_ID_FIELD_NAMES
+            .split(|&alias| alias == id_name)
+            .next()
+            .unwrap_or_default();
+        for field in visible {
+            let alias = field.attrs.name().serialize_name();
+            let earlier = higher_priority.contains(&alias);
+            if (earlier && field.attrs.serialize_with().is_some())
+                || (alias == id_name && !is_type_gts_instance_id(field.ty))
+            {
+                return Err(syn::Error::new_spanned(
+                    field.original,
+                    format!(
+                        "struct_to_gts_schema: JSON field `{alias}` can shadow GTS instance ID `{id_name}`. Rename one of the fields."
+                    ),
+                ));
+            }
+            if earlier {
+                let ty = field.ty;
+                type_checks.extend(quote::quote_spanned!(syn::spanned::Spanned::span(ty)=>
+                    ::gts::__private::check_non_string_id_field::<#ty>();
+                ));
+            }
+        }
     }
-
-    // Validate field types
-    validate_field_types(input, fields)
-}
-
-/// Validate that field types are correct for ID and GTS Type fields
-fn validate_field_types(
-    input: &syn::DeriveInput,
-    fields: &syn::punctuated::Punctuated<syn::Field, syn::token::Comma>,
-) -> Result<(), syn::Error> {
-    let has_valid_id_field = fields.iter().any(|field| {
-        field_name_matches(field, ID_FIELD_NAMES) && is_type_gts_instance_id(&field.ty)
-    });
-
-    let has_valid_type_field = fields.iter().any(|field| {
-        let is_type_field = field_name_matches(field, TYPE_FIELD_NAMES)
-            || has_matching_serde_rename(field, SERDE_TYPE_RENAMES);
-        is_type_field && is_type_gts_schema_id(&field.ty)
-    });
 
     // Enforce "either/or but not both" logic
-    if has_valid_id_field && has_valid_type_field {
+    if instance_id.is_some() && has_valid_type_field {
         return Err(syn::Error::new_spanned(
             &input.ident,
-            "struct_to_gts_schema: Base structs must have either an ID field (one of: $id, id, gts_id, or gtsId) of type GtsInstanceId OR a GTS Type field (one of: type, gts_type, gtsType, or schema) of type GtsTypeId, but not both. Found both valid ID and GTS Type fields.",
+            "struct_to_gts_schema: Base structs cannot declare both a GtsInstanceId identity field and a GtsTypeId identity field.",
         ));
     }
 
-    if !has_valid_id_field && !has_valid_type_field {
+    // Older callers kept a defaulted, non-serialized type beside domain fields.
+    let legacy_type_field = fields.iter().any(|field| {
+        field.attrs.skip_serializing()
+            && !field.attrs.flatten()
+            && TYPE_FIELD_NAMES.contains(&field.attrs.name().serialize_name())
+            && is_type_gts_schema_id(field.ty)
+    });
+    if !identity_names.is_empty()
+        && instance_id.is_none()
+        && !has_valid_type_field
+        && !legacy_type_field
+    {
         return Err(syn::Error::new_spanned(
             &input.ident,
-            "struct_to_gts_schema: Base structs must have either an ID field (one of: $id, id, gts_id, or gtsId) of type GtsInstanceId OR a GTS Type field (one of: type, gts_type, gtsType, or schema) of type GtsTypeId",
+            "struct_to_gts_schema: Expected a base identity field of type GtsInstanceId (for an ID field) or GtsTypeId (for a GTS Type field). Base structs may also omit identity fields.",
         ));
     }
 
-    Ok(())
+    if type_checks.is_empty() {
+        Ok(type_checks)
+    } else {
+        Ok(quote!(const __GTS_ID_ALIAS_CHECKS: () = { #type_checks };))
+    }
+}
+
+/// Whether `cfg` or `cfg_attr` may remove or rename a field.
+fn has_conditional_fields(fields: &syn::punctuated::Punctuated<syn::Field, Token![,]>) -> bool {
+    fields
+        .iter()
+        .flat_map(|field| &field.attrs)
+        .any(|attr| attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr"))
 }
 
 /// Validate that the struct name version suffix matches the `type_id` version
@@ -615,8 +655,9 @@ fn remove_derives(input: &mut syn::DeriveInput, traits_to_remove: &[&str]) {
                 let kept_derives: Vec<_> = derives
                     .iter()
                     .filter(|path| {
-                        let path_str = quote::quote!(#path).to_string();
-                        !traits_to_remove.iter().any(|t| path_str.contains(t))
+                        !path.segments.last().is_some_and(|seg| {
+                            traits_to_remove.iter().any(|name| seg.ident == *name)
+                        })
                     })
                     .collect();
 
@@ -642,30 +683,16 @@ fn remove_derives(input: &mut syn::DeriveInput, traits_to_remove: &[&str]) {
 /// For nested structs (`base = ParentStruct`), Serialize and Deserialize are NOT added.
 /// This prevents direct serialization of nested structs - they can only be serialized
 /// through their base struct wrapper.
-fn add_missing_derives(input: &mut syn::DeriveInput, base: &BaseAttr) {
-    // For nested structs (base = ParentStruct), only add JsonSchema
-    // Serialize/Deserialize will be provided via GtsSerialize/GtsDeserialize traits
-    let is_nested = matches!(base, BaseAttr::Parent(_));
-
-    let derives_to_add: Vec<&str> = if is_nested {
-        // Nested struct: only JsonSchema
-        [("JsonSchema", "schemars::JsonSchema")]
-            .into_iter()
-            .filter(|(check, _)| !has_derive(input, check))
-            .map(|(_, full)| full)
-            .collect()
-    } else {
-        // Base struct: all three derives
-        [
-            ("Serialize", "serde::Serialize"),
-            ("Deserialize", "serde::Deserialize"),
-            ("JsonSchema", "schemars::JsonSchema"),
-        ]
-        .into_iter()
-        .filter(|(check, _)| !has_derive(input, check))
-        .map(|(_, full)| full)
-        .collect()
-    };
+fn add_missing_derives(input: &mut syn::DeriveInput, derive_serde: bool) {
+    let derives_to_add: Vec<&str> = [
+        ("Serialize", "serde::Serialize"),
+        ("Deserialize", "serde::Deserialize"),
+        ("JsonSchema", "schemars::JsonSchema"),
+    ]
+    .into_iter()
+    .filter(|(name, _)| (derive_serde || *name == "JsonSchema") && !has_derive(input, name))
+    .map(|(_, path)| path)
+    .collect();
 
     if !derives_to_add.is_empty() {
         let derives_str = derives_to_add.join(", ");
@@ -673,15 +700,11 @@ fn add_missing_derives(input: &mut syn::DeriveInput, base: &BaseAttr) {
             derives_str.parse().expect("Failed to parse derive tokens");
         let derive_attr = syn::parse_quote!(#[derive(#derives_tokens)]);
 
-        // `schemars` is a derive-helper attribute. Keep the derive that
-        // introduces it before a container-level `#[schemars(...)]`; placing
-        // the automatically-added derive after the helper triggers
-        // `legacy_derive_helpers` in crates that deny future-incompatible
-        // lints.
+        // Both helpers must follow the derive that registers them.
         let insert_at = input
             .attrs
             .iter()
-            .position(|attr| attr.path().is_ident("schemars"))
+            .position(|attr| attr.path().is_ident("serde") || attr.path().is_ident("schemars"))
             .unwrap_or(input.attrs.len());
         input.attrs.insert(insert_at, derive_attr);
     }
@@ -1308,8 +1331,8 @@ fn overrides_tokens(
 
     let mut guards = Vec::new();
     // Emit inline helpers in the same scope to preserve type and attribute paths.
-    let mut helpers: Vec<syn::Type> = Vec::new();
-    for (index, pair) in args.overrides.iter().enumerate() {
+    let mut entries = Vec::new();
+    for (index, (pair, ancestor)) in args.overrides.iter().zip(&ancestors).enumerate() {
         match &pair.helper {
             OverrideHelper::Type(helper) => {
                 guards.push(quote! {
@@ -1318,7 +1341,7 @@ fn overrides_tokens(
                         _assert_override_helper::<#helper>();
                     };
                 });
-                helpers.push(helper.clone());
+                entries.push(quote!(#ancestor.with_override::<#helper>()));
             }
             OverrideHelper::Inline(fields) => {
                 // Idents (not strings) so `format_ident!` strips any `r#`.
@@ -1333,11 +1356,11 @@ fn overrides_tokens(
                 };
                 guards.push(quote! {
                     #[doc(hidden)]
-                    #[derive(schemars::JsonSchema)]
+                    #[derive(schemars::JsonSchema, ::gts::__private::__GtsOverrideNames)]
                     #[allow(dead_code, non_camel_case_types)]
                     struct #helper { #fields }
                 });
-                helpers.push(syn::parse_quote!(#helper));
+                entries.push(quote!(#ancestor.with_inline_override::<#helper>(#helper::__GTS_OVERRIDE_NAMES)));
             }
         }
     }
@@ -1404,7 +1427,7 @@ fn overrides_tokens(
     }
 
     let entries = quote! {
-        &[#( #ancestors.with_override::<#helpers>() ),*]
+        &[#(#entries),*]
     };
     let apply = quote! {
         ::gts::schema_overrides::apply_ancestor_overrides(&mut overlay, #entries);
@@ -1615,6 +1638,7 @@ fn schema_export_test(input: &DeriveInput, dir_path: &str) -> proc_macro2::Token
     clippy::cognitive_complexity
 )]
 pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let arguments: proc_macro2::TokenStream = attr.clone().into();
     let args = parse_macro_input!(attr as GtsSchemaArgs);
     let input = parse_macro_input!(item as DeriveInput);
 
@@ -1707,12 +1731,38 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 .into();
             }
         }
-
-        // Validate base struct field requirements
-        if let Err(err) = validate_base_struct_fields(&input, fields, &args) {
-            return err.to_compile_error().into();
-        }
     }
+
+    // A derive sees the fields and attributes after rustc evaluates cfg/cfg_attr.
+    let defer = struct_fields.is_some_and(|fields| {
+        has_conditional_fields(fields)
+            || input.attrs.iter().any(|attr| {
+                // Attribute macros may introduce a serde serializer (e.g. serde_as).
+                // Validate and generate from the configured fields after they run.
+                !attr.path().get_ident().is_some_and(|name| {
+                    matches!(
+                        name.to_string().as_str(),
+                        "derive"
+                            | "serde"
+                            | "schemars"
+                            | "doc"
+                            | "allow"
+                            | "warn"
+                            | "deny"
+                            | "forbid"
+                            | "expect"
+                    )
+                })
+            })
+    });
+    let (serde_fields, id_checks) = if defer {
+        (Vec::new(), proc_macro2::TokenStream::new())
+    } else {
+        match configured_fields(&input, &args.base) {
+            Ok(fields) => fields,
+            Err(err) => return err.to_compile_error().into(),
+        }
+    };
 
     // Validate version match between struct name suffix and schema_id
     if let Err(err) = validate_version_match(&input.ident, &args.type_id) {
@@ -1728,24 +1778,24 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         param.bounds.push(syn::parse_quote!(::gts::GtsSchema));
     }
 
-    // For nested structs, remove Serialize/Deserialize to prevent direct serialization
-    // This is critical for Issue #24: nested structs can only be serialized through base struct
-    if matches!(&args.base, BaseAttr::Parent(_)) {
-        if has_serde_derives(&input.attrs) {
-            return syn::Error::new_spanned(
-                &input.ident,
-                "struct_to_gts_schema: Nested structs must not derive Serialize/Deserialize. \
+    // Nested structs can only be serialized through their base.
+    if matches!(&args.base, BaseAttr::Parent(_)) && has_serde_derives(&input.attrs) {
+        return syn::Error::new_spanned(
+            &input.ident,
+            "struct_to_gts_schema: Nested structs must not derive Serialize/Deserialize. \
                  Serialize them through the base struct instead.",
-            )
-            .to_compile_error()
-            .into();
-        }
-        remove_derives(&mut modified_input, &["Serialize", "Deserialize"]);
+        )
+        .to_compile_error()
+        .into();
     }
 
-    // Automatically add required derives: Serialize, Deserialize, JsonSchema
-    // For nested structs, only JsonSchema is added (no direct serialization)
-    add_missing_derives(&mut modified_input, &args.base);
+    // Named bases derive serde. Unit bases provide custom impls for their {} wire form.
+    let is_unit_struct = struct_fields.is_none();
+    let derive_serde = matches!(args.base, BaseAttr::IsBase) && !is_unit_struct;
+    if !derive_serde {
+        remove_derives(&mut modified_input, &["Serialize", "Deserialize"]);
+    }
+    add_missing_derives(&mut modified_input, derive_serde);
 
     // For base structs with generic fields, add serde attributes for GtsSerialize/GtsDeserialize
     add_gts_serde_attrs(&mut modified_input, &args.base);
@@ -1754,6 +1804,62 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     if let Err(err) = validate_base_segments(&input, &args.base, &args.type_id) {
         return err.to_compile_error().into();
     }
+    // Check if this is a unit struct - we need to add an allow attribute for clippy
+    // because quote! may emit {} instead of ; for unit structs
+    if is_unit_struct {
+        modified_input
+            .attrs
+            .push(syn::parse_quote!(#[allow(clippy::empty_structs_with_brackets)]));
+    }
+
+    let exporter = schema_export_test(&input, &args.dir_path);
+    let implementations = if defer {
+        modified_input
+            .attrs
+            .push(syn::parse_quote!(#[derive(::gts::__private::__GtsConfiguredSchema)]));
+        modified_input
+            .attrs
+            .push(syn::parse_quote!(#[__gts_schema_args(#arguments)]));
+        proc_macro2::TokenStream::new()
+    } else {
+        match schema_implementations(
+            &args,
+            &input,
+            &modified_input.generics,
+            &serde_fields,
+            &id_checks,
+        ) {
+            Ok(implementations) => implementations,
+            Err(err) => return err.to_compile_error().into(),
+        }
+    };
+    quote!(#modified_input #exporter #implementations).into()
+}
+
+fn configured_fields<'a>(
+    input: &'a DeriveInput,
+    base: &BaseAttr,
+) -> syn::Result<(
+    Vec<serde_derive_internals::ast::Field<'a>>,
+    proc_macro2::TokenStream,
+)> {
+    let fields = serde_struct_fields(input)?;
+    let checks = if matches!(base, BaseAttr::IsBase) {
+        validate_base_struct_fields(input, &fields)?
+    } else {
+        proc_macro2::TokenStream::new()
+    };
+    Ok((fields, checks))
+}
+
+#[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+fn schema_implementations(
+    args: &GtsSchemaArgs,
+    input: &DeriveInput,
+    generics: &syn::Generics,
+    serde_fields: &[serde_derive_internals::ast::Field<'_>],
+    id_checks: &proc_macro2::TokenStream,
+) -> syn::Result<proc_macro2::TokenStream> {
     let expected_parent_type_id = extract_parent_type_id(&args.type_id);
 
     // Build the schema output file path from dir_path + schema_id
@@ -1796,8 +1902,6 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     let schema_file_path = format!("{dir_path}/{type_id}.schema.json");
 
     // Extract generics to properly handle generic structs
-    // Use modified_input.generics which has the GtsSchema bounds added
-    let generics = &modified_input.generics;
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     // Get the generic type parameter name if present
@@ -1810,16 +1914,10 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     let mut generic_field_name: Option<String> = None;
     let mut generic_field_slot: Option<GenericSlot> = None;
 
-    // Find the field that uses the generic type (only for structs with fields)
-    // Use the SERIALIZED name (serde rename if present, otherwise field ident)
-    if let (Some(gp), Some(fields)) = (&generic_param_name, struct_fields) {
-        for field in fields {
-            if let Some(slot) = generic_slot(&field.ty, gp)
-                && let Some(ident) = &field.ident
-            {
-                // Use serde rename if present, otherwise use the field identifier
-                generic_field_name =
-                    Some(get_serde_rename(field).unwrap_or_else(|| ident.to_string()));
+    if let Some(gp) = &generic_param_name {
+        for field in serde_fields {
+            if let Some(slot) = generic_slot(field.ty, gp) {
+                generic_field_name = Some(field.attrs.name().serialize_name().to_owned());
                 generic_field_slot = Some(slot);
                 break;
             }
@@ -1870,8 +1968,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         quote! { None::<&'static str> }
     };
 
-    let override_only = !args.overrides.is_empty()
-        && struct_fields.is_none_or(syn::punctuated::Punctuated::is_empty);
+    let override_only = !args.overrides.is_empty() && serde_fields.is_empty();
     let parent = match &args.base {
         BaseAttr::Parent(segment) => schema_declaration(&syn::parse_quote!(#segment)),
         BaseAttr::IsBase => quote! {},
@@ -1988,7 +2085,15 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     // omit the slot or send `null`, so the slot stays optional and nullable
     // (and, being closed and empty, admits only `{}` when present). A bare-`P`
     // slot is already required by the parent itself.
-    let declares_payload = !property_names.is_empty();
+    let declares_payload = args.properties.split(',').map(str::trim).any(|name| {
+        serde_fields.iter().any(|field| {
+            field
+                .original
+                .ident
+                .as_ref()
+                .is_some_and(|ident| ident == name)
+        })
+    });
     let require_parent_slot = match &args.base {
         BaseAttr::Parent(_) => quote! {
             if #parent.generic_field_optional
@@ -2010,8 +2115,8 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
 
     // `overrides(Ancestor = Helper, ...)`: compile-time identity guards,
     // raw overlay emission and a separate accepted-set inclusion check.
-    let (overrides_guards, apply_overrides, validate_overrides) = match overrides_tokens(
-        &args,
+    let (overrides_guards, apply_overrides, validate_overrides) = overrides_tokens(
+        args,
         struct_name,
         input
             .generics
@@ -2020,10 +2125,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
             .map(|param| &param.ident),
         &parent,
         type_id,
-    ) {
-        Ok(tokens) => tokens,
-        Err(err) => return err.to_compile_error().into(),
-    };
+    )?;
 
     // --- GTS traits / modifiers emission --------------------
 
@@ -2582,6 +2684,11 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         quote! { Self::outer_generic_path() }
     };
 
+    let gts_property_renames = property_renames(input, serde_fields);
+    let gts_root_schema = quote! {
+        ::gts::schema::gts_root_schema::<Self>(<Self as ::gts::GtsSchema>::GTS_PROPERTY_RENAMES)
+    };
+
     let gts_schema_impl = if has_generic {
         let generic_param = input.generics.type_params().next().unwrap();
         let generic_ident = &generic_param.ident;
@@ -2615,10 +2722,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 // If inner is just {"type": "object"} (from ()), return our own schema
                 // schemars RootSchema serializes at root level (not under "schema" field)
                 if inner.get("properties").is_none() {
-                    let root_schema = schemars::generate::SchemaSettings::draft07()
-                        .into_generator()
-                        .into_root_schema_for::<Self>();
-                    return serde_json::to_value(&root_schema).expect("schemars");
+                    return #gts_root_schema;
                 }
                 inner
             }
@@ -2671,10 +2775,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 };
 
                 // Get THIS struct's schema (schemars will expand generic fields automatically)
-                let root_schema = schemars::generate::SchemaSettings::draft07()
-                    .into_generator()
-                    .into_root_schema_for::<Self>();
-                let schema_val = serde_json::to_value(&root_schema).expect("schemars");
+                let schema_val = #gts_root_schema;
                 let mut properties = schema_val.get("properties").cloned().unwrap_or(serde_json::json!({}));
                 let required = schema_val.get("required").cloned().unwrap_or(serde_json::json!([]));
                 let mut definitions = schema_val.get("definitions").cloned();
@@ -2813,10 +2914,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
             }
             fn innermost_schema() -> serde_json::Value {
                 // Return this type's schemars schema (RootSchema serializes at root level)
-                let root_schema = schemars::generate::SchemaSettings::draft07()
-                    .into_generator()
-                    .into_root_schema_for::<Self>();
-                serde_json::to_value(&root_schema).expect("schemars")
+                #gts_root_schema
             }
             fn gts_schema_with_refs_allof() -> serde_json::Value {
                 let type_id = Self::TYPE_ID;
@@ -2834,10 +2932,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
                 };
 
                 // Get this type's schemars schema (RootSchema serializes at root level)
-                let root_schema = schemars::generate::SchemaSettings::draft07()
-                    .into_generator()
-                    .into_root_schema_for::<Self>();
-                let schema_val = serde_json::to_value(&root_schema).expect("schemars");
+                let schema_val = #gts_root_schema;
                 let mut properties = schema_val.get("properties").cloned().unwrap_or_else(|| serde_json::json!({}));
                 let required = schema_val.get("required").cloned().unwrap_or_else(|| serde_json::json!([]));
                 let mut definitions = schema_val.get("definitions").cloned();
@@ -2926,42 +3021,9 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         }
     };
 
-    // Check if this is a unit struct - we need to add an allow attribute for clippy
-    // because quote! may emit {} instead of ; for unit structs
-    let is_unit_struct = matches!(&input.data, Data::Struct(data_struct) if matches!(&data_struct.fields, Fields::Unit));
+    let is_unit_struct =
+        matches!(&input.data, Data::Struct(data) if matches!(data.fields, Fields::Unit));
     let is_base_unit_struct = is_unit_struct && matches!(args.base, BaseAttr::IsBase);
-
-    if is_unit_struct {
-        modified_input
-            .attrs
-            .push(syn::parse_quote!(#[allow(clippy::empty_structs_with_brackets)]));
-    }
-
-    // For BASE unit structs only, we provide custom Serialize/Deserialize implementations
-    // (nested unit structs get GtsSerialize/GtsDeserialize instead)
-    if is_base_unit_struct {
-        // Remove our auto-added Serialize/Deserialize derives since we provide custom impls
-        // Keep JsonSchema from our auto-added derives
-        modified_input.attrs.retain(|attr| {
-            if attr.path().is_ident("derive") {
-                if let Ok(meta) = attr.meta.require_list() {
-                    let tokens = meta.tokens.to_string();
-                    // Remove derives that contain Serialize or Deserialize
-                    // (our auto-added derive will have both)
-                    !tokens.contains("Serialize") && !tokens.contains("Deserialize")
-                } else {
-                    true
-                }
-            } else {
-                true
-            }
-        });
-
-        // Add just JsonSchema for unit structs (Serialize/Deserialize are custom impl'd below)
-        modified_input
-            .attrs
-            .push(syn::parse_quote!(#[derive(schemars::JsonSchema)]));
-    }
 
     // Generate custom serialization implementation for BASE unit structs to serialize as {} instead of null
     // (nested unit structs get GtsSerialize/GtsDeserialize impls instead)
@@ -3028,24 +3090,16 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
     // These structs don't have Serialize/Deserialize derives, so they need explicit impls
     let gts_serialize_impl = if matches!(&args.base, BaseAttr::Parent(_)) && !is_unit_struct {
         // Collect field information for serialization, including whether each field is the generic type
-        let fields_for_serialize: Vec<_> = struct_fields
-            .map(|fields| {
-                fields
-                    .iter()
-                    .filter_map(|field| {
-                        let ident = field.ident.as_ref()?;
-                        // Use serde rename if present, otherwise use field name
-                        let serialize_name =
-                            get_serde_rename(field).unwrap_or_else(|| ident.to_string());
-                        // Check whether this field carries the generic parameter
-                        let slot = generic_param_name
-                            .as_ref()
-                            .and_then(|gp| generic_slot(&field.ty, gp));
-                        Some((ident.clone(), serialize_name, slot))
-                    })
-                    .collect()
+        let fields_for_serialize: Vec<_> = serde_fields
+            .iter()
+            .filter_map(|field| {
+                let ident = field.original.ident.as_ref()?;
+                let slot = generic_param_name
+                    .as_ref()
+                    .and_then(|gp| generic_slot(field.ty, gp));
+                Some((ident, field, slot))
             })
-            .unwrap_or_default();
+            .collect();
 
         // The length hint counts every field but an absent optional slot,
         // which is skipped rather than written as `null` (see
@@ -3061,50 +3115,63 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
             .collect();
         let field_serialize_calls: Vec<_> = fields_for_serialize
             .iter()
-            .map(|(ident, serialize_name, slot)| match slot {
-                // For generic fields, use GtsSerializeWrapper
-                Some(GenericSlot::Required) => quote! {
-                    state.serialize_field(#serialize_name, &::gts::GtsSerializeWrapper(&self.#ident))?;
-                },
-                Some(GenericSlot::Optional) => quote! {
-                    match &self.#ident {
-                        Some(value) => state.serialize_field(
-                            #serialize_name,
-                            &::gts::GtsSerializeWrapper(value),
-                        )?,
-                        None => state.skip_field(#serialize_name)?,
-                    }
-                },
-                None => quote! {
-                    state.serialize_field(#serialize_name, &self.#ident)?;
-                },
-            })
-            .collect();
-
-        let field_names: Vec<_> = fields_for_serialize
-            .iter()
-            .map(|(_, name, _)| name.as_str())
-            .collect();
-        // Each key is read under the name the field is written with. The key
-        // derived from the Rust ident stays accepted as an alias, as earlier
-        // releases read it, unless another field is written under that key.
-        let field_variants: Vec<_> = fields_for_serialize
-            .iter()
-            .map(|(ident, name, _)| {
-                let legacy = legacy_field_key(ident);
-                if field_names.contains(&legacy.as_str()) {
-                    quote! { #[serde(rename = #name)] #ident }
-                } else {
-                    quote! { #[serde(rename = #name, alias = #legacy)] #ident }
+            .map(|(ident, field, slot)| {
+                let serialize_name = field.attrs.name().serialize_name();
+                match slot {
+                    // For generic fields, use GtsSerializeWrapper
+                    Some(GenericSlot::Required) => quote! {
+                        state.serialize_field(#serialize_name, &::gts::GtsSerializeWrapper(&self.#ident))?;
+                    },
+                    Some(GenericSlot::Optional) => quote! {
+                        match &self.#ident {
+                            Some(value) => state.serialize_field(
+                                #serialize_name,
+                                &::gts::GtsSerializeWrapper(value),
+                            )?,
+                            None => state.skip_field(#serialize_name)?,
+                        }
+                    },
+                    None => quote! {
+                        state.serialize_field(#serialize_name, &self.#ident)?;
+                    },
                 }
             })
             .collect();
+
+        let field_names: Vec<_> = serde_fields
+            .iter()
+            .map(|field| field.attrs.name().deserialize_name())
+            .collect();
+        let input_names: std::collections::BTreeSet<_> = serde_fields
+            .iter()
+            .flat_map(|field| field.attrs.aliases())
+            .collect();
+        let output_names: std::collections::BTreeSet<_> = serde_fields
+            .iter()
+            .map(|field| field.attrs.name().serialize_name())
+            .collect();
+        let field_variants = fields_for_serialize.iter().map(|(ident, field, _)| {
+            use serde_derive_internals::attr::RenameRule;
+            use syn::ext::IdentExt;
+
+            let attrs = &field.attrs;
+            let name = attrs.name().deserialize_name();
+            let aliases = attrs.aliases().iter().filter(|alias| *alias != name);
+            // Earlier readers used snake_case Rust identifiers. Keep that spelling
+            // only if it cannot intercept another field’s input or serialized output.
+            let legacy = RenameRule::SnakeCase.apply_to_variant(&ident.unraw().to_string());
+            let legacy_alias = (!input_names.contains(&legacy)
+                && (attrs.name().serialize_name() == legacy
+                    || !output_names.contains(legacy.as_str())))
+            .then(|| quote!(#[serde(alias = #legacy)]));
+            quote!(#[serde(rename = #name)] #(#[serde(alias = #aliases)])* #legacy_alias #ident)
+        });
         // The visitor keeps each member in a prefixed local, so a field cannot
         // shadow a default function or the visitor's own `map`.
         let field_locals: Vec<_> = fields_for_serialize
             .iter()
             .map(|(ident, _, _)| {
-                quote::format_ident!("__gts_field_{}", syn::ext::IdentExt::unraw(ident))
+                quote::format_ident!("__gts_field_{}", syn::ext::IdentExt::unraw(*ident))
             })
             .collect();
         let self_ty: syn::Type = syn::parse_quote!(#struct_name #ty_generics);
@@ -3112,34 +3179,41 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         // serde default takes that default, an `Option` (the optional generic
         // slot included) is `None`, and any other field is missing. A required
         // generic slot is always missing.
-        let field_finish_code: Vec<_> = struct_fields
-            .into_iter()
-            .flatten()
-            .filter(|field| field.ident.is_some())
-            .zip(fields_for_serialize.iter().zip(&field_locals))
-            .map(|(field, ((ident, name, slot), local))| {
-                let default = if *slot == Some(GenericSlot::Required) {
-                    None
+        let field_finish_code: Vec<_> = fields_for_serialize
+            .iter()
+            .zip(&field_locals)
+            .map(|((ident, field, slot), local)| {
+                use serde_derive_internals::attr::Default as FieldDefault;
+                let attrs = &field.attrs;
+                let name = attrs.name().deserialize_name();
+                // Serde infers Default for skipped fields. The derived reader uses
+                // field defaults explicitly requested by its caller.
+                let implicit_default = attrs.skip_deserializing()
+                    && !serde_metas(field.original)
+                        .iter()
+                        .any(|meta| meta.path().is_ident("default"));
+                let default = if *slot == Some(GenericSlot::Required) || implicit_default {
+                    &FieldDefault::None
                 } else {
-                    serde_default(field)
+                    attrs.default()
                 };
                 match default {
-                    Some(FieldDefault::Trait) => {
-                        quote! { #ident: #local.unwrap_or_default() }
-                    }
-                    Some(FieldDefault::Path(mut path)) => {
+                    FieldDefault::Default => quote! { #ident: #local.unwrap_or_default() },
+                    FieldDefault::Path(path) => {
+                        let mut path = path.clone();
                         syn::visit_mut::VisitMut::visit_expr_path_mut(
                             &mut ReplaceSelf(&self_ty),
                             &mut path,
                         );
                         quote! { #ident: #local.unwrap_or_else(#path) }
                     }
-                    None if *slot == Some(GenericSlot::Optional)
-                        || option_inner(&field.ty).is_some() =>
+                    FieldDefault::None
+                        if *slot == Some(GenericSlot::Optional)
+                            || option_inner(field.ty).is_some() =>
                     {
                         quote! { #ident: #local.unwrap_or(None) }
                     }
-                    None => quote! {
+                    FieldDefault::None => quote! {
                         #ident: #local.ok_or_else(|| serde::de::Error::missing_field(#name))?
                     },
                 }
@@ -3200,7 +3274,8 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         let field_visit_code: Vec<_> = fields_for_serialize
             .iter()
             .zip(&field_locals)
-            .map(|((ident, name, slot), local)| {
+            .map(|((ident, field, slot), local)| {
+                let name = field.attrs.name().deserialize_name();
                 let read_value = match slot {
                     Some(GenericSlot::Required) => quote! {
                         let wrapper: ::gts::GtsDeserializeWrapper<_> = map.next_value()?;
@@ -3404,18 +3479,15 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         });
         quote!(where #(#existing,)* #slot)
     };
-    let schema_export_test = schema_export_test(&input, dir_path);
 
     let expanded = quote! {
         // Compile-time deprecation warning when `schema_id` alias was used
         #deprecation_warning
 
-        #modified_input
 
         // Compile-time assertion for base struct matching (if specified)
         #base_assertion
         #overrides_guards
-        #schema_export_test
 
         // Compile-time bound check for `traits_schema = inline(T)` / bare `T`
         #traits_schema_assert
@@ -3434,6 +3506,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         #no_direct_serde_impl
 
         impl #impl_generics #struct_name #ty_generics #gts_schema_where_clause {
+            #id_checks
             /// File path where the GTS schema will be generated by the CLI.
             #[doc(hidden)]
             #[allow(dead_code)]
@@ -3500,6 +3573,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         impl #impl_generics ::gts::GtsSchema for #struct_name #ty_generics #gts_schema_where_clause {
             const TYPE_ID: &'static str = #type_id_lit;
             const GENERIC_FIELD: Option<&'static str> = #generic_field_option;
+            const GTS_PROPERTY_RENAMES: &'static [(&'static str, &'static str)] = #gts_property_renames;
             const GENERIC_FIELD_OPTIONAL: bool = #generic_field_optional;
             // Modifiers, so children / `gts_instance!` can guard at compile time
             // on the parent's / target's finality / abstractness.
@@ -3559,7 +3633,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
         #instance_methods_impl
     };
 
-    TokenStream::from(expanded)
+    Ok(expanded)
 }
 
 // =====================================================================
@@ -3572,6 +3646,7 @@ pub fn struct_to_gts_schema(attr: TokenStream, item: TokenStream) -> TokenStream
 
 mod id_arg;
 mod instance;
+mod schema_names;
 
 /// Construct a full GTS identifier string from a prefix-less suffix.
 ///
@@ -3747,6 +3822,39 @@ pub fn gts_instance_raw(input: TokenStream) -> TokenStream {
         Ok(tokens) => tokens.into(),
         Err(e) => e.to_compile_error().into(),
     }
+}
+
+/// Records the exact property mapping of a macro-generated inline override helper
+/// after rustc has applied its field attributes.
+#[doc(hidden)]
+#[proc_macro_derive(__GtsOverrideNames)]
+pub fn gts_override_names(item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as DeriveInput);
+    let fields = match serde_struct_fields(&input) {
+        Ok(fields) => fields,
+        Err(error) => return error.to_compile_error().into(),
+    };
+    let names = property_renames(&input, &fields);
+    let ident = &input.ident;
+    quote!(impl #ident { const __GTS_OVERRIDE_NAMES: &'static [(&'static str, &'static str)] = #names; }).into()
+}
+
+/// Emits GTS implementations from rustc's configured struct.
+#[doc(hidden)]
+#[proc_macro_derive(__GtsConfiguredSchema, attributes(__gts_schema_args))]
+pub fn gts_configured_schema(item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as DeriveInput);
+    let expand = || -> syn::Result<_> {
+        let args: GtsSchemaArgs = input
+            .attrs
+            .iter()
+            .find(|attr| attr.path().is_ident("__gts_schema_args"))
+            .ok_or_else(|| syn::Error::new_spanned(&input.ident, "missing GTS schema arguments"))?
+            .parse_args()?;
+        let (fields, checks) = configured_fields(&input, &args.base)?;
+        schema_implementations(&args, &input, &input.generics, &fields, &checks)
+    };
+    expand().unwrap_or_else(|err| err.to_compile_error()).into()
 }
 
 /// Derive the `gts::GtsTraitsSchema` marker for a struct that backs an inline

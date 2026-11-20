@@ -629,6 +629,7 @@ name = "gts"
 version = "0.17.3"
 dependencies = [
  "gts-id",
+ "gts-macros",
  "jsonschema",
  "jsonschema-regex",
  "num-cmp",
@@ -674,6 +675,7 @@ dependencies = [
  "gts-id",
  "proc-macro2",
  "quote",
+ "serde_derive_internals",
  "serde_json",
  "syn",
 ]

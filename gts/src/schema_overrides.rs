@@ -46,11 +46,92 @@ impl AncestorOverride {
 /// type keeps a `$ref`, which [`validate_ancestor_overrides`] rejects.
 #[must_use]
 pub fn helper_schema<H: schemars::JsonSchema>() -> Value {
-    let root = schemars::generate::SchemaSettings::draft07()
-        .with(|settings| settings.inline_subschemas = true)
+    helper_schema_for_ancestor::<H>(&[])
+}
+
+/// An unambiguous old spelling may still occur in an otherwise wire-named helper.
+/// Keep conflicting entries intact so override validation reports the invalid field.
+pub(crate) fn resolve_legacy_override_names(schema: &mut Value, ancestor_names: &[(&str, &str)]) {
+    let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
+        return;
+    };
+    let renames: Vec<_> = ancestor_names
+        .iter()
+        .copied()
+        .filter(|&(old, wire)| {
+            properties.contains_key(old)
+                && !properties.contains_key(wire)
+                && !ancestor_names.iter().any(|&(_, out)| out == old)
+        })
+        .collect();
+    crate::schema::rename_root_properties(schema, &renames);
+}
+
+pub(crate) fn helper_schema_for_ancestor<H: schemars::JsonSchema>(
+    ancestor_renames: &[(&str, &str)],
+) -> Value {
+    let settings = schemars::generate::SchemaSettings::draft07()
+        .with(|settings| settings.inline_subschemas = true);
+    let mut helper = Value::from(
+        settings
+            .clone()
+            .into_generator()
+            .into_root_schema_for::<H>(),
+    );
+    let Some(properties) = helper.get("properties").and_then(Value::as_object) else {
+        return helper;
+    };
+    if !ancestor_renames
+        .iter()
+        .any(|(input, _)| properties.contains_key(*input))
+    {
+        return helper;
+    }
+    // An override may use the ancestor's old input spelling or its wire spelling.
+    // If a spelling names two different ancestor fields, prefer the wire field,
+    // unless the helper's write schema establishes that it moved the property.
+    let wire = settings
+        .for_serialize()
         .into_generator()
         .into_root_schema_for::<H>();
-    serde_json::to_value(root).unwrap_or(Value::Null)
+    if let Some(written) = wire.get("properties").and_then(Value::as_object) {
+        let mut renames: Vec<_> = ancestor_renames
+            .iter()
+            .copied()
+            .filter(|&(input, output)| {
+                let Some(source) = properties.get(input) else {
+                    return false;
+                };
+                let input_is_wire = ancestor_renames.iter().any(|&(_, name)| name == input);
+                if !input_is_wire {
+                    return written.contains_key(output) || written.contains_key(input);
+                }
+                written
+                    .get(output)
+                    .is_some_and(|dest| match written.get(input) {
+                        None => true,
+                        Some(at_input) => dest == source && at_input != source,
+                    })
+            })
+            .collect();
+        // Moving one property can force the next move in a chain (a -> b -> c).
+        // Never overwrite another constraint when both spellings were supplied.
+        while let Some(&(_, dest)) = renames.iter().find(|&&(_, dest)| {
+            properties.contains_key(dest) && !renames.iter().any(|&(src, _)| src == dest)
+        }) {
+            if let Some(&next) = ancestor_renames
+                .iter()
+                .find(|&&(src, out)| src == dest && written.contains_key(out))
+            {
+                renames.push(next);
+            } else {
+                // Retain both fields so validation diagnoses the undeclared input name.
+                return helper;
+            }
+        }
+        crate::schema::rename_root_properties(&mut helper, &renames);
+    }
+    helper
 }
 
 /// An override the inherited field does not admit.

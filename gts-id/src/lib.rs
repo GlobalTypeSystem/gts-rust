@@ -17,3 +17,13 @@ pub use gts_id_pattern::GtsIdPattern;
 pub use gts_id_segment::{GtsIdPatternSegment, GtsIdSegment, GtsIdSegmentParts, GtsUuidTail};
 pub use parse::GTS_ID_MAX_LENGTH;
 pub use prefix::{DEFAULT_GTS_ID_PREFIX, GTS_ID_PREFIX, GTS_ID_PREFIX_ENV};
+
+/// Default JSON member names for an instance ID, in lookup order.
+pub const DEFAULT_ENTITY_ID_FIELDS: &[&str] = &[
+    "$id", "gtsId", "gtsIid", "gtsOid", "gtsI", "gts_id", "gts_oid", "gts_iid", "id",
+];
+
+/// Default JSON member names for an instance's type ID, in lookup order.
+pub const DEFAULT_TYPE_ID_FIELDS: &[&str] = &[
+    "gtsTid", "gtsType", "gtsT", "gts_t", "gts_tid", "gts_type", "type", "schema",
+];

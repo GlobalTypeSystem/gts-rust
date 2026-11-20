@@ -38,6 +38,8 @@ struct MacroAttrs {
     description: Option<String>,
     properties: Option<String>,
     base: BaseAttr,
+    /// `gts_abstract = true` -> `x-gts-abstract: true`.
+    gts_abstract: bool,
 }
 
 /// Base attribute type
@@ -423,6 +425,7 @@ fn parse_macro_attrs(attr_body: &str) -> Option<MacroAttrs> {
         description,
         properties,
         base,
+        gts_abstract: has_true_argument(attr_body, "gts_abstract"),
     })
 }
 
@@ -522,7 +525,7 @@ fn extract_and_generate_schemas(
         }
 
         // Build JSON schema
-        let schema = build_json_schema(
+        let mut schema = build_json_schema(
             &attrs.type_id,
             struct_name,
             attrs.description.as_deref(),
@@ -530,6 +533,9 @@ fn extract_and_generate_schemas(
             &attrs.base,
             &field_types,
         );
+        if attrs.gts_abstract {
+            schema["x-gts-abstract"] = serde_json::Value::Bool(true);
+        }
 
         fs::write(&output_path, serde_json::to_string_pretty(&schema)?)?;
 
@@ -694,10 +700,12 @@ fn rust_type_to_json_schema(rust_type: &str) -> (bool, serde_json::Value) {
         t if t.contains("Uuid") || t.contains("uuid") => {
             json!({ "type": "string", "format": "uuid" })
         }
-        // GtsInstanceId - use the canonical schema from the gts crate
-        "GtsInstanceId" => GtsInstanceId::json_schema_value(),
-        // GtsTypeId (or its deprecated alias GtsSchemaId) — use the canonical schema from the gts crate
-        "GtsTypeId" | "GtsSchemaId" => GtsTypeId::json_schema_value(),
+        // GTS ID types, bare or by path (`gts::GtsTypeId`) - use the canonical schemas from the gts crate
+        t if gts_id_type_name(t) == "GtsInstanceId" => GtsInstanceId::json_schema_value(),
+        // GtsTypeId (or its deprecated alias GtsSchemaId)
+        t if matches!(gts_id_type_name(t), "GtsTypeId" | "GtsSchemaId") => {
+            GtsTypeId::json_schema_value()
+        }
         // Generic type parameter (e.g., P, T, etc.) - treat as object
         t if t.len() <= 2 && t.chars().all(|c| c.is_ascii_uppercase()) => {
             json!({ "type": "object" })
@@ -724,6 +732,32 @@ fn rust_type_to_json_schema(rust_type: &str) -> (bool, serde_json::Value) {
     };
 
     (!is_optional, final_schema)
+}
+
+/// `true` if the comma-separated attribute arguments include `name = true`.
+fn has_true_argument(attr_body: &str, name: &str) -> bool {
+    use proc_macro2::TokenTree;
+
+    let Ok(tokens) = attr_body.parse::<proc_macro2::TokenStream>() else {
+        return false;
+    };
+    let tokens: Vec<TokenTree> = tokens.into_iter().collect();
+    tokens
+        .split(|token| matches!(token, TokenTree::Punct(p) if p.as_char() == ','))
+        .any(|argument| {
+            matches!(
+                argument,
+                [TokenTree::Ident(key), TokenTree::Punct(eq), TokenTree::Ident(value)]
+                    if key == name && eq.as_char() == '=' && value == "true"
+            )
+        })
+}
+
+/// The type name inside `gts::`, `::gts::` or `gts::gts::`; other paths stay unchanged.
+fn gts_id_type_name(rust_type: &str) -> &str {
+    let name = rust_type.strip_prefix("::").unwrap_or(rust_type);
+    let name = name.strip_prefix("gts::").unwrap_or(name);
+    name.strip_prefix("gts::").unwrap_or(name)
 }
 
 #[cfg(test)]
@@ -1321,6 +1355,95 @@ pub struct ChildEvent {
         );
 
         assert!(result.is_ok());
+    }
+
+    // The declaration from issue #160, verbatim, in a file outside any Cargo package.
+    #[test]
+    fn test_generate_schemas_from_rust_issue_160_abstract_base() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        assert!(
+            package_manifest(
+                &temp_dir.path().canonicalize().unwrap(),
+                &mut HashMap::new()
+            )
+            .is_none()
+        );
+        fs::write(
+            temp_dir.path().join("membership.rs"),
+            r#"use gts_macros::struct_to_gts_schema;
+
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    type_id = "gts.example.core.groups.membership.v1~",
+    description = "Resource types accepted for group membership",
+    properties = "resource_type",
+    base = true,
+    gts_abstract = true
+)]
+pub struct MembershipV1 {
+    pub resource_type: gts::GtsTypeId,
+}
+"#,
+        )
+        .unwrap();
+
+        generate_schemas_from_rust(temp_dir.path().to_str().unwrap(), None, &[], 0).unwrap();
+
+        let schema: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(
+                temp_dir
+                    .path()
+                    .join("schemas/gts.example.core.groups.membership.v1~.schema.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(schema["x-gts-abstract"], true);
+        assert_eq!(schema["required"], serde_json::json!(["resource_type"]));
+        assert_eq!(
+            schema["properties"],
+            serde_json::json!({ "resource_type": GtsTypeId::json_schema_value() })
+        );
+    }
+
+    #[test]
+    fn test_gts_abstract_reads_only_its_own_argument() {
+        let attrs = parse_macro_attrs(
+            r#"dir_path = "schemas", base = true, type_id = "gts.x.a.b.c.v1~",
+               description = "Unlike gts_abstract = true", gts_abstract = false"#,
+        )
+        .unwrap();
+        assert!(!attrs.gts_abstract);
+        let attrs = parse_macro_attrs(
+            r#"dir_path = "schemas", base = true, type_id = "gts.x.a.b.c.v1~", gts_abstract = true"#,
+        )
+        .unwrap();
+        assert!(attrs.gts_abstract);
+    }
+
+    #[test]
+    fn test_rust_type_to_json_schema_gts_paths() {
+        for path in [
+            "GtsTypeId",
+            "gts::GtsTypeId",
+            "::gts::GtsTypeId",
+            "gts::gts::GtsTypeId",
+        ] {
+            assert_eq!(
+                rust_type_to_json_schema(path).1,
+                GtsTypeId::json_schema_value()
+            );
+        }
+        assert_eq!(
+            rust_type_to_json_schema("gts::GtsInstanceId").1,
+            GtsInstanceId::json_schema_value()
+        );
+        assert_eq!(
+            rust_type_to_json_schema("unrelated::GtsTypeId").1,
+            serde_json::json!({ "type": "object" })
+        );
     }
 
     #[test]
